@@ -33,8 +33,8 @@ namespace glyphastore::detail {
     std::memcpy(&word, control, kSwissGroupSize);
     const __m128i group = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(&word));
     const __m128i needle = _mm_set1_epi8(static_cast<char>(byte));
-    return static_cast<std::uint64_t>(_mm_movemask_epi8(_mm_cmpeq_epi8(group, needle))) &
-           ((1ULL << kSwissGroupSize) - 1ULL);
+    const auto movemask = static_cast<unsigned>(_mm_movemask_epi8(_mm_cmpeq_epi8(group, needle)));
+    return static_cast<std::uint64_t>(movemask) & ((1ULL << kSwissGroupSize) - 1ULL);
 #elif defined(__ARM_NEON) || defined(__aarch64__)
     const uint8x8_t compared = vceq_u8(vld1_u8(control), vdup_n_u8(byte));
     std::uint64_t mask = 0;
