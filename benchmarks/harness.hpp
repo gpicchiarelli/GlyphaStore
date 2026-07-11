@@ -86,7 +86,11 @@ template <typename Fn> [[nodiscard]] inline auto measure(const std::size_t opera
     const auto started = std::chrono::steady_clock::now();
     const std::size_t hits = fn();
     const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    return Result{.operations = operations, .hits = hits, .seconds = elapsed};
+    return Result{.name = {},
+                  .config = {},
+                  .operations = operations,
+                  .hits = hits,
+                  .seconds = elapsed};
 }
 
 [[nodiscard]] inline auto ops_per_second(const Result& result) -> double {
