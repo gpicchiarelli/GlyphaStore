@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/segment/global_manager.hpp"
@@ -28,17 +29,17 @@ class Worker final {
     }
 
     // Expired keys are tombstoned and removed from the Index on read.
-    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<RecordView>;
-    [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
+    [[nodiscard]] auto get(const HashedKey& key, std::uint64_t now_ns = 0) -> Result<RecordView>;
+    [[nodiscard]] auto put(const HashedKey& key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
-    [[nodiscard]] auto erase(std::string_view key) -> Status;
+    [[nodiscard]] auto erase(const HashedKey& key) -> Status;
 
   private:
     [[nodiscard]] auto next_sequence() -> SequenceNumber;
     [[nodiscard]] auto append_record(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read_ref(const RecordRef& ref) const -> Result<RecordView>;
-    [[nodiscard]] auto publish(std::string_view key, const RecordRef& ref) -> Status;
-    [[nodiscard]] auto unpublish(std::string_view key) -> Status;
+    [[nodiscard]] auto publish(const HashedKey& key, const RecordRef& ref) -> Status;
+    [[nodiscard]] auto unpublish(const HashedKey& key) -> Status;
 
     WorkerId id_;
     GlobalSegmentManager& manager_;

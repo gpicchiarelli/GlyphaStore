@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index_types.hpp"
 #include "glyphastore/index/swiss_table.hpp"
@@ -28,8 +29,11 @@ class Index final {
     auto operator=(const Index&) -> Index& = delete;
 
     [[nodiscard]] auto find(std::string_view key) const -> std::optional<RecordRef>;
+    [[nodiscard]] auto find(const HashedKey& key) const -> std::optional<RecordRef>;
     [[nodiscard]] auto insert_or_assign(std::string_view key, RecordRef ref) -> Result<IndexMutationResult>;
+    [[nodiscard]] auto insert_or_assign(const HashedKey& key, RecordRef ref) -> Result<IndexMutationResult>;
     auto erase(std::string_view key) -> IndexMutationResult;
+    auto erase(const HashedKey& key) -> IndexMutationResult;
     [[nodiscard]] auto reserve(std::size_t count) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;

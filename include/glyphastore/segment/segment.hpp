@@ -37,6 +37,7 @@ class Segment final {
 
     [[nodiscard]] auto append(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read(const RecordRef& ref) const -> Result<RecordView>;
+    [[nodiscard]] auto validate_ref_extent(const RecordRef& ref) const -> Status;
     [[nodiscard]] auto scan() const -> Result<std::vector<RecordRef>>;
 
     auto seal() -> Status;
@@ -73,8 +74,6 @@ class Segment final {
     }
 
   private:
-    [[nodiscard]] auto validate_ref(const RecordRef& ref) const -> Status;
-
     SegmentId id_;
     WorkerId owner_;
     GenerationId generation_;

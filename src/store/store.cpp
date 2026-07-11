@@ -1,5 +1,7 @@
 #include "glyphastore/store/store.hpp"
 
+#include "glyphastore/core/key_hash.hpp"
+
 #include <memory>
 
 namespace glyphastore {
@@ -14,16 +16,19 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
 }
 
 auto Store::get(std::string_view key, const std::uint64_t now_ns) -> Result<RecordView> {
-    return workers_.route(key).get(key, now_ns);
+    const auto hashed = HashedKey::compute(key);
+    return workers_.route(hashed).get(hashed, now_ns);
 }
 
 auto Store::put(std::string_view key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status {
-    return workers_.route(key).put(key, value, expire_at_ns);
+    const auto hashed = HashedKey::compute(key);
+    return workers_.route(hashed).put(hashed, value, expire_at_ns);
 }
 
 auto Store::erase(std::string_view key) -> Status {
-    return workers_.route(key).erase(key);
+    const auto hashed = HashedKey::compute(key);
+    return workers_.route(hashed).erase(hashed);
 }
 
 auto Store::verify_index() const -> Status {

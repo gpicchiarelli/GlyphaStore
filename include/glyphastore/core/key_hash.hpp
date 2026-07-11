@@ -34,4 +34,13 @@ inline constexpr std::uint64_t kFnv1a64Prime = 1099511628211ULL;
     return route_worker(hash_key(key), worker_count);
 }
 
+struct HashedKey {
+    std::string_view key;
+    std::uint64_t hash;
+
+    [[nodiscard]] static auto compute(std::string_view key) noexcept -> HashedKey {
+        return HashedKey{key, hash_key(key)};
+    }
+};
+
 } // namespace glyphastore

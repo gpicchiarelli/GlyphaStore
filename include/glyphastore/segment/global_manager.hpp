@@ -5,7 +5,6 @@
 #include "glyphastore/segment/segment.hpp"
 
 #include <cstddef>
-#include <unordered_map>
 #include <vector>
 
 namespace glyphastore {
@@ -17,7 +16,8 @@ class GlobalSegmentManager final {
 
     [[nodiscard]] auto allocate_active(WorkerId owner) -> SegmentPtr;
     [[nodiscard]] auto rotate_active(SegmentPtr active, WorkerId owner) -> Result<SegmentPtr>;
-    [[nodiscard]] auto find(SegmentId id) const -> SegmentPtr;
+    [[nodiscard]] auto find(SegmentId id) noexcept -> Segment*;
+    [[nodiscard]] auto find(SegmentId id) const noexcept -> const Segment*;
     [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>& {
         return segments_;
     }
@@ -29,9 +29,10 @@ class GlobalSegmentManager final {
   private:
     [[nodiscard]] auto register_segment(SegmentPtr segment) -> SegmentPtr;
 
+    SegmentId first_id_;
     SegmentId next_id_;
+    std::vector<SegmentPtr> catalog_;
     std::vector<SegmentPtr> segments_;
-    std::unordered_map<SegmentId, SegmentPtr> catalog_;
     std::vector<SegmentId> retired_pool_;
 };
 

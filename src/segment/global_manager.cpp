@@ -2,10 +2,15 @@
 
 namespace glyphastore {
 
-GlobalSegmentManager::GlobalSegmentManager(const SegmentId first_id) : next_id_(first_id) {}
+GlobalSegmentManager::GlobalSegmentManager(const SegmentId first_id)
+    : first_id_(first_id), next_id_(first_id) {}
 
 auto GlobalSegmentManager::register_segment(SegmentPtr segment) -> SegmentPtr {
-    catalog_.emplace(segment->id(), segment);
+    const auto slot = segment->id().value - first_id_.value;
+    if (catalog_.size() <= slot) {
+        catalog_.resize(slot + 1U);
+    }
+    catalog_[slot] = segment;
     segments_.push_back(segment);
     return segment;
 }
@@ -28,23 +33,31 @@ auto GlobalSegmentManager::rotate_active(SegmentPtr active, const WorkerId owner
     return register_segment(std::move(segment));
 }
 
-auto GlobalSegmentManager::find(const SegmentId id) const -> SegmentPtr {
-    const auto it = catalog_.find(id);
-    if (it == catalog_.end()) {
-        return {};
+auto GlobalSegmentManager::find(const SegmentId id) const noexcept -> const Segment* {
+    if (id.value < first_id_.value) {
+        return nullptr;
     }
-    return it->second;
+    const auto slot = id.value - first_id_.value;
+    if (slot >= catalog_.size()) {
+        return nullptr;
+    }
+    return catalog_[slot].get();
+}
+
+auto GlobalSegmentManager::find(const SegmentId id) noexcept -> Segment* {
+    return const_cast<Segment*>(std::as_const(*this).find(id));
 }
 
 auto GlobalSegmentManager::try_retire(const SegmentId id) -> Status {
-    const auto segment = find(id);
+    auto* segment = find(id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "segment is not in the catalog");
     }
     if (auto retired = segment->retire(); !retired) {
         return retired;
     }
-    catalog_.erase(id);
+    const auto slot = id.value - first_id_.value;
+    catalog_[slot].reset();
     retired_pool_.push_back(id);
     return {};
 }

@@ -26,11 +26,23 @@ auto Index::find(const std::string_view key) const -> std::optional<RecordRef> {
     return table_.find(key);
 }
 
+auto Index::find(const HashedKey& key) const -> std::optional<RecordRef> {
+    return table_.find(key);
+}
+
 auto Index::insert_or_assign(const std::string_view key, RecordRef ref) -> Result<IndexMutationResult> {
     return table_.insert_or_assign(key, ref);
 }
 
+auto Index::insert_or_assign(const HashedKey& key, RecordRef ref) -> Result<IndexMutationResult> {
+    return table_.insert_or_assign(key, ref);
+}
+
 auto Index::erase(const std::string_view key) -> IndexMutationResult {
+    return table_.erase(key);
+}
+
+auto Index::erase(const HashedKey& key) -> IndexMutationResult {
     return table_.erase(key);
 }
 

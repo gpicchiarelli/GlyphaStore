@@ -3,6 +3,20 @@
 #include "glyphastore/core/key_hash.hpp"
 
 namespace glyphastore {
+namespace {
+
+[[nodiscard]] auto validate_live_record(const Segment& segment, const RecordRef& ref) -> Status {
+    if (auto valid = segment.validate_ref_extent(ref); !valid) {
+        return valid;
+    }
+    const auto stats = segment.stats();
+    if (stats.live_records == 0 || stats.live_bytes < ref.size.value) {
+        return fail(ErrorCode::corrupted_data, "record is not accounted as live");
+    }
+    return {};
+}
+
+} // namespace
 
 Worker::Worker(WorkerId id, GlobalSegmentManager& manager) : id_(id), manager_(manager) {
     active_ = manager_.allocate_active(id_);
@@ -30,35 +44,28 @@ auto Worker::append_record(const RecordInput& input) -> Result<RecordRef> {
 }
 
 auto Worker::read_ref(const RecordRef& ref) const -> Result<RecordView> {
-    const auto segment = manager_.find(ref.segment_id);
+    const auto* segment = manager_.find(ref.segment_id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "record reference targets a missing segment");
     }
     return segment->read(ref);
 }
 
-auto Worker::publish(std::string_view key, const RecordRef& ref) -> Status {
-    const auto segment = manager_.find(ref.segment_id);
+auto Worker::publish(const HashedKey& key, const RecordRef& ref) -> Status {
+    auto* segment = manager_.find(ref.segment_id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "new record reference targets a missing segment");
     }
-    if (auto readable = segment->read(ref); !readable) {
-        return unexpected(readable.error());
-    }
 
     const auto previous = index_.find(key);
-    SegmentPtr previous_segment;
+    Segment* previous_segment = nullptr;
     if (previous) {
         previous_segment = manager_.find(previous->segment_id);
         if (!previous_segment) {
             return fail(ErrorCode::invalid_reference, "previous record reference targets a missing segment");
         }
-        if (auto readable = previous_segment->read(*previous); !readable) {
-            return unexpected(readable.error());
-        }
-        const auto stats = previous_segment->stats();
-        if (stats.live_records == 0 || stats.live_bytes < previous->size.value) {
-            return fail(ErrorCode::corrupted_data, "previous record is not accounted as live");
+        if (auto valid = validate_live_record(*previous_segment, *previous); !valid) {
+            return valid;
         }
     }
 
@@ -89,17 +96,17 @@ auto Worker::publish(std::string_view key, const RecordRef& ref) -> Status {
     return {};
 }
 
-auto Worker::unpublish(std::string_view key) -> Status {
+auto Worker::unpublish(const HashedKey& key) -> Status {
     const auto previous = index_.find(key);
     if (!previous) {
         return fail(ErrorCode::not_found, "key is not present in worker index");
     }
-    const auto segment = manager_.find(previous->segment_id);
+    auto* segment = manager_.find(previous->segment_id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "erased record reference targets a missing segment");
     }
-    if (auto readable = segment->read(*previous); !readable) {
-        return unexpected(readable.error());
+    if (auto valid = validate_live_record(*segment, *previous); !valid) {
+        return valid;
     }
     if (auto dead = segment->mark_dead(*previous); !dead) {
         return dead;
@@ -113,7 +120,7 @@ auto Worker::unpublish(std::string_view key) -> Status {
     return {};
 }
 
-auto Worker::get(std::string_view key, std::uint64_t now_ns) -> Result<RecordView> {
+auto Worker::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<RecordView> {
     const auto ref = index_.find(key);
     if (!ref) {
         return fail(ErrorCode::not_found, "key is not present");
@@ -134,31 +141,26 @@ auto Worker::get(std::string_view key, std::uint64_t now_ns) -> Result<RecordVie
     return record;
 }
 
-auto Worker::put(std::string_view key, std::span<const std::byte> value, std::uint64_t expire_at_ns)
-    -> Status {
+auto Worker::put(const HashedKey& key, const std::span<const std::byte> value,
+                 const std::uint64_t expire_at_ns) -> Status {
     const auto existing = index_.find(key);
     if (existing) {
-        const auto previous_segment = manager_.find(existing->segment_id);
+        const auto* previous_segment = manager_.find(existing->segment_id);
         if (!previous_segment) {
             return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
         }
-        if (auto readable = previous_segment->read(*existing); !readable) {
-            return unexpected(readable.error());
-        }
-        const auto stats = previous_segment->stats();
-        if (stats.live_records == 0 || stats.live_bytes < existing->size.value) {
-            return fail(ErrorCode::corrupted_data, "existing record is not accounted as live");
+        if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
+            return valid;
         }
     } else if (auto reserved = index_.reserve(index_.stats().size + 1U); !reserved) {
         return reserved;
     }
-    const auto key_hash = hash_key(key);
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::put,
-        .key_hash = key_hash,
+        .key_hash = key.hash,
         .expire_at_ns = expire_at_ns,
-        .key = {reinterpret_cast<const std::byte*>(key.data()), key.size()},
+        .key = {reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()},
         .value = value,
     };
     auto ref = append_record(input);
@@ -168,28 +170,23 @@ auto Worker::put(std::string_view key, std::span<const std::byte> value, std::ui
     return publish(key, *ref);
 }
 
-auto Worker::erase(std::string_view key) -> Status {
+auto Worker::erase(const HashedKey& key) -> Status {
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
     }
-    const auto previous_segment = manager_.find(existing->segment_id);
+    const auto* previous_segment = manager_.find(existing->segment_id);
     if (!previous_segment) {
         return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
     }
-    if (auto readable = previous_segment->read(*existing); !readable) {
-        return unexpected(readable.error());
+    if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
+        return valid;
     }
-    const auto stats = previous_segment->stats();
-    if (stats.live_records == 0 || stats.live_bytes < existing->size.value) {
-        return fail(ErrorCode::corrupted_data, "existing record is not accounted as live");
-    }
-    const auto key_hash = hash_key(key);
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::erase,
-        .key_hash = key_hash,
-        .key = {reinterpret_cast<const std::byte*>(key.data()), key.size()},
+        .key_hash = key.hash,
+        .key = {reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()},
     };
     auto ref = append_record(input);
     if (!ref) {

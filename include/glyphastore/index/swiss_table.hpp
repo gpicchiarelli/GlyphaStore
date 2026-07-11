@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/index_types.hpp"
 
 #include <cstddef>
@@ -24,8 +25,11 @@ class SwissTableIndex final {
     SwissTableIndex();
 
     [[nodiscard]] auto find(std::string_view key) const -> std::optional<RecordRef>;
+    [[nodiscard]] auto find(const HashedKey& key) const -> std::optional<RecordRef>;
     [[nodiscard]] auto insert_or_assign(std::string_view key, RecordRef ref) -> Result<IndexMutationResult>;
+    [[nodiscard]] auto insert_or_assign(const HashedKey& key, RecordRef ref) -> Result<IndexMutationResult>;
     auto erase(std::string_view key) -> IndexMutationResult;
+    auto erase(const HashedKey& key) -> IndexMutationResult;
     [[nodiscard]] auto reserve(std::size_t count) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
@@ -55,7 +59,8 @@ class SwissTableIndex final {
     [[nodiscard]] auto key_equals(const Slot& slot, std::string_view key,
                                   std::uint64_t key_hash) const noexcept -> bool;
     [[nodiscard]] auto slot_key(const Slot& slot) const noexcept -> std::string_view;
-    [[nodiscard]] auto find_slot_index(std::string_view key) const -> std::optional<std::size_t>;
+    [[nodiscard]] auto find_slot_index(std::string_view key, std::uint64_t key_hash) const
+        -> std::optional<std::size_t>;
     [[nodiscard]] auto find_insert_index(std::string_view key, std::uint64_t key_hash,
                                          std::uint64_t mixed_hash) -> Result<std::size_t>;
     [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;

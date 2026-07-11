@@ -50,7 +50,7 @@ auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
     };
 }
 
-auto Segment::validate_ref(const RecordRef& ref) const -> Status {
+auto Segment::validate_ref_extent(const RecordRef& ref) const -> Status {
     if (ref.segment_id != id_ || ref.generation != generation_) {
         return fail(ErrorCode::invalid_reference, "record reference targets another segment generation");
     }
@@ -62,7 +62,7 @@ auto Segment::validate_ref(const RecordRef& ref) const -> Status {
 }
 
 auto Segment::read(const RecordRef& ref) const -> Result<RecordView> {
-    if (auto valid = validate_ref(ref); !valid) {
+    if (auto valid = validate_ref_extent(ref); !valid) {
         return unexpected(valid.error());
     }
     auto decoded =
@@ -110,7 +110,7 @@ auto Segment::seal() -> Status {
 }
 
 auto Segment::mark_live(const RecordRef& ref) -> Status {
-    if (auto valid = validate_ref(ref); !valid) {
+    if (auto valid = validate_ref_extent(ref); !valid) {
         return valid;
     }
     ++stats_.live_records;
@@ -119,7 +119,7 @@ auto Segment::mark_live(const RecordRef& ref) -> Status {
 }
 
 auto Segment::mark_dead(const RecordRef& ref) -> Status {
-    if (auto valid = validate_ref(ref); !valid) {
+    if (auto valid = validate_ref_extent(ref); !valid) {
         return valid;
     }
     if (stats_.live_records == 0 || stats_.live_bytes < ref.size.value) {
