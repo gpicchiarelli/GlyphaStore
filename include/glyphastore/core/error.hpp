@@ -35,6 +35,10 @@ template <typename T> class [[nodiscard]] Result final {
   public:
     Result(T value) : storage_(std::move(value)) {}
     Result(Unexpected failure) : storage_(std::move(failure.error)) {}
+    Result(Result&&) noexcept = default;
+    auto operator=(Result&&) noexcept -> Result& = default;
+    Result(const Result&) = delete;
+    auto operator=(const Result&) -> Result& = delete;
 
     [[nodiscard]] auto has_value() const noexcept -> bool {
         return std::holds_alternative<T>(storage_);

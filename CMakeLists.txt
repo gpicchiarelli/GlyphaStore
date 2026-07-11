@@ -13,10 +13,13 @@ glyphastore_project_options()
 
 add_library(glyphastore_core
     src/index/index.cpp
+    src/segment/manager.cpp
     src/segment/record.cpp
     src/segment/segment.cpp
+    src/store/store.cpp
     src/vacuum/vacuum.cpp
     src/worker/topology.cpp
+    src/worker/worker.cpp
 )
 add_library(GlyphaStore::core ALIAS glyphastore_core)
 
@@ -47,6 +50,7 @@ if(BUILD_TESTING)
         tests/unit/segment_tests.cpp
         tests/unit/worker_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
+        tests/integration/store_tests.cpp
         tests/property/history_property_tests.cpp
     )
     target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::core glyphastore_project_options)
