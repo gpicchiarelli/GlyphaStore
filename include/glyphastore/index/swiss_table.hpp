@@ -34,6 +34,7 @@ class SwissTableIndex final {
   private:
     struct Slot {
         RecordRef ref{};
+        std::uint64_t key_hash{};
         std::uint32_t key_size{};
         bool key_is_inline{};
         alignas(RecordRef) std::byte inline_key[kSwissInlineKeyBytes]{};
@@ -46,17 +47,19 @@ class SwissTableIndex final {
         auto operator=(const Slot&) -> Slot& = delete;
     };
 
-    [[nodiscard]] auto hash_slot(std::string_view key) const noexcept -> std::uint64_t;
+    [[nodiscard]] auto mix_hash(std::uint64_t key_hash) const noexcept -> std::uint64_t;
     [[nodiscard]] static auto h2(std::uint64_t hash) noexcept -> std::uint8_t;
     [[nodiscard]] auto probe_start(std::uint64_t hash) const noexcept -> std::size_t;
     [[nodiscard]] static auto next_group(std::size_t group_start, std::size_t capacity) noexcept
         -> std::size_t;
-    [[nodiscard]] auto key_equals(const Slot& slot, std::string_view key) const noexcept -> bool;
+    [[nodiscard]] auto key_equals(const Slot& slot, std::string_view key,
+                                  std::uint64_t key_hash) const noexcept -> bool;
     [[nodiscard]] auto slot_key(const Slot& slot) const noexcept -> std::string_view;
     [[nodiscard]] auto find_slot_index(std::string_view key) const -> std::optional<std::size_t>;
-    [[nodiscard]] auto find_insert_index(std::string_view key) -> Result<std::size_t>;
+    [[nodiscard]] auto find_insert_index(std::string_view key, std::uint64_t key_hash,
+                                         std::uint64_t mixed_hash) -> Result<std::size_t>;
     [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;
-    void set_key(Slot& slot, std::string_view key);
+    void set_key(Slot& slot, std::string_view key, std::uint64_t key_hash);
     void clear_slot(std::size_t index);
     [[nodiscard]] auto grow_if_needed() -> Status;
     [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> Result<std::size_t>;

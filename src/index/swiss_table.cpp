@@ -33,8 +33,8 @@ auto SwissTableIndex::normalize_capacity(const std::size_t minimum_slots) -> Res
     return capacity;
 }
 
-auto SwissTableIndex::hash_slot(const std::string_view key) const noexcept -> std::uint64_t {
-    std::uint64_t hash = hash_key(key);
+auto SwissTableIndex::mix_hash(const std::uint64_t key_hash) const noexcept -> std::uint64_t {
+    std::uint64_t hash = key_hash;
     hash ^= seed_;
     hash *= kSwissMixConstant;
     hash ^= hash >> 33U;
@@ -69,16 +69,24 @@ auto SwissTableIndex::slot_key(const Slot& slot) const noexcept -> std::string_v
     return {reinterpret_cast<const char*>(slot.heap_key.get()), slot.key_size};
 }
 
-auto SwissTableIndex::key_equals(const Slot& slot, const std::string_view key) const noexcept -> bool {
+auto SwissTableIndex::key_equals(const Slot& slot, const std::string_view key,
+                                 const std::uint64_t key_hash) const noexcept -> bool {
+    if (slot.key_size != key.size() || slot.key_hash != key_hash) {
+        return false;
+    }
+    if (key.empty()) {
+        return true;
+    }
     const auto stored = slot_key(slot);
-    return stored.size() == key.size() && stored == key;
+    return std::memcmp(stored.data(), key.data(), key.size()) == 0;
 }
 
 auto SwissTableIndex::find_slot_index(const std::string_view key) const -> std::optional<std::size_t> {
     if (capacity_ == 0) {
         return std::nullopt;
     }
-    const auto hash = hash_slot(key);
+    const auto key_hash = hash_key(key);
+    const auto hash = mix_hash(key_hash);
     const auto fingerprint = h2(hash);
     auto group_start = probe_start(hash);
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
@@ -89,7 +97,7 @@ auto SwissTableIndex::find_slot_index(const std::string_view key) const -> std::
             if (control == kSwissEmpty) {
                 return std::nullopt;
             }
-            if (control == fingerprint && key_equals(slots_[index], key)) {
+            if (control == fingerprint && key_equals(slots_[index], key, key_hash)) {
                 return index;
             }
         }
@@ -98,13 +106,13 @@ auto SwissTableIndex::find_slot_index(const std::string_view key) const -> std::
     return std::nullopt;
 }
 
-auto SwissTableIndex::find_insert_index(const std::string_view key) -> Result<std::size_t> {
+auto SwissTableIndex::find_insert_index(const std::string_view key, const std::uint64_t key_hash,
+                                        const std::uint64_t mixed_hash) -> Result<std::size_t> {
     if (auto grown = grow_if_needed(); !grown) {
         return unexpected(grown.error());
     }
-    const auto hash = hash_slot(key);
-    const auto fingerprint = h2(hash);
-    auto group_start = probe_start(hash);
+    const auto fingerprint = h2(mixed_hash);
+    auto group_start = probe_start(mixed_hash);
     std::optional<std::size_t> first_deleted;
 
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
@@ -118,7 +126,7 @@ auto SwissTableIndex::find_insert_index(const std::string_view key) -> Result<st
             if (control == kSwissDeleted && !first_deleted.has_value()) {
                 first_deleted = index;
             }
-            if (control == fingerprint && key_equals(slots_[index], key)) {
+            if (control == fingerprint && key_equals(slots_[index], key, key_hash)) {
                 return index;
             }
         }
@@ -127,8 +135,9 @@ auto SwissTableIndex::find_insert_index(const std::string_view key) -> Result<st
     return fail(ErrorCode::corrupted_data, "swiss table probe sequence exhausted without insert slot");
 }
 
-void SwissTableIndex::set_key(Slot& slot, const std::string_view key) {
+void SwissTableIndex::set_key(Slot& slot, const std::string_view key, const std::uint64_t key_hash) {
     slot.key_size = static_cast<std::uint32_t>(key.size());
+    slot.key_hash = key_hash;
     if (key.size() <= kSwissInlineKeyBytes) {
         slot.key_is_inline = true;
         slot.heap_key.reset();
@@ -180,7 +189,7 @@ auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
         if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
             continue;
         }
-        const auto hash = hash_slot(slot_key(slots_[index]));
+        const auto hash = mix_hash(slots_[index].key_hash);
         auto group_start = ((hash >> 7U) & ((*normalized / kSwissGroupSize) - 1U)) * kSwissGroupSize;
         bool placed{};
         for (std::size_t probe = 0; probe < *normalized && !placed; probe += kSwissGroupSize) {
@@ -223,15 +232,17 @@ auto SwissTableIndex::insert_or_assign(const std::string_view key, RecordRef ref
     if (key.size() > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "index key exceeds supported size");
     }
-    auto slot_index = find_insert_index(key);
+    const auto key_hash = hash_key(key);
+    const auto mixed_hash = mix_hash(key_hash);
+    auto slot_index = find_insert_index(key, key_hash, mixed_hash);
     if (!slot_index) {
         return unexpected(slot_index.error());
     }
     const auto index = *slot_index;
-    const auto fingerprint = h2(hash_slot(key));
+    const auto fingerprint = h2(mixed_hash);
     if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
         control_[index] = fingerprint;
-        set_key(slots_[index], key);
+        set_key(slots_[index], key, key_hash);
         slots_[index].ref = ref;
         ++size_;
         return IndexMutationResult{.inserted = true, .previous = std::nullopt};
