@@ -4,7 +4,7 @@
 
 namespace glyphastore {
 
-Worker::Worker(WorkerId id, SegmentManager& manager) : id_(id), manager_(manager) {
+Worker::Worker(WorkerId id, GlobalSegmentManager& manager) : id_(id), manager_(manager) {
     active_ = manager_.allocate_active(id_);
     owned_.push_back(active_);
 }

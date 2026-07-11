@@ -13,11 +13,13 @@ glyphastore_project_options()
 
 add_library(glyphastore_core
     src/index/index.cpp
-    src/segment/manager.cpp
+    src/index/swiss_table.cpp
+    src/segment/global_manager.cpp
     src/segment/record.cpp
     src/segment/segment.cpp
     src/store/store.cpp
     src/vacuum/vacuum.cpp
+    src/worker/pool.cpp
     src/worker/topology.cpp
     src/worker/worker.cpp
 )

@@ -3,18 +3,17 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
-#include "glyphastore/segment/manager.hpp"
+#include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment.hpp"
+#include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
-#include "glyphastore/worker/worker.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
 #include <string_view>
-#include <vector>
 
 namespace glyphastore {
 
@@ -36,10 +35,13 @@ class Store final {
         return workers_.size();
     }
     [[nodiscard]] auto worker(std::size_t index) const noexcept -> const Worker& {
-        return workers_[index];
+        return workers_.worker(index);
+    }
+    [[nodiscard]] auto segment_manager() const noexcept -> const GlobalSegmentManager& {
+        return segment_manager_;
     }
     [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>& {
-        return manager_.segments();
+        return segment_manager_.segments();
     }
 
     // Returns a view into segment memory. The RecordView spans remain valid only while
@@ -52,13 +54,10 @@ class Store final {
     [[nodiscard]] auto verify_index() const -> Status;
 
   private:
-    Store(SegmentManager manager, std::size_t worker_count);
+    Store(SegmentId first_segment_id, std::size_t worker_count);
 
-    [[nodiscard]] auto worker_for(std::string_view key) const -> const Worker&;
-    [[nodiscard]] auto worker_for(std::string_view key) -> Worker&;
-
-    SegmentManager manager_;
-    std::vector<Worker> workers_;
+    GlobalSegmentManager segment_manager_;
+    WorkerPool workers_;
 };
 
 } // namespace glyphastore

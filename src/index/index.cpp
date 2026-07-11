@@ -1,68 +1,12 @@
 #include "glyphastore/index/index.hpp"
 
-#include <algorithm>
+#include "glyphastore/segment/record.hpp"
+
 #include <unordered_map>
 #include <utility>
 
 namespace glyphastore {
 namespace {
-
-class StandardIndexBackend final : public IndexBackend {
-  public:
-    auto find(std::string_view key) const -> std::optional<RecordRef> override {
-        const auto it = entries_.find(std::string{key});
-        if (it == entries_.end()) {
-            return std::nullopt;
-        }
-        return it->second;
-    }
-
-    auto insert_or_assign(std::string_view key, RecordRef ref) -> IndexMutationResult override {
-        auto [it, inserted] = entries_.try_emplace(std::string{key}, ref);
-        if (inserted) {
-            return {.inserted = true, .previous = std::nullopt};
-        }
-        const auto previous = it->second;
-        it->second = ref;
-        return {.inserted = false, .previous = previous};
-    }
-
-    auto erase(std::string_view key) -> IndexMutationResult override {
-        const auto it = entries_.find(std::string{key});
-        if (it == entries_.end()) {
-            return {};
-        }
-        const auto previous = it->second;
-        entries_.erase(it);
-        return {.inserted = false, .previous = previous};
-    }
-
-    void reserve(std::size_t count) override {
-        entries_.reserve(count);
-    }
-
-    auto entries() const -> std::vector<IndexEntry> override {
-        std::vector<IndexEntry> result;
-        result.reserve(entries_.size());
-        for (const auto& [key, ref] : entries_) {
-            result.push_back({key, ref});
-        }
-        return result;
-    }
-
-    auto stats() const noexcept -> IndexStats override {
-        return {entries_.size(), entries_.bucket_count(), entries_.load_factor()};
-    }
-
-    auto clone_empty() const -> std::unique_ptr<IndexBackend> override {
-        return std::make_unique<StandardIndexBackend>();
-    }
-
-  private:
-    // Bootstrap backend only. The architecture targets a benchmark-selected flat,
-    // open-addressing table inspired by SwissTable/F14.
-    std::unordered_map<std::string, RecordRef> entries_;
-};
 
 struct LatestRecord {
     RecordRef ref;
@@ -72,35 +16,41 @@ struct LatestRecord {
 
 } // namespace
 
-Index::Index() : backend_(std::make_unique<StandardIndexBackend>()) {}
-Index::Index(std::unique_ptr<IndexBackend> backend) : backend_(std::move(backend)) {}
+Index::Index() = default;
+Index::Index(SwissTableIndex table) : table_(std::move(table)) {}
 Index::~Index() = default;
 Index::Index(Index&&) noexcept = default;
 auto Index::operator=(Index&&) noexcept -> Index& = default;
 
-auto Index::find(std::string_view key) const -> std::optional<RecordRef> {
-    return backend_->find(key);
-}
-auto Index::insert_or_assign(std::string_view key, RecordRef ref) -> IndexMutationResult {
-    return backend_->insert_or_assign(key, ref);
-}
-auto Index::erase(std::string_view key) -> IndexMutationResult {
-    return backend_->erase(key);
-}
-void Index::reserve(std::size_t count) {
-    backend_->reserve(count);
-}
-auto Index::entries() const -> std::vector<IndexEntry> {
-    return backend_->entries();
-}
-auto Index::stats() const noexcept -> IndexStats {
-    return backend_->stats();
-}
-auto Index::make_empty() const -> Index {
-    return Index{backend_->clone_empty()};
+auto Index::find(const std::string_view key) const -> std::optional<RecordRef> {
+    return table_.find(key);
 }
 
-auto rebuild_index_from_segments(std::span<const SegmentPtr> segments, std::uint64_t now_ns)
+auto Index::insert_or_assign(const std::string_view key, RecordRef ref) -> IndexMutationResult {
+    return table_.insert_or_assign(key, ref);
+}
+
+auto Index::erase(const std::string_view key) -> IndexMutationResult {
+    return table_.erase(key);
+}
+
+void Index::reserve(const std::size_t count) {
+    table_.reserve(count);
+}
+
+auto Index::entries() const -> std::vector<IndexEntry> {
+    return table_.entries();
+}
+
+auto Index::stats() const noexcept -> IndexStats {
+    return table_.stats();
+}
+
+auto Index::make_empty() const -> Index {
+    return Index{table_.clone_empty()};
+}
+
+auto rebuild_index_from_segments(const std::span<const SegmentPtr> segments, const std::uint64_t now_ns)
     -> Result<RebuildResult> {
     std::unordered_map<std::string, LatestRecord> latest;
     RebuildStats stats{};

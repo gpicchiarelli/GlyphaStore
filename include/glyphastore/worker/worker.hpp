@@ -3,7 +3,7 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
-#include "glyphastore/segment/manager.hpp"
+#include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/segment/record.hpp"
 
 #include <cstdint>
@@ -15,7 +15,7 @@ namespace glyphastore {
 
 class Worker final {
   public:
-    Worker(WorkerId id, SegmentManager& manager);
+    Worker(WorkerId id, GlobalSegmentManager& manager);
 
     [[nodiscard]] auto id() const noexcept -> WorkerId {
         return id_;
@@ -41,7 +41,7 @@ class Worker final {
     [[nodiscard]] auto unpublish(std::string_view key) -> Status;
 
     WorkerId id_;
-    SegmentManager& manager_;
+    GlobalSegmentManager& manager_;
     Index index_;
     SegmentPtr active_;
     SequenceNumber next_sequence_{SequenceNumber{1}};

@@ -2,9 +2,12 @@
 
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/types.hpp"
+#include "glyphastore/index/index_types.hpp"
+#include "glyphastore/index/swiss_table.hpp"
 #include "glyphastore/segment/segment.hpp"
 
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <span>
@@ -14,38 +17,10 @@
 
 namespace glyphastore {
 
-struct IndexEntry {
-    std::string key;
-    RecordRef record;
-};
-
-struct IndexMutationResult {
-    bool inserted{};
-    std::optional<RecordRef> previous;
-};
-
-struct IndexStats {
-    std::size_t size{};
-    std::size_t bucket_count{};
-    float load_factor{};
-};
-
-class IndexBackend {
-  public:
-    virtual ~IndexBackend() = default;
-    [[nodiscard]] virtual auto find(std::string_view key) const -> std::optional<RecordRef> = 0;
-    virtual auto insert_or_assign(std::string_view key, RecordRef ref) -> IndexMutationResult = 0;
-    virtual auto erase(std::string_view key) -> IndexMutationResult = 0;
-    virtual void reserve(std::size_t count) = 0;
-    [[nodiscard]] virtual auto entries() const -> std::vector<IndexEntry> = 0;
-    [[nodiscard]] virtual auto stats() const noexcept -> IndexStats = 0;
-    [[nodiscard]] virtual auto clone_empty() const -> std::unique_ptr<IndexBackend> = 0;
-};
-
+// Logical Index partition owned by one Worker. Backed by SwissTableIndex.
 class Index final {
   public:
     Index();
-    explicit Index(std::unique_ptr<IndexBackend> backend);
     ~Index();
     Index(Index&&) noexcept;
     auto operator=(Index&&) noexcept -> Index&;
@@ -61,14 +36,9 @@ class Index final {
     [[nodiscard]] auto make_empty() const -> Index;
 
   private:
-    std::unique_ptr<IndexBackend> backend_;
-};
+    explicit Index(SwissTableIndex table);
 
-struct RebuildStats {
-    std::uint64_t records_scanned{};
-    std::uint64_t records_visible{};
-    std::uint64_t tombstones{};
-    std::uint64_t expired{};
+    SwissTableIndex table_;
 };
 
 struct RebuildResult {

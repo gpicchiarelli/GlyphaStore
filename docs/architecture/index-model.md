@@ -7,10 +7,9 @@ the term `Index`, not `KeyIndex`.
 full key -> RecordRef(segment_id, offset, size, sequence, generation)
 ```
 
-The bootstrap backend deliberately uses a standard container for correctness. The production
-destination is a benchmark-selected flat open-addressing table inspired by SwissTable/F14, with
-group metadata, hash fingerprints, controlled load factor, seeded hashing, bounded probing policy,
-and incremental resizing.
+The production Index partition is a SwissTable-style flat open-addressing table with group control
+bytes, hash fingerprints, controlled load factor, seeded hashing, and bounded group probing. See
+`docs/adr/0007-swiss-table-index.md`.
 
 The final choice must be based on GlyphaStore workloads:
 
