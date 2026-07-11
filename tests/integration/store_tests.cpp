@@ -130,3 +130,15 @@ GLYPHA_TEST("store verify index matches segment scan rebuild") {
     GLYPHA_REQUIRE(rebuilt->index.find("two").has_value());
     GLYPHA_REQUIRE(rebuilt->index.find("three").has_value());
 }
+
+GLYPHA_TEST("store round trips a key larger than 16-bit lengths") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string key(70'000, 'k');
+    GLYPHA_REQUIRE(store.put(key, bytes("value")).has_value());
+    const auto record = store.get(key);
+    GLYPHA_REQUIRE(record.has_value());
+    GLYPHA_REQUIRE(record->key_string() == key);
+    GLYPHA_REQUIRE(store.verify_index().has_value());
+}

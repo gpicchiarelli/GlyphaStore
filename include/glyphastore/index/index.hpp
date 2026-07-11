@@ -28,9 +28,9 @@ class Index final {
     auto operator=(const Index&) -> Index& = delete;
 
     [[nodiscard]] auto find(std::string_view key) const -> std::optional<RecordRef>;
-    auto insert_or_assign(std::string_view key, RecordRef ref) -> IndexMutationResult;
+    [[nodiscard]] auto insert_or_assign(std::string_view key, RecordRef ref) -> Result<IndexMutationResult>;
     auto erase(std::string_view key) -> IndexMutationResult;
-    void reserve(std::size_t count);
+    [[nodiscard]] auto reserve(std::size_t count) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
     [[nodiscard]] auto make_empty() const -> Index;

@@ -17,14 +17,17 @@ inline constexpr std::uint64_t kSwissMixConstant = 0x9E3779B97F4A7C15ULL;
 } // namespace
 
 SwissTableIndex::SwissTableIndex() : seed_(kSwissSeed) {
-    capacity_ = normalize_capacity(kSwissGroupSize);
+    capacity_ = kSwissGroupSize;
     control_.assign(capacity_, kSwissEmpty);
     slots_.resize(capacity_);
 }
 
-auto SwissTableIndex::normalize_capacity(const std::size_t minimum_slots) -> std::size_t {
+auto SwissTableIndex::normalize_capacity(const std::size_t minimum_slots) -> Result<std::size_t> {
     std::size_t capacity = kSwissGroupSize;
     while (capacity < minimum_slots) {
+        if (capacity > std::numeric_limits<std::size_t>::max() / 2U) {
+            return fail(ErrorCode::arithmetic_overflow, "swiss table capacity overflow");
+        }
         capacity <<= 1U;
     }
     return capacity;
@@ -96,7 +99,9 @@ auto SwissTableIndex::find_slot_index(const std::string_view key) const -> std::
 }
 
 auto SwissTableIndex::find_insert_index(const std::string_view key) -> Result<std::size_t> {
-    grow_if_needed();
+    if (auto grown = grow_if_needed(); !grown) {
+        return unexpected(grown.error());
+    }
     const auto hash = hash_slot(key);
     const auto fingerprint = h2(hash);
     auto group_start = probe_start(hash);
@@ -123,7 +128,7 @@ auto SwissTableIndex::find_insert_index(const std::string_view key) -> Result<st
 }
 
 void SwissTableIndex::set_key(Slot& slot, const std::string_view key) {
-    slot.key_size = static_cast<std::uint16_t>(key.size());
+    slot.key_size = static_cast<std::uint32_t>(key.size());
     if (key.size() <= kSwissInlineKeyBytes) {
         slot.key_is_inline = true;
         slot.heap_key.reset();
@@ -143,50 +148,66 @@ void SwissTableIndex::clear_slot(const std::size_t index) {
     slots_[index] = Slot{};
 }
 
-void SwissTableIndex::grow_if_needed() {
+auto SwissTableIndex::grow_if_needed() -> Status {
     if (capacity_ == 0) {
-        return;
+        return {};
     }
     const auto projected = size_ + 1;
-    if (static_cast<float>(projected) / static_cast<float>(capacity_) <= kSwissMaxLoadFactor) {
-        return;
+    const auto maximum_size = capacity_ - capacity_ / 8U;
+    if (projected <= maximum_size) {
+        return {};
     }
-    rehash(capacity_ << 1U);
+    if (capacity_ > std::numeric_limits<std::size_t>::max() / 2U) {
+        return fail(ErrorCode::arithmetic_overflow, "swiss table growth overflow");
+    }
+    return rehash(capacity_ << 1U);
 }
 
-void SwissTableIndex::rehash(const std::size_t new_capacity) {
-    const auto normalized = normalize_capacity(new_capacity);
-    if (normalized == capacity_) {
-        return;
+auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
+    auto normalized = normalize_capacity(new_capacity);
+    if (!normalized) {
+        return unexpected(normalized.error());
+    }
+    if (*normalized == capacity_) {
+        return {};
     }
 
-    auto old_control = std::move(control_);
-    auto old_slots = std::move(slots_);
-    const auto old_capacity = capacity_;
+    std::vector<std::uint8_t> new_control(*normalized, kSwissEmpty);
+    std::vector<Slot> new_slots(*normalized);
+    std::vector<std::size_t> targets(capacity_, std::numeric_limits<std::size_t>::max());
 
-    capacity_ = normalized;
-    size_ = 0;
-    control_.assign(capacity_, kSwissEmpty);
-    slots_.clear();
-    slots_.resize(capacity_);
-
-    for (std::size_t index = 0; index < old_capacity; ++index) {
-        if (old_control[index] == kSwissEmpty || old_control[index] == kSwissDeleted) {
+    for (std::size_t index = 0; index < capacity_; ++index) {
+        if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
             continue;
         }
-        const auto key = slot_key(old_slots[index]);
-        auto target = find_insert_index(key);
-        if (!target) {
-            capacity_ = old_capacity;
-            control_ = std::move(old_control);
-            slots_ = std::move(old_slots);
-            return;
+        const auto hash = hash_slot(slot_key(slots_[index]));
+        auto group_start = ((hash >> 7U) & ((*normalized / kSwissGroupSize) - 1U)) * kSwissGroupSize;
+        bool placed{};
+        for (std::size_t probe = 0; probe < *normalized && !placed; probe += kSwissGroupSize) {
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto target = group_start + offset;
+                if (new_control[target] == kSwissEmpty) {
+                    new_control[target] = control_[index];
+                    targets[index] = target;
+                    placed = true;
+                    break;
+                }
+            }
+            group_start = next_group(group_start, *normalized);
         }
-        const auto slot_index = *target;
-        control_[slot_index] = old_control[index];
-        slots_[slot_index] = std::move(old_slots[index]);
-        ++size_;
+        if (!placed) {
+            return fail(ErrorCode::corrupted_data, "swiss table rehash could not place an entry");
+        }
     }
+    for (std::size_t index = 0; index < capacity_; ++index) {
+        if (targets[index] != std::numeric_limits<std::size_t>::max()) {
+            new_slots[targets[index]] = std::move(slots_[index]);
+        }
+    }
+    capacity_ = *normalized;
+    control_ = std::move(new_control);
+    slots_ = std::move(new_slots);
+    return {};
 }
 
 auto SwissTableIndex::find(const std::string_view key) const -> std::optional<RecordRef> {
@@ -197,10 +218,14 @@ auto SwissTableIndex::find(const std::string_view key) const -> std::optional<Re
     return slots_[*index].ref;
 }
 
-auto SwissTableIndex::insert_or_assign(const std::string_view key, RecordRef ref) -> IndexMutationResult {
+auto SwissTableIndex::insert_or_assign(const std::string_view key, RecordRef ref)
+    -> Result<IndexMutationResult> {
+    if (key.size() > std::numeric_limits<std::uint32_t>::max()) {
+        return fail(ErrorCode::invalid_argument, "index key exceeds supported size");
+    }
     auto slot_index = find_insert_index(key);
     if (!slot_index) {
-        return {};
+        return unexpected(slot_index.error());
     }
     const auto index = *slot_index;
     const auto fingerprint = h2(hash_slot(key));
@@ -209,11 +234,11 @@ auto SwissTableIndex::insert_or_assign(const std::string_view key, RecordRef ref
         set_key(slots_[index], key);
         slots_[index].ref = ref;
         ++size_;
-        return {.inserted = true, .previous = std::nullopt};
+        return IndexMutationResult{.inserted = true, .previous = std::nullopt};
     }
     const auto previous = slots_[index].ref;
     slots_[index].ref = ref;
-    return {.inserted = false, .previous = previous};
+    return IndexMutationResult{.inserted = false, .previous = previous};
 }
 
 auto SwissTableIndex::erase(const std::string_view key) -> IndexMutationResult {
@@ -227,18 +252,30 @@ auto SwissTableIndex::erase(const std::string_view key) -> IndexMutationResult {
     return {.inserted = false, .previous = previous};
 }
 
-void SwissTableIndex::reserve(const std::size_t count) {
+auto SwissTableIndex::reserve(const std::size_t count) -> Status {
+    const auto extra = count / 7U + (count % 7U == 0 ? 0U : 1U);
+    if (extra > std::numeric_limits<std::size_t>::max() - count) {
+        return fail(ErrorCode::arithmetic_overflow, "swiss table reserve overflow");
+    }
+    const auto minimum = count + extra;
     if (capacity_ == 0) {
-        capacity_ = normalize_capacity(std::max(count, kSwissGroupSize));
+        auto normalized = normalize_capacity(std::max(minimum, kSwissGroupSize));
+        if (!normalized) {
+            return unexpected(normalized.error());
+        }
+        capacity_ = *normalized;
         control_.assign(capacity_, kSwissEmpty);
         slots_.resize(capacity_);
-        return;
+        return {};
     }
-    const auto needed =
-        normalize_capacity(static_cast<std::size_t>(static_cast<float>(count) / kSwissMaxLoadFactor) + 1U);
-    if (needed > capacity_) {
-        rehash(needed);
+    auto needed = normalize_capacity(std::max(minimum, kSwissGroupSize));
+    if (!needed) {
+        return unexpected(needed.error());
     }
+    if (*needed > capacity_) {
+        return rehash(*needed);
+    }
+    return {};
 }
 
 auto SwissTableIndex::entries() const -> std::vector<IndexEntry> {

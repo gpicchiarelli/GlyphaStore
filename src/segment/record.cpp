@@ -89,6 +89,16 @@ auto crc32c(std::span<const std::byte> bytes) noexcept -> std::uint32_t {
 }
 
 auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
+    const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);
+    if (opcode_raw != static_cast<std::uint16_t>(Opcode::put) &&
+        opcode_raw != static_cast<std::uint16_t>(Opcode::erase)) {
+        return fail(ErrorCode::invalid_argument, "unknown record opcode");
+    }
+    const auto type_raw = static_cast<std::uint16_t>(input.type);
+    if (type_raw < static_cast<std::uint16_t>(ValueType::bytes) ||
+        type_raw > static_cast<std::uint16_t>(ValueType::lease)) {
+        return fail(ErrorCode::invalid_argument, "unknown record value type");
+    }
     if (input.key.size() > std::numeric_limits<std::uint32_t>::max() ||
         input.value.size() > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::record_too_large, "key or value exceeds record format limits");
@@ -117,12 +127,16 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
     put_u64(out, 24, input.sequence.value);
     put_u64(out, 32, input.key_hash);
     put_u64(out, 40, input.expire_at_ns);
-    put_u16(out, 48, static_cast<std::uint16_t>(input.opcode));
-    put_u16(out, 50, static_cast<std::uint16_t>(input.type));
+    put_u16(out, 48, opcode_raw);
+    put_u16(out, 50, type_raw);
     put_u32(out, 52, input.flags);
-    std::memcpy(bytes.data() + kEncodedRecordHeaderSize, input.key.data(), input.key.size());
-    std::memcpy(bytes.data() + kEncodedRecordHeaderSize + input.key.size(), input.value.data(),
-                input.value.size());
+    if (!input.key.empty()) {
+        std::memcpy(bytes.data() + kEncodedRecordHeaderSize, input.key.data(), input.key.size());
+    }
+    if (!input.value.empty()) {
+        std::memcpy(bytes.data() + kEncodedRecordHeaderSize + input.key.size(), input.value.data(),
+                    input.value.size());
+    }
     put_u32(out, 20, checksum_with_zeroed_field(bytes));
     return bytes;
 }
@@ -138,8 +152,8 @@ auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView> {
     const auto total_size = get_u32(bytes, 8);
     const auto key_size = get_u32(bytes, 12);
     const auto value_size = get_u32(bytes, 16);
-    if (total_size > bytes.size() || total_size > kMaxNormalRecordSize ||
-        total_size % kRecordAlignment != 0) {
+    if (total_size < kEncodedRecordHeaderSize || total_size > bytes.size() ||
+        total_size > kMaxNormalRecordSize || total_size % kRecordAlignment != 0) {
         return fail(ErrorCode::invalid_record, "record total size is invalid");
     }
     auto payload_size = checked_add<std::size_t>(key_size, value_size);
@@ -155,11 +169,16 @@ auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView> {
         opcode_raw != static_cast<std::uint16_t>(Opcode::erase)) {
         return fail(ErrorCode::invalid_record, "unknown record opcode");
     }
+    const auto type_raw = get_u16(bytes, 50);
+    if (type_raw < static_cast<std::uint16_t>(ValueType::bytes) ||
+        type_raw > static_cast<std::uint16_t>(ValueType::lease)) {
+        return fail(ErrorCode::invalid_record, "unknown record value type");
+    }
     const auto key_begin = static_cast<std::size_t>(kEncodedRecordHeaderSize);
     return RecordView{
         .sequence = SequenceNumber{get_u64(bytes, 24)},
         .opcode = static_cast<Opcode>(opcode_raw),
-        .type = static_cast<ValueType>(get_u16(bytes, 50)),
+        .type = static_cast<ValueType>(type_raw),
         .flags = get_u32(bytes, 52),
         .key_hash = get_u64(bytes, 32),
         .expire_at_ns = get_u64(bytes, 40),

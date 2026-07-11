@@ -26,7 +26,7 @@ auto Index::find(const std::string_view key) const -> std::optional<RecordRef> {
     return table_.find(key);
 }
 
-auto Index::insert_or_assign(const std::string_view key, RecordRef ref) -> IndexMutationResult {
+auto Index::insert_or_assign(const std::string_view key, RecordRef ref) -> Result<IndexMutationResult> {
     return table_.insert_or_assign(key, ref);
 }
 
@@ -34,8 +34,8 @@ auto Index::erase(const std::string_view key) -> IndexMutationResult {
     return table_.erase(key);
 }
 
-void Index::reserve(const std::size_t count) {
-    table_.reserve(count);
+auto Index::reserve(const std::size_t count) -> Status {
+    return table_.reserve(count);
 }
 
 auto Index::entries() const -> std::vector<IndexEntry> {
@@ -83,14 +83,19 @@ auto rebuild_index_from_segments(const std::span<const SegmentPtr> segments, con
     }
 
     Index index;
-    index.reserve(latest.size());
+    if (auto reserved = index.reserve(latest.size()); !reserved) {
+        return unexpected(reserved.error());
+    }
     for (const auto& [key, record] : latest) {
         if (record.deleted) {
             ++stats.tombstones;
         } else if (record.expired) {
             ++stats.expired;
         } else {
-            index.insert_or_assign(key, record.ref);
+            auto inserted = index.insert_or_assign(key, record.ref);
+            if (!inserted) {
+                return unexpected(inserted.error());
+            }
             ++stats.records_visible;
         }
     }

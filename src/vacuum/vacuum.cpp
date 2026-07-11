@@ -48,7 +48,9 @@ auto VacuumBuilder::rebuild(const Index& current_index, std::span<const SegmentP
                             SegmentId first_new_segment, WorkerId owner) const -> Result<VacuumResult> {
     const auto catalog = make_catalog(current_segments);
     auto new_index = current_index.make_empty();
-    new_index.reserve(current_index.stats().size);
+    if (auto reserved = new_index.reserve(current_index.stats().size); !reserved) {
+        return unexpected(reserved.error());
+    }
     std::vector<SegmentPtr> new_segments;
     new_segments.push_back(std::make_shared<Segment>(first_new_segment, owner));
     VacuumStats stats{.old_segments = current_segments.size()};
@@ -87,7 +89,10 @@ auto VacuumBuilder::rebuild(const Index& current_index, std::span<const SegmentP
         if (auto live = new_segments.back()->mark_live(*ref); !live) {
             return unexpected(live.error());
         }
-        new_index.insert_or_assign(entry.key, *ref);
+        auto inserted = new_index.insert_or_assign(entry.key, *ref);
+        if (!inserted) {
+            return unexpected(inserted.error());
+        }
         ++stats.records_copied;
         stats.bytes_copied += ref->size.value;
     }

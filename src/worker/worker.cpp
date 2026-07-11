@@ -38,40 +38,78 @@ auto Worker::read_ref(const RecordRef& ref) const -> Result<RecordView> {
 }
 
 auto Worker::publish(std::string_view key, const RecordRef& ref) -> Status {
-    const auto mutation = index_.insert_or_assign(key, ref);
-    if (mutation.previous) {
-        const auto previous_segment = manager_.find(mutation.previous->segment_id);
-        if (!previous_segment) {
-            return fail(ErrorCode::invalid_reference, "previous record reference targets a missing segment");
-        }
-        if (auto dead = previous_segment->mark_dead(*mutation.previous); !dead) {
-            return dead;
-        }
-        static_cast<void>(manager_.try_retire(mutation.previous->segment_id));
-    }
     const auto segment = manager_.find(ref.segment_id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "new record reference targets a missing segment");
     }
+    if (auto readable = segment->read(ref); !readable) {
+        return unexpected(readable.error());
+    }
+
+    const auto previous = index_.find(key);
+    SegmentPtr previous_segment;
+    if (previous) {
+        previous_segment = manager_.find(previous->segment_id);
+        if (!previous_segment) {
+            return fail(ErrorCode::invalid_reference, "previous record reference targets a missing segment");
+        }
+        if (auto readable = previous_segment->read(*previous); !readable) {
+            return unexpected(readable.error());
+        }
+        const auto stats = previous_segment->stats();
+        if (stats.live_records == 0 || stats.live_bytes < previous->size.value) {
+            return fail(ErrorCode::corrupted_data, "previous record is not accounted as live");
+        }
+    }
+
     if (auto live = segment->mark_live(ref); !live) {
         return live;
+    }
+    if (previous) {
+        if (auto dead = previous_segment->mark_dead(*previous); !dead) {
+            static_cast<void>(segment->mark_dead(ref));
+            return dead;
+        }
+    }
+
+    auto mutation = index_.insert_or_assign(key, ref);
+    if (!mutation) {
+        if (previous) {
+            static_cast<void>(previous_segment->mark_live(*previous));
+        }
+        static_cast<void>(segment->mark_dead(ref));
+        return unexpected(mutation.error());
+    }
+    if (mutation->previous != previous) {
+        return fail(ErrorCode::corrupted_data, "index changed during record publication");
+    }
+    if (previous) {
+        static_cast<void>(manager_.try_retire(previous->segment_id));
     }
     return {};
 }
 
 auto Worker::unpublish(std::string_view key) -> Status {
-    const auto mutation = index_.erase(key);
-    if (!mutation.previous) {
+    const auto previous = index_.find(key);
+    if (!previous) {
         return fail(ErrorCode::not_found, "key is not present in worker index");
     }
-    const auto segment = manager_.find(mutation.previous->segment_id);
+    const auto segment = manager_.find(previous->segment_id);
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "erased record reference targets a missing segment");
     }
-    if (auto dead = segment->mark_dead(*mutation.previous); !dead) {
+    if (auto readable = segment->read(*previous); !readable) {
+        return unexpected(readable.error());
+    }
+    if (auto dead = segment->mark_dead(*previous); !dead) {
         return dead;
     }
-    static_cast<void>(manager_.try_retire(mutation.previous->segment_id));
+    const auto mutation = index_.erase(key);
+    if (mutation.previous != previous) {
+        static_cast<void>(segment->mark_live(*previous));
+        return fail(ErrorCode::corrupted_data, "index changed during record removal");
+    }
+    static_cast<void>(manager_.try_retire(previous->segment_id));
     return {};
 }
 
@@ -98,6 +136,22 @@ auto Worker::get(std::string_view key, std::uint64_t now_ns) -> Result<RecordVie
 
 auto Worker::put(std::string_view key, std::span<const std::byte> value, std::uint64_t expire_at_ns)
     -> Status {
+    const auto existing = index_.find(key);
+    if (existing) {
+        const auto previous_segment = manager_.find(existing->segment_id);
+        if (!previous_segment) {
+            return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
+        }
+        if (auto readable = previous_segment->read(*existing); !readable) {
+            return unexpected(readable.error());
+        }
+        const auto stats = previous_segment->stats();
+        if (stats.live_records == 0 || stats.live_bytes < existing->size.value) {
+            return fail(ErrorCode::corrupted_data, "existing record is not accounted as live");
+        }
+    } else if (auto reserved = index_.reserve(index_.stats().size + 1U); !reserved) {
+        return reserved;
+    }
     const auto key_hash = hash_key(key);
     const RecordInput input{
         .sequence = next_sequence(),
@@ -118,6 +172,17 @@ auto Worker::erase(std::string_view key) -> Status {
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
+    }
+    const auto previous_segment = manager_.find(existing->segment_id);
+    if (!previous_segment) {
+        return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
+    }
+    if (auto readable = previous_segment->read(*existing); !readable) {
+        return unexpected(readable.error());
+    }
+    const auto stats = previous_segment->stats();
+    if (stats.live_records == 0 || stats.live_bytes < existing->size.value) {
+        return fail(ErrorCode::corrupted_data, "existing record is not accounted as live");
     }
     const auto key_hash = hash_key(key);
     const RecordInput input{

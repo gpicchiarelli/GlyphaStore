@@ -9,14 +9,21 @@
 int main() {
     constexpr std::size_t operations = 200'000;
     glyphastore::Index index;
-    index.reserve(operations);
+    if (auto reserved = index.reserve(operations); !reserved) {
+        std::cerr << "index reserve failed: " << reserved.error().message << '\n';
+        return 1;
+    }
     const auto started = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < operations; ++i) {
         const auto key = std::to_string(i);
-        index.insert_or_assign(
+        auto inserted = index.insert_or_assign(
             key, glyphastore::RecordRef{glyphastore::SegmentId{1}, glyphastore::RecordOffset{0},
                                         glyphastore::RecordSize{64}, glyphastore::SequenceNumber{i},
                                         glyphastore::GenerationId{1}});
+        if (!inserted) {
+            std::cerr << "index insert failed: " << inserted.error().message << '\n';
+            return 1;
+        }
     }
     std::size_t hits{};
     for (std::size_t i = 0; i < operations; ++i) {

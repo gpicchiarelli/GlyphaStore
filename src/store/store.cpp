@@ -34,16 +34,31 @@ auto Store::verify_index() const -> Status {
     if (rebuilt->index.stats().size != rebuilt->stats.records_visible) {
         return fail(ErrorCode::corrupted_data, "rebuilt index size does not match visible record count");
     }
+    std::size_t worker_entry_count{};
     for (std::size_t index = 0; index < workers_.size(); ++index) {
         const auto& worker = workers_.worker(index);
         if (worker.index().stats().size > rebuilt->index.stats().size) {
             return fail(ErrorCode::corrupted_data, "worker index exceeds rebuilt index size");
         }
         for (const auto& entry : worker.index().entries()) {
+            ++worker_entry_count;
+            if (route_worker(entry.key, workers_.size()) != index) {
+                return fail(ErrorCode::corrupted_data, "worker index entry is in the wrong partition");
+            }
             const auto ref = rebuilt->index.find(entry.key);
             if (!ref || *ref != entry.record) {
                 return fail(ErrorCode::corrupted_data, "worker index entry does not match rebuilt index");
             }
+        }
+    }
+    if (worker_entry_count != rebuilt->index.stats().size) {
+        return fail(ErrorCode::corrupted_data, "worker indexes do not contain every rebuilt entry");
+    }
+    for (const auto& entry : rebuilt->index.entries()) {
+        const auto worker_index = route_worker(entry.key, workers_.size());
+        const auto ref = workers_.worker(worker_index).index().find(entry.key);
+        if (!ref || *ref != entry.record) {
+            return fail(ErrorCode::corrupted_data, "rebuilt entry is missing from its worker index");
         }
     }
     return {};

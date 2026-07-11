@@ -60,7 +60,7 @@ GLYPHA_TEST("vacuum copies exactly visible records and leaves source immutable")
     GLYPHA_REQUIRE(source->mark_live(current).has_value());
     GLYPHA_REQUIRE(source->seal().has_value());
     glyphastore::Index index;
-    index.insert_or_assign("key", current);
+    GLYPHA_REQUIRE(index.insert_or_assign("key", current).has_value());
     const auto before = source->stats();
     const std::vector<glyphastore::SegmentPtr> segments{source};
 

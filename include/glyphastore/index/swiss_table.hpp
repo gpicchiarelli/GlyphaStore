@@ -24,9 +24,9 @@ class SwissTableIndex final {
     SwissTableIndex();
 
     [[nodiscard]] auto find(std::string_view key) const -> std::optional<RecordRef>;
-    auto insert_or_assign(std::string_view key, RecordRef ref) -> IndexMutationResult;
+    [[nodiscard]] auto insert_or_assign(std::string_view key, RecordRef ref) -> Result<IndexMutationResult>;
     auto erase(std::string_view key) -> IndexMutationResult;
-    void reserve(std::size_t count);
+    [[nodiscard]] auto reserve(std::size_t count) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
     [[nodiscard]] auto clone_empty() const -> SwissTableIndex;
@@ -34,7 +34,7 @@ class SwissTableIndex final {
   private:
     struct Slot {
         RecordRef ref{};
-        std::uint16_t key_size{};
+        std::uint32_t key_size{};
         bool key_is_inline{};
         alignas(RecordRef) std::byte inline_key[kSwissInlineKeyBytes]{};
         std::unique_ptr<std::byte[]> heap_key{};
@@ -55,11 +55,11 @@ class SwissTableIndex final {
     [[nodiscard]] auto slot_key(const Slot& slot) const noexcept -> std::string_view;
     [[nodiscard]] auto find_slot_index(std::string_view key) const -> std::optional<std::size_t>;
     [[nodiscard]] auto find_insert_index(std::string_view key) -> Result<std::size_t>;
-    void rehash(std::size_t new_capacity);
+    [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;
     void set_key(Slot& slot, std::string_view key);
     void clear_slot(std::size_t index);
-    void grow_if_needed();
-    [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> std::size_t;
+    [[nodiscard]] auto grow_if_needed() -> Status;
+    [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> Result<std::size_t>;
 
     std::uint64_t seed_;
     std::size_t size_{};

@@ -44,6 +44,37 @@ GLYPHA_TEST("record codec rejects truncation and checksum corruption") {
     GLYPHA_REQUIRE(corrupted.error().code == glyphastore::ErrorCode::checksum_mismatch);
 }
 
+GLYPHA_TEST("record codec rejects total size smaller than its header") {
+    auto encoded = glyphastore::encode_record({
+        .sequence = glyphastore::SequenceNumber{1},
+        .key = as_bytes("k"),
+        .value = as_bytes("v"),
+    });
+    GLYPHA_REQUIRE(encoded.has_value());
+    for (std::size_t index = 8; index < 12; ++index) {
+        (*encoded)[index] = std::byte{0};
+    }
+    for (std::size_t index = 20; index < 24; ++index) {
+        (*encoded)[index] = std::byte{0};
+    }
+    const auto decoded = glyphastore::decode_record(*encoded);
+    GLYPHA_REQUIRE(!decoded.has_value());
+    GLYPHA_REQUIRE(decoded.error().code == glyphastore::ErrorCode::invalid_record);
+}
+
+GLYPHA_TEST("record codec rejects unknown opcode and value type on encode") {
+    const auto opcode = glyphastore::encode_record({
+        .sequence = glyphastore::SequenceNumber{1},
+        .opcode = static_cast<glyphastore::Opcode>(999),
+    });
+    GLYPHA_REQUIRE(!opcode.has_value());
+    const auto type = glyphastore::encode_record({
+        .sequence = glyphastore::SequenceNumber{1},
+        .type = static_cast<glyphastore::ValueType>(999),
+    });
+    GLYPHA_REQUIRE(!type.has_value());
+}
+
 GLYPHA_TEST("record codec supports empty key and value without unsafe extents") {
     const auto encoded = glyphastore::encode_record({.sequence = glyphastore::SequenceNumber{7}});
     GLYPHA_REQUIRE(encoded.has_value());
