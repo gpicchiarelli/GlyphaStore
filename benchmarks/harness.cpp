@@ -7,17 +7,31 @@
 
 namespace glyphastore::bench {
 
-void apply_cpu_pin(const RunSettings& settings) {
-    if (!settings.pin_cpu) {
-        return;
+namespace {
+bool g_cpu_pin_applied = false;
+} // namespace
+
+[[nodiscard]] auto cpu_pin_applied() noexcept -> bool {
+    return g_cpu_pin_applied;
+}
+
+bool try_cpu_pin(const bool requested) {
+    g_cpu_pin_applied = false;
+    if (!requested) {
+        return false;
     }
 #if defined(__linux__)
     cpu_set_t cpuset{};
     CPU_ZERO(&cpuset);
     CPU_SET(0, &cpuset);
-    (void)pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset);
+    if (pthread_setaffinity_np(pthread_self(), sizeof(cpuset), &cpuset) == 0) {
+        g_cpu_pin_applied = true;
+        return true;
+    }
+    return false;
 #else
-    (void)settings;
+    (void)requested;
+    return false;
 #endif
 }
 

@@ -4,7 +4,6 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <iostream>
 #include <optional>
 #include <random>
@@ -66,7 +65,20 @@ struct KeyMaterial {
     std::vector<std::size_t> order;
 };
 
-void apply_cpu_pin(const RunSettings& settings);
+[[nodiscard]] auto cpu_pin_applied() noexcept -> bool;
+[[nodiscard]] auto try_cpu_pin(bool requested) -> bool;
+
+[[nodiscard]] inline auto validate_run_settings(const RunSettings& settings, const Config& config) -> bool {
+    if (config.operations == 0) {
+        std::cerr << "benchmark error: --ops must be greater than zero\n";
+        return false;
+    }
+    if (settings.measured_iterations == 0) {
+        std::cerr << "benchmark error: --repeats must be greater than zero\n";
+        return false;
+    }
+    return true;
+}
 
 [[nodiscard]] inline auto make_key(const std::size_t index, const std::size_t key_size) -> std::string {
     const auto decimal = std::to_string(index);
@@ -128,17 +140,13 @@ void apply_cpu_pin(const RunSettings& settings);
     }
 
     std::vector<double> ns_per_op;
+    std::vector<double> ops_per_second;
     ns_per_op.reserve(seconds.size());
+    ops_per_second.reserve(seconds.size());
     for (const auto elapsed : seconds) {
         ns_per_op.push_back(operations > 0 ? elapsed * 1.0e9 / static_cast<double>(operations) : 0.0);
+        ops_per_second.push_back(elapsed > 0.0 ? static_cast<double>(operations) / elapsed : 0.0);
     }
-
-    const auto med_ns = median(ns_per_op);
-    const auto min_ns = *std::ranges::min_element(ns_per_op);
-    const auto max_ns = *std::ranges::max_element(ns_per_op);
-    const auto med_seconds = median(seconds);
-    const auto min_seconds = *std::ranges::min_element(seconds);
-    const auto max_seconds = *std::ranges::max_element(seconds);
 
     return Result{
         .name = std::move(name),
@@ -147,46 +155,39 @@ void apply_cpu_pin(const RunSettings& settings);
         .operations = operations,
         .hits = hits,
         .samples = seconds.size(),
-        .median_seconds = med_seconds,
-        .min_seconds = min_seconds,
-        .max_seconds = max_seconds,
-        .median_ns_per_op = med_ns,
-        .min_ns_per_op = min_ns,
-        .max_ns_per_op = max_ns,
-        .median_ops_per_second = med_seconds > 0.0 ? static_cast<double>(operations) / med_seconds : 0.0,
-        .min_ops_per_second = max_seconds > 0.0 ? static_cast<double>(operations) / max_seconds : 0.0,
-        .max_ops_per_second = min_seconds > 0.0 ? static_cast<double>(operations) / min_seconds : 0.0,
+        .median_seconds = median(seconds),
+        .min_seconds = *std::ranges::min_element(seconds),
+        .max_seconds = *std::ranges::max_element(seconds),
+        .median_ns_per_op = median(ns_per_op),
+        .min_ns_per_op = *std::ranges::min_element(ns_per_op),
+        .max_ns_per_op = *std::ranges::max_element(ns_per_op),
+        .median_ops_per_second = median(ops_per_second),
+        .min_ops_per_second = *std::ranges::min_element(ops_per_second),
+        .max_ops_per_second = *std::ranges::max_element(ops_per_second),
     };
 }
 
-template <typename Fn>
-[[nodiscard]] inline auto benchmark_collect(const RunSettings& settings, const std::size_t operations,
-                                            const Config& config, std::string name, Fn&& run_once) -> Result {
-    apply_cpu_pin(settings);
-
-    for (std::size_t iteration = 0; iteration < settings.warmup_iterations; ++iteration) {
-        (void)run_once();
+[[nodiscard]] inline auto validate_sample_hits(const std::string_view name, const std::size_t expected_hits,
+                                               const std::size_t actual_hits, const std::size_t sample_index)
+    -> bool {
+    if (actual_hits == expected_hits) {
+        return true;
     }
-
-    std::vector<double> samples;
-    samples.reserve(settings.measured_iterations);
-    std::size_t hits = 0;
-    for (std::size_t iteration = 0; iteration < settings.measured_iterations; ++iteration) {
-        const auto started = std::chrono::steady_clock::now();
-        hits = run_once();
-        samples.push_back(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
-    }
-
-    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples));
+    std::cerr << "benchmark error: " << name << " sample " << sample_index
+              << " expected hits=" << expected_hits << " got hits=" << actual_hits << '\n';
+    return false;
 }
 
 template <typename SetupFn, typename BodyFn>
 [[nodiscard]] inline auto benchmark_collect_timed(const RunSettings& settings, const std::size_t operations,
-                                                  const Config& config, std::string name, SetupFn&& setup,
+                                                  const Config& config, std::string name,
+                                                  const std::size_t expected_hits, SetupFn&& setup,
                                                   BodyFn&& body) -> Result {
-    apply_cpu_pin(settings);
+    (void)try_cpu_pin(settings.pin_cpu);
 
-    const auto run_iteration = [&](const bool timed) -> std::optional<std::pair<std::size_t, double>> {
+    const auto run_iteration =
+        [&](const bool timed,
+            const std::size_t sample_index) -> std::optional<std::pair<std::size_t, double>> {
         auto context = setup();
         if (!timed) {
             (void)body(context);
@@ -196,20 +197,24 @@ template <typename SetupFn, typename BodyFn>
         const auto hits = body(context);
         const auto elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        if (!validate_sample_hits(name, expected_hits, hits, sample_index)) {
+            return std::nullopt;
+        }
         return std::pair{hits, elapsed};
     };
 
     for (std::size_t iteration = 0; iteration < settings.warmup_iterations; ++iteration) {
-        (void)run_iteration(false);
+        (void)run_iteration(false, iteration);
     }
 
     std::vector<double> samples;
     samples.reserve(settings.measured_iterations);
     std::size_t hits = 0;
     for (std::size_t iteration = 0; iteration < settings.measured_iterations; ++iteration) {
-        const auto measured = run_iteration(true);
+        const auto measured = run_iteration(true, iteration + 1U);
         if (!measured) {
-            continue;
+            return Result{
+                .name = std::move(name), .config = config, .settings = settings, .operations = operations};
         }
         hits = measured->first;
         samples.push_back(measured->second);
@@ -241,7 +246,8 @@ inline void print_metadata(std::ostream& out, const RunSettings& settings) {
     out << "# compiler=" << __VERSION__ << '\n';
     out << "# benchmark_warmup=" << settings.warmup_iterations << '\n';
     out << "# benchmark_repeats=" << settings.measured_iterations << '\n';
-    out << "# cpu_pin=" << (settings.pin_cpu ? 1 : 0) << '\n';
+    out << "# cpu_pin_requested=" << (settings.pin_cpu ? 1 : 0) << '\n';
+    out << "# cpu_pin_applied=" << (cpu_pin_applied() ? 1 : 0) << '\n';
     out << "# note=use plugged-in power; thermal throttling affects spread\n";
 }
 

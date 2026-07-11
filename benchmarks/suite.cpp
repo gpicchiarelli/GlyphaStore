@@ -16,23 +16,30 @@ namespace {
 
 [[nodiscard]] auto run_index_insert_find(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
-    return benchmark_collect(
-        settings, config.operations * 2U, config, "index_insert_find", [&]() -> std::size_t {
-            Index index;
-            if (!index.reserve(config.operations)) {
+    return benchmark_collect_timed(
+        settings, config.operations * 2U, config, "index_insert_find", config.operations,
+        [&]() -> std::unique_ptr<Index> {
+            auto index = std::make_unique<Index>();
+            if (!index->reserve(config.operations)) {
+                return nullptr;
+            }
+            return index;
+        },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
                 return 0;
             }
             for (const auto index_in_order : material.order) {
                 const auto& key = material.keys[index_in_order];
-                if (!index.insert_or_assign(key,
-                                            RecordRef{SegmentId{1}, RecordOffset{0}, RecordSize{64},
-                                                      SequenceNumber{index_in_order + 1}, GenerationId{1}})) {
+                if (!index->insert_or_assign(key, RecordRef{SegmentId{1}, RecordOffset{0}, RecordSize{64},
+                                                            SequenceNumber{index_in_order + 1},
+                                                            GenerationId{1}})) {
                     return 0;
                 }
             }
             std::size_t hits = 0;
             for (const auto index_in_order : material.order) {
-                hits += index.find(material.keys[index_in_order]).has_value() ? 1U : 0U;
+                hits += index->find(material.keys[index_in_order]).has_value() ? 1U : 0U;
             }
             return hits;
         });
@@ -40,27 +47,34 @@ namespace {
 
 [[nodiscard]] auto run_store_put(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
-    return benchmark_collect(settings, config.operations, config, "store_put", [&]() -> std::size_t {
-        auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
-        if (!opened) {
-            return 0;
-        }
-        auto& store = **opened;
-        std::size_t writes = 0;
-        for (const auto index_in_order : material.order) {
-            if (store.put(material.keys[index_in_order], bytes(material.values[index_in_order]))
-                    .has_value()) {
-                ++writes;
+    return benchmark_collect_timed(
+        settings, config.operations, config, "store_put", config.operations,
+        [&]() -> std::unique_ptr<Store> {
+            auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
+            if (!opened) {
+                return nullptr;
             }
-        }
-        return writes;
-    });
+            return std::move(*opened);
+        },
+        [&](std::unique_ptr<Store>& store) -> std::size_t {
+            if (store == nullptr) {
+                return 0;
+            }
+            std::size_t writes = 0;
+            for (const auto index_in_order : material.order) {
+                if (store->put(material.keys[index_in_order], bytes(material.values[index_in_order]))
+                        .has_value()) {
+                    ++writes;
+                }
+            }
+            return writes;
+        });
 }
 
 [[nodiscard]] auto run_store_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
-        settings, config.operations, config, "store_get",
+        settings, config.operations, config, "store_get", config.operations,
         [&]() -> std::unique_ptr<Store> {
             auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
             if (!opened) {
@@ -91,44 +105,58 @@ namespace {
 
 [[nodiscard]] auto run_store_put_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
-    return benchmark_collect(settings, config.operations * 2U, config, "store_put_get", [&]() -> std::size_t {
-        auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
-        if (!opened) {
-            return 0;
-        }
-        auto& store = **opened;
-        for (const auto index_in_order : material.order) {
-            if (!store.put(material.keys[index_in_order], bytes(material.values[index_in_order]))
-                     .has_value()) {
+    return benchmark_collect_timed(
+        settings, config.operations * 2U, config, "store_put_get", config.operations,
+        [&]() -> std::unique_ptr<Store> {
+            auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
+            if (!opened) {
+                return nullptr;
+            }
+            return std::move(*opened);
+        },
+        [&](std::unique_ptr<Store>& store) -> std::size_t {
+            if (store == nullptr) {
                 return 0;
             }
-        }
-        std::size_t hits = 0;
-        for (const auto index_in_order : material.order) {
-            if (store.get(material.keys[index_in_order]).has_value()) {
-                ++hits;
+            for (const auto index_in_order : material.order) {
+                if (!store->put(material.keys[index_in_order], bytes(material.values[index_in_order]))
+                         .has_value()) {
+                    return 0;
+                }
             }
-        }
-        return hits;
-    });
+            std::size_t hits = 0;
+            for (const auto index_in_order : material.order) {
+                if (store->get(material.keys[index_in_order]).has_value()) {
+                    ++hits;
+                }
+            }
+            return hits;
+        });
 }
 
 [[nodiscard]] auto run_store_read_after_write(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
-    return benchmark_collect(
-        settings, config.operations * 2U, config, "store_read_after_write", [&]() -> std::size_t {
+    const auto expected_hits = config.operations * 2U;
+    return benchmark_collect_timed(
+        settings, expected_hits, config, "store_read_after_write", expected_hits,
+        [&]() -> std::unique_ptr<Store> {
             auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
             if (!opened) {
+                return nullptr;
+            }
+            return std::move(*opened);
+        },
+        [&](std::unique_ptr<Store>& store) -> std::size_t {
+            if (store == nullptr) {
                 return 0;
             }
-            auto& store = **opened;
             std::size_t hits = 0;
             for (const auto index_in_order : material.order) {
-                if (store.put(material.keys[index_in_order], bytes(material.values[index_in_order]))
+                if (store->put(material.keys[index_in_order], bytes(material.values[index_in_order]))
                         .has_value()) {
                     ++hits;
                 }
-                if (store.get(material.keys[index_in_order]).has_value()) {
+                if (store->get(material.keys[index_in_order]).has_value()) {
                     ++hits;
                 }
             }

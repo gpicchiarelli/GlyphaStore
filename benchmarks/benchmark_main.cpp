@@ -109,6 +109,10 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
            options.random_access;
 }
 
+[[nodiscard]] auto result_is_valid(const glyphastore::bench::Result& result) -> bool {
+    return result.samples == result.settings.measured_iterations;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -124,12 +128,22 @@ int main(int argc, char** argv) {
         configs = glyphastore::bench::quick_configs();
     }
 
+    for (const auto& config : configs) {
+        if (!glyphastore::bench::validate_run_settings(options.settings, config)) {
+            return 1;
+        }
+    }
+
     std::cout << "# glyphastore benchmark\n";
     glyphastore::bench::print_metadata(std::cout, options.settings);
 
     for (auto config : configs) {
         apply_overrides(config, options);
         for (const auto& result : glyphastore::bench::run_benchmark(options.kind, config, options.settings)) {
+            if (!result_is_valid(result)) {
+                std::cerr << "benchmark error: " << result.name << " produced invalid samples\n";
+                return 1;
+            }
             glyphastore::bench::print_result(std::cout, result);
         }
     }
