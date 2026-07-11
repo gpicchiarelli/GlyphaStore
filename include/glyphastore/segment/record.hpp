@@ -21,8 +21,8 @@ struct RecordInput {
     std::uint32_t flags{};
     std::uint64_t key_hash{};
     std::uint64_t expire_at_ns{};
-    std::span<const std::byte> key;
-    std::span<const std::byte> value;
+    std::span<const std::byte> key{};
+    std::span<const std::byte> value{};
 };
 
 struct RecordView {

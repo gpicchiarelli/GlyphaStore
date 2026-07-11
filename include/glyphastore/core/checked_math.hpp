@@ -22,7 +22,7 @@ template <std::unsigned_integral T>
     }
     auto with_padding = checked_add(value, static_cast<T>(alignment - 1));
     if (!with_padding) {
-        return std::unexpected(with_padding.error());
+        return unexpected(with_padding.error());
     }
     return static_cast<T>(*with_padding & static_cast<T>(~(alignment - 1)));
 }

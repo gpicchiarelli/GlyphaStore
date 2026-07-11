@@ -95,11 +95,11 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
     }
     auto raw = checked_add<std::size_t>(kEncodedRecordHeaderSize, input.key.size());
     if (!raw) {
-        return std::unexpected(raw.error());
+        return unexpected(raw.error());
     }
     raw = checked_add<std::size_t>(*raw, input.value.size());
     if (!raw) {
-        return std::unexpected(raw.error());
+        return unexpected(raw.error());
     }
     auto aligned = align_up_checked<std::size_t>(*raw, kRecordAlignment);
     if (!aligned || *aligned > kMaxNormalRecordSize || *aligned > std::numeric_limits<std::uint32_t>::max()) {

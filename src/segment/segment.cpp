@@ -23,7 +23,7 @@ auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
     }
     auto encoded = encode_record(input);
     if (!encoded) {
-        return std::unexpected(encoded.error());
+        return unexpected(encoded.error());
     }
     if (!range_contains(kSegmentSizeBytes, write_offset_, encoded->size())) {
         return fail(ErrorCode::segment_full, "record does not fit in active segment");
@@ -59,12 +59,12 @@ auto Segment::validate_ref(const RecordRef& ref) const -> Status {
 
 auto Segment::read(const RecordRef& ref) const -> Result<RecordView> {
     if (auto valid = validate_ref(ref); !valid) {
-        return std::unexpected(valid.error());
+        return unexpected(valid.error());
     }
     auto decoded =
         decode_record(std::span<const std::byte>{storage_.get() + ref.offset.value, ref.size.value});
     if (!decoded) {
-        return std::unexpected(decoded.error());
+        return unexpected(decoded.error());
     }
     if (decoded->sequence != ref.sequence || decoded->encoded_size != ref.size.value) {
         return fail(ErrorCode::invalid_reference, "record reference metadata does not match encoded record");
@@ -80,7 +80,7 @@ auto Segment::scan() const -> Result<std::vector<RecordRef>> {
         auto decoded =
             decode_record(std::span<const std::byte>{storage_.get() + offset, stats_.used_bytes - offset});
         if (!decoded) {
-            return std::unexpected(decoded.error());
+            return unexpected(decoded.error());
         }
         refs.push_back(RecordRef{
             .segment_id = id_,

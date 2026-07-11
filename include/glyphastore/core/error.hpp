@@ -1,7 +1,9 @@
 #pragma once
 
-#include <expected>
+#include <optional>
 #include <string>
+#include <utility>
+#include <variant>
 
 namespace glyphastore {
 
@@ -25,12 +27,85 @@ struct Error {
     std::string message;
 };
 
-template <typename T> using Result = std::expected<T, Error>;
+struct Unexpected {
+    Error error;
+};
+
+template <typename T> class [[nodiscard]] Result final {
+  public:
+    Result(T value) : storage_(std::move(value)) {}
+    Result(Unexpected failure) : storage_(std::move(failure.error)) {}
+
+    [[nodiscard]] auto has_value() const noexcept -> bool {
+        return std::holds_alternative<T>(storage_);
+    }
+    explicit operator bool() const noexcept {
+        return has_value();
+    }
+
+    [[nodiscard]] auto value() & -> T& {
+        return std::get<T>(storage_);
+    }
+    [[nodiscard]] auto value() const& -> const T& {
+        return std::get<T>(storage_);
+    }
+    [[nodiscard]] auto value() && -> T&& {
+        return std::get<T>(std::move(storage_));
+    }
+    [[nodiscard]] auto error() & -> Error& {
+        return std::get<Error>(storage_);
+    }
+    [[nodiscard]] auto error() const& -> const Error& {
+        return std::get<Error>(storage_);
+    }
+
+    [[nodiscard]] auto operator*() & -> T& {
+        return value();
+    }
+    [[nodiscard]] auto operator*() const& -> const T& {
+        return value();
+    }
+    [[nodiscard]] auto operator->() -> T* {
+        return &value();
+    }
+    [[nodiscard]] auto operator->() const -> const T* {
+        return &value();
+    }
+
+  private:
+    std::variant<T, Error> storage_;
+};
+
+template <> class [[nodiscard]] Result<void> final {
+  public:
+    Result() = default;
+    Result(Unexpected failure) : error_(std::move(failure.error)) {}
+
+    [[nodiscard]] auto has_value() const noexcept -> bool {
+        return !error_.has_value();
+    }
+    explicit operator bool() const noexcept {
+        return has_value();
+    }
+    [[nodiscard]] auto error() & -> Error& {
+        return *error_;
+    }
+    [[nodiscard]] auto error() const& -> const Error& {
+        return *error_;
+    }
+
+  private:
+    std::optional<Error> error_;
+};
 
 using Status = Result<void>;
 
-inline auto fail(ErrorCode code, std::string message) -> std::unexpected<Error> {
-    return std::unexpected(Error{code, std::move(message)});
+inline auto unexpected(Error error) -> Unexpected {
+    return Unexpected{std::move(error)};
+}
+
+inline auto fail(ErrorCode code, std::string message) -> Unexpected {
+    return unexpected(Error{code, std::move(message)});
 }
 
 } // namespace glyphastore

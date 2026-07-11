@@ -60,7 +60,7 @@ auto VacuumBuilder::rebuild(const Index& current_index, std::span<const SegmentP
         }
         auto record = found->second->read(entry.record);
         if (!record) {
-            return std::unexpected(record.error());
+            return unexpected(record.error());
         }
         const RecordInput input{
             .sequence = record->sequence,
@@ -75,17 +75,17 @@ auto VacuumBuilder::rebuild(const Index& current_index, std::span<const SegmentP
         auto ref = new_segments.back()->append(input);
         if (!ref && ref.error().code == ErrorCode::segment_full) {
             if (auto sealed = new_segments.back()->seal(); !sealed) {
-                return std::unexpected(sealed.error());
+                return unexpected(sealed.error());
             }
             new_segments.push_back(
                 std::make_shared<Segment>(SegmentId{first_new_segment.value + new_segments.size()}, owner));
             ref = new_segments.back()->append(input);
         }
         if (!ref) {
-            return std::unexpected(ref.error());
+            return unexpected(ref.error());
         }
         if (auto live = new_segments.back()->mark_live(*ref); !live) {
-            return std::unexpected(live.error());
+            return unexpected(live.error());
         }
         new_index.insert_or_assign(entry.key, *ref);
         ++stats.records_copied;
@@ -94,7 +94,7 @@ auto VacuumBuilder::rebuild(const Index& current_index, std::span<const SegmentP
     for (const auto& segment : new_segments) {
         if (segment->state() == SegmentState::active) {
             if (auto sealed = segment->seal(); !sealed) {
-                return std::unexpected(sealed.error());
+                return unexpected(sealed.error());
             }
         }
     }

@@ -108,13 +108,13 @@ auto rebuild_index_from_segments(std::span<const SegmentPtr> segments, std::uint
     for (const auto& segment : segments) {
         auto refs = segment->scan();
         if (!refs) {
-            return std::unexpected(refs.error());
+            return unexpected(refs.error());
         }
         for (const auto& ref : *refs) {
             ++stats.records_scanned;
             auto record = segment->read(ref);
             if (!record) {
-                return std::unexpected(record.error());
+                return unexpected(record.error());
             }
             const std::string key{record->key_string()};
             const auto current = latest.find(key);
