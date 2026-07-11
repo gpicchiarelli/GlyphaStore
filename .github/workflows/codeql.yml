@@ -31,11 +31,12 @@ jobs:
       - name: Analyze
         uses: github/codeql-action/analyze@v4
         with:
-          output: ../results
+          output: codeql-results
           upload: false
+          upload-database: false
       - name: Preserve SARIF report
         uses: actions/upload-artifact@v7
         with:
           name: codeql-sarif
-          path: ../results/*.sarif
+          path: codeql-results/*.sarif
           retention-days: 14
