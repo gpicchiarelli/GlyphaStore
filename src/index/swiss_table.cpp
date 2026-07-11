@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/index/swiss_control_group.hpp"
 
 #include <algorithm>
 #include <cstring>
@@ -77,8 +78,10 @@ auto SwissTableIndex::key_equals(const Slot& slot, const std::string_view key,
     if (key.empty()) {
         return true;
     }
-    const auto stored = slot_key(slot);
-    return std::memcmp(stored.data(), key.data(), key.size()) == 0;
+    if (slot.key_is_inline) {
+        return std::memcmp(slot.inline_key, key.data(), key.size()) == 0;
+    }
+    return std::memcmp(slot.heap_key.get(), key.data(), key.size()) == 0;
 }
 
 auto SwissTableIndex::find_slot_index(const std::string_view key, const std::uint64_t key_hash) const
@@ -91,14 +94,16 @@ auto SwissTableIndex::find_slot_index(const std::string_view key, const std::uin
     auto group_start = probe_start(hash);
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
         (void)probe;
+        const auto control_word = detail::load_control_group64(&control_[group_start]);
+        const auto fingerprint_mask = detail::equal_byte_mask(&control_[group_start], fingerprint);
         for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
-            const auto index = group_start + offset;
-            const auto control = control_[index];
+            const auto control = detail::control_byte_at(control_word, offset);
             if (control == kSwissEmpty) {
                 return std::nullopt;
             }
-            if (control == fingerprint && key_equals(slots_[index], key, key_hash)) {
-                return index;
+            if ((fingerprint_mask & (1ULL << offset)) != 0 &&
+                key_equals(slots_[group_start + offset], key, key_hash)) {
+                return group_start + offset;
             }
         }
         group_start = next_group(group_start, capacity_);
@@ -117,16 +122,18 @@ auto SwissTableIndex::find_insert_index(const std::string_view key, const std::u
 
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
         (void)probe;
+        const auto control_word = detail::load_control_group64(&control_[group_start]);
+        const auto fingerprint_mask = detail::equal_byte_mask(&control_[group_start], fingerprint);
         for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
             const auto index = group_start + offset;
-            const auto control = control_[index];
+            const auto control = detail::control_byte_at(control_word, offset);
             if (control == kSwissEmpty) {
                 return first_deleted.value_or(index);
             }
             if (control == kSwissDeleted && !first_deleted.has_value()) {
                 first_deleted = index;
             }
-            if (control == fingerprint && key_equals(slots_[index], key, key_hash)) {
+            if ((fingerprint_mask & (1ULL << offset)) != 0 && key_equals(slots_[index], key, key_hash)) {
                 return index;
             }
         }
@@ -193,14 +200,16 @@ auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
         auto group_start = ((hash >> 7U) & ((*normalized / kSwissGroupSize) - 1U)) * kSwissGroupSize;
         bool placed{};
         for (std::size_t probe = 0; probe < *normalized && !placed; probe += kSwissGroupSize) {
+            const auto control_word = detail::load_control_group64(&new_control[group_start]);
             for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
-                const auto target = group_start + offset;
-                if (new_control[target] == kSwissEmpty) {
-                    new_control[target] = control_[index];
-                    targets[index] = target;
-                    placed = true;
-                    break;
+                if (detail::control_byte_at(control_word, offset) != kSwissEmpty) {
+                    continue;
                 }
+                const auto target = group_start + offset;
+                new_control[target] = control_[index];
+                targets[index] = target;
+                placed = true;
+                break;
             }
             group_start = next_group(group_start, *normalized);
         }
