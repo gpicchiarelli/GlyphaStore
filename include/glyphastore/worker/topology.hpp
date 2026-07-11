@@ -15,7 +15,7 @@ struct WorkerTopology {
 };
 
 struct WorkerCountConfig {
-    std::optional<std::size_t> explicit_count;
+    std::optional<std::size_t> explicit_count{};
     std::size_t reserved_cores{1};
     std::size_t maximum_workers{256};
     std::size_t minimum_memory_per_worker{kSegmentSizeBytes};
