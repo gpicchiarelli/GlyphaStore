@@ -37,8 +37,11 @@ class Segment final {
 
     [[nodiscard]] auto append(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read(const RecordRef& ref) const -> Result<RecordView>;
+    // Skips CRC verification. Only valid when resident bytes are immutable (sealed/retired).
+    // Not used on Store get paths; callers with mutable segment access must use read().
     [[nodiscard]] auto read_trusted(const RecordRef& ref) const -> Result<RecordView>;
     [[nodiscard]] auto validate_ref_extent(const RecordRef& ref) const -> Status;
+    // True for sealed or retired resident segments whose append path is closed.
     [[nodiscard]] auto is_trusted() const noexcept -> bool;
     [[nodiscard]] auto scan() const -> Result<std::vector<RecordRef>>;
 
@@ -68,6 +71,7 @@ class Segment final {
     [[nodiscard]] auto base() const noexcept -> const std::byte* {
         return storage_.get();
     }
+    // Exposed for fuzzing and corruption probes; mutating bytes invalidates CRC on read().
     [[nodiscard]] auto mutable_base() noexcept -> std::byte* {
         return storage_.get();
     }

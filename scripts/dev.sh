@@ -77,6 +77,12 @@ case "${1:-help}" in
         "$cmake" --preset macos-fuzz
         "$cmake" --build --preset macos-fuzz
         ;;
+    test-lto)
+        require_tools
+        "$cmake" --preset macos-release-lto
+        "$cmake" --build --preset macos-release-lto --target glyphastore_tests
+        "$ctest" --preset macos-release-lto
+        ;;
     xcode-build)
         require_tools
         "$cmake" --preset xcode
@@ -96,6 +102,6 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
         ;;
 esac

@@ -95,7 +95,7 @@ auto Segment::read_trusted(const RecordRef& ref) const -> Result<RecordView> {
 }
 
 auto Segment::is_trusted() const noexcept -> bool {
-    return residency_ == ResidencyState::resident;
+    return residency_ == ResidencyState::resident && state_ != SegmentState::active;
 }
 
 auto Segment::scan() const -> Result<std::vector<RecordRef>> {

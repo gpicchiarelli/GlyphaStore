@@ -52,8 +52,11 @@ if(BUILD_TESTING)
         tests/unit/index_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/segment_tests.cpp
+        tests/unit/segment_catalog_tests.cpp
+        tests/unit/trusted_read_tests.cpp
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
+        tests/integration/optimization_regression_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
         tests/integration/store_tests.cpp
         tests/property/history_property_tests.cpp
