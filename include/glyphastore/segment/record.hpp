@@ -46,8 +46,9 @@ inline constexpr std::uint32_t kRecordMagic = 0x52594C47U;
 inline constexpr std::uint16_t kRecordFormatVersion = 1;
 inline constexpr std::uint16_t kEncodedRecordHeaderSize = 56;
 
+[[nodiscard]] auto encoded_record_size(const RecordInput& input) -> Result<std::size_t>;
+[[nodiscard]] auto encode_record(std::span<std::byte> out, const RecordInput& input) -> Status;
 [[nodiscard]] auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>>;
 [[nodiscard]] auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView>;
-[[nodiscard]] auto crc32c(std::span<const std::byte> bytes) noexcept -> std::uint32_t;
 
 } // namespace glyphastore

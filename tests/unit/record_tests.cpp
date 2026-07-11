@@ -1,9 +1,11 @@
+#include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "test.hpp"
 
 #include <array>
 #include <cstddef>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -82,4 +84,37 @@ GLYPHA_TEST("record codec supports empty key and value without unsafe extents") 
     GLYPHA_REQUIRE(decoded.has_value());
     GLYPHA_REQUIRE(decoded->key.empty());
     GLYPHA_REQUIRE(decoded->value.empty());
+}
+
+GLYPHA_TEST("crc32c matches the standard Castagnoli test vector") {
+    static constexpr std::array<char, 9> payload{'1', '2', '3', '4', '5', '6', '7', '8', '9'};
+    const auto bytes =
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(payload.data()), payload.size()};
+    GLYPHA_REQUIRE(glyphastore::crc32c(bytes) == 0xE3069283U);
+}
+
+GLYPHA_TEST("record encode zeroes alignment padding in destination buffers") {
+    const auto size = glyphastore::encoded_record_size({
+        .sequence = glyphastore::SequenceNumber{1},
+        .key = as_bytes("k"),
+        .value = as_bytes("v"),
+    });
+    GLYPHA_REQUIRE(size.has_value());
+
+    std::vector<std::byte> buffer(*size, std::byte{0xA5});
+    GLYPHA_REQUIRE(glyphastore::encode_record(buffer,
+                                              {
+                                                  .sequence = glyphastore::SequenceNumber{1},
+                                                  .key = as_bytes("k"),
+                                                  .value = as_bytes("v"),
+                                              })
+                       .has_value());
+
+    const auto payload_end = glyphastore::kEncodedRecordHeaderSize + 1U + 1U;
+    for (std::size_t index = payload_end; index < *size; ++index) {
+        GLYPHA_REQUIRE(buffer[index] == std::byte{0});
+    }
+
+    const auto decoded = glyphastore::decode_record(buffer);
+    GLYPHA_REQUIRE(decoded.has_value());
 }

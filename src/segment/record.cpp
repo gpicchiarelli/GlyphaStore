@@ -1,8 +1,8 @@
 #include "glyphastore/segment/record.hpp"
 
 #include "glyphastore/core/checked_math.hpp"
+#include "glyphastore/segment/crc32c.hpp"
 
-#include <array>
 #include <cstring>
 #include <limits>
 
@@ -51,44 +51,7 @@ auto get_u64(std::span<const std::byte> in, std::size_t at) -> std::uint64_t {
     return value;
 }
 
-auto checksum_with_zeroed_field(std::span<const std::byte> bytes) noexcept -> std::uint32_t {
-    std::uint32_t crc = 0xFFFFFFFFU;
-    auto update = [&crc](std::uint8_t byte) {
-        crc ^= byte;
-        for (int bit = 0; bit < 8; ++bit) {
-            const auto mask = static_cast<std::uint32_t>(0U - (crc & 1U));
-            crc = (crc >> 1U) ^ (0x82F63B78U & mask);
-        }
-    };
-    for (std::size_t i = 0; i < bytes.size(); ++i) {
-        update(i >= 20 && i < 24 ? 0U : to_u8(bytes[i]));
-    }
-    return ~crc;
-}
-
-} // namespace
-
-auto RecordView::key_string() const -> std::string_view {
-    return {reinterpret_cast<const char*>(key.data()), key.size()};
-}
-
-auto RecordView::expired(std::uint64_t now_ns) const noexcept -> bool {
-    return expire_at_ns != 0 && now_ns != 0 && expire_at_ns <= now_ns;
-}
-
-auto crc32c(std::span<const std::byte> bytes) noexcept -> std::uint32_t {
-    std::uint32_t crc = 0xFFFFFFFFU;
-    for (const auto value : bytes) {
-        crc ^= to_u8(value);
-        for (int bit = 0; bit < 8; ++bit) {
-            const auto mask = static_cast<std::uint32_t>(0U - (crc & 1U));
-            crc = (crc >> 1U) ^ (0x82F63B78U & mask);
-        }
-    }
-    return ~crc;
-}
-
-auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
+[[nodiscard]] auto validate_record_input(const RecordInput& input) -> Status {
     const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);
     if (opcode_raw != static_cast<std::uint16_t>(Opcode::put) &&
         opcode_raw != static_cast<std::uint16_t>(Opcode::erase)) {
@@ -103,6 +66,13 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
         input.value.size() > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::record_too_large, "key or value exceeds record format limits");
     }
+    return {};
+}
+
+[[nodiscard]] auto compute_encoded_size(const RecordInput& input) -> Result<std::size_t> {
+    if (auto valid = validate_record_input(input); !valid) {
+        return unexpected(valid.error());
+    }
     auto raw = checked_add<std::size_t>(kEncodedRecordHeaderSize, input.key.size());
     if (!raw) {
         return unexpected(raw.error());
@@ -115,29 +85,72 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
     if (!aligned || *aligned > kMaxNormalRecordSize || *aligned > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::record_too_large, "encoded record exceeds the normal record limit");
     }
+    return *aligned;
+}
 
-    std::vector<std::byte> bytes(*aligned, std::byte{0});
-    auto out = std::span<std::byte>{bytes};
-    put_u32(out, 0, kRecordMagic);
-    put_u16(out, 4, kRecordFormatVersion);
-    put_u16(out, 6, kEncodedRecordHeaderSize);
-    put_u32(out, 8, static_cast<std::uint32_t>(*aligned));
-    put_u32(out, 12, static_cast<std::uint32_t>(input.key.size()));
-    put_u32(out, 16, static_cast<std::uint32_t>(input.value.size()));
-    put_u64(out, 24, input.sequence.value);
-    put_u64(out, 32, input.key_hash);
-    put_u64(out, 40, input.expire_at_ns);
-    put_u16(out, 48, opcode_raw);
-    put_u16(out, 50, type_raw);
-    put_u32(out, 52, input.flags);
+} // namespace
+
+auto RecordView::key_string() const -> std::string_view {
+    return {reinterpret_cast<const char*>(key.data()), key.size()};
+}
+
+auto RecordView::expired(std::uint64_t now_ns) const noexcept -> bool {
+    return expire_at_ns != 0 && now_ns != 0 && expire_at_ns <= now_ns;
+}
+
+auto encoded_record_size(const RecordInput& input) -> Result<std::size_t> {
+    return compute_encoded_size(input);
+}
+
+auto encode_record(const std::span<std::byte> out, const RecordInput& input) -> Status {
+    const auto size = compute_encoded_size(input);
+    if (!size) {
+        return unexpected(size.error());
+    }
+    if (out.size() < *size) {
+        return fail(ErrorCode::invalid_argument, "encode buffer is too small for the record");
+    }
+
+    const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);
+    const auto type_raw = static_cast<std::uint16_t>(input.type);
+    const auto encoded = out.first(*size);
+    put_u32(encoded, 0, kRecordMagic);
+    put_u16(encoded, 4, kRecordFormatVersion);
+    put_u16(encoded, 6, kEncodedRecordHeaderSize);
+    put_u32(encoded, 8, static_cast<std::uint32_t>(*size));
+    put_u32(encoded, 12, static_cast<std::uint32_t>(input.key.size()));
+    put_u32(encoded, 16, static_cast<std::uint32_t>(input.value.size()));
+    put_u32(encoded, 20, 0);
+    put_u64(encoded, 24, input.sequence.value);
+    put_u64(encoded, 32, input.key_hash);
+    put_u64(encoded, 40, input.expire_at_ns);
+    put_u16(encoded, 48, opcode_raw);
+    put_u16(encoded, 50, type_raw);
+    put_u32(encoded, 52, input.flags);
     if (!input.key.empty()) {
-        std::memcpy(bytes.data() + kEncodedRecordHeaderSize, input.key.data(), input.key.size());
+        std::memcpy(encoded.data() + kEncodedRecordHeaderSize, input.key.data(), input.key.size());
     }
     if (!input.value.empty()) {
-        std::memcpy(bytes.data() + kEncodedRecordHeaderSize + input.key.size(), input.value.data(),
+        std::memcpy(encoded.data() + kEncodedRecordHeaderSize + input.key.size(), input.value.data(),
                     input.value.size());
     }
-    put_u32(out, 20, checksum_with_zeroed_field(bytes));
+    const auto payload_end = kEncodedRecordHeaderSize + input.key.size() + input.value.size();
+    if (payload_end < *size) {
+        std::memset(encoded.data() + payload_end, 0, *size - payload_end);
+    }
+    put_u32(encoded, 20, crc32c_with_zeroed_checksum_field(encoded));
+    return {};
+}
+
+auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
+    const auto size = compute_encoded_size(input);
+    if (!size) {
+        return unexpected(size.error());
+    }
+    std::vector<std::byte> bytes(*size, std::byte{0});
+    if (auto encoded = encode_record(bytes, input); !encoded) {
+        return unexpected(encoded.error());
+    }
     return bytes;
 }
 
@@ -161,7 +174,7 @@ auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView> {
         return fail(ErrorCode::invalid_record, "record payload extent is invalid");
     }
     const auto encoded = bytes.first(total_size);
-    if (get_u32(bytes, 20) != checksum_with_zeroed_field(encoded)) {
+    if (get_u32(bytes, 20) != crc32c_with_zeroed_checksum_field(encoded)) {
         return fail(ErrorCode::checksum_mismatch, "record checksum mismatch");
     }
     const auto opcode_raw = get_u16(bytes, 48);

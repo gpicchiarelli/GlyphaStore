@@ -21,16 +21,20 @@ auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
     if (state_ != SegmentState::active) {
         return fail(ErrorCode::segment_sealed, "append requires an active segment");
     }
-    auto encoded = encode_record(input);
-    if (!encoded) {
-        return unexpected(encoded.error());
+    const auto encoded_size = encoded_record_size(input);
+    if (!encoded_size) {
+        return unexpected(encoded_size.error());
     }
-    if (!range_contains(kSegmentSizeBytes, write_offset_, encoded->size())) {
+    if (!range_contains(kSegmentSizeBytes, write_offset_, *encoded_size)) {
         return fail(ErrorCode::segment_full, "record does not fit in active segment");
     }
     const auto offset = write_offset_;
-    std::memcpy(storage_.get() + offset, encoded->data(), encoded->size());
-    write_offset_ += encoded->size();
+    const auto destination =
+        std::span<std::byte>{storage_.get() + offset, static_cast<std::size_t>(*encoded_size)};
+    if (auto encoded = encode_record(destination, input); !encoded) {
+        return unexpected(encoded.error());
+    }
+    write_offset_ += *encoded_size;
     stats_.used_bytes = write_offset_;
     ++stats_.record_count;
     if (stats_.record_count == 1) {
@@ -40,7 +44,7 @@ auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
     return RecordRef{
         .segment_id = id_,
         .offset = RecordOffset{static_cast<std::uint32_t>(offset)},
-        .size = RecordSize{static_cast<std::uint32_t>(encoded->size())},
+        .size = RecordSize{static_cast<std::uint32_t>(*encoded_size)},
         .sequence = input.sequence,
         .generation = generation_,
     };

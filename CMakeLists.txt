@@ -14,6 +14,7 @@ glyphastore_project_options()
 add_library(glyphastore_core
     src/index/index.cpp
     src/index/swiss_table.cpp
+    src/segment/crc32c.cpp
     src/segment/global_manager.cpp
     src/segment/record.cpp
     src/segment/segment.cpp
