@@ -44,7 +44,7 @@ case "${1:-help}" in
         require_tools
         "$cmake" --preset macos-release
         "$cmake" --build --preset macos-release --target glyphastore_benchmarks
-        "$root/build/macos-release/glyphastore_benchmarks"
+        "$root/build/macos-release/glyphastore_benchmarks" "${@:2}"
         ;;
     fuzz-build)
         require_tools
@@ -70,6 +70,6 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|fuzz-build|xcode-build|format|clean}"
+        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|fuzz-build|xcode-build|format|clean} [benchmark args]"
         ;;
 esac

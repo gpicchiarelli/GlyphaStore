@@ -75,8 +75,24 @@ glyphastore_set_warnings(glyphastore_rebuild_index)
 set_target_properties(glyphastore_rebuild_index PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 
 if(GLYPHASTORE_BUILD_BENCHMARKS)
-    add_executable(glyphastore_benchmarks benchmarks/benchmark_main.cpp)
+    find_program(GIT_EXECUTABLE NAMES git)
+    set(GLYPHASTORE_GIT_SHA "unknown")
+    if(GIT_EXECUTABLE)
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} rev-parse --short HEAD
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            OUTPUT_VARIABLE GLYPHASTORE_GIT_SHA
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET
+        )
+    endif()
+    add_executable(glyphastore_benchmarks
+        benchmarks/benchmark_main.cpp
+        benchmarks/suite.cpp
+    )
     target_link_libraries(glyphastore_benchmarks PRIVATE GlyphaStore::core glyphastore_project_options)
+    target_include_directories(glyphastore_benchmarks PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
+    target_compile_definitions(glyphastore_benchmarks PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}")
     glyphastore_set_warnings(glyphastore_benchmarks)
     set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 endif()
