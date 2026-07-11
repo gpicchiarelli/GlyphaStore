@@ -8,15 +8,22 @@
 #include "glyphastore/segment/record.hpp"
 
 #include <cstdint>
+#include <mutex>
 #include <span>
 #include <string_view>
 #include <vector>
 
 namespace glyphastore {
 
+class Store;
+
 class Worker final {
   public:
     Worker(WorkerId id, GlobalSegmentManager& manager);
+    Worker(const Worker&) = delete;
+    auto operator=(const Worker&) -> Worker& = delete;
+    Worker(Worker&&) = delete;
+    auto operator=(Worker&&) -> Worker& = delete;
 
     [[nodiscard]] auto id() const noexcept -> WorkerId {
         return id_;
@@ -35,6 +42,10 @@ class Worker final {
     [[nodiscard]] auto erase(const HashedKey& key) -> Status;
 
   private:
+    [[nodiscard]] auto get_locked(const HashedKey& key, std::uint64_t now_ns) -> Result<RecordView>;
+    [[nodiscard]] auto put_locked(const HashedKey& key, std::span<const std::byte> value,
+                                  std::uint64_t expire_at_ns) -> Status;
+    [[nodiscard]] auto erase_locked(const HashedKey& key) -> Status;
     [[nodiscard]] auto next_sequence() -> SequenceNumber;
     [[nodiscard]] auto append_record(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read_ref(const RecordRef& ref) const -> Result<RecordView>;
@@ -47,6 +58,9 @@ class Worker final {
     SegmentPtr active_;
     SequenceNumber next_sequence_{SequenceNumber{1}};
     std::vector<SegmentPtr> owned_;
+    mutable std::mutex mutex_;
+
+    friend class Store;
 };
 
 } // namespace glyphastore

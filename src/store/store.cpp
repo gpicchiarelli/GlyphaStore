@@ -3,6 +3,8 @@
 #include "glyphastore/core/key_hash.hpp"
 
 #include <memory>
+#include <mutex>
+#include <vector>
 
 namespace glyphastore {
 
@@ -32,7 +34,13 @@ auto Store::erase(std::string_view key) -> Status {
 }
 
 auto Store::verify_index() const -> Status {
-    const auto rebuilt = rebuild_index_from_segments(segment_manager_.segments());
+    std::vector<std::unique_lock<std::mutex>> worker_locks;
+    worker_locks.reserve(workers_.size());
+    for (std::size_t index = 0; index < workers_.size(); ++index) {
+        worker_locks.emplace_back(workers_.worker(index).mutex_);
+    }
+
+    const auto rebuilt = rebuild_index_from_segments(segment_manager_.segment_snapshot());
     if (!rebuilt) {
         return unexpected(rebuilt.error());
     }

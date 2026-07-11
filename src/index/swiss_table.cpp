@@ -411,11 +411,9 @@ auto SwissTableIndex::entries() const -> std::vector<IndexEntry> {
 }
 
 auto SwissTableIndex::stats() const noexcept -> IndexStats {
-    return {size_,
-            capacity_,
+    return {size_, capacity_,
             capacity_ == 0 ? 0.0F : static_cast<float>(size_) / static_cast<float>(capacity_),
-            heap_keys_.allocated_bytes(),
-            heap_live_bytes_};
+            heap_keys_.allocated_bytes(), heap_live_bytes_};
 }
 
 auto SwissTableIndex::clone_empty() const -> SwissTableIndex {

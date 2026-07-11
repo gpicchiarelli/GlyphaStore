@@ -123,6 +123,22 @@ auto Worker::unpublish(const HashedKey& key) -> Status {
 }
 
 auto Worker::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<RecordView> {
+    const std::lock_guard lock{mutex_};
+    return get_locked(key, now_ns);
+}
+
+auto Worker::put(const HashedKey& key, const std::span<const std::byte> value,
+                 const std::uint64_t expire_at_ns) -> Status {
+    const std::lock_guard lock{mutex_};
+    return put_locked(key, value, expire_at_ns);
+}
+
+auto Worker::erase(const HashedKey& key) -> Status {
+    const std::lock_guard lock{mutex_};
+    return erase_locked(key);
+}
+
+auto Worker::get_locked(const HashedKey& key, const std::uint64_t now_ns) -> Result<RecordView> {
     const auto ref = index_.find(key);
     if (!ref) {
         return fail(ErrorCode::not_found, "key is not present");
@@ -135,7 +151,7 @@ auto Worker::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<Rec
         return fail(ErrorCode::not_found, "key is not present");
     }
     if (record->expired(now_ns)) {
-        if (auto erased = erase(key); !erased) {
+        if (auto erased = erase_locked(key); !erased) {
             return unexpected(erased.error());
         }
         return fail(ErrorCode::not_found, "key has expired");
@@ -143,8 +159,8 @@ auto Worker::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<Rec
     return record;
 }
 
-auto Worker::put(const HashedKey& key, const std::span<const std::byte> value,
-                 const std::uint64_t expire_at_ns) -> Status {
+auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> value,
+                        const std::uint64_t expire_at_ns) -> Status {
     const auto existing = index_.find(key);
     if (existing) {
         const auto* previous_segment = manager_.find(existing->segment_id);
@@ -172,7 +188,7 @@ auto Worker::put(const HashedKey& key, const std::span<const std::byte> value,
     return publish(key, *ref);
 }
 
-auto Worker::erase(const HashedKey& key) -> Status {
+auto Worker::erase_locked(const HashedKey& key) -> Status {
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");

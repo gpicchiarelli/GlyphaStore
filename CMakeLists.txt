@@ -58,6 +58,7 @@ if(BUILD_TESTING)
         tests/unit/trusted_read_tests.cpp
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
+        tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
         tests/integration/store_tests.cpp

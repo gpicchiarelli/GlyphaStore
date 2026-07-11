@@ -5,6 +5,7 @@
 #include "glyphastore/worker/worker.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <string_view>
 #include <vector>
 
@@ -23,10 +24,10 @@ class WorkerPool final {
         return workers_.size();
     }
     [[nodiscard]] auto worker(std::size_t index) const noexcept -> const Worker& {
-        return workers_[index];
+        return *workers_[index];
     }
     [[nodiscard]] auto worker(std::size_t index) noexcept -> Worker& {
-        return workers_[index];
+        return *workers_[index];
     }
     [[nodiscard]] auto route(const HashedKey& key) const noexcept -> const Worker& {
         return worker(route_worker(key.hash, workers_.size()));
@@ -37,7 +38,7 @@ class WorkerPool final {
 
   private:
     GlobalSegmentManager& manager_;
-    std::vector<Worker> workers_;
+    std::vector<std::unique_ptr<Worker>> workers_;
 };
 
 } // namespace glyphastore

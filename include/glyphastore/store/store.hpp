@@ -44,8 +44,12 @@ class Store final {
         return segment_manager_.segments();
     }
 
-    // Returns a view into segment memory. The RecordView spans remain valid only while
-    // this Store instance and its backing Segments remain alive and unmodified.
+    // Thread-safe Store API: each key routes to one Worker partition and acquires that
+    // Worker's mutex for the duration of the operation. Different keys on different
+    // Workers run concurrently; the same Worker serializes callers.
+    //
+    // get() returns segment-backed spans; copy value bytes before calling Store again
+    // on the same key from another thread if the view must remain stable.
     [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<RecordView>;
     [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;

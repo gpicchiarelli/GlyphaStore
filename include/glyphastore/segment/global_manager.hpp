@@ -5,6 +5,7 @@
 #include "glyphastore/segment/segment.hpp"
 
 #include <cstddef>
+#include <mutex>
 #include <vector>
 
 namespace glyphastore {
@@ -18,12 +19,9 @@ class GlobalSegmentManager final {
     [[nodiscard]] auto rotate_active(SegmentPtr active, WorkerId owner) -> Result<SegmentPtr>;
     [[nodiscard]] auto find(SegmentId id) noexcept -> Segment*;
     [[nodiscard]] auto find(SegmentId id) const noexcept -> const Segment*;
-    [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>& {
-        return segments_;
-    }
-    [[nodiscard]] auto retired_pool() const noexcept -> const std::vector<SegmentId>& {
-        return retired_pool_;
-    }
+    [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>&;
+    [[nodiscard]] auto segment_snapshot() const -> std::vector<SegmentPtr>;
+    [[nodiscard]] auto retired_pool() const noexcept -> const std::vector<SegmentId>&;
     [[nodiscard]] auto try_retire(SegmentId id) -> Status;
 
   private:
@@ -34,6 +32,7 @@ class GlobalSegmentManager final {
     std::vector<SegmentPtr> catalog_;
     std::vector<SegmentPtr> segments_;
     std::vector<SegmentId> retired_pool_;
+    mutable std::mutex mutex_;
 };
 
 } // namespace glyphastore
