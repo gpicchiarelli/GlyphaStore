@@ -11,6 +11,7 @@ namespace {
 
 struct Options {
     glyphastore::bench::BenchmarkKind kind{glyphastore::bench::BenchmarkKind::all};
+    glyphastore::bench::RunSettings settings{};
     bool full_suite{};
     std::optional<std::size_t> operations;
     std::optional<std::size_t> key_size;
@@ -39,6 +40,10 @@ struct Options {
             options.random_access = true;
             continue;
         }
+        if (arg == "--pin-cpu") {
+            options.settings.pin_cpu = true;
+            continue;
+        }
         if (arg == "--filter" && index + 1 < argc) {
             options.kind = glyphastore::bench::parse_kind(argv[++index]);
             continue;
@@ -59,11 +64,20 @@ struct Options {
             options.workers = parse_size(argv[++index], "--workers");
             continue;
         }
+        if (arg == "--warmup" && index + 1 < argc) {
+            options.settings.warmup_iterations = parse_size(argv[++index], "--warmup");
+            continue;
+        }
+        if (arg == "--repeats" && index + 1 < argc) {
+            options.settings.measured_iterations = parse_size(argv[++index], "--repeats");
+            continue;
+        }
         if (arg == "--help" || arg == "-h") {
             std::cout
-                << "usage: glyphastore_benchmarks [--suite] [--random]\n"
+                << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu]\n"
                 << "       [--filter all|index|store-put|store-get|store-put-get|store-read-after-write]\n"
-                << "       [--ops N] [--key-size N] [--value-size N] [--workers N]\n";
+                << "       [--ops N] [--key-size N] [--value-size N] [--workers N]\n"
+                << "       [--warmup N] [--repeats N]\n";
             std::exit(0);
         }
         std::cerr << "unknown argument: " << arg << '\n';
@@ -111,11 +125,11 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "# glyphastore benchmark\n";
-    glyphastore::bench::print_metadata(std::cout);
+    glyphastore::bench::print_metadata(std::cout, options.settings);
 
     for (auto config : configs) {
         apply_overrides(config, options);
-        for (const auto& result : glyphastore::bench::run_benchmark(options.kind, config)) {
+        for (const auto& result : glyphastore::bench::run_benchmark(options.kind, config, options.settings)) {
             glyphastore::bench::print_result(std::cout, result);
         }
     }

@@ -89,6 +89,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     endif()
     add_executable(glyphastore_benchmarks
         benchmarks/benchmark_main.cpp
+        benchmarks/harness.cpp
         benchmarks/suite.cpp
     )
     target_link_libraries(glyphastore_benchmarks PRIVATE GlyphaStore::core glyphastore_project_options)
