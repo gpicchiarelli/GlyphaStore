@@ -23,7 +23,7 @@ enum class ErrorCode {
 };
 
 struct Error {
-    ErrorCode code;
+    ErrorCode code{ErrorCode::invalid_argument};
     std::string message;
 };
 
