@@ -19,7 +19,13 @@ inline constexpr std::size_t kDefaultWarmupIterations = 1;
 inline constexpr std::size_t kDefaultMeasuredIterations = 7;
 
 enum class BenchmarkKind {
+    index_insert,
+    index_replace,
+    index_find_hit,
+    index_find_miss,
+    index_erase,
     index_insert_find,
+    index_all,
     store_put,
     store_get,
     store_put_get,
@@ -111,6 +117,21 @@ struct KeyMaterial {
     }
     if (config.random_access) {
         std::mt19937_64 random{0xC0FFEEULL};
+        std::ranges::shuffle(material.order, random);
+    }
+    return material;
+}
+
+[[nodiscard]] inline auto make_miss_key_material(const Config& config) -> KeyMaterial {
+    KeyMaterial material;
+    material.keys.reserve(config.operations);
+    material.order.reserve(config.operations);
+    for (std::size_t index = 0; index < config.operations; ++index) {
+        material.keys.push_back(make_key(config.operations + index, config.key_size));
+        material.order.push_back(index);
+    }
+    if (config.random_access) {
+        std::mt19937_64 random{0xDEADBEEFULL};
         std::ranges::shuffle(material.order, random);
     }
     return material;
@@ -266,6 +287,24 @@ inline void print_result(std::ostream& out, const Result& result) {
 }
 
 [[nodiscard]] inline auto parse_kind(std::string_view value) -> BenchmarkKind {
+    if (value == "index-insert") {
+        return BenchmarkKind::index_insert;
+    }
+    if (value == "index-replace") {
+        return BenchmarkKind::index_replace;
+    }
+    if (value == "index-find-hit") {
+        return BenchmarkKind::index_find_hit;
+    }
+    if (value == "index-find-miss") {
+        return BenchmarkKind::index_find_miss;
+    }
+    if (value == "index-erase") {
+        return BenchmarkKind::index_erase;
+    }
+    if (value == "index-all") {
+        return BenchmarkKind::index_all;
+    }
     if (value == "index") {
         return BenchmarkKind::index_insert_find;
     }

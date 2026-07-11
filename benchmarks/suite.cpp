@@ -14,13 +14,59 @@ namespace {
     return value;
 }
 
-[[nodiscard]] auto run_index_insert_find(const Config& config, const RunSettings& settings) -> Result {
+[[nodiscard]] auto make_index_ref(const std::size_t index_in_order) -> RecordRef {
+    return RecordRef{
+        .segment_id = SegmentId{1},
+        .offset = RecordOffset{static_cast<std::uint32_t>((index_in_order * 64U) % 1'000'000U)},
+        .size = RecordSize{64},
+        .sequence = SequenceNumber{index_in_order + 1},
+        .generation = GenerationId{1},
+    };
+}
+
+[[nodiscard]] auto make_reserved_index(const std::size_t operations) -> std::unique_ptr<Index> {
+    auto index = std::make_unique<Index>();
+    if (!index->reserve(operations)) {
+        return nullptr;
+    }
+    return index;
+}
+
+[[nodiscard]] auto populate_index(Index& index, const KeyMaterial& material) -> bool {
+    for (const auto index_in_order : material.order) {
+        if (!index.insert_or_assign(material.keys[index_in_order], make_index_ref(index_in_order))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+[[nodiscard]] auto run_index_insert(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
-        settings, config.operations * 2U, config, "index_insert_find", config.operations,
+        settings, config.operations, config, "index_insert", config.operations,
+        [&]() -> std::unique_ptr<Index> { return make_reserved_index(config.operations); },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
+            std::size_t inserted = 0;
+            for (const auto index_in_order : material.order) {
+                if (index->insert_or_assign(material.keys[index_in_order], make_index_ref(index_in_order))) {
+                    ++inserted;
+                }
+            }
+            return inserted;
+        });
+}
+
+[[nodiscard]] auto run_index_replace(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations, config, "index_replace", config.operations,
         [&]() -> std::unique_ptr<Index> {
-            auto index = std::make_unique<Index>();
-            if (!index->reserve(config.operations)) {
+            auto index = make_reserved_index(config.operations);
+            if (index == nullptr || !populate_index(*index, material)) {
                 return nullptr;
             }
             return index;
@@ -29,11 +75,101 @@ namespace {
             if (index == nullptr) {
                 return 0;
             }
+            std::size_t replaced = 0;
+            for (const auto index_in_order : material.order) {
+                const auto replacement = make_index_ref(index_in_order + config.operations);
+                if (index->insert_or_assign(material.keys[index_in_order], replacement)) {
+                    ++replaced;
+                }
+            }
+            return replaced;
+        });
+}
+
+[[nodiscard]] auto run_index_find_hit(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations, config, "index_find_hit", config.operations,
+        [&]() -> std::unique_ptr<Index> {
+            auto index = make_reserved_index(config.operations);
+            if (index == nullptr || !populate_index(*index, material)) {
+                return nullptr;
+            }
+            return index;
+        },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
+            std::size_t hits = 0;
+            for (const auto index_in_order : material.order) {
+                hits += index->find(material.keys[index_in_order]).has_value() ? 1U : 0U;
+            }
+            return hits;
+        });
+}
+
+[[nodiscard]] auto run_index_find_miss(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    const auto miss_material = make_miss_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations, config, "index_find_miss", config.operations,
+        [&]() -> std::unique_ptr<Index> {
+            auto index = make_reserved_index(config.operations);
+            if (index == nullptr || !populate_index(*index, material)) {
+                return nullptr;
+            }
+            return index;
+        },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
+            std::size_t misses = 0;
+            for (const auto index_in_order : miss_material.order) {
+                misses += index->find(miss_material.keys[index_in_order]).has_value() ? 0U : 1U;
+            }
+            return misses;
+        });
+}
+
+[[nodiscard]] auto run_index_erase(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations, config, "index_erase", config.operations,
+        [&]() -> std::unique_ptr<Index> {
+            auto index = make_reserved_index(config.operations);
+            if (index == nullptr || !populate_index(*index, material)) {
+                return nullptr;
+            }
+            return index;
+        },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
+            std::size_t erased = 0;
+            for (const auto index_in_order : material.order) {
+                if (index->erase(material.keys[index_in_order]).previous.has_value()) {
+                    ++erased;
+                }
+            }
+            return erased;
+        });
+}
+
+[[nodiscard]] auto run_index_insert_find(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations * 2U, config, "index_insert_find", config.operations,
+        [&]() -> std::unique_ptr<Index> { return make_reserved_index(config.operations); },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
             for (const auto index_in_order : material.order) {
                 const auto& key = material.keys[index_in_order];
-                if (!index->insert_or_assign(key, RecordRef{SegmentId{1}, RecordOffset{0}, RecordSize{64},
-                                                            SequenceNumber{index_in_order + 1},
-                                                            GenerationId{1}})) {
+                if (!index->insert_or_assign(key, make_index_ref(index_in_order))) {
                     return 0;
                 }
             }
@@ -167,6 +303,16 @@ namespace {
 [[nodiscard]] auto run_single(const BenchmarkKind kind, const Config& config, const RunSettings& settings)
     -> Result {
     switch (kind) {
+    case BenchmarkKind::index_insert:
+        return run_index_insert(config, settings);
+    case BenchmarkKind::index_replace:
+        return run_index_replace(config, settings);
+    case BenchmarkKind::index_find_hit:
+        return run_index_find_hit(config, settings);
+    case BenchmarkKind::index_find_miss:
+        return run_index_find_miss(config, settings);
+    case BenchmarkKind::index_erase:
+        return run_index_erase(config, settings);
     case BenchmarkKind::index_insert_find:
         return run_index_insert_find(config, settings);
     case BenchmarkKind::store_put:
@@ -178,9 +324,24 @@ namespace {
     case BenchmarkKind::store_read_after_write:
         return run_store_read_after_write(config, settings);
     case BenchmarkKind::all:
+    case BenchmarkKind::index_all:
         break;
     }
     return {};
+}
+
+[[nodiscard]] auto index_benchmark_kinds() -> std::vector<BenchmarkKind> {
+    return {BenchmarkKind::index_insert, BenchmarkKind::index_replace, BenchmarkKind::index_find_hit,
+            BenchmarkKind::index_find_miss, BenchmarkKind::index_erase};
+}
+
+[[nodiscard]] auto all_benchmark_kinds() -> std::vector<BenchmarkKind> {
+    auto kinds = index_benchmark_kinds();
+    kinds.push_back(BenchmarkKind::store_put);
+    kinds.push_back(BenchmarkKind::store_get);
+    kinds.push_back(BenchmarkKind::store_put_get);
+    kinds.push_back(BenchmarkKind::store_read_after_write);
+    return kinds;
 }
 
 } // namespace
@@ -188,10 +349,14 @@ namespace {
 auto run_benchmark(const BenchmarkKind kind, const Config& config, const RunSettings& settings)
     -> std::vector<Result> {
     std::vector<Result> results;
+    if (kind == BenchmarkKind::index_all) {
+        for (const auto isolated : index_benchmark_kinds()) {
+            results.push_back(run_single(isolated, config, settings));
+        }
+        return results;
+    }
     if (kind == BenchmarkKind::all) {
-        for (const auto isolated :
-             {BenchmarkKind::index_insert_find, BenchmarkKind::store_put, BenchmarkKind::store_get,
-              BenchmarkKind::store_put_get, BenchmarkKind::store_read_after_write}) {
+        for (const auto isolated : all_benchmark_kinds()) {
             results.push_back(run_single(isolated, config, settings));
         }
         return results;
