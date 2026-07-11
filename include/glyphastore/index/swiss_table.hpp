@@ -66,13 +66,17 @@ class SwissTableIndex final {
     [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;
     [[nodiscard]] auto set_key(Slot& slot, std::string_view key, std::uint64_t key_hash) -> Status;
     void clear_slot(std::size_t index);
-    void compact_heap_keys(std::span<Slot> slots, std::span<const std::uint8_t> control);
+    [[nodiscard]] auto compact_heap_keys(std::span<Slot> slots, std::span<const std::uint8_t> control)
+        -> Status;
+    [[nodiscard]] auto maybe_compact_heap_keys() -> Status;
     [[nodiscard]] auto grow_if_needed() -> Status;
     [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> Result<std::size_t>;
 
     std::uint64_t seed_;
     std::size_t size_{};
     std::size_t capacity_{};
+    std::size_t heap_live_bytes_{};
+    std::size_t heap_dead_bytes_{};
     std::vector<std::uint8_t> control_;
     std::vector<Slot> slots_;
     KeyArena heap_keys_;

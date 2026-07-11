@@ -136,6 +136,7 @@ int main(int argc, char** argv) {
     }
 
     std::cout << "# glyphastore benchmark\n";
+    (void)glyphastore::bench::try_cpu_pin(options.settings.pin_cpu);
     glyphastore::bench::print_metadata(std::cout, options.settings);
 
     for (auto config : configs) {

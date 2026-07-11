@@ -36,10 +36,12 @@ target_include_directories(glyphastore_core
 target_link_libraries(glyphastore_core PRIVATE glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
+glyphastore_enable_ipo(glyphastore_core)
 
 add_executable(glyphastore_demo src/main.cpp)
 target_link_libraries(glyphastore_demo PRIVATE GlyphaStore::core glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_demo)
+glyphastore_enable_ipo(glyphastore_demo)
 set_target_properties(glyphastore_demo PROPERTIES
     XCODE_GENERATE_SCHEME TRUE
     XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -65,6 +67,7 @@ if(BUILD_TESTING)
     target_include_directories(glyphastore_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     glyphastore_set_warnings(glyphastore_tests)
     glyphastore_enable_hardening(glyphastore_tests)
+    glyphastore_enable_ipo(glyphastore_tests)
     add_test(NAME glyphastore_tests COMMAND glyphastore_tests)
     set_target_properties(glyphastore_tests PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 endif()
@@ -72,11 +75,13 @@ endif()
 add_executable(glyphastore_inspect_segment tools/inspect_segment.cpp)
 target_link_libraries(glyphastore_inspect_segment PRIVATE GlyphaStore::core glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_inspect_segment)
+glyphastore_enable_ipo(glyphastore_inspect_segment)
 set_target_properties(glyphastore_inspect_segment PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 
 add_executable(glyphastore_rebuild_index tools/rebuild_index.cpp)
 target_link_libraries(glyphastore_rebuild_index PRIVATE GlyphaStore::core glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_rebuild_index)
+glyphastore_enable_ipo(glyphastore_rebuild_index)
 set_target_properties(glyphastore_rebuild_index PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 
 if(GLYPHASTORE_BUILD_BENCHMARKS)
@@ -90,6 +95,15 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
             OUTPUT_STRIP_TRAILING_WHITESPACE
             ERROR_QUIET
         )
+        execute_process(
+            COMMAND ${GIT_EXECUTABLE} diff-index --quiet HEAD --
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            RESULT_VARIABLE GLYPHASTORE_GIT_DIRTY
+            ERROR_QUIET
+        )
+        if(GLYPHASTORE_GIT_DIRTY)
+            string(APPEND GLYPHASTORE_GIT_SHA "-dirty")
+        endif()
     endif()
     add_executable(glyphastore_benchmarks
         benchmarks/benchmark_main.cpp
@@ -100,6 +114,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     target_include_directories(glyphastore_benchmarks PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
     target_compile_definitions(glyphastore_benchmarks PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}")
     glyphastore_set_warnings(glyphastore_benchmarks)
+    glyphastore_enable_ipo(glyphastore_benchmarks)
     set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
 endif()
 
@@ -125,6 +140,7 @@ if(GLYPHASTORE_BUILD_FUZZERS)
         target_link_libraries(fuzz_${target} PRIVATE GlyphaStore::core glyphastore_project_options)
         target_compile_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
         target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+        glyphastore_enable_ipo(fuzz_${target})
     endforeach()
 endif()
 

@@ -195,9 +195,11 @@
     { "name": "macos-debug", "configurePreset": "macos-debug", "output": { "outputOnFailure": true } },
     { "name": "macos-asan", "configurePreset": "macos-asan", "output": { "outputOnFailure": true } },
     { "name": "macos-tsan", "configurePreset": "macos-tsan", "output": { "outputOnFailure": true } },
+    { "name": "macos-release-lto", "configurePreset": "macos-release-lto", "output": { "outputOnFailure": true } },
     { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "unix-debug", "configurePreset": "unix-debug", "output": { "outputOnFailure": true } },
     { "name": "unix-asan", "configurePreset": "unix-asan", "output": { "outputOnFailure": true } },
-    { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } }
+    { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } },
+    { "name": "unix-release-lto", "configurePreset": "unix-release-lto", "output": { "outputOnFailure": true } }
   ]
 }

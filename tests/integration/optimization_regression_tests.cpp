@@ -22,22 +22,19 @@ GLYPHA_TEST("index heap key arena survives erase churn and rehash") {
     constexpr std::uint64_t initial = 2'000;
     for (std::uint64_t value = 0; value < initial; ++value) {
         const auto key = heap_key(value);
-        const glyphastore::RecordRef ref{glyphastore::SegmentId{1},
-                                         glyphastore::RecordOffset{10},
-                                         glyphastore::RecordSize{20},
-                                         glyphastore::SequenceNumber{value},
+        const glyphastore::RecordRef ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                         glyphastore::RecordSize{20}, glyphastore::SequenceNumber{value},
                                          glyphastore::GenerationId{1}};
         GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
     }
+    GLYPHA_REQUIRE(index.stats().arena_live_bytes >= initial * 32U);
     for (std::uint64_t value = 0; value < initial / 2; ++value) {
         GLYPHA_REQUIRE(index.erase(heap_key(value)).previous.has_value());
     }
     for (std::uint64_t value = initial; value < initial + (initial / 2); ++value) {
         const auto key = heap_key(value);
-        const glyphastore::RecordRef ref{glyphastore::SegmentId{1},
-                                         glyphastore::RecordOffset{10},
-                                         glyphastore::RecordSize{20},
-                                         glyphastore::SequenceNumber{value},
+        const glyphastore::RecordRef ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                         glyphastore::RecordSize{20}, glyphastore::SequenceNumber{value},
                                          glyphastore::GenerationId{1}};
         GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
     }
@@ -45,16 +42,31 @@ GLYPHA_TEST("index heap key arena survives erase churn and rehash") {
         GLYPHA_REQUIRE(index.find(heap_key(value)).has_value());
     }
     GLYPHA_REQUIRE(index.stats().size == initial);
+    GLYPHA_REQUIRE(index.stats().arena_live_bytes <= index.stats().size * 64U);
+    GLYPHA_REQUIRE(index.stats().arena_allocated_bytes <= index.stats().arena_live_bytes + 65'536U);
+}
+
+GLYPHA_TEST("index heap arena reclaims memory after insert erase churn") {
+    glyphastore::Index index;
+    const std::string key(256, 'k');
+    const glyphastore::RecordRef ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                     glyphastore::RecordSize{20}, glyphastore::SequenceNumber{1},
+                                     glyphastore::GenerationId{1}};
+    for (std::uint64_t cycle = 0; cycle < 10'000; ++cycle) {
+        GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
+        GLYPHA_REQUIRE(index.erase(key).previous.has_value());
+    }
+    GLYPHA_REQUIRE(index.stats().size == 0);
+    GLYPHA_REQUIRE(index.stats().arena_live_bytes == 0);
+    GLYPHA_REQUIRE(index.stats().arena_allocated_bytes <= key.size() + 64U);
 }
 
 GLYPHA_TEST("index swiss table probe path matches under mixed inline and heap keys") {
     glyphastore::Index index;
     for (std::uint64_t value = 0; value < 4'096; ++value) {
         const auto key = (value % 3 == 0) ? heap_key(value) : ("inline-" + std::to_string(value));
-        const glyphastore::RecordRef ref{glyphastore::SegmentId{1},
-                                         glyphastore::RecordOffset{10},
-                                         glyphastore::RecordSize{20},
-                                         glyphastore::SequenceNumber{value},
+        const glyphastore::RecordRef ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                         glyphastore::RecordSize{20}, glyphastore::SequenceNumber{value},
                                          glyphastore::GenerationId{1}};
         GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
     }
@@ -71,10 +83,8 @@ GLYPHA_TEST("index swiss table probe path matches under mixed inline and heap ke
 GLYPHA_TEST("hashed key path preserves single hash lookup") {
     glyphastore::Index index;
     const auto hashed = glyphastore::HashedKey::compute("hashed-route");
-    const glyphastore::RecordRef ref{glyphastore::SegmentId{9},
-                                     glyphastore::RecordOffset{10},
-                                     glyphastore::RecordSize{20},
-                                     glyphastore::SequenceNumber{1},
+    const glyphastore::RecordRef ref{glyphastore::SegmentId{9}, glyphastore::RecordOffset{10},
+                                     glyphastore::RecordSize{20}, glyphastore::SequenceNumber{1},
                                      glyphastore::GenerationId{1}};
     GLYPHA_REQUIRE(index.insert_or_assign(hashed, ref).has_value());
     GLYPHA_REQUIRE(index.find(hashed) == ref);

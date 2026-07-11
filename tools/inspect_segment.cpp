@@ -1,6 +1,6 @@
-#include <iostream>
-
 #include "glyphastore/core/types.hpp"
+
+#include <iostream>
 
 int main(int argc, char** argv) {
     if (argc != 2) {

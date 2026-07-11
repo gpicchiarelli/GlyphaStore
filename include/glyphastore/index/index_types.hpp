@@ -24,6 +24,8 @@ struct IndexStats {
     std::size_t size{};
     std::size_t bucket_count{};
     float load_factor{};
+    std::size_t arena_allocated_bytes{};
+    std::size_t arena_live_bytes{};
 };
 
 struct RebuildStats {

@@ -204,8 +204,6 @@ template <typename SetupFn, typename BodyFn>
                                                   const Config& config, std::string name,
                                                   const std::size_t expected_hits, SetupFn&& setup,
                                                   BodyFn&& body) -> Result {
-    (void)try_cpu_pin(settings.pin_cpu);
-
     const auto run_iteration =
         [&](const bool timed,
             const std::size_t sample_index) -> std::optional<std::pair<std::size_t, double>> {

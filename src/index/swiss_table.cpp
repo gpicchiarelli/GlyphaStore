@@ -14,6 +14,7 @@ namespace {
 
 inline constexpr std::uint64_t kSwissSeed = 0x243F6A8885A308D3ULL;
 inline constexpr std::uint64_t kSwissMixConstant = 0x9E3779B97F4A7C15ULL;
+inline constexpr std::size_t kHeapArenaCompactDeadThreshold = 65'536;
 
 } // namespace
 
@@ -173,11 +174,12 @@ auto SwissTableIndex::set_key(Slot& slot, const std::string_view key, const std:
         return fail(ErrorCode::corrupted_data, "index key arena allocation is out of range");
     }
     std::memcpy(const_cast<std::byte*>(destination.data()), key.data(), key.size());
+    heap_live_bytes_ += key.size();
     return {};
 }
 
-void SwissTableIndex::compact_heap_keys(const std::span<Slot> slots,
-                                        const std::span<const std::uint8_t> control) {
+auto SwissTableIndex::compact_heap_keys(const std::span<Slot> slots,
+                                        const std::span<const std::uint8_t> control) -> Status {
     KeyArena compacted;
     std::size_t heap_bytes = 0;
     for (std::size_t index = 0; index < slots.size(); ++index) {
@@ -186,7 +188,7 @@ void SwissTableIndex::compact_heap_keys(const std::span<Slot> slots,
             continue;
         }
         const auto& slot = slots[index];
-        if (!slot.key_is_inline) {
+        if (!slot.key_is_inline && slot.key_size > 0) {
             heap_bytes += slot.key_size;
         }
     }
@@ -200,23 +202,44 @@ void SwissTableIndex::compact_heap_keys(const std::span<Slot> slots,
         }
         const auto source = heap_keys_.data(slot.heap_key_offset, slot.key_size);
         if (source.size() != slot.key_size) {
-            continue;
+            return fail(ErrorCode::corrupted_data, "heap key compaction source is out of range");
         }
         const auto offset = compacted.allocate(slot.key_size);
         if (!offset) {
-            continue;
+            return unexpected(offset.error());
         }
         const auto destination = compacted.data(*offset, slot.key_size);
         if (destination.size() != slot.key_size) {
-            continue;
+            return fail(ErrorCode::corrupted_data, "heap key compaction destination is out of range");
         }
         std::memcpy(const_cast<std::byte*>(destination.data()), source.data(), slot.key_size);
         slot.heap_key_offset = *offset;
     }
     heap_keys_ = std::move(compacted);
+    heap_dead_bytes_ = 0;
+    heap_live_bytes_ = heap_keys_.allocated_bytes();
+    return {};
+}
+
+auto SwissTableIndex::maybe_compact_heap_keys() -> Status {
+    if (heap_dead_bytes_ == 0) {
+        return {};
+    }
+    if (heap_dead_bytes_ < heap_live_bytes_ && heap_dead_bytes_ < kHeapArenaCompactDeadThreshold) {
+        return {};
+    }
+    return compact_heap_keys(slots_, control_);
 }
 
 void SwissTableIndex::clear_slot(const std::size_t index) {
+    if (!slots_[index].key_is_inline && slots_[index].key_size > 0) {
+        if (heap_live_bytes_ >= slots_[index].key_size) {
+            heap_live_bytes_ -= slots_[index].key_size;
+        } else {
+            heap_live_bytes_ = 0;
+        }
+        heap_dead_bytes_ += slots_[index].key_size;
+    }
     control_[index] = kSwissDeleted;
     slots_[index] = Slot{};
 }
@@ -279,7 +302,9 @@ auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
             new_slots[targets[index]] = std::move(slots_[index]);
         }
     }
-    compact_heap_keys(new_slots, new_control);
+    if (auto compacted = compact_heap_keys(new_slots, new_control); !compacted) {
+        return compacted;
+    }
     capacity_ = *normalized;
     control_ = std::move(new_control);
     slots_ = std::move(new_slots);
@@ -342,6 +367,7 @@ auto SwissTableIndex::erase(const HashedKey& key) -> IndexMutationResult {
     const auto previous = slots_[*index].ref;
     clear_slot(*index);
     --size_;
+    (void)maybe_compact_heap_keys();
     return {.inserted = false, .previous = previous};
 }
 
@@ -385,8 +411,11 @@ auto SwissTableIndex::entries() const -> std::vector<IndexEntry> {
 }
 
 auto SwissTableIndex::stats() const noexcept -> IndexStats {
-    return {size_, capacity_,
-            capacity_ == 0 ? 0.0F : static_cast<float>(size_) / static_cast<float>(capacity_)};
+    return {size_,
+            capacity_,
+            capacity_ == 0 ? 0.0F : static_cast<float>(size_) / static_cast<float>(capacity_),
+            heap_keys_.allocated_bytes(),
+            heap_live_bytes_};
 }
 
 auto SwissTableIndex::clone_empty() const -> SwissTableIndex {

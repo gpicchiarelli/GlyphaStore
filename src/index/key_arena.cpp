@@ -39,6 +39,10 @@ auto KeyArena::data(const std::uint32_t offset, const std::size_t size) const ->
     return {storage_.data() + offset, size};
 }
 
+auto KeyArena::allocated_bytes() const noexcept -> std::size_t {
+    return bump_;
+}
+
 void KeyArena::clear() noexcept {
     storage_.clear();
     bump_ = 0;
