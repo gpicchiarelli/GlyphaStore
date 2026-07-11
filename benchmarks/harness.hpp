@@ -15,7 +15,14 @@ namespace glyphastore::bench {
 
 inline constexpr std::size_t kDefaultOperations = 200'000;
 
-enum class BenchmarkKind { index_insert_find, store_put, store_get, store_put_get, all };
+enum class BenchmarkKind {
+    index_insert_find,
+    store_put,
+    store_get,
+    store_put_get,
+    store_read_after_write,
+    all
+};
 
 struct Config {
     std::size_t operations{kDefaultOperations};
@@ -134,6 +141,9 @@ inline void print_result(std::ostream& out, const Result& result) {
     }
     if (value == "store-put-get") {
         return BenchmarkKind::store_put_get;
+    }
+    if (value == "store-read-after-write") {
+        return BenchmarkKind::store_read_after_write;
     }
     return BenchmarkKind::all;
 }

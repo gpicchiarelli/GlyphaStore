@@ -135,6 +135,32 @@ namespace {
                   .seconds = put_phase.seconds + get_phase.seconds};
 }
 
+[[nodiscard]] auto run_store_read_after_write(const Config& config) -> Result {
+    const auto material = make_key_material(config);
+    auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
+    if (!opened) {
+        return Result{.name = "store_read_after_write", .config = config};
+    }
+    auto& store = **opened;
+
+    auto measured = measure(config.operations * 2U, [&]() -> std::size_t {
+        std::size_t hits = 0;
+        for (const auto index_in_order : material.order) {
+            if (store.put(material.keys[index_in_order], bytes(material.values[index_in_order]))
+                    .has_value()) {
+                ++hits;
+            }
+            if (store.get(material.keys[index_in_order]).has_value()) {
+                ++hits;
+            }
+        }
+        return hits;
+    });
+    measured.name = "store_read_after_write";
+    measured.config = config;
+    return measured;
+}
+
 } // namespace
 
 auto run_benchmark(const BenchmarkKind kind, const Config& config) -> std::vector<Result> {
@@ -152,11 +178,15 @@ auto run_benchmark(const BenchmarkKind kind, const Config& config) -> std::vecto
     case BenchmarkKind::store_put_get:
         results.push_back(run_store_put_get(config));
         break;
+    case BenchmarkKind::store_read_after_write:
+        results.push_back(run_store_read_after_write(config));
+        break;
     case BenchmarkKind::all:
         results.push_back(run_index_insert_find(config));
         results.push_back(run_store_put(config));
         results.push_back(run_store_get(config));
         results.push_back(run_store_put_get(config));
+        results.push_back(run_store_read_after_write(config));
         break;
     }
     return results;

@@ -60,9 +60,10 @@ struct Options {
             continue;
         }
         if (arg == "--help" || arg == "-h") {
-            std::cout << "usage: glyphastore_benchmarks [--suite] [--random]\n"
-                      << "       [--filter all|index|store-put|store-get|store-put-get]\n"
-                      << "       [--ops N] [--key-size N] [--value-size N] [--workers N]\n";
+            std::cout
+                << "usage: glyphastore_benchmarks [--suite] [--random]\n"
+                << "       [--filter all|index|store-put|store-get|store-put-get|store-read-after-write]\n"
+                << "       [--ops N] [--key-size N] [--value-size N] [--workers N]\n";
             std::exit(0);
         }
         std::cerr << "unknown argument: " << arg << '\n';
