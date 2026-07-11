@@ -1,0 +1,108 @@
+cmake_minimum_required(VERSION 3.25)
+
+project(GlyphaStore VERSION 0.1.0 LANGUAGES CXX)
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
+
+include(ProjectOptions)
+include(CompilerWarnings)
+include(Sanitizers)
+include(Hardening)
+
+glyphastore_project_options()
+
+add_library(glyphastore_core
+    src/index/index.cpp
+    src/segment/record.cpp
+    src/segment/segment.cpp
+    src/vacuum/vacuum.cpp
+    src/worker/topology.cpp
+)
+add_library(GlyphaStore::core ALIAS glyphastore_core)
+
+target_compile_features(glyphastore_core PUBLIC cxx_std_23)
+target_include_directories(glyphastore_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_core PRIVATE glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_core)
+glyphastore_enable_hardening(glyphastore_core)
+
+add_executable(glyphastore_demo src/main.cpp)
+target_link_libraries(glyphastore_demo PRIVATE GlyphaStore::core glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_demo)
+set_target_properties(glyphastore_demo PROPERTIES
+    XCODE_GENERATE_SCHEME TRUE
+    XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+include(CTest)
+if(BUILD_TESTING)
+    add_executable(glyphastore_tests
+        tests/test_main.cpp
+        tests/unit/index_tests.cpp
+        tests/unit/record_tests.cpp
+        tests/unit/segment_tests.cpp
+        tests/unit/worker_tests.cpp
+        tests/integration/rebuild_vacuum_tests.cpp
+        tests/property/history_property_tests.cpp
+    )
+    target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::core glyphastore_project_options)
+    target_include_directories(glyphastore_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    glyphastore_set_warnings(glyphastore_tests)
+    glyphastore_enable_hardening(glyphastore_tests)
+    add_test(NAME glyphastore_tests COMMAND glyphastore_tests)
+    set_target_properties(glyphastore_tests PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+endif()
+
+add_executable(glyphastore_inspect_segment tools/inspect_segment.cpp)
+target_link_libraries(glyphastore_inspect_segment PRIVATE GlyphaStore::core glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_inspect_segment)
+set_target_properties(glyphastore_inspect_segment PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+
+add_executable(glyphastore_rebuild_index tools/rebuild_index.cpp)
+target_link_libraries(glyphastore_rebuild_index PRIVATE GlyphaStore::core glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_rebuild_index)
+set_target_properties(glyphastore_rebuild_index PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+
+if(GLYPHASTORE_BUILD_BENCHMARKS)
+    add_executable(glyphastore_benchmarks benchmarks/benchmark_main.cpp)
+    target_link_libraries(glyphastore_benchmarks PRIVATE GlyphaStore::core glyphastore_project_options)
+    glyphastore_set_warnings(glyphastore_benchmarks)
+    set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+endif()
+
+if(GLYPHASTORE_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "Fuzz targets require Clang/libFuzzer")
+    endif()
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_REQUIRED_FLAGS "-fsanitize=fuzzer")
+    check_cxx_source_compiles(
+        "#include <cstddef>\n#include <cstdint>\nextern \"C\" int LLVMFuzzerTestOneInput(const std::uint8_t*, std::size_t) { return 0; }"
+        GLYPHASTORE_HAS_LIBFUZZER_RUNTIME
+    )
+    unset(CMAKE_REQUIRED_FLAGS)
+    if(NOT GLYPHASTORE_HAS_LIBFUZZER_RUNTIME)
+        message(FATAL_ERROR
+            "The selected Clang does not provide a linkable libFuzzer runtime. "
+            "On macOS install a full LLVM toolchain and configure with CC/CXX pointing to it."
+        )
+    endif()
+    foreach(target IN ITEMS record_decoder segment_scanner index_rebuild)
+        add_executable(fuzz_${target} fuzz/fuzz_${target}.cpp)
+        target_link_libraries(fuzz_${target} PRIVATE GlyphaStore::core glyphastore_project_options)
+        target_compile_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+        target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
+    endforeach()
+endif()
+
+install(TARGETS glyphastore_core glyphastore_demo glyphastore_inspect_segment glyphastore_rebuild_index
+    EXPORT GlyphaStoreTargets
+    RUNTIME DESTINATION bin
+    LIBRARY DESTINATION lib
+    ARCHIVE DESTINATION lib
+)
+install(DIRECTORY include/ DESTINATION include)

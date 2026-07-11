@@ -1,0 +1,48 @@
+# Build systems
+/build/
+/out/
+/cmake-build-*/
+/CMakeUserPresets.json
+/compile_commands.json
+
+# Local development toolchain
+/.tools/
+/.cache/
+
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+*.xccheckout
+*.xcscmblueprint
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/
+*~
+
+# Generated diagnostics
+Testing/
+coverage/
+*.profraw
+*.profdata
+*.gcda
+*.gcno
+*.lcov
+sanitizer-*.log
+benchmark-results/
+
+# Fuzzing output (seed corpora belong under fuzz/corpus when intentionally committed)
+crash-*
+leak-*
+oom-*
+slow-unit-*
+timeout-*
+fuzz-corpus-local/
+
+# GlyphaStore runtime artifacts
+*.gseg
+*.gwal
+*.gsf
+*.glyphatmp

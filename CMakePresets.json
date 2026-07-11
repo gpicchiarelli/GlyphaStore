@@ -1,0 +1,138 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "CMAKE_CXX_STANDARD": "23",
+        "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
+        "BUILD_TESTING": "ON",
+        "GLYPHASTORE_BUILD_BENCHMARKS": "ON"
+      }
+    },
+    {
+      "name": "macos-debug",
+      "inherits": "base",
+      "displayName": "macOS Debug (Ninja)",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "macos-release",
+      "inherits": "base",
+      "displayName": "macOS Release (Ninja)",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "macos-asan",
+      "inherits": "macos-debug",
+      "displayName": "macOS ASan + UBSan",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_ASAN": "ON",
+        "GLYPHASTORE_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "macos-tsan",
+      "inherits": "macos-debug",
+      "displayName": "macOS TSan",
+      "cacheVariables": { "GLYPHASTORE_ENABLE_TSAN": "ON" }
+    },
+    {
+      "name": "macos-fuzz",
+      "inherits": "macos-debug",
+      "displayName": "macOS libFuzzer",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "GLYPHASTORE_BUILD_BENCHMARKS": "OFF",
+        "GLYPHASTORE_BUILD_FUZZERS": "ON"
+      }
+    },
+    {
+      "name": "xcode",
+      "inherits": "base",
+      "displayName": "Xcode Project",
+      "generator": "Xcode",
+      "binaryDir": "${sourceDir}/build/xcode",
+      "cacheVariables": {
+        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "YES"
+      }
+    },
+    {
+      "name": "unix-debug",
+      "inherits": "base",
+      "displayName": "Unix Debug",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+    },
+    {
+      "name": "unix-release",
+      "inherits": "base",
+      "displayName": "Unix Release",
+      "generator": "Ninja",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+    },
+    {
+      "name": "unix-asan",
+      "inherits": "unix-debug",
+      "displayName": "Unix ASan + UBSan",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_ASAN": "ON",
+        "GLYPHASTORE_ENABLE_UBSAN": "ON"
+      }
+    },
+    {
+      "name": "unix-tsan",
+      "inherits": "unix-debug",
+      "displayName": "Unix TSan",
+      "cacheVariables": { "GLYPHASTORE_ENABLE_TSAN": "ON" }
+    },
+    {
+      "name": "unix-clang-tidy",
+      "inherits": "unix-debug",
+      "displayName": "Unix Clang-Tidy",
+      "cacheVariables": { "GLYPHASTORE_ENABLE_CLANG_TIDY": "ON" }
+    },
+    {
+      "name": "unix-fuzz",
+      "inherits": "unix-debug",
+      "displayName": "Unix libFuzzer",
+      "cacheVariables": {
+        "BUILD_TESTING": "OFF",
+        "GLYPHASTORE_BUILD_BENCHMARKS": "OFF",
+        "GLYPHASTORE_BUILD_FUZZERS": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "macos-debug", "configurePreset": "macos-debug" },
+    { "name": "macos-release", "configurePreset": "macos-release" },
+    { "name": "macos-asan", "configurePreset": "macos-asan" },
+    { "name": "macos-tsan", "configurePreset": "macos-tsan" },
+    { "name": "macos-fuzz", "configurePreset": "macos-fuzz" },
+    { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug" },
+    { "name": "xcode-release", "configurePreset": "xcode", "configuration": "Release" },
+    { "name": "unix-debug", "configurePreset": "unix-debug" },
+    { "name": "unix-release", "configurePreset": "unix-release" },
+    { "name": "unix-asan", "configurePreset": "unix-asan" },
+    { "name": "unix-tsan", "configurePreset": "unix-tsan" },
+    { "name": "unix-clang-tidy", "configurePreset": "unix-clang-tidy" },
+    { "name": "unix-fuzz", "configurePreset": "unix-fuzz" }
+  ],
+  "testPresets": [
+    { "name": "macos-debug", "configurePreset": "macos-debug", "output": { "outputOnFailure": true } },
+    { "name": "macos-asan", "configurePreset": "macos-asan", "output": { "outputOnFailure": true } },
+    { "name": "macos-tsan", "configurePreset": "macos-tsan", "output": { "outputOnFailure": true } },
+    { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug", "output": { "outputOnFailure": true } },
+    { "name": "unix-debug", "configurePreset": "unix-debug", "output": { "outputOnFailure": true } },
+    { "name": "unix-asan", "configurePreset": "unix-asan", "output": { "outputOnFailure": true } },
+    { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } }
+  ]
+}

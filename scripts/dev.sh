@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cmake="${CMAKE:-$root/.tools/venv/bin/cmake}"
+ctest="${CTEST:-$root/.tools/venv/bin/ctest}"
+export PATH="$root/.tools/venv/bin:$PATH"
+
+require_tools() {
+    if [[ ! -x "$cmake" ]]; then
+        echo "Local CMake is missing. Run ./scripts/bootstrap-macos.sh first." >&2
+        exit 1
+    fi
+}
+
+case "${1:-help}" in
+    configure)
+        require_tools
+        "$cmake" --preset macos-debug
+        ;;
+    build)
+        require_tools
+        "$cmake" --build --preset macos-debug
+        ;;
+    test)
+        require_tools
+        "$cmake" --preset macos-debug
+        "$cmake" --build --preset macos-debug
+        "$ctest" --preset macos-debug
+        ;;
+    asan)
+        require_tools
+        "$cmake" --preset macos-asan
+        "$cmake" --build --preset macos-asan
+        "$ctest" --preset macos-asan
+        ;;
+    tsan)
+        require_tools
+        "$cmake" --preset macos-tsan
+        "$cmake" --build --preset macos-tsan
+        "$ctest" --preset macos-tsan
+        ;;
+    benchmark)
+        require_tools
+        "$cmake" --preset macos-release
+        "$cmake" --build --preset macos-release --target glyphastore_benchmarks
+        "$root/build/macos-release/glyphastore_benchmarks"
+        ;;
+    fuzz-build)
+        require_tools
+        "$cmake" --preset macos-fuzz
+        "$cmake" --build --preset macos-fuzz
+        ;;
+    xcode-build)
+        require_tools
+        "$cmake" --preset xcode
+        "$cmake" --build --preset xcode-debug
+        "$ctest" --preset xcode-debug
+        ;;
+    format)
+        formatter="$(command -v clang-format || true)"
+        if [[ -z "$formatter" ]]; then
+            echo "clang-format not found; install LLVM with MacPorts or Homebrew." >&2
+            exit 1
+        fi
+        find "$root/include" "$root/src" "$root/tests" "$root/benchmarks" "$root/fuzz" \
+            -type f \( -name '*.cpp' -o -name '*.hpp' \) -print0 | xargs -0 "$formatter" -i
+        ;;
+    clean)
+        "$cmake" -E rm -rf "$root/build"
+        ;;
+    *)
+        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|fuzz-build|xcode-build|format|clean}"
+        ;;
+esac

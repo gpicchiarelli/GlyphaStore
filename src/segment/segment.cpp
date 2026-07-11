@@ -1,0 +1,137 @@
+#include "glyphastore/segment/segment.hpp"
+
+#include "glyphastore/core/checked_math.hpp"
+
+#include <cstring>
+#include <utility>
+
+namespace glyphastore {
+
+Segment::Segment(SegmentId id, WorkerId owner, GenerationId generation)
+    : id_(id), owner_(owner), generation_(generation),
+      storage_(std::make_unique_for_overwrite<std::byte[]>(kSegmentSizeBytes)) {
+    std::memset(storage_.get(), 0, kSegmentHeaderReservedBytes);
+}
+
+Segment::~Segment() = default;
+Segment::Segment(Segment&&) noexcept = default;
+auto Segment::operator=(Segment&&) noexcept -> Segment& = default;
+
+auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
+    if (state_ != SegmentState::active) {
+        return fail(ErrorCode::segment_sealed, "append requires an active segment");
+    }
+    auto encoded = encode_record(input);
+    if (!encoded) {
+        return std::unexpected(encoded.error());
+    }
+    if (!range_contains(kSegmentSizeBytes, write_offset_, encoded->size())) {
+        return fail(ErrorCode::segment_full, "record does not fit in active segment");
+    }
+    const auto offset = write_offset_;
+    std::memcpy(storage_.get() + offset, encoded->data(), encoded->size());
+    write_offset_ += encoded->size();
+    stats_.used_bytes = write_offset_;
+    ++stats_.record_count;
+    if (stats_.record_count == 1) {
+        stats_.first_sequence = input.sequence;
+    }
+    stats_.last_sequence = input.sequence;
+    return RecordRef{
+        .segment_id = id_,
+        .offset = RecordOffset{static_cast<std::uint32_t>(offset)},
+        .size = RecordSize{static_cast<std::uint32_t>(encoded->size())},
+        .sequence = input.sequence,
+        .generation = generation_,
+    };
+}
+
+auto Segment::validate_ref(const RecordRef& ref) const -> Status {
+    if (ref.segment_id != id_ || ref.generation != generation_) {
+        return fail(ErrorCode::invalid_reference, "record reference targets another segment generation");
+    }
+    if (ref.offset.value < kSegmentHeaderReservedBytes ||
+        !range_contains(static_cast<std::uint32_t>(stats_.used_bytes), ref.offset.value, ref.size.value)) {
+        return fail(ErrorCode::invalid_reference, "record reference lies outside written segment bytes");
+    }
+    return {};
+}
+
+auto Segment::read(const RecordRef& ref) const -> Result<RecordView> {
+    if (auto valid = validate_ref(ref); !valid) {
+        return std::unexpected(valid.error());
+    }
+    auto decoded =
+        decode_record(std::span<const std::byte>{storage_.get() + ref.offset.value, ref.size.value});
+    if (!decoded) {
+        return std::unexpected(decoded.error());
+    }
+    if (decoded->sequence != ref.sequence || decoded->encoded_size != ref.size.value) {
+        return fail(ErrorCode::invalid_reference, "record reference metadata does not match encoded record");
+    }
+    return decoded;
+}
+
+auto Segment::scan() const -> Result<std::vector<RecordRef>> {
+    std::vector<RecordRef> refs;
+    refs.reserve(static_cast<std::size_t>(stats_.record_count));
+    std::size_t offset = kSegmentHeaderReservedBytes;
+    while (offset < stats_.used_bytes) {
+        auto decoded =
+            decode_record(std::span<const std::byte>{storage_.get() + offset, stats_.used_bytes - offset});
+        if (!decoded) {
+            return std::unexpected(decoded.error());
+        }
+        refs.push_back(RecordRef{
+            .segment_id = id_,
+            .offset = RecordOffset{static_cast<std::uint32_t>(offset)},
+            .size = RecordSize{decoded->encoded_size},
+            .sequence = decoded->sequence,
+            .generation = generation_,
+        });
+        offset += decoded->encoded_size;
+    }
+    if (refs.size() != stats_.record_count) {
+        return fail(ErrorCode::corrupted_data, "segment record count does not match scan result");
+    }
+    return refs;
+}
+
+auto Segment::seal() -> Status {
+    if (state_ != SegmentState::active) {
+        return fail(ErrorCode::invalid_argument, "only an active segment can be sealed");
+    }
+    state_ = SegmentState::sealed;
+    return {};
+}
+
+auto Segment::mark_live(const RecordRef& ref) -> Status {
+    if (auto valid = validate_ref(ref); !valid) {
+        return valid;
+    }
+    ++stats_.live_records;
+    stats_.live_bytes += ref.size.value;
+    return {};
+}
+
+auto Segment::mark_dead(const RecordRef& ref) -> Status {
+    if (auto valid = validate_ref(ref); !valid) {
+        return valid;
+    }
+    if (stats_.live_records == 0 || stats_.live_bytes < ref.size.value) {
+        return fail(ErrorCode::invalid_argument, "segment liveness accounting underflow");
+    }
+    --stats_.live_records;
+    stats_.live_bytes -= ref.size.value;
+    return {};
+}
+
+auto Segment::retire() -> Status {
+    if (state_ != SegmentState::sealed || stats_.live_records != 0) {
+        return fail(ErrorCode::invalid_argument, "only a sealed segment with zero live records can retire");
+    }
+    state_ = SegmentState::retired;
+    return {};
+}
+
+} // namespace glyphastore
