@@ -48,6 +48,9 @@ auto Worker::read_ref(const RecordRef& ref) const -> Result<RecordView> {
     if (!segment) {
         return fail(ErrorCode::invalid_reference, "record reference targets a missing segment");
     }
+    if (segment->is_trusted()) {
+        return segment->read_trusted(ref);
+    }
     return segment->read(ref);
 }
 

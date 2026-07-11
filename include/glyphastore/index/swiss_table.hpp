@@ -3,10 +3,10 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/index_types.hpp"
+#include "glyphastore/index/key_arena.hpp"
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <optional>
 #include <string_view>
 #include <vector>
@@ -42,7 +42,7 @@ class SwissTableIndex final {
         std::uint32_t key_size{};
         bool key_is_inline{};
         alignas(RecordRef) std::byte inline_key[kSwissInlineKeyBytes]{};
-        std::unique_ptr<std::byte[]> heap_key{};
+        std::uint32_t heap_key_offset{};
 
         Slot() = default;
         Slot(Slot&&) = default;
@@ -64,8 +64,9 @@ class SwissTableIndex final {
     [[nodiscard]] auto find_insert_index(std::string_view key, std::uint64_t key_hash,
                                          std::uint64_t mixed_hash) -> Result<std::size_t>;
     [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;
-    void set_key(Slot& slot, std::string_view key, std::uint64_t key_hash);
+    [[nodiscard]] auto set_key(Slot& slot, std::string_view key, std::uint64_t key_hash) -> Status;
     void clear_slot(std::size_t index);
+    void compact_heap_keys(std::span<Slot> slots, std::span<const std::uint8_t> control);
     [[nodiscard]] auto grow_if_needed() -> Status;
     [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> Result<std::size_t>;
 
@@ -74,6 +75,7 @@ class SwissTableIndex final {
     std::size_t capacity_{};
     std::vector<std::uint8_t> control_;
     std::vector<Slot> slots_;
+    KeyArena heap_keys_;
 };
 
 } // namespace glyphastore

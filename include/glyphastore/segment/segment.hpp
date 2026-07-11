@@ -37,7 +37,9 @@ class Segment final {
 
     [[nodiscard]] auto append(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read(const RecordRef& ref) const -> Result<RecordView>;
+    [[nodiscard]] auto read_trusted(const RecordRef& ref) const -> Result<RecordView>;
     [[nodiscard]] auto validate_ref_extent(const RecordRef& ref) const -> Status;
+    [[nodiscard]] auto is_trusted() const noexcept -> bool;
     [[nodiscard]] auto scan() const -> Result<std::vector<RecordRef>>;
 
     auto seal() -> Status;

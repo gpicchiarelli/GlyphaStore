@@ -49,6 +49,7 @@ inline constexpr std::uint16_t kEncodedRecordHeaderSize = 56;
 [[nodiscard]] auto encoded_record_size(const RecordInput& input) -> Result<std::size_t>;
 [[nodiscard]] auto encode_record(std::span<std::byte> out, const RecordInput& input) -> Status;
 [[nodiscard]] auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>>;
-[[nodiscard]] auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView>;
+[[nodiscard]] auto decode_record(std::span<const std::byte> bytes, bool verify_checksum = true)
+    -> Result<RecordView>;
 
 } // namespace glyphastore

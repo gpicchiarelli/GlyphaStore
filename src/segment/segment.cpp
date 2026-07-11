@@ -66,7 +66,7 @@ auto Segment::read(const RecordRef& ref) const -> Result<RecordView> {
         return unexpected(valid.error());
     }
     auto decoded =
-        decode_record(std::span<const std::byte>{storage_.get() + ref.offset.value, ref.size.value});
+        decode_record(std::span<const std::byte>{storage_.get() + ref.offset.value, ref.size.value}, true);
     if (!decoded) {
         return unexpected(decoded.error());
     }
@@ -74,6 +74,28 @@ auto Segment::read(const RecordRef& ref) const -> Result<RecordView> {
         return fail(ErrorCode::invalid_reference, "record reference metadata does not match encoded record");
     }
     return decoded;
+}
+
+auto Segment::read_trusted(const RecordRef& ref) const -> Result<RecordView> {
+    if (!is_trusted()) {
+        return fail(ErrorCode::invalid_argument, "trusted read requires a resident trusted segment");
+    }
+    if (auto valid = validate_ref_extent(ref); !valid) {
+        return unexpected(valid.error());
+    }
+    auto decoded =
+        decode_record(std::span<const std::byte>{storage_.get() + ref.offset.value, ref.size.value}, false);
+    if (!decoded) {
+        return unexpected(decoded.error());
+    }
+    if (decoded->sequence != ref.sequence || decoded->encoded_size != ref.size.value) {
+        return fail(ErrorCode::invalid_reference, "record reference metadata does not match encoded record");
+    }
+    return decoded;
+}
+
+auto Segment::is_trusted() const noexcept -> bool {
+    return residency_ == ResidencyState::resident;
 }
 
 auto Segment::scan() const -> Result<std::vector<RecordRef>> {

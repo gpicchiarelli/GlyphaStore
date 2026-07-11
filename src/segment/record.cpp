@@ -154,7 +154,7 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
     return bytes;
 }
 
-auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView> {
+auto decode_record(const std::span<const std::byte> bytes, const bool verify_checksum) -> Result<RecordView> {
     if (bytes.size() < kEncodedRecordHeaderSize) {
         return fail(ErrorCode::invalid_record, "record is shorter than the encoded header");
     }
@@ -174,7 +174,7 @@ auto decode_record(std::span<const std::byte> bytes) -> Result<RecordView> {
         return fail(ErrorCode::invalid_record, "record payload extent is invalid");
     }
     const auto encoded = bytes.first(total_size);
-    if (get_u32(bytes, 20) != crc32c_with_zeroed_checksum_field(encoded)) {
+    if (verify_checksum && get_u32(bytes, 20) != crc32c_with_zeroed_checksum_field(encoded)) {
         return fail(ErrorCode::checksum_mismatch, "record checksum mismatch");
     }
     const auto opcode_raw = get_u16(bytes, 48);

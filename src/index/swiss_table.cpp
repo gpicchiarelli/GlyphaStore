@@ -67,7 +67,8 @@ auto SwissTableIndex::slot_key(const Slot& slot) const noexcept -> std::string_v
     if (slot.key_is_inline) {
         return {reinterpret_cast<const char*>(slot.inline_key), slot.key_size};
     }
-    return {reinterpret_cast<const char*>(slot.heap_key.get()), slot.key_size};
+    return {reinterpret_cast<const char*>(heap_keys_.data(slot.heap_key_offset, slot.key_size).data()),
+            slot.key_size};
 }
 
 auto SwissTableIndex::key_equals(const Slot& slot, const std::string_view key,
@@ -81,7 +82,11 @@ auto SwissTableIndex::key_equals(const Slot& slot, const std::string_view key,
     if (slot.key_is_inline) {
         return std::memcmp(slot.inline_key, key.data(), key.size()) == 0;
     }
-    return std::memcmp(slot.heap_key.get(), key.data(), key.size()) == 0;
+    const auto heap_key = heap_keys_.data(slot.heap_key_offset, slot.key_size);
+    if (heap_key.size() != key.size()) {
+        return false;
+    }
+    return std::memcmp(heap_key.data(), key.data(), key.size()) == 0;
 }
 
 auto SwissTableIndex::find_slot_index(const std::string_view key, const std::uint64_t key_hash) const
@@ -142,21 +147,73 @@ auto SwissTableIndex::find_insert_index(const std::string_view key, const std::u
     return fail(ErrorCode::corrupted_data, "swiss table probe sequence exhausted without insert slot");
 }
 
-void SwissTableIndex::set_key(Slot& slot, const std::string_view key, const std::uint64_t key_hash) {
+auto SwissTableIndex::set_key(Slot& slot, const std::string_view key, const std::uint64_t key_hash)
+    -> Status {
     slot.key_size = static_cast<std::uint32_t>(key.size());
     slot.key_hash = key_hash;
     if (key.size() <= kSwissInlineKeyBytes) {
         slot.key_is_inline = true;
-        slot.heap_key.reset();
+        slot.heap_key_offset = 0;
         std::memset(slot.inline_key, 0, kSwissInlineKeyBytes);
         if (!key.empty()) {
             std::memcpy(slot.inline_key, key.data(), key.size());
         }
-        return;
+        return {};
     }
     slot.key_is_inline = false;
-    slot.heap_key = std::make_unique_for_overwrite<std::byte[]>(key.size());
-    std::memcpy(slot.heap_key.get(), key.data(), key.size());
+    auto offset = heap_keys_.allocate(key.size());
+    if (!offset) {
+        slot = Slot{};
+        return unexpected(offset.error());
+    }
+    slot.heap_key_offset = *offset;
+    const auto destination = heap_keys_.data(slot.heap_key_offset, key.size());
+    if (destination.size() != key.size()) {
+        slot = Slot{};
+        return fail(ErrorCode::corrupted_data, "index key arena allocation is out of range");
+    }
+    std::memcpy(const_cast<std::byte*>(destination.data()), key.data(), key.size());
+    return {};
+}
+
+void SwissTableIndex::compact_heap_keys(const std::span<Slot> slots,
+                                        const std::span<const std::uint8_t> control) {
+    KeyArena compacted;
+    std::size_t heap_bytes = 0;
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        const auto slot_control = control[index];
+        if (slot_control == kSwissEmpty || slot_control == kSwissDeleted) {
+            continue;
+        }
+        const auto& slot = slots[index];
+        if (!slot.key_is_inline) {
+            heap_bytes += slot.key_size;
+        }
+    }
+    compacted.reserve(heap_bytes);
+    for (std::size_t index = 0; index < slots.size(); ++index) {
+        auto& slot = slots[index];
+        const auto slot_control = control[index];
+        if (slot_control == kSwissEmpty || slot_control == kSwissDeleted || slot.key_is_inline ||
+            slot.key_size == 0) {
+            continue;
+        }
+        const auto source = heap_keys_.data(slot.heap_key_offset, slot.key_size);
+        if (source.size() != slot.key_size) {
+            continue;
+        }
+        const auto offset = compacted.allocate(slot.key_size);
+        if (!offset) {
+            continue;
+        }
+        const auto destination = compacted.data(*offset, slot.key_size);
+        if (destination.size() != slot.key_size) {
+            continue;
+        }
+        std::memcpy(const_cast<std::byte*>(destination.data()), source.data(), slot.key_size);
+        slot.heap_key_offset = *offset;
+    }
+    heap_keys_ = std::move(compacted);
 }
 
 void SwissTableIndex::clear_slot(const std::size_t index) {
@@ -222,6 +279,7 @@ auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
             new_slots[targets[index]] = std::move(slots_[index]);
         }
     }
+    compact_heap_keys(new_slots, new_control);
     capacity_ = *normalized;
     control_ = std::move(new_control);
     slots_ = std::move(new_slots);
@@ -257,8 +315,12 @@ auto SwissTableIndex::insert_or_assign(const HashedKey& key, RecordRef ref) -> R
     const auto index = *slot_index;
     const auto fingerprint = h2(mixed_hash);
     if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
+        const auto previous_control = control_[index];
         control_[index] = fingerprint;
-        set_key(slots_[index], key.key, key.hash);
+        if (auto key_set = set_key(slots_[index], key.key, key.hash); !key_set) {
+            control_[index] = previous_control;
+            return unexpected(key_set.error());
+        }
         slots_[index].ref = ref;
         ++size_;
         return IndexMutationResult{.inserted = true, .previous = std::nullopt};
