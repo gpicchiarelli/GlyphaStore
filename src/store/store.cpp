@@ -27,7 +27,7 @@ auto Store::worker_for(std::string_view key) -> Worker& {
     return workers_[route_worker(key, workers_.size())];
 }
 
-auto Store::get(std::string_view key, std::uint64_t now_ns) const -> Result<RecordView> {
+auto Store::get(std::string_view key, std::uint64_t now_ns) -> Result<RecordView> {
     return worker_for(key).get(key, now_ns);
 }
 

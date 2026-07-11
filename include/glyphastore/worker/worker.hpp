@@ -27,7 +27,8 @@ class Worker final {
         return owned_;
     }
 
-    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) const -> Result<RecordView>;
+    // Expired keys are tombstoned and removed from the Index on read.
+    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<RecordView>;
     [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
     [[nodiscard]] auto erase(std::string_view key) -> Status;

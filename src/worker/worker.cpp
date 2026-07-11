@@ -75,7 +75,7 @@ auto Worker::unpublish(std::string_view key) -> Status {
     return {};
 }
 
-auto Worker::get(std::string_view key, std::uint64_t now_ns) const -> Result<RecordView> {
+auto Worker::get(std::string_view key, std::uint64_t now_ns) -> Result<RecordView> {
     const auto ref = index_.find(key);
     if (!ref) {
         return fail(ErrorCode::not_found, "key is not present");
@@ -88,6 +88,9 @@ auto Worker::get(std::string_view key, std::uint64_t now_ns) const -> Result<Rec
         return fail(ErrorCode::not_found, "key is not present");
     }
     if (record->expired(now_ns)) {
+        if (auto erased = erase(key); !erased) {
+            return unexpected(erased.error());
+        }
         return fail(ErrorCode::not_found, "key has expired");
     }
     return record;

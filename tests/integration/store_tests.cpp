@@ -66,6 +66,37 @@ GLYPHA_TEST("store get hides expired keys") {
     const auto hidden = store.get("expired", 100);
     GLYPHA_REQUIRE(!hidden.has_value());
     GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
+    const auto route = glyphastore::route_worker("expired", store.worker_count());
+    GLYPHA_REQUIRE(!store.worker(route).index().find("expired").has_value());
+    GLYPHA_REQUIRE(store.verify_index().has_value());
+}
+
+GLYPHA_TEST("store keeps partitioned keys on routed workers only") {
+    constexpr std::size_t worker_total = 8;
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = worker_total}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    std::string key_a;
+    std::string key_b;
+    std::size_t route_a{};
+    std::size_t route_b{};
+    for (std::uint64_t seed = 0;; ++seed) {
+        key_a = "route-key-" + std::to_string(seed);
+        key_b = "route-key-" + std::to_string(seed + 100000U);
+        route_a = glyphastore::route_worker(key_a, worker_total);
+        route_b = glyphastore::route_worker(key_b, worker_total);
+        if (route_a != route_b) {
+            break;
+        }
+    }
+
+    GLYPHA_REQUIRE(store.put(key_a, bytes("a")).has_value());
+    GLYPHA_REQUIRE(store.put(key_b, bytes("b")).has_value());
+    GLYPHA_REQUIRE(store.worker(route_a).index().find(key_a).has_value());
+    GLYPHA_REQUIRE(!store.worker(route_a).index().find(key_b).has_value());
+    GLYPHA_REQUIRE(store.worker(route_b).index().find(key_b).has_value());
+    GLYPHA_REQUIRE(!store.worker(route_b).index().find(key_a).has_value());
 }
 
 GLYPHA_TEST("store routes keys to distinct worker partitions") {

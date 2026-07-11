@@ -35,11 +35,16 @@ class Store final {
     [[nodiscard]] auto worker_count() const noexcept -> std::size_t {
         return workers_.size();
     }
+    [[nodiscard]] auto worker(std::size_t index) const noexcept -> const Worker& {
+        return workers_[index];
+    }
     [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>& {
         return manager_.segments();
     }
 
-    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) const -> Result<RecordView>;
+    // Returns a view into segment memory. The RecordView spans remain valid only while
+    // this Store instance and its backing Segments remain alive and unmodified.
+    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<RecordView>;
     [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
     [[nodiscard]] auto erase(std::string_view key) -> Status;

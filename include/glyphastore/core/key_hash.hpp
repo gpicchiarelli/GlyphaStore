@@ -7,6 +7,7 @@
 
 namespace glyphastore {
 
+// Deterministic 64-bit FNV-1a used for Worker routing. See docs/adr/0006-key-routing-hash.md.
 inline constexpr std::uint64_t kFnv1a64Offset = 14695981039346656037ULL;
 inline constexpr std::uint64_t kFnv1a64Prime = 1099511628211ULL;
 

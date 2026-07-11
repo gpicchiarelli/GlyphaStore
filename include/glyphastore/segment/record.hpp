@@ -32,6 +32,8 @@ struct RecordView {
     std::uint32_t flags;
     std::uint64_t key_hash;
     std::uint64_t expire_at_ns;
+    // key and value span encoded bytes inside a Segment buffer. The spans remain
+    // valid only while the owning Store or Segment that produced this view lives.
     std::span<const std::byte> key;
     std::span<const std::byte> value;
     std::uint32_t encoded_size;

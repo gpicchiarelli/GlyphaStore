@@ -24,7 +24,7 @@ auto VacuumPlanner::candidates(std::span<const SegmentPtr> segments) const -> st
     std::vector<Candidate> ranked;
     for (const auto& segment : segments) {
         const auto stats = segment->stats();
-        if (segment->state() != SegmentState::sealed || stats.used_bytes == 0) {
+        if (segment->state() != SegmentState::sealed || stats.record_count == 0) {
             continue;
         }
         const auto ratio = static_cast<double>(stats.live_bytes) / static_cast<double>(stats.used_bytes);
