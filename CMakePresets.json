@@ -44,6 +44,39 @@
       "cacheVariables": { "GLYPHASTORE_ENABLE_TSAN": "ON" }
     },
     {
+      "name": "macos-release-lto",
+      "inherits": "macos-release",
+      "displayName": "macOS Release + LTO",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "macos-pgo-generate",
+      "inherits": "macos-release",
+      "displayName": "macOS PGO Instrumentation",
+      "cacheVariables": {
+        "GLYPHASTORE_PGO": "GENERATE"
+      }
+    },
+    {
+      "name": "macos-pgo-use",
+      "inherits": "macos-release",
+      "displayName": "macOS PGO Optimized",
+      "cacheVariables": {
+        "GLYPHASTORE_PGO": "USE",
+        "GLYPHASTORE_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "macos-native-release",
+      "inherits": "macos-release",
+      "displayName": "macOS Release (-mcpu=native)",
+      "cacheVariables": {
+        "GLYPHASTORE_NATIVE_CPU": "ON"
+      }
+    },
+    {
       "name": "macos-fuzz",
       "inherits": "macos-debug",
       "displayName": "macOS libFuzzer",
@@ -101,6 +134,31 @@
       "cacheVariables": { "GLYPHASTORE_ENABLE_CLANG_TIDY": "ON" }
     },
     {
+      "name": "unix-release-lto",
+      "inherits": "unix-release",
+      "displayName": "Unix Release + LTO",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_LTO": "ON"
+      }
+    },
+    {
+      "name": "unix-pgo-generate",
+      "inherits": "unix-release",
+      "displayName": "Unix PGO Instrumentation",
+      "cacheVariables": {
+        "GLYPHASTORE_PGO": "GENERATE"
+      }
+    },
+    {
+      "name": "unix-pgo-use",
+      "inherits": "unix-release",
+      "displayName": "Unix PGO Optimized",
+      "cacheVariables": {
+        "GLYPHASTORE_PGO": "USE",
+        "GLYPHASTORE_ENABLE_LTO": "ON"
+      }
+    },
+    {
       "name": "unix-fuzz",
       "inherits": "unix-debug",
       "displayName": "Unix libFuzzer",
@@ -116,6 +174,10 @@
     { "name": "macos-release", "configurePreset": "macos-release" },
     { "name": "macos-asan", "configurePreset": "macos-asan" },
     { "name": "macos-tsan", "configurePreset": "macos-tsan" },
+    { "name": "macos-release-lto", "configurePreset": "macos-release-lto" },
+    { "name": "macos-pgo-generate", "configurePreset": "macos-pgo-generate" },
+    { "name": "macos-pgo-use", "configurePreset": "macos-pgo-use" },
+    { "name": "macos-native-release", "configurePreset": "macos-native-release" },
     { "name": "macos-fuzz", "configurePreset": "macos-fuzz" },
     { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug" },
     { "name": "xcode-release", "configurePreset": "xcode", "configuration": "Release" },
@@ -124,6 +186,9 @@
     { "name": "unix-asan", "configurePreset": "unix-asan" },
     { "name": "unix-tsan", "configurePreset": "unix-tsan" },
     { "name": "unix-clang-tidy", "configurePreset": "unix-clang-tidy" },
+    { "name": "unix-release-lto", "configurePreset": "unix-release-lto" },
+    { "name": "unix-pgo-generate", "configurePreset": "unix-pgo-generate" },
+    { "name": "unix-pgo-use", "configurePreset": "unix-pgo-use" },
     { "name": "unix-fuzz", "configurePreset": "unix-fuzz" }
   ],
   "testPresets": [

@@ -46,6 +46,32 @@ case "${1:-help}" in
         "$cmake" --build --preset macos-release --target glyphastore_benchmarks
         "$root/build/macos-release/glyphastore_benchmarks" "${@:2}"
         ;;
+    benchmark-lto)
+        require_tools
+        "$cmake" --preset macos-release-lto
+        "$cmake" --build --preset macos-release-lto --target glyphastore_benchmarks
+        "$root/build/macos-release-lto/glyphastore_benchmarks" "${@:2}"
+        ;;
+    benchmark-pgo)
+        require_tools
+        "$cmake" --preset macos-pgo-use
+        "$cmake" --build --preset macos-pgo-use --target glyphastore_benchmarks
+        "$root/build/macos-pgo-use/glyphastore_benchmarks" "${@:2}"
+        ;;
+    pgo-generate)
+        require_tools
+        "$cmake" --preset macos-pgo-generate
+        "$cmake" --build --preset macos-pgo-generate --target glyphastore_benchmarks
+        ;;
+    pgo-train)
+        require_tools
+        PGO_PRESET=macos-pgo-generate "$root/scripts/pgo-train.sh"
+        ;;
+    pgo-use)
+        require_tools
+        "$cmake" --preset macos-pgo-use
+        "$cmake" --build --preset macos-pgo-use --target glyphastore_benchmarks
+        ;;
     fuzz-build)
         require_tools
         "$cmake" --preset macos-fuzz
@@ -70,6 +96,6 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|benchmark|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
         ;;
 esac
