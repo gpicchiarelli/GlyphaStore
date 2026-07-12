@@ -1,61 +1,76 @@
-# GlyphaStore
+<h1 align="center">GlyphaStore</h1>
+
+<p align="center">
+  <strong>A log-indexed, segmented, memory-first key-value store in C++23.</strong>
+</p>
 
 <!-- build and quality -->
-[![CI](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml)
-[![Benchmarks](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml)
-[![Sanitizers](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml)
-[![Static analysis](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml)
-[![CodeQL](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml)
+<p align="center">
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml"><img alt="Benchmarks" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml"><img alt="Sanitizers" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml"><img alt="Static analysis" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg"></a>
+</p>
 
 <!-- toolchain and release posture -->
-[![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/23.html)
-[![CMake](https://img.shields.io/badge/CMake-3.25%2B-064F8C?logo=cmake&logoColor=white)](CMakeLists.txt)
-[![Version](https://img.shields.io/badge/version-0.1.0-blue)](CHANGELOG.md)
-[![Status](https://img.shields.io/badge/status-architectural%20prototype-orange)](#project-status)
-[![Maturity](https://img.shields.io/badge/maturity-pre--alpha-lightgrey)](#project-status)
+<p align="center">
+  <a href="https://en.cppreference.com/w/cpp/23.html"><img alt="C++23" src="https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&amp;logoColor=white"></a>
+  <a href="CMakeLists.txt"><img alt="CMake 3.25+" src="https://img.shields.io/badge/CMake-3.25%2B-064F8C?logo=cmake&amp;logoColor=white"></a>
+  <a href="CHANGELOG.md"><img alt="Version 0.1.0" src="https://img.shields.io/badge/version-0.1.0-blue"></a>
+  <a href="#project-status"><img alt="Architectural prototype" src="https://img.shields.io/badge/status-architectural%20prototype-orange"></a>
+  <a href="SECURITY.md"><img alt="Security policy" src="https://img.shields.io/badge/security-policy-critical?logo=github"></a>
+  <a href="LICENSE"><img alt="BSD-3-Clause" src="https://img.shields.io/badge/license-BSD--3--Clause-blue"></a>
+</p>
 
-<!-- project identity -->
-[![Storage](https://img.shields.io/badge/storage-log--indexed-6f42c1)](#architecture)
-[![Segments](https://img.shields.io/badge/segments-64%20MiB%20append--only-2ea44f)](docs/architecture/storage-model.md)
-[![CI platforms](https://img.shields.io/badge/CI-Linux%20%7C%20macOS-informational)](#supported-platforms)
-[![Linux](https://img.shields.io/badge/target-Linux%20since%200.1.0-FCC624?logo=linux&logoColor=black)](#supported-platforms)
-[![macOS](https://img.shields.io/badge/target-macOS%20since%200.1.0-000000?logo=apple&logoColor=white)](#supported-platforms)
-[![FreeBSD](https://img.shields.io/badge/target-FreeBSD%20since%200.1.0-AB2B28?logo=freebsd&logoColor=white)](#supported-platforms)
-[![OpenBSD](https://img.shields.io/badge/target-OpenBSD%20since%200.1.0-F2CA30?logo=openbsd&logoColor=black)](#supported-platforms)
-[![Security policy](https://img.shields.io/badge/security-policy-critical?logo=github)](SECURITY.md)
-[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+<!-- project targets -->
+<p align="center">
+  <a href="#supported-platforms"><img alt="Linux target since 0.1.0" src="https://img.shields.io/badge/target-Linux%20since%200.1.0-FCC624?logo=linux&amp;logoColor=black"></a>
+  <a href="#supported-platforms"><img alt="macOS target since 0.1.0" src="https://img.shields.io/badge/target-macOS%20since%200.1.0-000000?logo=apple&amp;logoColor=white"></a>
+  <a href="#supported-platforms"><img alt="FreeBSD target since 0.1.0" src="https://img.shields.io/badge/target-FreeBSD%20since%200.1.0-AB2B28?logo=freebsd&amp;logoColor=white"></a>
+  <a href="#supported-platforms"><img alt="OpenBSD target since 0.1.0" src="https://img.shields.io/badge/target-OpenBSD%20since%200.1.0-F2CA30?logo=openbsd&amp;logoColor=black"></a>
+</p>
 
 ![GlyphaStore storage engine laboratory](docs/assets/glyphastore-hero.png)
 
-**A high-performance, log-indexed, segmented, memory-first key-value store in C++23.**
+<p align="center">
+  <a href="#architecture">Architecture</a> ·
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#engineering-evidence">Engineering evidence</a> ·
+  <a href="#experimental-tcp-daemon">TCP server</a> ·
+  <a href="#documentation">Documentation</a>
+</p>
 
-GlyphaStore is an early architecture prototype built around immutable records, fixed 64 MiB
-segments, a derived exact-key Index, automatic worker sizing, and bounded background maintenance.
+GlyphaStore explores a high-performance storage architecture built around immutable records,
+fixed 64 MiB segments, a derived exact-key Index, automatic Worker sizing, and bounded background
+maintenance. It presents one logical key-space while keeping ownership, recovery, and reclamation
+explicit.
 
 ## Project status
 
-> **Status:** architectural prototype. Not production ready. There is no stable disk format,
-> network protocol, durability contract, or compatibility promise yet.
+> [!IMPORTANT]
+> **Architectural prototype — not production ready.** There is no stable disk format, network
+> protocol, durability contract, or compatibility promise yet.
 
-## What it is
+## Design at a glance
 
-- A single logical key-space with worker-owned Index partitions.
-- Fixed-size 64 MiB append-only segments using bump allocation.
-- Immutable, checksummed, explicitly little-endian records.
-- Exact-key lookup through an abstract Index (`key -> RecordRef`).
-- Index recovery where the highest valid sequence wins and tombstones remove visibility.
-- Copy-build-validate vacuum foundations and whole-segment liveness accounting.
-- A macOS-first developer experience with generated Xcode projects and sanitizer presets.
+| Concern | Design |
+| --- | --- |
+| Key-space | One logical Store, deterministically routed to Worker-owned Index partitions |
+| Storage | Fixed 64 MiB append-only Segments with bump allocation |
+| Records | Immutable, checksummed, explicitly little-endian, and positionally addressed |
+| Lookup | Exact full-key Index mapping to `RecordRef(segment, offset, size, sequence)` |
+| Recovery | Rebuild by scanning valid Records; highest sequence wins, tombstones remove visibility |
+| Maintenance | Whole-Segment liveness plus copy-build-validate vacuum foundations |
+| Server | Native non-blocking TCP with `epoll` on Linux and `kqueue` on BSD/macOS |
 
-## What it is not
+The scope is intentionally narrow: GlyphaStore is not Redis-compatible, a RESP implementation, a
+SQL or document database, or evidence of unverified throughput claims. The current TCP protocol is
+experimental and has no compatibility promise.
 
-- Not Redis-compatible and not a RESP implementation.
-- Not a SQL database, ordered query engine, or general-purpose document store.
-- Not a production server yet; the experimental binary TCP protocol has no compatibility promise.
-- Not evidence of claimed throughput. Performance numbers will be published only from reproducible
-  benchmarks.
+## Quick start
 
-## Quick start on macOS
+### macOS and Xcode
 
 ```bash
 ./scripts/bootstrap-macos.sh
@@ -79,7 +94,7 @@ Command-line workflow:
 See [macOS and Xcode development](docs/development-macos.md) for schemes, Instruments, Apple
 Silicon notes, and troubleshooting.
 
-## Portable CMake workflow
+### Portable CMake
 
 With CMake 3.25+ and Ninja available:
 
@@ -106,7 +121,7 @@ valid records and retaining the highest sequence for each full key. See the
 [architecture charter](docs/architecture/architecture-charter.md) and
 [storage model](docs/architecture/storage-model.md).
 
-## Tests, sanitizers, fuzzing, and benchmarks
+## Engineering evidence
 
 ```bash
 ./scripts/dev.sh test
@@ -132,11 +147,12 @@ publishable numbers still require controlled hardware.
 
 ## Experimental TCP daemon
 
-`glyphastored` is the native non-blocking TCP server bootstrap. Each executor pairs one Reactor with
-one Worker: `kqueue` on macOS/FreeBSD/OpenBSD and edge-triggered `epoll` on Linux. The protocol implements
-pipelined `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, and `ERASE`. Binding moves ownership of the
-socket reference and buffered state once to the selected Reactor. Store operations then execute
-only on that Worker; a mismatched key receives `WRONG_OWNER` and is never forwarded internally.
+`glyphastored` is the native non-blocking TCP server bootstrap. Each executor pairs one Reactor
+with one Worker: `kqueue` on macOS/FreeBSD/OpenBSD and edge-triggered `epoll` on Linux. The protocol
+implements pipelined `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, and `ERASE`. Binding moves
+ownership of the socket reference and buffered state once to the selected Reactor. Store
+operations then execute only on that Worker; a mismatched key receives `WRONG_OWNER` and is never
+forwarded internally.
 
 The TCP benchmark runs the real binary protocol over loopback with validated pipelined responses:
 
@@ -155,6 +171,19 @@ connection setup, and client-thread creation remain outside the timed region.
 ```
 
 See the [server model](docs/architecture/server-model.md) for framing and concurrency invariants.
+
+## Documentation
+
+| Read | Purpose |
+| --- | --- |
+| [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
+| [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
+| [Index model](docs/architecture/index-model.md) | Exact-key lookup and SwissTable-oriented design |
+| [Worker model](docs/architecture/worker-model.md) | Ownership, routing, topology, and concurrency |
+| [Server model](docs/architecture/server-model.md) | Reactors, protocol framing, handoff, and backpressure |
+| [Vacuum model](docs/architecture/vacuum-model.md) | Copy-build-validate publication and reclamation |
+| [Development guide](docs/development.md) | Portable workflow and automated benchmark reports |
+| [Production readiness](docs/production-readiness.md) | Explicit gates from prototype to stable release |
 
 ## Supported platforms
 
