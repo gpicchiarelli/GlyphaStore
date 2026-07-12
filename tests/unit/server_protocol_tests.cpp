@@ -24,6 +24,7 @@ GLYPHA_TEST("server protocol request round trips and handles partial frames") {
         .flags = 3,
         .request_id = 42,
         .expire_at_ns = 900,
+        .target_worker = 7,
         .key = bytes("key"),
         .value = bytes("value"),
     };
@@ -43,6 +44,7 @@ GLYPHA_TEST("server protocol request round trips and handles partial frames") {
     GLYPHA_REQUIRE(decoded->frame.flags == 3);
     GLYPHA_REQUIRE(decoded->frame.request_id == 42);
     GLYPHA_REQUIRE(decoded->frame.expire_at_ns == 900);
+    GLYPHA_REQUIRE(decoded->frame.target_worker == 7);
     GLYPHA_REQUIRE(text(decoded->frame.key) == "key");
     GLYPHA_REQUIRE(text(decoded->frame.value) == "value");
 }
@@ -71,6 +73,9 @@ GLYPHA_TEST("server protocol response round trips") {
     const auto encoded = glyphastore::server::encode_response({
         .status = glyphastore::server::ResponseStatus::ok,
         .request_id = 77,
+        .owner_worker = 2,
+        .worker_count = 4,
+        .routing_epoch = 9,
         .value = bytes("pong"),
     });
     GLYPHA_REQUIRE(encoded.has_value());
@@ -79,5 +84,8 @@ GLYPHA_TEST("server protocol response round trips") {
     GLYPHA_REQUIRE(decoded->complete);
     GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(decoded->frame.request_id == 77);
+    GLYPHA_REQUIRE(decoded->frame.owner_worker == 2);
+    GLYPHA_REQUIRE(decoded->frame.worker_count == 4);
+    GLYPHA_REQUIRE(decoded->frame.routing_epoch == 9);
     GLYPHA_REQUIRE(text(decoded->frame.value) == "pong");
 }

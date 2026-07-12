@@ -48,6 +48,7 @@ struct ParallelSample {
         switch (config.distribution) {
         case ParallelDistribution::uniform:
         case ParallelDistribution::worker_affine:
+        case ParallelDistribution::owner_bound:
             desired_owner = operation % config.workers;
             break;
         case ParallelDistribution::single_worker:
@@ -66,7 +67,8 @@ struct ParallelSample {
         result.material.keys.push_back(std::move(key));
         result.material.values.push_back(make_value(operation, config.value_size));
         result.material.order.push_back(operation);
-        const auto client_thread = config.distribution == ParallelDistribution::worker_affine
+        const auto client_thread = config.distribution == ParallelDistribution::worker_affine ||
+                                           config.distribution == ParallelDistribution::owner_bound
                                        ? desired_owner % config.threads
                                        : (operation / config.workers) % config.threads;
         result.thread_order[client_thread].push_back(operation);
@@ -124,20 +126,28 @@ template <typename SetupFn, typename BodyFn>
     }
 
     std::vector<double> samples;
+    std::vector<ResourceSample> resources;
     samples.reserve(settings.measured_iterations);
+    resources.reserve(settings.measured_iterations);
     std::size_t hits = 0;
     for (std::size_t iteration = 0; iteration < settings.measured_iterations; ++iteration) {
         auto context = setup();
+        auto resource = process_memory_snapshot();
         const auto sample = run_parallel_threads(
             config.threads, [&](const std::size_t thread) { return body(context, thread); });
+        const auto after = process_memory_snapshot();
+        resource.rss_after_bytes = after.rss_after_bytes;
+        resource.peak_rss_bytes = after.peak_rss_bytes;
         if (!validate_sample_hits(name, expected_hits, sample.hits, iteration + 1U)) {
             return Result{
                 .name = std::move(name), .config = config, .settings = settings, .operations = operations};
         }
         hits = sample.hits;
         samples.push_back(sample.seconds);
+        resources.push_back(resource);
     }
-    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples));
+    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples),
+                           std::move(resources));
 }
 
 [[nodiscard]] auto make_index_ref(const std::size_t index_in_order) -> RecordRef {

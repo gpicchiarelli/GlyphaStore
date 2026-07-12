@@ -13,10 +13,8 @@ namespace {
 [[nodiscard]] auto validate_config(const ReactorConfig& config) -> Status {
     constexpr std::size_t maximum_queue_capacity = std::size_t{1} << 30U;
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
-        config.worker_inbox_capacity == 0 || config.completion_queue_capacity == 0 ||
-        config.maximum_in_flight_per_connection == 0 || config.maximum_remote_tasks_per_cycle == 0 ||
-        config.worker_inbox_capacity > maximum_queue_capacity ||
-        config.completion_queue_capacity > maximum_queue_capacity ||
+        config.connection_handoff_capacity == 0 ||
+        config.connection_handoff_capacity > maximum_queue_capacity ||
         config.maximum_connections > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "server capacity configuration is outside supported limits");
     }
@@ -27,7 +25,7 @@ namespace {
 
 Server::Server(ReactorConfig config, std::unique_ptr<Store> store)
     : config_(std::move(config)), store_(std::move(store)),
-      mesh_(store_->worker_count(), config_.worker_inbox_capacity, config_.completion_queue_capacity) {
+      mesh_(store_->worker_count(), config_.connection_handoff_capacity) {
     reactors_.reserve(store_->worker_count());
     threads_.reserve(store_->worker_count());
     affinity_results_.resize(store_->worker_count());
@@ -47,14 +45,11 @@ auto Server::create(const ReactorConfig& config) -> Result<std::unique_ptr<Serve
         return unexpected(store.error());
     }
     auto server = std::unique_ptr<Server>(new Server(config, std::move(*store)));
-    const bool multiple_executors = server->store_->worker_count() > 1;
 #if defined(__linux__)
-    const bool kernel_distribution = config.reuse_port && multiple_executors;
+    const bool kernel_distribution = config.reuse_port && server->store_->worker_count() > 1;
 #else
     const bool kernel_distribution = false;
 #endif
-    const bool explicit_distribution =
-        config.distribute_connections && multiple_executors && !kernel_distribution;
     std::uint16_t shared_port = config.port;
     for (std::size_t executor = 0; executor < server->store_->worker_count(); ++executor) {
         TcpListener listener;
@@ -68,10 +63,7 @@ auto Server::create(const ReactorConfig& config) -> Result<std::unique_ptr<Serve
                 shared_port = listener.port();
             }
         }
-        auto endpoint_config = config;
-        endpoint_config.handoff_accepted_connections = explicit_distribution && executor == 0;
-        auto reactor =
-            Reactor::create(endpoint_config, executor, std::move(listener), *server->store_, server->mesh_);
+        auto reactor = Reactor::create(config, executor, std::move(listener), *server->store_, server->mesh_);
         if (!reactor) {
             return unexpected(reactor.error());
         }
@@ -123,13 +115,13 @@ auto Server::port() const noexcept -> std::uint16_t {
     return reactors_.empty() ? 0 : reactors_.front()->port();
 }
 
-auto Server::accepted_connections_per_executor() const -> std::vector<std::size_t> {
-    std::vector<std::size_t> accepted;
-    accepted.reserve(reactors_.size());
+auto Server::adopted_connections_per_executor() const -> std::vector<std::size_t> {
+    std::vector<std::size_t> adopted;
+    adopted.reserve(reactors_.size());
     for (const auto& reactor : reactors_) {
-        accepted.push_back(reactor->accepted_connections());
+        adopted.push_back(reactor->adopted_connections());
     }
-    return accepted;
+    return adopted;
 }
 
 auto Server::executor_affinity_results() const -> std::vector<ExecutorAffinityResult> {

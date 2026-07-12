@@ -24,9 +24,7 @@ struct Options {
     std::uint16_t port{7379};
     std::size_t maximum_connections{4096};
     std::size_t workers{1};
-    std::size_t worker_inbox_capacity{4096};
-    std::size_t completion_queue_capacity{65'536};
-    std::size_t maximum_in_flight{1024};
+    std::size_t handoff_capacity{4096};
     bool executor_affinity{};
 };
 
@@ -61,17 +59,8 @@ template <typename T> [[nodiscard]] auto parse_integer(const std::string_view te
             result.workers = parse_integer<std::size_t>(argv[++index], "--workers");
             continue;
         }
-        if (argument == "--worker-inbox" && index + 1 < argc) {
-            result.worker_inbox_capacity = parse_integer<std::size_t>(argv[++index], "--worker-inbox");
-            continue;
-        }
-        if (argument == "--completion-queue" && index + 1 < argc) {
-            result.completion_queue_capacity =
-                parse_integer<std::size_t>(argv[++index], "--completion-queue");
-            continue;
-        }
-        if (argument == "--max-in-flight" && index + 1 < argc) {
-            result.maximum_in_flight = parse_integer<std::size_t>(argv[++index], "--max-in-flight");
+        if (argument == "--handoff-capacity" && index + 1 < argc) {
+            result.handoff_capacity = parse_integer<std::size_t>(argv[++index], "--handoff-capacity");
             continue;
         }
         if (argument == "--executor-affinity") {
@@ -80,8 +69,7 @@ template <typename T> [[nodiscard]] auto parse_integer(const std::string_view te
         }
         if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastored [--bind IPv4] [--port N] [--max-connections N]"
-                         " [--workers N] [--worker-inbox N] [--completion-queue N]"
-                         " [--max-in-flight N] [--executor-affinity]\n";
+                         " [--workers N] [--handoff-capacity N] [--executor-affinity]\n";
             std::exit(0);
         }
         std::cerr << "unknown or incomplete argument: " << argument << '\n';
@@ -99,9 +87,7 @@ int main(int argc, char** argv) {
                                              .port = arguments.port,
                                              .maximum_connections = arguments.maximum_connections,
                                              .worker_count = arguments.workers,
-                                             .worker_inbox_capacity = arguments.worker_inbox_capacity,
-                                             .completion_queue_capacity = arguments.completion_queue_capacity,
-                                             .maximum_in_flight_per_connection = arguments.maximum_in_flight,
+                                             .connection_handoff_capacity = arguments.handoff_capacity,
                                              .executor_affinity = arguments.executor_affinity});
     if (!server) {
         std::cerr << "glyphastored: " << server.error().message << '\n';

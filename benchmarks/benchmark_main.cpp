@@ -94,7 +94,7 @@ struct Options {
                       << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
                       << "                store-parallel-read-after-write|store-parallel-all]\n"
                       << "       [--ops N] [--key-size N] [--value-size N] [--workers N] [--threads N]\n"
-                      << "       [--distribution uniform|worker-affine|single-worker|zipf]\n"
+                      << "       [--distribution uniform|worker-affine|owner-bound|single-worker|zipf]\n"
                       << "       [--warmup N] [--repeats N]\n";
             std::exit(0);
         }

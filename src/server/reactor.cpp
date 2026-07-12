@@ -5,10 +5,10 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
-#include <limits>
 #include <span>
 #include <string_view>
 #include <sys/socket.h>
+#include <utility>
 
 namespace glyphastore::server {
 namespace {
@@ -53,7 +53,7 @@ namespace {
 } // namespace
 
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener listener, Poller poller,
-                 Wakeup wakeup, Store& store, DispatchMesh& mesh)
+                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(listener)),
       poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store), mesh_(mesh),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
@@ -64,7 +64,7 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 }
 
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id, TcpListener listener,
-                     Store& store, DispatchMesh& mesh) -> Result<std::unique_ptr<Reactor>> {
+                     Store& store, ConnectionHandoffMesh& mesh) -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
     }
@@ -115,7 +115,8 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->input_offset = 0;
     current->output.clear();
     current->output_offset = 0;
-    current->in_flight = 0;
+    current->bound_worker.reset();
+    current->initialized = false;
     current->peer_read_closed = false;
     ++current->generation;
     if (current->generation == 0) {
@@ -134,41 +135,52 @@ auto Reactor::accept_ready() -> Status {
         if (!accepted->has_value()) {
             return {};
         }
-        auto socket = std::move(**accepted);
-        const auto target =
-            config_.handoff_accepted_connections ? next_accept_executor_++ % mesh_.size() : executor_id_;
-        if (target != executor_id_) {
-            static_cast<void>(mesh_.try_handoff(target, std::move(socket)));
-            continue;
-        }
-        if (auto adopted = adopt_connection(std::move(socket)); !adopted) {
+        ConnectionHandoff handoff{.socket = std::move(**accepted)};
+        if (auto adopted = adopt_connection(std::move(handoff)); !adopted) {
             return adopted;
         }
     }
 }
 
-auto Reactor::adopt_connection(SocketHandle socket) -> Status {
+auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     if (free_slots_.empty()) {
+        return {};
+    }
+    if (handoff.peer_read_closed && handoff.input.empty() && handoff.output.empty()) {
         return {};
     }
     const auto slot = free_slots_.back();
     free_slots_.pop_back();
     auto& current = connections_[slot];
-    current.socket = std::move(socket);
-    current.input.clear();
-    current.input.reserve(4096);
-    current.output.clear();
-    current.output.reserve(4096);
-    current.in_flight = 0;
-    current.peer_read_closed = false;
+    current.socket = std::move(handoff.socket);
+    current.input = std::move(handoff.input);
+    current.input_offset = 0;
+    current.output = std::move(handoff.output);
+    current.output_offset = 0;
+    current.bound_worker = handoff.bound_worker;
+    current.initialized = handoff.initialized;
+    current.peer_read_closed = handoff.peer_read_closed;
     const ConnectionToken token{.slot = slot, .generation = current.generation};
-    if (auto added = poller_.add(current.socket.descriptor(), token.encode(), IoInterest::read); !added) {
+    auto interest = IoInterest::none;
+    if (!current.peer_read_closed) {
+        interest = interest | IoInterest::read;
+    }
+    if (!current.output.empty()) {
+        interest = interest | IoInterest::write;
+    }
+    if (auto added = poller_.add(current.socket.descriptor(), token.encode(), interest); !added) {
         current.socket.reset();
         free_slots_.push_back(slot);
         return added;
     }
     ++active_connections_;
-    ++accepted_connections_;
+    ++adopted_connections_;
+    if (!current.input.empty()) {
+        if (auto processed = process_frames(token); !processed) {
+            close_connection(token);
+            return {};
+        }
+    }
     return {};
 }
 
@@ -222,36 +234,35 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         if (!decoded->complete) {
             break;
         }
-        ResponseView response{.status = ResponseStatus::ok, .request_id = decoded->frame.request_id};
+        if (decoded->frame.opcode == RequestOpcode::bind_worker) {
+            current->input_offset += decoded->consumed;
+            return bind_connection(token, decoded->frame);
+        }
+
+        ResponseView response{.status = ResponseStatus::ok,
+                              .request_id = decoded->frame.request_id,
+                              .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                              .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                              .routing_epoch = kRoutingEpoch};
         bool immediate_response = true;
         switch (decoded->frame.opcode) {
-        case RequestOpcode::hello:
-            response.value = bytes("GlyphaStore/1");
+        case RequestOpcode::init:
+            current->initialized = true;
+            response.value = bytes("GlyphaStore/2");
             break;
         case RequestOpcode::ping:
             response.value = decoded->frame.value;
             break;
-        case RequestOpcode::get: {
+        case RequestOpcode::get:
+        case RequestOpcode::put:
+        case RequestOpcode::erase:
             immediate_response = false;
             if (auto dispatched = dispatch_request(token, decoded->frame); !dispatched) {
                 return dispatched;
             }
             break;
-        }
-        case RequestOpcode::put: {
-            immediate_response = false;
-            if (auto dispatched = dispatch_request(token, decoded->frame); !dispatched) {
-                return dispatched;
-            }
+        case RequestOpcode::bind_worker:
             break;
-        }
-        case RequestOpcode::erase: {
-            immediate_response = false;
-            if (auto dispatched = dispatch_request(token, decoded->frame); !dispatched) {
-                return dispatched;
-            }
-            break;
-        }
         }
         if (immediate_response) {
             if (auto queued = queue_response(token, response); !queued) {
@@ -271,6 +282,66 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
     return {};
 }
 
+auto Reactor::bind_connection(const ConnectionToken token, const RequestView& request) -> Status {
+    auto* current = connection(token);
+    if (current == nullptr) {
+        return {};
+    }
+    ResponseView response{.status = ResponseStatus::ok,
+                          .request_id = request.request_id,
+                          .owner_worker = request.target_worker,
+                          .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                          .routing_epoch = kRoutingEpoch};
+    if (!current->initialized || current->bound_worker.has_value() || request.target_worker >= mesh_.size()) {
+        response.status = ResponseStatus::invalid_request;
+        response.owner_worker = current->bound_worker.value_or(kNoWorker);
+        return queue_response(token, response);
+    }
+    current->bound_worker = request.target_worker;
+    if (auto queued = queue_response(token, response); !queued) {
+        return queued;
+    }
+    if (request.target_worker == executor_id_) {
+        return process_frames(token);
+    }
+    return transfer_connection(token, request.target_worker);
+}
+
+auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t target_worker) -> Status {
+    auto* current = connection(token);
+    if (current == nullptr) {
+        return {};
+    }
+    static_cast<void>(poller_.remove(current->socket.descriptor()));
+    if (current->input_offset > 0) {
+        current->input.erase(current->input.begin(),
+                             current->input.begin() + static_cast<std::ptrdiff_t>(current->input_offset));
+        current->input_offset = 0;
+    }
+    if (current->output_offset > 0) {
+        current->output.erase(current->output.begin(),
+                              current->output.begin() + static_cast<std::ptrdiff_t>(current->output_offset));
+        current->output_offset = 0;
+    }
+    ConnectionHandoff handoff{.socket = std::move(current->socket),
+                              .input = std::move(current->input),
+                              .output = std::move(current->output),
+                              .bound_worker = static_cast<std::uint32_t>(target_worker),
+                              .initialized = current->initialized,
+                              .peer_read_closed = current->peer_read_closed};
+    current->bound_worker.reset();
+    current->initialized = false;
+    current->peer_read_closed = false;
+    ++current->generation;
+    if (current->generation == 0) {
+        current->generation = 1;
+    }
+    free_slots_.push_back(token.slot);
+    --active_connections_;
+    static_cast<void>(mesh_.try_handoff(target_worker, std::move(handoff)));
+    return {};
+}
+
 auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& request) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
@@ -279,36 +350,35 @@ auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& r
     const auto key = key_text(request.key);
     const auto key_hash = hash_key(key);
     const auto owner = route_worker(key_hash, mesh_.size());
-    if (owner == executor_id_) {
-        return execute_local(token, request, key_hash);
+    if (!current->bound_worker.has_value()) {
+        return queue_response(token, {.status = ResponseStatus::not_bound,
+                                      .request_id = request.request_id,
+                                      .owner_worker = static_cast<std::uint32_t>(owner),
+                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                      .routing_epoch = kRoutingEpoch});
     }
-    if (current->in_flight >= config_.maximum_in_flight_per_connection) {
-        return queue_response(token,
-                              {.status = ResponseStatus::overloaded, .request_id = request.request_id});
+    if (*current->bound_worker != executor_id_) {
+        return fail(ErrorCode::corrupted_data, "bound connection is owned by the wrong Reactor");
     }
-    DispatchTask task{
-        .opcode = request.opcode,
-        .origin_executor = executor_id_,
-        .connection = token,
-        .request_id = request.request_id,
-        .key_hash = key_hash,
-        .expire_at_ns = request.opcode == RequestOpcode::get ? current_time_ns() : request.expire_at_ns,
-        .key = std::string{key},
-        .value = std::vector<std::byte>{request.value.begin(), request.value.end()},
-    };
-    if (!mesh_.try_submit(owner, std::move(task))) {
-        return queue_response(token,
-                              {.status = ResponseStatus::overloaded, .request_id = request.request_id});
+    if (owner != executor_id_) {
+        return queue_response(token, {.status = ResponseStatus::wrong_owner,
+                                      .request_id = request.request_id,
+                                      .owner_worker = static_cast<std::uint32_t>(owner),
+                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                      .routing_epoch = kRoutingEpoch});
     }
-    ++current->in_flight;
-    return {};
+    return execute_local(token, request, key_hash);
 }
 
 auto Reactor::execute_local(const ConnectionToken token, const RequestView& request,
                             const std::uint64_t key_hash) -> Status {
     const auto key_string = key_text(request.key);
     const HashedKey key{.key = key_string, .hash = key_hash};
-    ResponseView response{.status = ResponseStatus::ok, .request_id = request.request_id};
+    ResponseView response{.status = ResponseStatus::ok,
+                          .request_id = request.request_id,
+                          .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                          .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                          .routing_epoch = kRoutingEpoch};
     switch (request.opcode) {
     case RequestOpcode::get: {
         auto record = store_.get_owned(executor_id_, key, current_time_ns());
@@ -319,119 +389,35 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         }
         break;
     }
-    case RequestOpcode::put: {
+    case RequestOpcode::put:
         if (auto stored = store_.put_owned(executor_id_, key, request.value, request.expire_at_ns); !stored) {
             response.status = response_status(stored.error());
         }
         break;
-    }
-    case RequestOpcode::erase: {
+    case RequestOpcode::erase:
         if (auto erased = store_.erase_owned(executor_id_, key); !erased) {
             response.status = response_status(erased.error());
         }
         break;
-    }
-    case RequestOpcode::hello:
+    case RequestOpcode::init:
     case RequestOpcode::ping:
+    case RequestOpcode::bind_worker:
         response.status = ResponseStatus::invalid_request;
         break;
     }
     return queue_response(token, response);
 }
 
-auto Reactor::execute_remote(DispatchTask task) -> DispatchCompletion {
-    DispatchCompletion completion{.connection = task.connection, .request_id = task.request_id};
-    const HashedKey key{.key = task.key, .hash = task.key_hash};
-    switch (task.opcode) {
-    case RequestOpcode::get: {
-        auto record = store_.get_owned(executor_id_, key, task.expire_at_ns);
-        if (record) {
-            completion.value.assign(record->value.begin(), record->value.end());
-        } else {
-            completion.status = response_status(record.error());
-        }
-        break;
-    }
-    case RequestOpcode::put: {
-        if (auto stored = store_.put_owned(executor_id_, key, task.value, task.expire_at_ns); !stored) {
-            completion.status = response_status(stored.error());
-        }
-        break;
-    }
-    case RequestOpcode::erase: {
-        if (auto erased = store_.erase_owned(executor_id_, key); !erased) {
-            completion.status = response_status(erased.error());
-        }
-        break;
-    }
-    case RequestOpcode::hello:
-    case RequestOpcode::ping:
-        completion.status = ResponseStatus::invalid_request;
-        break;
-    }
-    return completion;
-}
-
-auto Reactor::process_completions() -> Status {
-    while (auto completion = mesh_.try_pop_completion(executor_id_)) {
-        auto* current = connection(completion->connection);
-        if (current == nullptr) {
-            continue;
-        }
-        if (current->in_flight == 0) {
-            return fail(ErrorCode::corrupted_data, "completion has no matching in-flight request");
-        }
-        --current->in_flight;
-        if (auto queued = queue_response(completion->connection, {.status = completion->status,
-                                                                  .request_id = completion->request_id,
-                                                                  .value = completion->value});
-            !queued) {
-            close_connection(completion->connection);
-        }
-    }
-    return {};
-}
-
-auto Reactor::process_remote_tasks() -> Status {
-    if (deferred_completion_) {
-        if (!mesh_.try_complete(deferred_completion_->first, std::move(deferred_completion_->second))) {
-            return {};
-        }
-        deferred_completion_.reset();
-    }
-    std::size_t processed{};
-    while (processed < config_.maximum_remote_tasks_per_cycle) {
-        auto task = mesh_.try_pop_task(executor_id_);
-        if (!task) {
-            return {};
-        }
-        const auto origin = task->origin_executor;
-        auto completion = execute_remote(std::move(*task));
-        if (!mesh_.try_complete(origin, std::move(completion))) {
-            deferred_completion_.emplace(origin, std::move(completion));
-            return {};
-        }
-        ++processed;
-    }
-    return wakeup_.notify();
-}
-
 auto Reactor::process_messages() -> Status {
     if (auto drained = wakeup_.drain(); !drained) {
         return drained;
     }
-    if (auto handoffs = process_handoffs(); !handoffs) {
-        return handoffs;
-    }
-    if (auto completions = process_completions(); !completions) {
-        return completions;
-    }
-    return process_remote_tasks();
+    return process_handoffs();
 }
 
 auto Reactor::process_handoffs() -> Status {
-    while (auto socket = mesh_.try_pop_handoff(executor_id_)) {
-        if (auto adopted = adopt_connection(std::move(*socket)); !adopted) {
+    while (auto handoff = mesh_.try_pop(executor_id_)) {
+        if (auto adopted = adopt_connection(std::move(*handoff)); !adopted) {
             return adopted;
         }
     }
@@ -458,17 +444,19 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             if (auto processed = process_frames(token); !processed) {
                 return processed;
             }
+            current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
             continue;
         }
         if (received == 0) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && current->in_flight == 0) {
+            if (current->output_offset == current->output.size()) {
                 close_connection(token);
                 return {};
             }
-            const auto interest =
-                current->output_offset == current->output.size() ? IoInterest::none : IoInterest::write;
-            return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+            return poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::write);
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return {};
@@ -503,20 +491,18 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     }
     current->output.clear();
     current->output_offset = 0;
-    if (current->peer_read_closed && current->in_flight == 0) {
+    if (current->peer_read_closed) {
         close_connection(token);
         return {};
     }
-    const auto interest = current->peer_read_closed ? IoInterest::none : IoInterest::read;
-    return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+    return poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
     if (auto messages = process_messages(); !messages) {
         return messages;
     }
-    const auto effective_timeout = deferred_completion_.has_value() ? 0 : timeout_ms;
-    auto ready = poller_.wait(events_, effective_timeout);
+    auto ready = poller_.wait(events_, timeout_ms);
     if (!ready) {
         return unexpected(ready.error());
     }
@@ -553,15 +539,12 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         }
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && current->in_flight == 0) {
+            if (current->output_offset == current->output.size()) {
                 close_connection(token);
-            } else {
-                const auto interest =
-                    current->output_offset == current->output.size() ? IoInterest::none : IoInterest::write;
-                if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest);
-                    !modified) {
-                    close_connection(token);
-                }
+            } else if (auto modified =
+                           poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::write);
+                       !modified) {
+                close_connection(token);
             }
         }
     }

@@ -47,7 +47,7 @@ else()
 endif()
 
 add_library(glyphastore_server_core
-    src/server/dispatcher.cpp
+    src/server/connection_handoff.cpp
     src/server/protocol.cpp
     src/server/reactor.cpp
     src/server/server.cpp
@@ -90,7 +90,7 @@ if(BUILD_TESTING)
         tests/test_main.cpp
         tests/unit/index_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
-        tests/unit/dispatch_mesh_tests.cpp
+        tests/unit/connection_handoff_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp

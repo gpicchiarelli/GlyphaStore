@@ -1,7 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
-#include "glyphastore/server/dispatcher.hpp"
+#include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/reactor.hpp"
 #include "glyphastore/server/thread_affinity.hpp"
 #include "glyphastore/store/store.hpp"
@@ -35,7 +35,7 @@ class Server final {
     [[nodiscard]] auto executor_count() const noexcept -> std::size_t {
         return reactors_.size();
     }
-    [[nodiscard]] auto accepted_connections_per_executor() const -> std::vector<std::size_t>;
+    [[nodiscard]] auto adopted_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
@@ -47,7 +47,7 @@ class Server final {
 
     ReactorConfig config_;
     std::unique_ptr<Store> store_;
-    DispatchMesh mesh_;
+    ConnectionHandoffMesh mesh_;
     std::vector<std::unique_ptr<Reactor>> reactors_;
     std::vector<std::thread> threads_;
     std::vector<ExecutorAffinityResult> affinity_results_;

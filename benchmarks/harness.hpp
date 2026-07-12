@@ -9,6 +9,7 @@
 #include <random>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -37,7 +38,7 @@ enum class BenchmarkKind {
     all
 };
 
-enum class ParallelDistribution { uniform, worker_affine, single_worker, zipf };
+enum class ParallelDistribution { uniform, worker_affine, owner_bound, single_worker, zipf };
 
 [[nodiscard]] inline auto is_parallel_benchmark(const BenchmarkKind kind) noexcept -> bool {
     return kind == BenchmarkKind::store_parallel_put || kind == BenchmarkKind::store_parallel_get ||
@@ -52,6 +53,8 @@ enum class ParallelDistribution { uniform, worker_affine, single_worker, zipf };
         return "uniform";
     case ParallelDistribution::worker_affine:
         return "worker-affine";
+    case ParallelDistribution::owner_bound:
+        return "owner-bound";
     case ParallelDistribution::single_worker:
         return "single-worker";
     case ParallelDistribution::zipf:
@@ -67,6 +70,9 @@ enum class ParallelDistribution { uniform, worker_affine, single_worker, zipf };
     }
     if (value == "worker-affine") {
         return ParallelDistribution::worker_affine;
+    }
+    if (value == "owner-bound") {
+        return ParallelDistribution::owner_bound;
     }
     if (value == "single-worker") {
         return ParallelDistribution::single_worker;
@@ -93,6 +99,14 @@ struct RunSettings {
     bool pin_cpu{false};
 };
 
+struct ResourceSample {
+    std::size_t rss_before_bytes{};
+    std::size_t rss_after_bytes{};
+    std::size_t peak_rss_bytes{};
+    std::size_t ingress_bytes{};
+    std::size_t egress_bytes{};
+};
+
 struct Result {
     std::string name;
     Config config;
@@ -109,6 +123,22 @@ struct Result {
     double median_ops_per_second{};
     double min_ops_per_second{};
     double max_ops_per_second{};
+    double median_rss_bytes{};
+    double min_rss_bytes{};
+    double max_rss_bytes{};
+    double median_rss_delta_bytes{};
+    double peak_rss_bytes{};
+    std::size_t ingress_bytes{};
+    std::size_t egress_bytes{};
+    double median_ingress_bytes_per_second{};
+    double min_ingress_bytes_per_second{};
+    double max_ingress_bytes_per_second{};
+    double median_egress_bytes_per_second{};
+    double min_egress_bytes_per_second{};
+    double max_egress_bytes_per_second{};
+    double median_duplex_bytes_per_second{};
+    double min_duplex_bytes_per_second{};
+    double max_duplex_bytes_per_second{};
 };
 
 struct KeyMaterial {
@@ -119,6 +149,7 @@ struct KeyMaterial {
 
 [[nodiscard]] auto cpu_pin_applied() noexcept -> bool;
 [[nodiscard]] auto try_cpu_pin(bool requested) -> bool;
+[[nodiscard]] auto process_memory_snapshot() noexcept -> ResourceSample;
 
 [[nodiscard]] inline auto validate_run_settings(const RunSettings& settings, const Config& config) -> bool {
     if (config.operations == 0) {
@@ -213,7 +244,8 @@ struct KeyMaterial {
 
 [[nodiscard]] inline auto finalize_result(std::string name, const Config& config, const RunSettings& settings,
                                           const std::size_t operations, const std::size_t hits,
-                                          std::vector<double> seconds) -> Result {
+                                          std::vector<double> seconds,
+                                          std::vector<ResourceSample> resources = {}) -> Result {
     if (seconds.empty()) {
         return Result{.name = std::move(name),
                       .config = config,
@@ -224,12 +256,45 @@ struct KeyMaterial {
 
     std::vector<double> ns_per_op;
     std::vector<double> ops_per_second;
+    std::vector<double> rss_bytes;
+    std::vector<double> rss_delta_bytes;
+    std::vector<double> ingress_bytes_per_second;
+    std::vector<double> egress_bytes_per_second;
+    std::vector<double> duplex_bytes_per_second;
     ns_per_op.reserve(seconds.size());
     ops_per_second.reserve(seconds.size());
-    for (const auto elapsed : seconds) {
+    rss_bytes.reserve(resources.size());
+    rss_delta_bytes.reserve(resources.size());
+    ingress_bytes_per_second.reserve(resources.size());
+    egress_bytes_per_second.reserve(resources.size());
+    duplex_bytes_per_second.reserve(resources.size());
+    for (std::size_t index = 0; index < seconds.size(); ++index) {
+        const auto elapsed = seconds[index];
         ns_per_op.push_back(operations > 0 ? elapsed * 1.0e9 / static_cast<double>(operations) : 0.0);
         ops_per_second.push_back(elapsed > 0.0 ? static_cast<double>(operations) / elapsed : 0.0);
+        if (index < resources.size()) {
+            const auto& resource = resources[index];
+            rss_bytes.push_back(static_cast<double>(resource.rss_after_bytes));
+            const auto delta = resource.rss_after_bytes > resource.rss_before_bytes
+                                   ? resource.rss_after_bytes - resource.rss_before_bytes
+                                   : 0;
+            rss_delta_bytes.push_back(static_cast<double>(delta));
+            ingress_bytes_per_second.push_back(
+                elapsed > 0.0 ? static_cast<double>(resource.ingress_bytes) / elapsed : 0.0);
+            egress_bytes_per_second.push_back(
+                elapsed > 0.0 ? static_cast<double>(resource.egress_bytes) / elapsed : 0.0);
+            duplex_bytes_per_second.push_back(
+                elapsed > 0.0 ? static_cast<double>(resource.ingress_bytes + resource.egress_bytes) / elapsed
+                              : 0.0);
+        }
     }
+
+    const auto first_resource = resources.empty() ? ResourceSample{} : resources.front();
+    const auto peak_rss =
+        resources.empty()
+            ? 0.0
+            : static_cast<double>(
+                  std::ranges::max_element(resources, {}, &ResourceSample::peak_rss_bytes)->peak_rss_bytes);
 
     return Result{
         .name = std::move(name),
@@ -247,6 +312,28 @@ struct KeyMaterial {
         .median_ops_per_second = median(ops_per_second),
         .min_ops_per_second = *std::ranges::min_element(ops_per_second),
         .max_ops_per_second = *std::ranges::max_element(ops_per_second),
+        .median_rss_bytes = median(rss_bytes),
+        .min_rss_bytes = rss_bytes.empty() ? 0.0 : *std::ranges::min_element(rss_bytes),
+        .max_rss_bytes = rss_bytes.empty() ? 0.0 : *std::ranges::max_element(rss_bytes),
+        .median_rss_delta_bytes = median(rss_delta_bytes),
+        .peak_rss_bytes = peak_rss,
+        .ingress_bytes = first_resource.ingress_bytes,
+        .egress_bytes = first_resource.egress_bytes,
+        .median_ingress_bytes_per_second = median(ingress_bytes_per_second),
+        .min_ingress_bytes_per_second =
+            ingress_bytes_per_second.empty() ? 0.0 : *std::ranges::min_element(ingress_bytes_per_second),
+        .max_ingress_bytes_per_second =
+            ingress_bytes_per_second.empty() ? 0.0 : *std::ranges::max_element(ingress_bytes_per_second),
+        .median_egress_bytes_per_second = median(egress_bytes_per_second),
+        .min_egress_bytes_per_second =
+            egress_bytes_per_second.empty() ? 0.0 : *std::ranges::min_element(egress_bytes_per_second),
+        .max_egress_bytes_per_second =
+            egress_bytes_per_second.empty() ? 0.0 : *std::ranges::max_element(egress_bytes_per_second),
+        .median_duplex_bytes_per_second = median(duplex_bytes_per_second),
+        .min_duplex_bytes_per_second =
+            duplex_bytes_per_second.empty() ? 0.0 : *std::ranges::min_element(duplex_bytes_per_second),
+        .max_duplex_bytes_per_second =
+            duplex_bytes_per_second.empty() ? 0.0 : *std::ranges::max_element(duplex_bytes_per_second),
     };
 }
 
@@ -266,22 +353,25 @@ template <typename SetupFn, typename BodyFn>
                                                   const Config& config, std::string name,
                                                   const std::size_t expected_hits, SetupFn&& setup,
                                                   BodyFn&& body) -> Result {
-    const auto run_iteration =
-        [&](const bool timed,
-            const std::size_t sample_index) -> std::optional<std::pair<std::size_t, double>> {
+    const auto run_iteration = [&](const bool timed, const std::size_t sample_index)
+        -> std::optional<std::tuple<std::size_t, double, ResourceSample>> {
         auto context = setup();
         if (!timed) {
             (void)body(context);
             return std::nullopt;
         }
+        auto resources = process_memory_snapshot();
         const auto started = std::chrono::steady_clock::now();
         const auto hits = body(context);
         const auto elapsed =
             std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        const auto after = process_memory_snapshot();
+        resources.rss_after_bytes = after.rss_after_bytes;
+        resources.peak_rss_bytes = after.peak_rss_bytes;
         if (!validate_sample_hits(name, expected_hits, hits, sample_index)) {
             return std::nullopt;
         }
-        return std::pair{hits, elapsed};
+        return std::tuple{hits, elapsed, resources};
     };
 
     for (std::size_t iteration = 0; iteration < settings.warmup_iterations; ++iteration) {
@@ -289,7 +379,9 @@ template <typename SetupFn, typename BodyFn>
     }
 
     std::vector<double> samples;
+    std::vector<ResourceSample> resources;
     samples.reserve(settings.measured_iterations);
+    resources.reserve(settings.measured_iterations);
     std::size_t hits = 0;
     for (std::size_t iteration = 0; iteration < settings.measured_iterations; ++iteration) {
         const auto measured = run_iteration(true, iteration + 1U);
@@ -297,11 +389,13 @@ template <typename SetupFn, typename BodyFn>
             return Result{
                 .name = std::move(name), .config = config, .settings = settings, .operations = operations};
         }
-        hits = measured->first;
-        samples.push_back(measured->second);
+        hits = std::get<0>(*measured);
+        samples.push_back(std::get<1>(*measured));
+        resources.push_back(std::get<2>(*measured));
     }
 
-    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples));
+    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples),
+                           std::move(resources));
 }
 
 inline void print_metadata(std::ostream& out, const RunSettings& settings) {
@@ -345,7 +439,21 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "min_ops_per_second=" << result.min_ops_per_second << ' '
         << "max_ops_per_second=" << result.max_ops_per_second << ' '
         << "median_ns_per_op=" << result.median_ns_per_op << ' ' << "min_ns_per_op=" << result.min_ns_per_op
-        << ' ' << "max_ns_per_op=" << result.max_ns_per_op << '\n';
+        << ' ' << "max_ns_per_op=" << result.max_ns_per_op << ' '
+        << "median_rss_bytes=" << result.median_rss_bytes << ' ' << "min_rss_bytes=" << result.min_rss_bytes
+        << ' ' << "max_rss_bytes=" << result.max_rss_bytes << ' '
+        << "median_rss_delta_bytes=" << result.median_rss_delta_bytes << ' '
+        << "peak_rss_bytes=" << result.peak_rss_bytes << ' ' << "ingress_bytes=" << result.ingress_bytes
+        << ' ' << "egress_bytes=" << result.egress_bytes << ' '
+        << "median_ingress_bytes_per_second=" << result.median_ingress_bytes_per_second << ' '
+        << "min_ingress_bytes_per_second=" << result.min_ingress_bytes_per_second << ' '
+        << "max_ingress_bytes_per_second=" << result.max_ingress_bytes_per_second << ' '
+        << "median_egress_bytes_per_second=" << result.median_egress_bytes_per_second << ' '
+        << "min_egress_bytes_per_second=" << result.min_egress_bytes_per_second << ' '
+        << "max_egress_bytes_per_second=" << result.max_egress_bytes_per_second << ' '
+        << "median_duplex_bytes_per_second=" << result.median_duplex_bytes_per_second << ' '
+        << "min_duplex_bytes_per_second=" << result.min_duplex_bytes_per_second << ' '
+        << "max_duplex_bytes_per_second=" << result.max_duplex_bytes_per_second << '\n';
 }
 
 [[nodiscard]] inline auto parse_kind(std::string_view value) -> BenchmarkKind {

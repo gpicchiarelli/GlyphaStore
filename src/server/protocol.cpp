@@ -59,8 +59,8 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
 
 [[nodiscard]] auto request_opcode(const std::uint8_t encoded) -> Result<RequestOpcode> {
     switch (encoded) {
-    case static_cast<std::uint8_t>(RequestOpcode::hello):
-        return RequestOpcode::hello;
+    case static_cast<std::uint8_t>(RequestOpcode::init):
+        return RequestOpcode::init;
     case static_cast<std::uint8_t>(RequestOpcode::ping):
         return RequestOpcode::ping;
     case static_cast<std::uint8_t>(RequestOpcode::get):
@@ -69,6 +69,8 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         return RequestOpcode::put;
     case static_cast<std::uint8_t>(RequestOpcode::erase):
         return RequestOpcode::erase;
+    case static_cast<std::uint8_t>(RequestOpcode::bind_worker):
+        return RequestOpcode::bind_worker;
     default:
         return fail(ErrorCode::invalid_record, "request contains an unknown opcode");
     }
@@ -88,6 +90,10 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         return ResponseStatus::not_found;
     case static_cast<std::uint16_t>(ResponseStatus::overloaded):
         return ResponseStatus::overloaded;
+    case static_cast<std::uint16_t>(ResponseStatus::wrong_owner):
+        return ResponseStatus::wrong_owner;
+    case static_cast<std::uint16_t>(ResponseStatus::not_bound):
+        return ResponseStatus::not_bound;
     default:
         return fail(ErrorCode::invalid_record, "response contains an unknown status");
     }
@@ -147,6 +153,7 @@ auto decode_request(const std::span<const std::byte> input, const std::size_t ma
                                                           .flags = std::to_integer<std::uint8_t>(input[7]),
                                                           .request_id = load_u64(input, 8),
                                                           .expire_at_ns = load_u64(input, 24),
+                                                          .target_worker = load_u32(input, 32),
                                                           .key = key,
                                                           .value = value}};
 }
@@ -180,6 +187,9 @@ auto decode_response(const std::span<const std::byte> input, const std::size_t m
         .consumed = frame_size,
         .frame = ResponseView{.status = *status,
                               .request_id = load_u64(input, 8),
+                              .owner_worker = load_u32(input, 20),
+                              .worker_count = load_u32(input, 24),
+                              .routing_epoch = load_u64(input, 32),
                               .value = input.subspan(kResponseHeaderBytes, value_size)}};
 }
 
@@ -204,6 +214,8 @@ auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>
     store_u32(bytes, 16, *encoded_key_size);
     store_u32(bytes, 20, *encoded_value_size);
     store_u64(bytes, 24, request.expire_at_ns);
+    store_u32(bytes, 32, request.target_worker);
+    store_u32(bytes, 36, 0);
     std::ranges::copy(request.key, bytes.begin() + static_cast<std::ptrdiff_t>(kRequestHeaderBytes));
     std::ranges::copy(request.value,
                       bytes.begin() + static_cast<std::ptrdiff_t>(kRequestHeaderBytes + request.key.size()));
@@ -237,7 +249,10 @@ auto encode_response(const std::span<std::byte> output, const ResponseView& resp
     store_u16(bytes, 6, static_cast<std::uint16_t>(response.status));
     store_u64(bytes, 8, response.request_id);
     store_u32(bytes, 16, *encoded_value_size);
-    store_u32(bytes, 20, 0);
+    store_u32(bytes, 20, response.owner_worker);
+    store_u32(bytes, 24, response.worker_count);
+    store_u32(bytes, 28, 0);
+    store_u64(bytes, 32, response.routing_epoch);
     std::ranges::copy(response.value, bytes.begin() + static_cast<std::ptrdiff_t>(kResponseHeaderBytes));
     return *frame_size;
 }

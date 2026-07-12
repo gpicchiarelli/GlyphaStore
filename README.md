@@ -83,7 +83,7 @@ valid records and retaining the highest sequence for each full key. See the
 ./scripts/dev.sh asan
 ./scripts/dev.sh tsan
 ./scripts/dev.sh benchmark
-./scripts/dev.sh benchmark-server --workers 4 --clients 4 --routing affine --executor-affinity
+./scripts/dev.sh benchmark-server --workers 4 --clients 4 --executor-affinity
 ./scripts/dev.sh benchmark --filter store-parallel-all --workers 4 --threads 4 --distribution uniform
 ./scripts/dev.sh fuzz-build
 ```
@@ -97,18 +97,20 @@ microbenchmarks, not comparative product claims. Parallel Store benchmarks suppo
 
 `glyphastored` is the native non-blocking TCP server bootstrap. Each executor pairs one Reactor with
 one Worker: `kqueue` on macOS/FreeBSD and edge-triggered `epoll` on Linux. The protocol implements
-pipelined `HELLO`, `PING`, `GET`, `PUT`, and `ERASE`. Same-owner Store operations execute directly;
-remote owners use bounded MPSC inbox and completion queues. Linux distributes connections with
-`SO_REUSEPORT`; macOS/FreeBSD use explicit bounded socket handoff.
+pipelined `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, and `ERASE`. Binding moves ownership of the
+socket reference and buffered state once to the selected Reactor. Store operations then execute
+only on that Worker; a mismatched key receives `WRONG_OWNER` and is never forwarded internally.
 
 The TCP benchmark runs the real binary protocol over loopback with validated pipelined responses:
 
 ```bash
 ./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 \
-  --pipeline 32 --routing uniform --warmup 1 --repeats 5
-./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 \
-  --pipeline 32 --routing affine --executor-affinity --warmup 1 --repeats 5
+  --pipeline 32 --executor-affinity --warmup 1 --repeats 5
 ```
+
+Its output includes exact timed ingress and egress frame bytes, ingress/egress/duplex bandwidth,
+current RSS, RSS growth from the post-setup baseline, and peak process RSS. `INIT`, `BIND_WORKER`,
+connection setup, and client-thread creation remain outside the timed region.
 
 ```bash
 ./scripts/dev.sh build

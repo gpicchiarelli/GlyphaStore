@@ -94,6 +94,35 @@ auto connect_to(const std::uint16_t port) -> int {
     return socket;
 }
 
+auto initialize_and_bind(const int socket, const std::uint32_t worker, const std::uint32_t worker_count)
+    -> bool {
+    const auto init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
+        .request_id = 1,
+    });
+    if (!init || !send_all(socket, *init)) {
+        return false;
+    }
+    const auto init_frame = receive_response(socket);
+    const auto initialized = glyphastore::server::decode_response(init_frame);
+    if (!initialized || initialized->frame.status != glyphastore::server::ResponseStatus::ok ||
+        initialized->frame.worker_count != worker_count || initialized->frame.routing_epoch == 0) {
+        return false;
+    }
+    const auto bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
+        .request_id = 2,
+        .target_worker = worker,
+    });
+    if (!bind || !send_all(socket, *bind)) {
+        return false;
+    }
+    const auto bind_frame = receive_response(socket);
+    const auto bound = glyphastore::server::decode_response(bind_frame);
+    return bound && bound->frame.status == glyphastore::server::ResponseStatus::ok &&
+           bound->frame.owner_worker == worker && bound->frame.worker_count == worker_count;
+}
+
 } // namespace
 
 GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
@@ -120,8 +149,8 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
     GLYPHA_REQUIRE(first->frame.request_id == 10);
     GLYPHA_REQUIRE(text(first->frame.value) == "first");
 
-    const auto hello = glyphastore::server::encode_request({
-        .opcode = glyphastore::server::RequestOpcode::hello,
+    const auto init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
         .request_id = 11,
     });
     const auto second_ping = glyphastore::server::encode_request({
@@ -129,23 +158,36 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
         .request_id = 12,
         .value = bytes("second"),
     });
-    GLYPHA_REQUIRE(hello.has_value());
+    GLYPHA_REQUIRE(init.has_value());
     GLYPHA_REQUIRE(second_ping.has_value());
     std::vector<std::byte> pipelined;
-    pipelined.insert(pipelined.end(), hello->begin(), hello->end());
+    pipelined.insert(pipelined.end(), init->begin(), init->end());
     pipelined.insert(pipelined.end(), second_ping->begin(), second_ping->end());
     GLYPHA_REQUIRE(send_all(socket, pipelined));
 
-    const auto hello_frame = receive_response(socket);
+    const auto init_frame = receive_response(socket);
     const auto second_ping_frame = receive_response(socket);
-    const auto hello_response = glyphastore::server::decode_response(hello_frame);
+    const auto init_response = glyphastore::server::decode_response(init_frame);
     const auto ping_response = glyphastore::server::decode_response(second_ping_frame);
-    GLYPHA_REQUIRE(hello_response.has_value());
+    GLYPHA_REQUIRE(init_response.has_value());
     GLYPHA_REQUIRE(ping_response.has_value());
-    GLYPHA_REQUIRE(hello_response->frame.request_id == 11);
-    GLYPHA_REQUIRE(text(hello_response->frame.value) == "GlyphaStore/1");
+    GLYPHA_REQUIRE(init_response->frame.request_id == 11);
+    GLYPHA_REQUIRE(text(init_response->frame.value) == "GlyphaStore/2");
+    GLYPHA_REQUIRE(init_response->frame.worker_count == 1);
     GLYPHA_REQUIRE(ping_response->frame.request_id == 12);
     GLYPHA_REQUIRE(text(ping_response->frame.value) == "second");
+    const auto bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
+        .request_id = 14,
+        .target_worker = 0,
+    });
+    GLYPHA_REQUIRE(bind.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *bind));
+    const auto bind_frame = receive_response(socket);
+    const auto bind_response = glyphastore::server::decode_response(bind_frame);
+    GLYPHA_REQUIRE(bind_response.has_value());
+    GLYPHA_REQUIRE(bind_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(bind_response->frame.owner_worker == 0);
 
     const auto put = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::put,
@@ -217,6 +259,7 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
 
     const auto half_closed_socket = connect_to(server.port());
     GLYPHA_REQUIRE(half_closed_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(half_closed_socket, 0, 1));
     const auto final_put = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::put,
         .request_id = 30,
@@ -237,65 +280,108 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
-GLYPHA_TEST("TCP reactor bounds asynchronous requests per connection") {
+GLYPHA_TEST("bound Reactor redirects wrong owners without forwarding") {
     GLYPHA_REQUIRE(glyphastore::route_worker("bounded-key-0", 2) == 1);
-    auto opened = glyphastore::server::Server::create({.port = 0,
-                                                       .maximum_connections = 4,
-                                                       .worker_count = 2,
-                                                       .maximum_in_flight_per_connection = 1,
-                                                       .reuse_port = false,
-                                                       .distribute_connections = false});
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 2, .reuse_port = false});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
     GLYPHA_REQUIRE(server.start().has_value());
 
-    const auto socket = connect_to(server.port());
-    GLYPHA_REQUIRE(socket >= 0);
-    const auto put = glyphastore::server::encode_request({
-        .opcode = glyphastore::server::RequestOpcode::put,
+    const auto wrong_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(wrong_socket >= 0);
+    const auto premature_bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
+        .request_id = 98,
+        .target_worker = 0,
+    });
+    GLYPHA_REQUIRE(premature_bind.has_value());
+    GLYPHA_REQUIRE(send_all(wrong_socket, *premature_bind));
+    const auto premature_bind_frame = receive_response(wrong_socket);
+    const auto premature = glyphastore::server::decode_response(premature_bind_frame);
+    GLYPHA_REQUIRE(premature.has_value());
+    GLYPHA_REQUIRE(premature->frame.status == glyphastore::server::ResponseStatus::invalid_request);
+    GLYPHA_REQUIRE(premature->frame.owner_worker == glyphastore::server::kNoWorker);
+
+    const auto unbound_get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 99,
+        .key = bytes("bounded-key-0"),
+    });
+    GLYPHA_REQUIRE(unbound_get.has_value());
+    GLYPHA_REQUIRE(send_all(wrong_socket, *unbound_get));
+    const auto unbound_frame = receive_response(wrong_socket);
+    const auto unbound = glyphastore::server::decode_response(unbound_frame);
+    GLYPHA_REQUIRE(unbound.has_value());
+    GLYPHA_REQUIRE(unbound->frame.status == glyphastore::server::ResponseStatus::not_bound);
+    GLYPHA_REQUIRE(unbound->frame.owner_worker == 1);
+    GLYPHA_REQUIRE(initialize_and_bind(wrong_socket, 0, 2));
+    const auto repeated_bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
         .request_id = 100,
+        .target_worker = 1,
+    });
+    GLYPHA_REQUIRE(repeated_bind.has_value());
+    GLYPHA_REQUIRE(send_all(wrong_socket, *repeated_bind));
+    const auto repeated_bind_frame = receive_response(wrong_socket);
+    const auto repeated = glyphastore::server::decode_response(repeated_bind_frame);
+    GLYPHA_REQUIRE(repeated.has_value());
+    GLYPHA_REQUIRE(repeated->frame.status == glyphastore::server::ResponseStatus::invalid_request);
+    GLYPHA_REQUIRE(repeated->frame.owner_worker == 0);
+
+    const auto misplaced_put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 101,
         .key = bytes("bounded-key-0"),
         .value = bytes("stored"),
     });
-    const auto early_get = glyphastore::server::encode_request({
-        .opcode = glyphastore::server::RequestOpcode::get,
+    GLYPHA_REQUIRE(misplaced_put.has_value());
+    GLYPHA_REQUIRE(send_all(wrong_socket, *misplaced_put));
+    const auto redirect_frame = receive_response(wrong_socket);
+    const auto redirect = glyphastore::server::decode_response(redirect_frame);
+    GLYPHA_REQUIRE(redirect.has_value());
+    GLYPHA_REQUIRE(redirect->frame.status == glyphastore::server::ResponseStatus::wrong_owner);
+    GLYPHA_REQUIRE(redirect->frame.owner_worker == 1);
+    static_cast<void>(::close(wrong_socket));
+
+    const auto owner_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(owner_socket >= 0);
+    const auto owner_init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
         .request_id = 101,
-        .key = bytes("bounded-key-0"),
     });
-    GLYPHA_REQUIRE(put.has_value());
-    GLYPHA_REQUIRE(early_get.has_value());
-    std::vector<std::byte> pipeline;
-    pipeline.insert(pipeline.end(), put->begin(), put->end());
-    pipeline.insert(pipeline.end(), early_get->begin(), early_get->end());
-    GLYPHA_REQUIRE(send_all(socket, pipeline));
-
-    const auto first_frame = receive_response(socket);
-    const auto second_frame = receive_response(socket);
-    const auto first = glyphastore::server::decode_response(first_frame);
-    const auto second = glyphastore::server::decode_response(second_frame);
-    GLYPHA_REQUIRE(first.has_value());
-    GLYPHA_REQUIRE(second.has_value());
-    const auto* put_response = first->frame.request_id == 100 ? &first->frame : &second->frame;
-    const auto* get_response = first->frame.request_id == 101 ? &first->frame : &second->frame;
-    GLYPHA_REQUIRE(put_response->request_id == 100);
-    GLYPHA_REQUIRE(put_response->status == glyphastore::server::ResponseStatus::ok);
-    GLYPHA_REQUIRE(get_response->request_id == 101);
-    GLYPHA_REQUIRE(get_response->status == glyphastore::server::ResponseStatus::overloaded);
-
-    const auto final_get = glyphastore::server::encode_request({
-        .opcode = glyphastore::server::RequestOpcode::get,
+    const auto owner_bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
         .request_id = 102,
+        .target_worker = 1,
+    });
+    const auto missing_get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 103,
         .key = bytes("bounded-key-0"),
     });
-    GLYPHA_REQUIRE(final_get.has_value());
-    GLYPHA_REQUIRE(send_all(socket, *final_get));
-    const auto final_frame = receive_response(socket);
-    const auto final = glyphastore::server::decode_response(final_frame);
-    GLYPHA_REQUIRE(final.has_value());
-    GLYPHA_REQUIRE(final->frame.status == glyphastore::server::ResponseStatus::ok);
-    GLYPHA_REQUIRE(text(final->frame.value) == "stored");
-
-    static_cast<void>(::close(socket));
+    GLYPHA_REQUIRE(owner_init.has_value());
+    GLYPHA_REQUIRE(owner_bind.has_value());
+    GLYPHA_REQUIRE(missing_get.has_value());
+    std::vector<std::byte> bind_pipeline;
+    bind_pipeline.insert(bind_pipeline.end(), owner_init->begin(), owner_init->end());
+    bind_pipeline.insert(bind_pipeline.end(), owner_bind->begin(), owner_bind->end());
+    bind_pipeline.insert(bind_pipeline.end(), missing_get->begin(), missing_get->end());
+    GLYPHA_REQUIRE(send_all(owner_socket, bind_pipeline));
+    const auto owner_init_frame = receive_response(owner_socket);
+    const auto owner_bind_frame = receive_response(owner_socket);
+    const auto missing_frame = receive_response(owner_socket);
+    const auto owner_initialized = glyphastore::server::decode_response(owner_init_frame);
+    const auto owner_bound = glyphastore::server::decode_response(owner_bind_frame);
+    const auto missing = glyphastore::server::decode_response(missing_frame);
+    GLYPHA_REQUIRE(owner_initialized.has_value());
+    GLYPHA_REQUIRE(owner_initialized->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(owner_bound.has_value());
+    GLYPHA_REQUIRE(owner_bound->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(owner_bound->frame.owner_worker == 1);
+    GLYPHA_REQUIRE(missing.has_value());
+    GLYPHA_REQUIRE(missing->frame.status == glyphastore::server::ResponseStatus::not_found);
+    static_cast<void>(::close(owner_socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
 }
@@ -311,8 +397,10 @@ GLYPHA_TEST("multi-Reactor executors distribute connections and share one Store"
     for (std::uint64_t request = 0; request < 16; ++request) {
         const auto key = std::string{"reuse-key-"} + std::to_string(request);
         const auto value = std::string{"reuse-value-"} + std::to_string(request);
+        const auto owner = static_cast<std::uint32_t>(glyphastore::route_worker(key, 2));
         const auto writer = connect_to(server.port());
         GLYPHA_REQUIRE(writer >= 0);
+        GLYPHA_REQUIRE(initialize_and_bind(writer, owner, 2));
         const auto put = glyphastore::server::encode_request({
             .opcode = glyphastore::server::RequestOpcode::put,
             .request_id = request * 2U,
@@ -329,6 +417,7 @@ GLYPHA_TEST("multi-Reactor executors distribute connections and share one Store"
 
         const auto reader = connect_to(server.port());
         GLYPHA_REQUIRE(reader >= 0);
+        GLYPHA_REQUIRE(initialize_and_bind(reader, owner, 2));
         const auto get = glyphastore::server::encode_request({
             .opcode = glyphastore::server::RequestOpcode::get,
             .request_id = request * 2U + 1U,
@@ -346,10 +435,10 @@ GLYPHA_TEST("multi-Reactor executors distribute connections and share one Store"
 
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
-    const auto accepted = server.accepted_connections_per_executor();
-    GLYPHA_REQUIRE(accepted.size() == 2);
-    GLYPHA_REQUIRE(accepted[0] > 0);
-    GLYPHA_REQUIRE(accepted[1] > 0);
+    const auto adopted = server.adopted_connections_per_executor();
+    GLYPHA_REQUIRE(adopted.size() == 2);
+    GLYPHA_REQUIRE(adopted[0] > 0);
+    GLYPHA_REQUIRE(adopted[1] > 0);
     const auto affinity = server.executor_affinity_results();
     GLYPHA_REQUIRE(affinity.size() == 2);
     GLYPHA_REQUIRE(affinity[0].mode != glyphastore::server::ExecutorAffinityMode::disabled);
