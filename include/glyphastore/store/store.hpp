@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/segment/global_manager.hpp"
@@ -51,9 +52,13 @@ class Store final {
     // get() returns segment-backed spans; copy value bytes before calling Store again
     // on the same key from another thread if the view must remain stable.
     [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<RecordView>;
+    [[nodiscard]] auto get(const HashedKey& key, std::uint64_t now_ns = 0) -> Result<RecordView>;
     [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
+    [[nodiscard]] auto put(const HashedKey& key, std::span<const std::byte> value,
+                           std::uint64_t expire_at_ns = 0) -> Status;
     [[nodiscard]] auto erase(std::string_view key) -> Status;
+    [[nodiscard]] auto erase(const HashedKey& key) -> Status;
 
     [[nodiscard]] auto verify_index() const -> Status;
 

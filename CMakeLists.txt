@@ -38,6 +38,41 @@ glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
 glyphastore_enable_ipo(glyphastore_core)
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(GLYPHASTORE_POLLER_SOURCE src/server/poller_epoll.cpp)
+elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+    set(GLYPHASTORE_POLLER_SOURCE src/server/poller_kqueue.cpp)
+else()
+    message(FATAL_ERROR "glyphastored requires epoll on Linux or kqueue on macOS/FreeBSD")
+endif()
+
+add_library(glyphastore_server_core
+    src/server/dispatcher.cpp
+    src/server/protocol.cpp
+    src/server/reactor.cpp
+    src/server/socket.cpp
+    src/server/wakeup.cpp
+    ${GLYPHASTORE_POLLER_SOURCE}
+)
+add_library(GlyphaStore::server ALIAS glyphastore_server_core)
+target_compile_features(glyphastore_server_core PUBLIC cxx_std_23)
+target_include_directories(glyphastore_server_core
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_server_core PUBLIC GlyphaStore::core PRIVATE glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_server_core)
+glyphastore_enable_hardening(glyphastore_server_core)
+glyphastore_enable_ipo(glyphastore_server_core)
+
+add_executable(glyphastored src/server/daemon_main.cpp)
+target_link_libraries(glyphastored PRIVATE GlyphaStore::server glyphastore_project_options)
+glyphastore_set_warnings(glyphastored)
+glyphastore_enable_hardening(glyphastored)
+glyphastore_enable_ipo(glyphastored)
+set_target_properties(glyphastored PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+
 add_executable(glyphastore_demo src/main.cpp)
 target_link_libraries(glyphastore_demo PRIVATE GlyphaStore::core glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_demo)
@@ -52,7 +87,9 @@ if(BUILD_TESTING)
     add_executable(glyphastore_tests
         tests/test_main.cpp
         tests/unit/index_tests.cpp
+        tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/record_tests.cpp
+        tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp
         tests/unit/segment_catalog_tests.cpp
         tests/unit/trusted_read_tests.cpp
@@ -61,10 +98,11 @@ if(BUILD_TESTING)
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
+        tests/integration/server_reactor_tests.cpp
         tests/integration/store_tests.cpp
         tests/property/history_property_tests.cpp
     )
-    target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::core glyphastore_project_options)
+    target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::server glyphastore_project_options)
     target_include_directories(glyphastore_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     glyphastore_set_warnings(glyphastore_tests)
     glyphastore_enable_hardening(glyphastore_tests)
@@ -151,16 +189,21 @@ if(GLYPHASTORE_BUILD_FUZZERS)
             "On macOS install a full LLVM toolchain and configure with CC/CXX pointing to it."
         )
     endif()
-    foreach(target IN ITEMS record_decoder segment_scanner index_rebuild)
+    foreach(target IN ITEMS record_decoder segment_scanner index_rebuild protocol_decoder)
         add_executable(fuzz_${target} fuzz/fuzz_${target}.cpp)
-        target_link_libraries(fuzz_${target} PRIVATE GlyphaStore::core glyphastore_project_options)
+        if(target STREQUAL "protocol_decoder")
+            target_link_libraries(fuzz_${target} PRIVATE GlyphaStore::server glyphastore_project_options)
+        else()
+            target_link_libraries(fuzz_${target} PRIVATE GlyphaStore::core glyphastore_project_options)
+        endif()
         target_compile_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
         target_link_options(fuzz_${target} PRIVATE -fsanitize=fuzzer,address,undefined)
         glyphastore_enable_ipo(fuzz_${target})
     endforeach()
 endif()
 
-install(TARGETS glyphastore_core glyphastore_demo glyphastore_inspect_segment glyphastore_rebuild_index
+install(TARGETS glyphastore_core glyphastore_server_core glyphastore_demo glyphastored glyphastore_inspect_segment
+        glyphastore_rebuild_index
     EXPORT GlyphaStoreTargets
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib

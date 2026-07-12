@@ -18,19 +18,29 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
 }
 
 auto Store::get(std::string_view key, const std::uint64_t now_ns) -> Result<RecordView> {
-    const auto hashed = HashedKey::compute(key);
-    return workers_.route(hashed).get(hashed, now_ns);
+    return get(HashedKey::compute(key), now_ns);
+}
+
+auto Store::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<RecordView> {
+    return workers_.route(key).get(key, now_ns);
 }
 
 auto Store::put(std::string_view key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status {
-    const auto hashed = HashedKey::compute(key);
-    return workers_.route(hashed).put(hashed, value, expire_at_ns);
+    return put(HashedKey::compute(key), value, expire_at_ns);
+}
+
+auto Store::put(const HashedKey& key, const std::span<const std::byte> value,
+                const std::uint64_t expire_at_ns) -> Status {
+    return workers_.route(key).put(key, value, expire_at_ns);
 }
 
 auto Store::erase(std::string_view key) -> Status {
-    const auto hashed = HashedKey::compute(key);
-    return workers_.route(hashed).erase(hashed);
+    return erase(HashedKey::compute(key));
+}
+
+auto Store::erase(const HashedKey& key) -> Status {
+    return workers_.route(key).erase(key);
 }
 
 auto Store::verify_index() const -> Status {

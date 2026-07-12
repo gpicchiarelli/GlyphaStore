@@ -21,7 +21,7 @@ segments, a derived exact-key Index, automatic worker sizing, and bounded backgr
 
 - Not Redis-compatible and not a RESP implementation.
 - Not a SQL database, ordered query engine, or general-purpose document store.
-- Not a production server yet; networking and the future binary protocol are intentionally absent.
+- Not a production server yet; the experimental binary TCP protocol has no compatibility promise.
 - Not evidence of claimed throughput. Performance numbers will be published only from reproducible
   benchmarks.
 
@@ -91,6 +91,20 @@ Fuzzers use Clang/libFuzzer and are disabled in normal builds. Benchmarks are bo
 microbenchmarks, not comparative product claims. Parallel Store benchmarks support `uniform`
 (independent clients crossing Worker boundaries), `worker-affine` (one client thread per Worker),
 `single-worker` (maximum contention), and `zipf` (skewed ownership) distributions.
+
+## Experimental TCP daemon
+
+`glyphastored` is the native non-blocking TCP server bootstrap. It uses `kqueue` on macOS/FreeBSD
+and edge-triggered `epoll` on Linux. The current protocol milestone implements pipelined `HELLO`,
+`PING`, `GET`, `PUT`, and `ERASE`. Store operations are hash-routed into bounded per-Worker MPSC
+inboxes and completed asynchronously back on the owning network Reactor.
+
+```bash
+./scripts/dev.sh build
+./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379
+```
+
+See the [server model](docs/architecture/server-model.md) for framing and concurrency invariants.
 
 ## Supported platforms
 
