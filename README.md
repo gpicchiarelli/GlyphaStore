@@ -75,6 +75,7 @@ experimental and has no compatibility promise.
 ```bash
 ./scripts/bootstrap-macos.sh
 ./scripts/open-xcode.sh
+# optional full verification: ./scripts/verify-xcode.sh
 ```
 
 The bootstrap installs CMake and Ninja into a repository-local Python virtual environment, so it
@@ -171,6 +172,8 @@ connection setup, and client-thread creation remain outside the timed region.
 ```
 
 See the [server model](docs/architecture/server-model.md) for framing and concurrency invariants.
+Command-line conventions, exit codes, signals, and operational examples are documented in the
+[CLI reference](docs/cli.md).
 
 ## Documentation
 

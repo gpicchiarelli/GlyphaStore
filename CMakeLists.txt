@@ -16,8 +16,24 @@ include(ProjectOptions)
 include(CompilerWarnings)
 include(Sanitizers)
 include(Hardening)
+include(XcodeSupport)
 
 glyphastore_project_options()
+set_property(GLOBAL PROPERTY USE_FOLDERS ON)
+set(CMAKE_PREDEFINED_TARGETS_FOLDER "CMake")
+
+add_library(glyphastore_cli_support
+    src/cli/arguments.cpp
+)
+target_compile_features(glyphastore_cli_support PUBLIC cxx_std_23)
+target_include_directories(glyphastore_cli_support
+    PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+target_link_libraries(glyphastore_cli_support PRIVATE glyphastore_project_options)
+glyphastore_set_warnings(glyphastore_cli_support)
+glyphastore_enable_hardening(glyphastore_cli_support)
+set_target_properties(glyphastore_cli_support PROPERTIES FOLDER "Libraries/Internal")
 
 add_library(glyphastore_core
     src/index/index.cpp
@@ -46,6 +62,7 @@ target_link_libraries(glyphastore_core PRIVATE $<BUILD_INTERFACE:glyphastore_pro
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
 glyphastore_enable_ipo(glyphastore_core)
+set_target_properties(glyphastore_core PROPERTIES FOLDER "Libraries")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(GLYPHASTORE_POLLER_SOURCE src/server/poller_epoll.cpp)
@@ -80,28 +97,34 @@ target_link_libraries(glyphastore_server_core
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
 glyphastore_enable_ipo(glyphastore_server_core)
+set_target_properties(glyphastore_server_core PROPERTIES FOLDER "Libraries")
 
 add_executable(glyphastored src/server/daemon_main.cpp)
-target_link_libraries(glyphastored PRIVATE GlyphaStore::server glyphastore_project_options)
+target_link_libraries(glyphastored
+    PRIVATE GlyphaStore::server glyphastore_cli_support glyphastore_project_options
+)
+target_compile_definitions(glyphastored PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
 glyphastore_set_warnings(glyphastored)
 glyphastore_enable_hardening(glyphastored)
 glyphastore_enable_ipo(glyphastored)
-set_target_properties(glyphastored PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+set_target_properties(glyphastored PROPERTIES FOLDER "Applications")
+glyphastore_xcode_scheme(glyphastored ARGUMENTS
+    --bind 127.0.0.1 --port 7379 --workers 2
+)
 
 add_executable(glyphastore_demo src/main.cpp)
 target_link_libraries(glyphastore_demo PRIVATE GlyphaStore::core glyphastore_project_options)
 glyphastore_set_warnings(glyphastore_demo)
 glyphastore_enable_ipo(glyphastore_demo)
-set_target_properties(glyphastore_demo PROPERTIES
-    XCODE_GENERATE_SCHEME TRUE
-    XCODE_SCHEME_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-)
+set_target_properties(glyphastore_demo PROPERTIES FOLDER "Applications")
+glyphastore_xcode_scheme(glyphastore_demo)
 
 include(CTest)
 if(BUILD_TESTING)
     add_executable(glyphastore_tests
         tests/test_main.cpp
         tests/unit/index_tests.cpp
+        tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/record_tests.cpp
@@ -118,26 +141,66 @@ if(BUILD_TESTING)
         tests/integration/store_tests.cpp
         tests/property/history_property_tests.cpp
     )
-    target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::server glyphastore_project_options)
+    target_link_libraries(glyphastore_tests
+        PRIVATE GlyphaStore::server glyphastore_cli_support glyphastore_project_options
+    )
     target_include_directories(glyphastore_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
     glyphastore_set_warnings(glyphastore_tests)
     glyphastore_enable_hardening(glyphastore_tests)
     glyphastore_enable_ipo(glyphastore_tests)
     add_test(NAME glyphastore_tests COMMAND glyphastore_tests)
-    set_target_properties(glyphastore_tests PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+    set_target_properties(glyphastore_tests PROPERTIES FOLDER "Quality")
+    glyphastore_xcode_scheme(glyphastore_tests)
 endif()
 
 add_executable(glyphastore_inspect_segment tools/inspect_segment.cpp)
-target_link_libraries(glyphastore_inspect_segment PRIVATE GlyphaStore::core glyphastore_project_options)
+target_link_libraries(glyphastore_inspect_segment
+    PRIVATE GlyphaStore::core glyphastore_cli_support glyphastore_project_options
+)
+target_compile_definitions(glyphastore_inspect_segment PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
 glyphastore_set_warnings(glyphastore_inspect_segment)
 glyphastore_enable_ipo(glyphastore_inspect_segment)
-set_target_properties(glyphastore_inspect_segment PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+set_target_properties(glyphastore_inspect_segment PROPERTIES FOLDER "Tools")
+glyphastore_xcode_scheme(glyphastore_inspect_segment ARGUMENTS --help)
 
 add_executable(glyphastore_rebuild_index tools/rebuild_index.cpp)
-target_link_libraries(glyphastore_rebuild_index PRIVATE GlyphaStore::core glyphastore_project_options)
+target_link_libraries(glyphastore_rebuild_index
+    PRIVATE GlyphaStore::core glyphastore_cli_support glyphastore_project_options
+)
+target_compile_definitions(glyphastore_rebuild_index PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
 glyphastore_set_warnings(glyphastore_rebuild_index)
 glyphastore_enable_ipo(glyphastore_rebuild_index)
-set_target_properties(glyphastore_rebuild_index PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+set_target_properties(glyphastore_rebuild_index PROPERTIES FOLDER "Tools")
+glyphastore_xcode_scheme(glyphastore_rebuild_index ARGUMENTS --help)
+
+if(BUILD_TESTING)
+    add_test(NAME glyphastore_cli_daemon_help COMMAND glyphastored --help)
+    set_tests_properties(glyphastore_cli_daemon_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "GlyphaStore native binary key-value server"
+    )
+    add_test(NAME glyphastore_cli_daemon_version COMMAND glyphastored --version)
+    set_tests_properties(glyphastore_cli_daemon_version PROPERTIES
+        PASS_REGULAR_EXPRESSION "glyphastored ${PROJECT_VERSION}"
+    )
+    add_test(NAME glyphastore_cli_inspect_help COMMAND glyphastore_inspect_segment --help)
+    set_tests_properties(glyphastore_cli_inspect_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "Inspect a GlyphaStore segment file"
+    )
+    add_test(NAME glyphastore_cli_rebuild_help COMMAND glyphastore_rebuild_index --help)
+    set_tests_properties(glyphastore_cli_rebuild_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "Rebuild a GlyphaStore index"
+    )
+    add_test(NAME glyphastore_cli_rejects_invalid_workers COMMAND glyphastored --workers 257)
+    set_tests_properties(glyphastore_cli_rejects_invalid_workers PROPERTIES WILL_FAIL TRUE)
+    set_tests_properties(
+        glyphastore_cli_daemon_help
+        glyphastore_cli_daemon_version
+        glyphastore_cli_inspect_help
+        glyphastore_cli_rebuild_help
+        glyphastore_cli_rejects_invalid_workers
+        PROPERTIES TIMEOUT 10
+    )
+endif()
 
 if(GLYPHASTORE_BUILD_BENCHMARKS)
     find_program(GIT_EXECUTABLE NAMES git)
@@ -170,7 +233,10 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     target_compile_definitions(glyphastore_benchmarks PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}")
     glyphastore_set_warnings(glyphastore_benchmarks)
     glyphastore_enable_ipo(glyphastore_benchmarks)
-    set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+    set_target_properties(glyphastore_benchmarks PROPERTIES FOLDER "Benchmarks")
+    glyphastore_xcode_scheme(glyphastore_benchmarks RELEASE ARGUMENTS
+        --filter store-put-get --ops 200000 --warmup 1 --repeats 7
+    )
     add_executable(glyphastore_server_benchmarks
         benchmarks/server_benchmark.cpp
         benchmarks/harness.cpp
@@ -183,7 +249,10 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
         PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}")
     glyphastore_set_warnings(glyphastore_server_benchmarks)
     glyphastore_enable_ipo(glyphastore_server_benchmarks)
-    set_target_properties(glyphastore_server_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+    set_target_properties(glyphastore_server_benchmarks PROPERTIES FOLDER "Benchmarks")
+    glyphastore_xcode_scheme(glyphastore_server_benchmarks RELEASE ARGUMENTS
+        --ops 100000 --workers 2 --clients 2 --pipeline 32 --warmup 1 --repeats 7
+    )
     if(BUILD_TESTING)
         foreach(distribution IN ITEMS uniform worker-affine single-worker zipf)
             add_test(
@@ -240,6 +309,32 @@ if(GLYPHASTORE_BUILD_FUZZERS)
         glyphastore_enable_ipo(fuzz_${target})
     endforeach()
 endif()
+
+if(BUILD_TESTING)
+    set(glyphastore_check_dependencies
+        glyphastore_tests
+        glyphastored
+        glyphastore_inspect_segment
+        glyphastore_rebuild_index
+    )
+    if(TARGET glyphastore_benchmarks)
+        list(APPEND glyphastore_check_dependencies
+            glyphastore_benchmarks
+            glyphastore_server_benchmarks
+        )
+    endif()
+    add_custom_target(check
+        COMMAND "${CMAKE_CTEST_COMMAND}" -C "$<CONFIG>" --output-on-failure
+        DEPENDS ${glyphastore_check_dependencies}
+        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+        USES_TERMINAL
+        COMMENT "Running GlyphaStore tests with CTest"
+    )
+    set_target_properties(check PROPERTIES FOLDER "Quality")
+    glyphastore_xcode_scheme(check)
+endif()
+
+glyphastore_add_xcode_project_files()
 
 install(TARGETS glyphastore_core glyphastore_server_core
     EXPORT GlyphaStoreTargets

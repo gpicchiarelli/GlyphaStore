@@ -1,4 +1,5 @@
 #include "glyphastore/server/poller.hpp"
+#include "system_error.hpp"
 
 #if !defined(__linux__)
 #error "epoll backend requires Linux"
@@ -7,17 +8,11 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <cstring>
-#include <string>
 #include <sys/epoll.h>
 #include <unistd.h>
 
 namespace glyphastore::server {
 namespace {
-
-[[nodiscard]] auto system_error(const char* operation) -> Unexpected {
-    return fail(ErrorCode::io_error, std::string{operation} + ": " + std::strerror(errno));
-}
 
 [[nodiscard]] auto epoll_flags(const IoInterest interest) noexcept -> std::uint32_t {
     std::uint32_t flags = EPOLLET | EPOLLRDHUP;

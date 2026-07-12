@@ -125,6 +125,18 @@ auto initialize_and_bind(const int socket, const std::uint32_t worker, const std
 
 } // namespace
 
+GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol buffers") {
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create(
+                        {.port = 0, .worker_count = glyphastore::kMaximumWorkerCount + 1U})
+                        .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create(
+                        {.port = 0, .maximum_input_bytes = glyphastore::server::kRequestHeaderBytes - 1U})
+                        .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create(
+                        {.port = 0, .maximum_output_bytes = glyphastore::server::kResponseHeaderBytes - 1U})
+                        .has_value());
+}
+
 GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
     auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 16});
     GLYPHA_REQUIRE(opened.has_value());

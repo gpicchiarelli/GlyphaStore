@@ -93,8 +93,9 @@
       "generator": "Xcode",
       "binaryDir": "${sourceDir}/build/xcode",
       "cacheVariables": {
-        "CMAKE_XCODE_GENERATE_SCHEME": "ON",
+        "CMAKE_XCODE_GENERATE_SCHEME": "OFF",
         "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED": "NO",
+        "CMAKE_XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED": "NO",
         "CMAKE_XCODE_ATTRIBUTE_ONLY_ACTIVE_ARCH": "YES"
       }
     },
