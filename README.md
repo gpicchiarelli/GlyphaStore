@@ -2,6 +2,7 @@
 
 <!-- build and quality -->
 [![CI](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml)
+[![Benchmarks](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml)
 [![Sanitizers](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml)
 [![Static analysis](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml)
 [![CodeQL](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml)
@@ -117,6 +118,13 @@ Fuzzers use Clang/libFuzzer and are disabled in normal builds. Benchmarks are bo
 microbenchmarks, not comparative product claims. Parallel Store benchmarks support `uniform`
 (independent clients crossing Worker boundaries), `worker-affine` (one client thread per Worker),
 `single-worker` (maximum contention), and `zipf` (skewed ownership) distributions.
+
+The [benchmark workflow](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml)
+runs a fixed Release suite on pushes to `main`, every Monday, and on manual dispatch. Every run
+publishes a Markdown summary plus raw text, runner metadata, and machine-readable JSON as a
+90-day artifact. When available, it also compares throughput with the previous successful run on
+`main`. GitHub-hosted runner measurements are regression signals, not absolute performance claims;
+publishable numbers still require controlled hardware.
 
 ## Experimental TCP daemon
 
