@@ -48,3 +48,33 @@ jobs:
         run: cmake --build --preset unix-debug
       - name: Test
         run: ctest --preset unix-debug
+
+  install-consumer:
+    name: Release install / external consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake --preset unix-release
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/install-prefix
+      - name: Build and install
+        run: |
+          cmake --build --preset unix-release
+          cmake --install build/unix-release
+      - name: Configure external consumer
+        run: >-
+          cmake -S tests/consumer -B build/consumer -G Ninja
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install-prefix
+      - name: Build and test external consumer
+        run: |
+          cmake --build build/consumer
+          ctest --test-dir build/consumer --output-on-failure

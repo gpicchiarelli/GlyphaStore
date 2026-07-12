@@ -404,7 +404,7 @@ inline void print_metadata(std::ostream& out, const RunSettings& settings) {
 #else
     out << "# git_sha=unknown\n";
 #endif
-#if defined(__APPLE__) && defined(__aarch64__)
+#if defined(__aarch64__)
     out << "# arch=arm64\n";
 #elif defined(__x86_64__)
     out << "# arch=x86_64\n";
@@ -415,6 +415,10 @@ inline void print_metadata(std::ostream& out, const RunSettings& settings) {
     out << "# platform=macos\n";
 #elif defined(__linux__)
     out << "# platform=linux\n";
+#elif defined(__FreeBSD__)
+    out << "# platform=freebsd\n";
+#elif defined(__OpenBSD__)
+    out << "# platform=openbsd\n";
 #else
     out << "# platform=unknown\n";
 #endif

@@ -1,9 +1,17 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(GlyphaStore VERSION 0.1.0 LANGUAGES CXX)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" GLYPHASTORE_VERSION)
+string(STRIP "${GLYPHASTORE_VERSION}" GLYPHASTORE_VERSION)
+if(NOT GLYPHASTORE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+    message(FATAL_ERROR "VERSION must contain exactly one semantic version such as 1.2.3")
+endif()
+
+project(GlyphaStore VERSION "${GLYPHASTORE_VERSION}" LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+include(CMakePackageConfigHelpers)
+include(GNUInstallDirs)
 include(ProjectOptions)
 include(CompilerWarnings)
 include(Sanitizers)
@@ -26,6 +34,7 @@ add_library(glyphastore_core
     src/worker/worker.cpp
 )
 add_library(GlyphaStore::core ALIAS glyphastore_core)
+set_target_properties(glyphastore_core PROPERTIES EXPORT_NAME core)
 
 target_compile_features(glyphastore_core PUBLIC cxx_std_23)
 target_include_directories(glyphastore_core
@@ -33,17 +42,17 @@ target_include_directories(glyphastore_core
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(glyphastore_core PRIVATE glyphastore_project_options)
+target_link_libraries(glyphastore_core PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>)
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
 glyphastore_enable_ipo(glyphastore_core)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(GLYPHASTORE_POLLER_SOURCE src/server/poller_epoll.cpp)
-elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD")
+elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
     set(GLYPHASTORE_POLLER_SOURCE src/server/poller_kqueue.cpp)
 else()
-    message(FATAL_ERROR "glyphastored requires epoll on Linux or kqueue on macOS/FreeBSD")
+    message(FATAL_ERROR "glyphastored requires epoll on Linux or kqueue on macOS/FreeBSD/OpenBSD")
 endif()
 
 add_library(glyphastore_server_core
@@ -57,13 +66,17 @@ add_library(glyphastore_server_core
     ${GLYPHASTORE_POLLER_SOURCE}
 )
 add_library(GlyphaStore::server ALIAS glyphastore_server_core)
+set_target_properties(glyphastore_server_core PROPERTIES EXPORT_NAME server)
 target_compile_features(glyphastore_server_core PUBLIC cxx_std_23)
 target_include_directories(glyphastore_server_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
 )
-target_link_libraries(glyphastore_server_core PUBLIC GlyphaStore::core PRIVATE glyphastore_project_options)
+target_link_libraries(glyphastore_server_core
+    PUBLIC GlyphaStore::core
+    PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
+)
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
 glyphastore_enable_ipo(glyphastore_server_core)
@@ -228,11 +241,56 @@ if(GLYPHASTORE_BUILD_FUZZERS)
     endforeach()
 endif()
 
-install(TARGETS glyphastore_core glyphastore_server_core glyphastore_demo glyphastored glyphastore_inspect_segment
-        glyphastore_rebuild_index
+install(TARGETS glyphastore_core glyphastore_server_core
     EXPORT GlyphaStoreTargets
-    RUNTIME DESTINATION bin
-    LIBRARY DESTINATION lib
-    ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime NAMELINK_COMPONENT Development
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Development
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-install(DIRECTORY include/ DESTINATION include)
+install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glyphastore_rebuild_index
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    COMPONENT Runtime
+)
+install(
+    DIRECTORY include/glyphastore
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+    COMPONENT Development
+    FILES_MATCHING PATTERN "*.hpp"
+)
+
+install(
+    EXPORT GlyphaStoreTargets
+    FILE GlyphaStoreTargets.cmake
+    NAMESPACE GlyphaStore::
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/GlyphaStore"
+    COMPONENT Development
+)
+
+configure_package_config_file(
+    cmake/GlyphaStoreConfig.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfig.cmake"
+    INSTALL_DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/GlyphaStore"
+)
+if(PROJECT_VERSION_MAJOR EQUAL 0)
+    set(GLYPHASTORE_VERSION_COMPATIBILITY SameMinorVersion)
+else()
+    set(GLYPHASTORE_VERSION_COMPATIBILITY SameMajorVersion)
+endif()
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfigVersion.cmake"
+    VERSION "${PROJECT_VERSION}"
+    COMPATIBILITY "${GLYPHASTORE_VERSION_COMPATIBILITY}"
+)
+install(
+    FILES
+        "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfig.cmake"
+        "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfigVersion.cmake"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/GlyphaStore"
+    COMPONENT Development
+)
+install(
+    FILES LICENSE NOTICE VERSION
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/GlyphaStore"
+    COMPONENT Runtime
+)

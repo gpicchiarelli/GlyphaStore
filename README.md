@@ -18,7 +18,10 @@
 [![Storage](https://img.shields.io/badge/storage-log--indexed-6f42c1)](#architecture)
 [![Segments](https://img.shields.io/badge/segments-64%20MiB%20append--only-2ea44f)](docs/architecture/storage-model.md)
 [![CI platforms](https://img.shields.io/badge/CI-Linux%20%7C%20macOS-informational)](#supported-platforms)
-[![FreeBSD](https://img.shields.io/badge/target-FreeBSD-lightgrey?logo=freebsd&logoColor=white)](#supported-platforms)
+[![Linux](https://img.shields.io/badge/target-Linux%20since%200.1.0-FCC624?logo=linux&logoColor=black)](#supported-platforms)
+[![macOS](https://img.shields.io/badge/target-macOS%20since%200.1.0-000000?logo=apple&logoColor=white)](#supported-platforms)
+[![FreeBSD](https://img.shields.io/badge/target-FreeBSD%20since%200.1.0-AB2B28?logo=freebsd&logoColor=white)](#supported-platforms)
+[![OpenBSD](https://img.shields.io/badge/target-OpenBSD%20since%200.1.0-F2CA30?logo=openbsd&logoColor=black)](#supported-platforms)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 ![GlyphaStore storage engine laboratory](docs/assets/glyphastore-hero.png)
@@ -85,7 +88,7 @@ cmake --build --preset macos-debug
 ctest --preset macos-debug
 ```
 
-On Linux and FreeBSD, use the `unix-debug` and `unix-release` presets.
+On Linux, FreeBSD, and OpenBSD, use the `unix-debug` and `unix-release` presets.
 
 ## Architecture
 
@@ -129,7 +132,7 @@ publishable numbers still require controlled hardware.
 ## Experimental TCP daemon
 
 `glyphastored` is the native non-blocking TCP server bootstrap. Each executor pairs one Reactor with
-one Worker: `kqueue` on macOS/FreeBSD and edge-triggered `epoll` on Linux. The protocol implements
+one Worker: `kqueue` on macOS/FreeBSD/OpenBSD and edge-triggered `epoll` on Linux. The protocol implements
 pipelined `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, and `ERASE`. Binding moves ownership of the
 socket reference and buffered state once to the selected Reactor. Store operations then execute
 only on that Worker; a mismatched key receives `WRONG_OWNER` and is never forwarded internally.
@@ -154,9 +157,11 @@ See the [server model](docs/architecture/server-model.md) for framing and concur
 
 ## Supported platforms
 
-- macOS on Apple Silicon is the primary development platform.
-- macOS Intel remains a supported CMake target.
-- Linux and FreeBSD are architectural targets and CI/packaging coverage will expand with the core.
+- macOS on Apple Silicon is the primary development platform; macOS Intel remains a target.
+- Linux and macOS are built and tested in CI.
+- Linux, macOS, FreeBSD, and OpenBSD are architectural targets since `0.1.0`.
+- FreeBSD and OpenBSD use the `kqueue` backend but do not yet have native CI runners; their badges
+  describe target status, not verified release support.
 
 ## Security
 

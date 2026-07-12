@@ -9,6 +9,9 @@
 
 #if defined(__linux__)
 #include <sys/sysinfo.h>
+#endif
+
+#if defined(__linux__) || defined(__OpenBSD__)
 #include <unistd.h>
 #endif
 
@@ -53,6 +56,11 @@ auto detect_worker_topology() noexcept -> WorkerTopology {
     size = sizeof(memory);
     if (sysctlbyname("hw.physmem", &memory, &size, nullptr, 0) == 0) {
         result.available_memory_bytes = static_cast<std::size_t>(memory);
+    }
+#elif defined(__OpenBSD__)
+    const auto available = sysconf(_SC_NPROCESSORS_ONLN);
+    if (available > 0) {
+        result.available_cpus = static_cast<std::size_t>(available);
     }
 #elif defined(__linux__)
     const auto available = sysconf(_SC_NPROCESSORS_ONLN);

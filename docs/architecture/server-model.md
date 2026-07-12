@@ -9,14 +9,14 @@ connection state.
 The server selects its readiness backend at compile time:
 
 - Linux: edge-triggered `epoll`;
-- macOS and FreeBSD: `kqueue` with `EV_CLEAR`.
+- macOS, FreeBSD, and OpenBSD: `kqueue` with `EV_CLEAR`.
 
 All accepted sockets are non-blocking and close-on-exec. Read and write handlers drain the socket
 until `EAGAIN`. Each executor combines one Reactor and one Store Worker. That Reactor is the sole
 owner of its connection sockets and input/output buffers, and that Worker is the only server data
 path operating its Index and segments.
 
-Linux may create one `SO_REUSEPORT` listener per executor; macOS and FreeBSD use one public
+Linux may create one `SO_REUSEPORT` listener per executor; macOS, FreeBSD, and OpenBSD use one public
 acceptor. Initial placement is temporary. After `INIT`, the client sends `BIND_WORKER`. If the
 selected Worker differs from the temporary Reactor, the source removes the descriptor from its
 poller and moves the `SocketHandle` plus buffered connection state through a bounded handoff queue.

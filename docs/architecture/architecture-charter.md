@@ -25,8 +25,8 @@ with Redis or any text protocol.
 - Vacuum uses copy-build-validate-publish-retire and never rewrites published records in place.
 - The Index and active Segments are RAM-resident. Sealed Segments may be persisted, mapped, or
   evicted by explicit policy.
-- Linux, macOS, and FreeBSD are supported architectural targets; macOS is the primary development
-  environment.
+- Linux, macOS, FreeBSD, and OpenBSD are architectural targets since `0.1.0`; macOS is the primary
+  development environment. Only Linux and macOS currently have continuous build-and-test evidence.
 - Memory safety, integer safety, data-race freedom, corruption detection, and bounded resource
   use are release requirements, not optional hardening.
 

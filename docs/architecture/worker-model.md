@@ -41,4 +41,5 @@ required across threads.
 
 On macOS, physical core detection uses `sysctlbyname`. Linux must respect the process CPU affinity
 mask when the platform backend is completed. FreeBSD uses native topology APIs with a portable
-fallback.
+fallback. OpenBSD uses `_SC_NPROCESSORS_ONLN` for the available CPU count and otherwise retains the
+portable `std::thread::hardware_concurrency` topology fallback.

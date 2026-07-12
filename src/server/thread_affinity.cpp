@@ -4,6 +4,10 @@
 #include <cstdio>
 #include <pthread.h>
 
+#if defined(__OpenBSD__)
+#include <pthread_np.h>
+#endif
+
 #if defined(__APPLE__)
 #include <mach/mach.h>
 #include <mach/thread_policy.h>
@@ -21,7 +25,7 @@ void set_thread_name(const std::size_t executor_id) noexcept {
     static_cast<void>(pthread_setname_np(name));
 #elif defined(__linux__)
     static_cast<void>(pthread_setname_np(pthread_self(), name));
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__OpenBSD__)
     pthread_set_name_np(pthread_self(), name);
 #endif
 }

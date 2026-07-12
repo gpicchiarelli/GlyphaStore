@@ -1,7 +1,7 @@
 #include "glyphastore/server/poller.hpp"
 
-#if !defined(__APPLE__) && !defined(__FreeBSD__)
-#error "kqueue backend requires macOS or FreeBSD"
+#if !defined(__APPLE__) && !defined(__FreeBSD__) && !defined(__OpenBSD__)
+#error "kqueue backend requires macOS, FreeBSD, or OpenBSD"
 #endif
 
 #include "glyphastore/server/socket.hpp"
