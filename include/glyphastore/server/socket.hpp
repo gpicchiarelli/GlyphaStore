@@ -37,8 +37,8 @@ class TcpListener final {
   public:
     TcpListener() = default;
 
-    [[nodiscard]] static auto bind(std::string_view address, std::uint16_t port, int backlog = 512)
-        -> Result<TcpListener>;
+    [[nodiscard]] static auto bind(std::string_view address, std::uint16_t port, int backlog = 512,
+                                   bool reuse_port = false) -> Result<TcpListener>;
     [[nodiscard]] auto accept() const -> Result<std::optional<SocketHandle>>;
     [[nodiscard]] auto descriptor() const noexcept -> int {
         return socket_.descriptor();

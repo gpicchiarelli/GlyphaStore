@@ -12,19 +12,21 @@ The server selects its readiness backend at compile time:
 - macOS and FreeBSD: `kqueue` with `EV_CLEAR`.
 
 All accepted sockets are non-blocking and close-on-exec. Read and write handlers drain the socket
-until `EAGAIN`. The Reactor is the sole owner of every connection socket and its input/output
-buffers. Storage Workers return completions to the owning Reactor rather than writing to a socket
-directly.
+until `EAGAIN`. Each executor combines one Reactor and one Store Worker. That Reactor is the sole
+owner of its connection sockets and input/output buffers, and that Worker is the only server data
+path operating its Index and segments.
 
-The current runtime has one network Reactor and one serial executor per Store Worker. `GET`, `PUT`,
-and `ERASE` route by the already-computed key hash into that Worker's bounded MPSC inbox. The
-Worker executor is the only server thread operating that partition, while `HELLO` and `PING` remain
-reactor-local. Completed operations cross a bounded MPSC completion ring and wake the native
-poller through `eventfd` on Linux or a non-blocking pipe on macOS/FreeBSD.
+Linux creates one `SO_REUSEPORT` listener per executor and lets the kernel distribute connections.
+On macOS and FreeBSD, one public acceptor distributes accepted sockets round-robin through bounded
+handoff queues; each destination Reactor then registers its socket in its own `kqueue`. This avoids
+depending on BSD `SO_REUSEPORT` behavior for listener load balancing.
 
-This removes Store work from the network loop and permits different Worker partitions to execute
-concurrently. A later multi-reactor stage will pair a Reactor with each Worker executor, making
-same-owner requests direct and reserving inbox hops for remote owners.
+`GET`, `PUT`, and `ERASE` compute the owner from the key hash. A same-owner request executes
+directly on the local Worker. A remote-owner request crosses the target executor's bounded MPSC
+inbox. Its completion returns through the origin executor's bounded completion ring and wakes that
+Reactor through `eventfd` on Linux or a non-blocking pipe on macOS/FreeBSD. `HELLO` and `PING`
+remain Reactor-local. Server executors use a private owner-checked Store path, so local work and
+inbox consumption do not acquire the public Store API's per-Worker mutex.
 
 ## Protocol
 
@@ -70,16 +72,26 @@ cannot target a new connection that reused the same descriptor or slot.
 
 ## Backpressure
 
-Input and output buffering is bounded per connection. Every Worker inbox, the completion ring, and
-the number of in-flight Store requests per connection are also bounded. A full Worker inbox or an
-exhausted per-connection allowance produces an `overloaded` response. Exceeding an input/output
-byte watermark closes the offending connection. Queue capacity is rounded up to a power of two at
-startup; overload never becomes unbounded memory growth.
+Input and output buffering is bounded per connection. Socket handoff queues, every Worker inbox,
+completion rings, and the number of in-flight remote Store requests per connection are also
+bounded. A full Worker inbox or exhausted per-connection allowance produces an `overloaded`
+response. A full socket-handoff queue rejects the newly accepted connection. Exceeding an
+input/output byte watermark closes the offending connection. Queue capacity is rounded up to a
+power of two at startup; overload never becomes unbounded memory growth.
 
 ## Current scope
 
-The daemon is still volatile and is not a durable network database. Network accept/read/write is
-currently handled by a single Reactor, so aggregate connection processing does not yet scale over
-multiple pollers. The executable validates TCP lifecycle, native readiness, partial frames,
-pipelining, out-of-order responses, large partial output, bounded MPSC contention, asynchronous
-Store operations, half-close with in-flight work, connection generations, and graceful stop.
+The daemon is still volatile and is not a durable network database. Executor threads are not yet
+guaranteed to run on performance cores, and connection-to-key locality depends on the client
+workload: arbitrary keys on one connection can still require remote Worker hops. Optional executor
+affinity is strict over the process-allowed CPU set on Linux. macOS exposes only Mach affinity tags,
+so its mode is advisory rather than a hard performance-core pin. The executable validates TCP
+lifecycle, multi-Reactor connection distribution, native readiness, partial frames, pipelining,
+out-of-order responses, large partial output, bounded MPSC contention, local and remote Store
+operations, half-close with in-flight work, connection generations, and graceful stop.
+
+`glyphastore_server_benchmarks` measures the real loopback TCP protocol. `uniform` routing uses the
+platform's normal connection distribution and arbitrary keys. `affine` routing forces explicit
+round-robin socket assignment and generates each client's keys for its matching Worker, isolating
+the local fast path. Server startup, connection establishment, request encoding, and client thread
+creation are outside the timed region; every response is decoded and validated.

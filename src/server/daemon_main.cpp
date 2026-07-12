@@ -1,6 +1,7 @@
-#include "glyphastore/server/reactor.hpp"
+#include "glyphastore/server/server.hpp"
 
 #include <charconv>
+#include <chrono>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -8,6 +9,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace {
 
@@ -25,6 +27,7 @@ struct Options {
     std::size_t worker_inbox_capacity{4096};
     std::size_t completion_queue_capacity{65'536};
     std::size_t maximum_in_flight{1024};
+    bool executor_affinity{};
 };
 
 template <typename T> [[nodiscard]] auto parse_integer(const std::string_view text, const char* flag) -> T {
@@ -71,10 +74,14 @@ template <typename T> [[nodiscard]] auto parse_integer(const std::string_view te
             result.maximum_in_flight = parse_integer<std::size_t>(argv[++index], "--max-in-flight");
             continue;
         }
+        if (argument == "--executor-affinity") {
+            result.executor_affinity = true;
+            continue;
+        }
         if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastored [--bind IPv4] [--port N] [--max-connections N]"
                          " [--workers N] [--worker-inbox N] [--completion-queue N]"
-                         " [--max-in-flight N]\n";
+                         " [--max-in-flight N] [--executor-affinity]\n";
             std::exit(0);
         }
         std::cerr << "unknown or incomplete argument: " << argument << '\n';
@@ -87,27 +94,35 @@ template <typename T> [[nodiscard]] auto parse_integer(const std::string_view te
 
 int main(int argc, char** argv) {
     const auto arguments = options(argc, argv);
-    auto reactor = glyphastore::server::Reactor::create(
-        {.bind_address = arguments.bind_address,
-         .port = arguments.port,
-         .maximum_connections = arguments.maximum_connections,
-         .worker_count = arguments.workers,
-         .worker_inbox_capacity = arguments.worker_inbox_capacity,
-         .completion_queue_capacity = arguments.completion_queue_capacity,
-         .maximum_in_flight_per_connection = arguments.maximum_in_flight});
-    if (!reactor) {
-        std::cerr << "glyphastored: " << reactor.error().message << '\n';
+    auto server =
+        glyphastore::server::Server::create({.bind_address = arguments.bind_address,
+                                             .port = arguments.port,
+                                             .maximum_connections = arguments.maximum_connections,
+                                             .worker_count = arguments.workers,
+                                             .worker_inbox_capacity = arguments.worker_inbox_capacity,
+                                             .completion_queue_capacity = arguments.completion_queue_capacity,
+                                             .maximum_in_flight_per_connection = arguments.maximum_in_flight,
+                                             .executor_affinity = arguments.executor_affinity});
+    if (!server) {
+        std::cerr << "glyphastored: " << server.error().message << '\n';
         return 1;
     }
 
     std::signal(SIGINT, request_stop);
     std::signal(SIGTERM, request_stop);
-    std::cout << "glyphastored listening on " << arguments.bind_address << ':' << (*reactor)->port() << '\n';
-    while (g_stop_requested == 0) {
-        if (auto status = (*reactor)->run_once(1000); !status) {
-            std::cerr << "glyphastored: reactor failure: " << status.error().message << '\n';
-            return 1;
-        }
+    if (auto started = (*server)->start(); !started) {
+        std::cerr << "glyphastored: " << started.error().message << '\n';
+        return 1;
+    }
+    std::cout << "glyphastored listening on " << arguments.bind_address << ':' << (*server)->port()
+              << " with " << (*server)->executor_count() << " executors\n";
+    while (g_stop_requested == 0 && (*server)->healthy()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    }
+    (*server)->request_stop();
+    if (auto stopped = (*server)->join(); !stopped) {
+        std::cerr << "glyphastored: reactor failure: " << stopped.error().message << '\n';
+        return 1;
     }
     return 0;
 }

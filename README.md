@@ -83,6 +83,7 @@ valid records and retaining the highest sequence for each full key. See the
 ./scripts/dev.sh asan
 ./scripts/dev.sh tsan
 ./scripts/dev.sh benchmark
+./scripts/dev.sh benchmark-server --workers 4 --clients 4 --routing affine --executor-affinity
 ./scripts/dev.sh benchmark --filter store-parallel-all --workers 4 --threads 4 --distribution uniform
 ./scripts/dev.sh fuzz-build
 ```
@@ -94,10 +95,20 @@ microbenchmarks, not comparative product claims. Parallel Store benchmarks suppo
 
 ## Experimental TCP daemon
 
-`glyphastored` is the native non-blocking TCP server bootstrap. It uses `kqueue` on macOS/FreeBSD
-and edge-triggered `epoll` on Linux. The current protocol milestone implements pipelined `HELLO`,
-`PING`, `GET`, `PUT`, and `ERASE`. Store operations are hash-routed into bounded per-Worker MPSC
-inboxes and completed asynchronously back on the owning network Reactor.
+`glyphastored` is the native non-blocking TCP server bootstrap. Each executor pairs one Reactor with
+one Worker: `kqueue` on macOS/FreeBSD and edge-triggered `epoll` on Linux. The protocol implements
+pipelined `HELLO`, `PING`, `GET`, `PUT`, and `ERASE`. Same-owner Store operations execute directly;
+remote owners use bounded MPSC inbox and completion queues. Linux distributes connections with
+`SO_REUSEPORT`; macOS/FreeBSD use explicit bounded socket handoff.
+
+The TCP benchmark runs the real binary protocol over loopback with validated pipelined responses:
+
+```bash
+./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 \
+  --pipeline 32 --routing uniform --warmup 1 --repeats 5
+./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 \
+  --pipeline 32 --routing affine --executor-affinity --warmup 1 --repeats 5
+```
 
 ```bash
 ./scripts/dev.sh build

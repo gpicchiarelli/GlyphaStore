@@ -18,6 +18,10 @@
 
 namespace glyphastore {
 
+namespace server {
+class Reactor;
+}
+
 struct StoreConfig {
     WorkerCountConfig worker_config{};
     SegmentId first_segment_id{1};
@@ -64,9 +68,16 @@ class Store final {
 
   private:
     Store(SegmentId first_segment_id, std::size_t worker_count);
+    [[nodiscard]] auto get_owned(std::size_t worker_index, const HashedKey& key, std::uint64_t now_ns)
+        -> Result<RecordView>;
+    [[nodiscard]] auto put_owned(std::size_t worker_index, const HashedKey& key,
+                                 std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
+    [[nodiscard]] auto erase_owned(std::size_t worker_index, const HashedKey& key) -> Status;
 
     GlobalSegmentManager segment_manager_;
     WorkerPool workers_;
+
+    friend class server::Reactor;
 };
 
 } // namespace glyphastore

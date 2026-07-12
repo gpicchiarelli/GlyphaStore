@@ -52,6 +52,12 @@ case "${1:-help}" in
         "$cmake" --build --preset macos-release-lto --target glyphastore_benchmarks
         "$root/build/macos-release-lto/glyphastore_benchmarks" "${@:2}"
         ;;
+    benchmark-server)
+        require_tools
+        "$cmake" --preset macos-release
+        "$cmake" --build --preset macos-release --target glyphastore_server_benchmarks
+        "$root/build/macos-release/glyphastore_server_benchmarks" "${@:2}"
+        ;;
     benchmark-pgo)
         require_tools
         "$cmake" --preset macos-pgo-use
@@ -80,7 +86,7 @@ case "${1:-help}" in
     test-lto)
         require_tools
         "$cmake" --preset macos-release-lto
-        "$cmake" --build --preset macos-release-lto --target glyphastore_tests
+        "$cmake" --build --preset macos-release-lto
         "$ctest" --preset macos-release-lto
         ;;
     xcode-build)
@@ -102,6 +108,6 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
         ;;
 esac

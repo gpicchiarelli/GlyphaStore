@@ -1,5 +1,5 @@
 #include "glyphastore/server/protocol.hpp"
-#include "glyphastore/server/reactor.hpp"
+#include "glyphastore/server/server.hpp"
 #include "test.hpp"
 
 #include <algorithm>
@@ -97,20 +97,12 @@ auto connect_to(const std::uint16_t port) -> int {
 } // namespace
 
 GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
-    auto opened = glyphastore::server::Reactor::create({.port = 0, .maximum_connections = 16});
+    auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 16});
     GLYPHA_REQUIRE(opened.has_value());
-    auto& reactor = **opened;
-    std::atomic<bool> failed{false};
-    std::jthread reactor_thread([&](const std::stop_token stop) {
-        while (!stop.stop_requested()) {
-            if (!reactor.run_once(10)) {
-                failed.store(true);
-                return;
-            }
-        }
-    });
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
 
-    const auto socket = connect_to(reactor.port());
+    const auto socket = connect_to(server.port());
     GLYPHA_REQUIRE(socket >= 0);
     const auto ping = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::ping,
@@ -223,7 +215,7 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
 
     static_cast<void>(::close(socket));
 
-    const auto half_closed_socket = connect_to(reactor.port());
+    const auto half_closed_socket = connect_to(server.port());
     GLYPHA_REQUIRE(half_closed_socket >= 0);
     const auto final_put = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::put,
@@ -241,38 +233,34 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
     GLYPHA_REQUIRE(final_response->frame.status == glyphastore::server::ResponseStatus::ok);
     static_cast<void>(::close(half_closed_socket));
 
-    reactor_thread.request_stop();
-    reactor_thread.join();
-    GLYPHA_REQUIRE(!failed.load());
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
 }
 
 GLYPHA_TEST("TCP reactor bounds asynchronous requests per connection") {
-    auto opened = glyphastore::server::Reactor::create(
-        {.port = 0, .maximum_connections = 4, .worker_count = 1, .maximum_in_flight_per_connection = 1});
+    GLYPHA_REQUIRE(glyphastore::route_worker("bounded-key-0", 2) == 1);
+    auto opened = glyphastore::server::Server::create({.port = 0,
+                                                       .maximum_connections = 4,
+                                                       .worker_count = 2,
+                                                       .maximum_in_flight_per_connection = 1,
+                                                       .reuse_port = false,
+                                                       .distribute_connections = false});
     GLYPHA_REQUIRE(opened.has_value());
-    auto& reactor = **opened;
-    std::atomic<bool> failed{false};
-    std::jthread reactor_thread([&](const std::stop_token stop) {
-        while (!stop.stop_requested()) {
-            if (!reactor.run_once(10)) {
-                failed.store(true);
-                return;
-            }
-        }
-    });
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
 
-    const auto socket = connect_to(reactor.port());
+    const auto socket = connect_to(server.port());
     GLYPHA_REQUIRE(socket >= 0);
     const auto put = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::put,
         .request_id = 100,
-        .key = bytes("bounded-key"),
+        .key = bytes("bounded-key-0"),
         .value = bytes("stored"),
     });
     const auto early_get = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::get,
         .request_id = 101,
-        .key = bytes("bounded-key"),
+        .key = bytes("bounded-key-0"),
     });
     GLYPHA_REQUIRE(put.has_value());
     GLYPHA_REQUIRE(early_get.has_value());
@@ -297,7 +285,7 @@ GLYPHA_TEST("TCP reactor bounds asynchronous requests per connection") {
     const auto final_get = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::get,
         .request_id = 102,
-        .key = bytes("bounded-key"),
+        .key = bytes("bounded-key-0"),
     });
     GLYPHA_REQUIRE(final_get.has_value());
     GLYPHA_REQUIRE(send_all(socket, *final_get));
@@ -308,7 +296,62 @@ GLYPHA_TEST("TCP reactor bounds asynchronous requests per connection") {
     GLYPHA_REQUIRE(text(final->frame.value) == "stored");
 
     static_cast<void>(::close(socket));
-    reactor_thread.request_stop();
-    reactor_thread.join();
-    GLYPHA_REQUIRE(!failed.load());
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("multi-Reactor executors distribute connections and share one Store") {
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 16, .worker_count = 2, .executor_affinity = true});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.executor_count() == 2);
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    for (std::uint64_t request = 0; request < 16; ++request) {
+        const auto key = std::string{"reuse-key-"} + std::to_string(request);
+        const auto value = std::string{"reuse-value-"} + std::to_string(request);
+        const auto writer = connect_to(server.port());
+        GLYPHA_REQUIRE(writer >= 0);
+        const auto put = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::put,
+            .request_id = request * 2U,
+            .key = bytes(key),
+            .value = bytes(value),
+        });
+        GLYPHA_REQUIRE(put.has_value());
+        GLYPHA_REQUIRE(send_all(writer, *put));
+        const auto put_frame = receive_response(writer);
+        const auto put_response = glyphastore::server::decode_response(put_frame);
+        GLYPHA_REQUIRE(put_response.has_value());
+        GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+        static_cast<void>(::close(writer));
+
+        const auto reader = connect_to(server.port());
+        GLYPHA_REQUIRE(reader >= 0);
+        const auto get = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::get,
+            .request_id = request * 2U + 1U,
+            .key = bytes(key),
+        });
+        GLYPHA_REQUIRE(get.has_value());
+        GLYPHA_REQUIRE(send_all(reader, *get));
+        const auto get_frame = receive_response(reader);
+        const auto get_response = glyphastore::server::decode_response(get_frame);
+        GLYPHA_REQUIRE(get_response.has_value());
+        GLYPHA_REQUIRE(get_response->frame.status == glyphastore::server::ResponseStatus::ok);
+        GLYPHA_REQUIRE(text(get_response->frame.value) == value);
+        static_cast<void>(::close(reader));
+    }
+
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+    const auto accepted = server.accepted_connections_per_executor();
+    GLYPHA_REQUIRE(accepted.size() == 2);
+    GLYPHA_REQUIRE(accepted[0] > 0);
+    GLYPHA_REQUIRE(accepted[1] > 0);
+    const auto affinity = server.executor_affinity_results();
+    GLYPHA_REQUIRE(affinity.size() == 2);
+    GLYPHA_REQUIRE(affinity[0].mode != glyphastore::server::ExecutorAffinityMode::disabled);
+    GLYPHA_REQUIRE(affinity[1].mode != glyphastore::server::ExecutorAffinityMode::disabled);
 }

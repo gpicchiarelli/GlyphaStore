@@ -50,7 +50,9 @@ add_library(glyphastore_server_core
     src/server/dispatcher.cpp
     src/server/protocol.cpp
     src/server/reactor.cpp
+    src/server/server.cpp
     src/server/socket.cpp
+    src/server/thread_affinity.cpp
     src/server/wakeup.cpp
     ${GLYPHASTORE_POLLER_SOURCE}
 )
@@ -88,6 +90,7 @@ if(BUILD_TESTING)
         tests/test_main.cpp
         tests/unit/index_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
+        tests/unit/dispatch_mesh_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp
@@ -155,6 +158,19 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_set_warnings(glyphastore_benchmarks)
     glyphastore_enable_ipo(glyphastore_benchmarks)
     set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+    add_executable(glyphastore_server_benchmarks
+        benchmarks/server_benchmark.cpp
+        benchmarks/harness.cpp
+    )
+    target_link_libraries(glyphastore_server_benchmarks
+        PRIVATE GlyphaStore::server glyphastore_project_options)
+    target_include_directories(glyphastore_server_benchmarks
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
+    target_compile_definitions(glyphastore_server_benchmarks
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}")
+    glyphastore_set_warnings(glyphastore_server_benchmarks)
+    glyphastore_enable_ipo(glyphastore_server_benchmarks)
+    set_target_properties(glyphastore_server_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
     if(BUILD_TESTING)
         foreach(distribution IN ITEMS uniform worker-affine single-worker zipf)
             add_test(
@@ -169,6 +185,16 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                     --repeats 1
             )
         endforeach()
+        add_test(
+            NAME glyphastore_benchmark_server_tcp
+            COMMAND glyphastore_server_benchmarks
+                --ops 128
+                --workers 2
+                --clients 2
+                --pipeline 8
+                --warmup 0
+                --repeats 1
+        )
     endif()
 endif()
 

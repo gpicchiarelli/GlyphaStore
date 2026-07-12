@@ -80,8 +80,8 @@ auto set_close_on_exec(const int descriptor) -> Status {
     return {};
 }
 
-auto TcpListener::bind(const std::string_view address, const std::uint16_t port, const int backlog)
-    -> Result<TcpListener> {
+auto TcpListener::bind(const std::string_view address, const std::uint16_t port, const int backlog,
+                       const bool reuse_port) -> Result<TcpListener> {
     SocketHandle socket{::socket(AF_INET, SOCK_STREAM, 0)};
     if (!socket.valid()) {
         return system_error("socket");
@@ -95,6 +95,10 @@ auto TcpListener::bind(const std::string_view address, const std::uint16_t port,
     const int enabled = 1;
     if (::setsockopt(socket.descriptor(), SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)) != 0) {
         return system_error("setsockopt(SO_REUSEADDR)");
+    }
+    if (reuse_port &&
+        ::setsockopt(socket.descriptor(), SOL_SOCKET, SO_REUSEPORT, &enabled, sizeof(enabled)) != 0) {
+        return system_error("setsockopt(SO_REUSEPORT)");
     }
 
     sockaddr_in endpoint{};

@@ -43,6 +43,29 @@ auto Store::erase(const HashedKey& key) -> Status {
     return workers_.route(key).erase(key);
 }
 
+auto Store::get_owned(const std::size_t worker_index, const HashedKey& key, const std::uint64_t now_ns)
+    -> Result<RecordView> {
+    if (worker_index >= workers_.size() || route_worker(key.hash, workers_.size()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "exclusive get targets the wrong Worker owner");
+    }
+    return workers_.worker(worker_index).get_locked(key, now_ns);
+}
+
+auto Store::put_owned(const std::size_t worker_index, const HashedKey& key,
+                      const std::span<const std::byte> value, const std::uint64_t expire_at_ns) -> Status {
+    if (worker_index >= workers_.size() || route_worker(key.hash, workers_.size()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "exclusive put targets the wrong Worker owner");
+    }
+    return workers_.worker(worker_index).put_locked(key, value, expire_at_ns);
+}
+
+auto Store::erase_owned(const std::size_t worker_index, const HashedKey& key) -> Status {
+    if (worker_index >= workers_.size() || route_worker(key.hash, workers_.size()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "exclusive erase targets the wrong Worker owner");
+    }
+    return workers_.worker(worker_index).erase_locked(key);
+}
+
 auto Store::verify_index() const -> Status {
     std::vector<std::unique_lock<std::mutex>> worker_locks;
     worker_locks.reserve(workers_.size());
