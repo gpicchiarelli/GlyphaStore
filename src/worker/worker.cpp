@@ -20,7 +20,28 @@ namespace {
 
 Worker::Worker(WorkerId id, GlobalSegmentManager& manager) : id_(id), manager_(manager) {
     active_ = manager_.allocate_active(id_);
-    owned_.push_back(active_);
+    register_owned_segment(active_);
+}
+
+void Worker::register_owned_segment(SegmentPtr segment) {
+    owned_by_id_.insert_or_assign(segment->id(), segment.get());
+    owned_.push_back(std::move(segment));
+}
+
+auto Worker::find_owned_segment(const SegmentId id) noexcept -> Segment* {
+    const auto found = owned_by_id_.find(id);
+    return found == owned_by_id_.end() ? nullptr : found->second;
+}
+
+auto Worker::find_owned_segment(const SegmentId id) const noexcept -> const Segment* {
+    const auto found = owned_by_id_.find(id);
+    return found == owned_by_id_.end() ? nullptr : found->second;
+}
+
+void Worker::maybe_retire(Segment& segment) {
+    if (segment.state() == SegmentState::sealed && segment.stats().live_records == 0) {
+        static_cast<void>(manager_.try_retire(segment.id()));
+    }
 }
 
 auto Worker::next_sequence() -> SequenceNumber {
@@ -37,46 +58,48 @@ auto Worker::append_record(const RecordInput& input) -> Result<RecordRef> {
             return unexpected(rotated.error());
         }
         active_ = *rotated;
-        owned_.push_back(active_);
+        register_owned_segment(active_);
         ref = active_->append(input);
     }
     return ref;
 }
 
 auto Worker::read_ref(const RecordRef& ref) const -> Result<RecordView> {
-    const auto* segment = manager_.find(ref.segment_id);
+    const auto* segment = find_owned_segment(ref.segment_id);
     if (!segment) {
-        return fail(ErrorCode::invalid_reference, "record reference targets a missing segment");
+        return fail(ErrorCode::invalid_reference,
+                    "record reference targets a segment not owned by this worker");
     }
     // Store get must always verify CRC: segment bytes are reachable via Store::segments() and
     // Segment::mutable_base(), so skipping checksum would allow in-memory tampering.
     return segment->read(ref);
 }
 
-auto Worker::publish(const HashedKey& key, const RecordRef& ref) -> Status {
-    auto* segment = manager_.find(ref.segment_id);
-    if (!segment) {
-        return fail(ErrorCode::invalid_reference, "new record reference targets a missing segment");
+auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segment) -> Status {
+    if (segment.id() != ref.segment_id || segment.owner() != id_) {
+        return fail(ErrorCode::invalid_reference,
+                    "new record reference targets a segment not owned by this worker");
     }
 
     const auto previous = index_.find(key);
     Segment* previous_segment = nullptr;
     if (previous) {
-        previous_segment = manager_.find(previous->segment_id);
+        previous_segment = find_owned_segment(previous->segment_id);
         if (!previous_segment) {
-            return fail(ErrorCode::invalid_reference, "previous record reference targets a missing segment");
+            return fail(ErrorCode::invalid_reference,
+                        "previous record reference targets a segment not owned by this worker");
         }
         if (auto valid = validate_live_record(*previous_segment, *previous); !valid) {
             return valid;
         }
     }
 
-    if (auto live = segment->mark_live(ref); !live) {
+    if (auto live = segment.mark_live(ref); !live) {
         return live;
     }
     if (previous) {
         if (auto dead = previous_segment->mark_dead(*previous); !dead) {
-            static_cast<void>(segment->mark_dead(ref));
+            static_cast<void>(segment.mark_dead(ref));
             return dead;
         }
     }
@@ -86,14 +109,14 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref) -> Status {
         if (previous) {
             static_cast<void>(previous_segment->mark_live(*previous));
         }
-        static_cast<void>(segment->mark_dead(ref));
+        static_cast<void>(segment.mark_dead(ref));
         return unexpected(mutation.error());
     }
     if (mutation->previous != previous) {
         return fail(ErrorCode::corrupted_data, "index changed during record publication");
     }
     if (previous) {
-        static_cast<void>(manager_.try_retire(previous->segment_id));
+        maybe_retire(*previous_segment);
     }
     return {};
 }
@@ -103,9 +126,10 @@ auto Worker::unpublish(const HashedKey& key) -> Status {
     if (!previous) {
         return fail(ErrorCode::not_found, "key is not present in worker index");
     }
-    auto* segment = manager_.find(previous->segment_id);
+    auto* segment = find_owned_segment(previous->segment_id);
     if (!segment) {
-        return fail(ErrorCode::invalid_reference, "erased record reference targets a missing segment");
+        return fail(ErrorCode::invalid_reference,
+                    "erased record reference targets a segment not owned by this worker");
     }
     if (auto valid = validate_live_record(*segment, *previous); !valid) {
         return valid;
@@ -118,7 +142,7 @@ auto Worker::unpublish(const HashedKey& key) -> Status {
         static_cast<void>(segment->mark_live(*previous));
         return fail(ErrorCode::corrupted_data, "index changed during record removal");
     }
-    static_cast<void>(manager_.try_retire(previous->segment_id));
+    maybe_retire(*segment);
     return {};
 }
 
@@ -163,9 +187,10 @@ auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> v
                         const std::uint64_t expire_at_ns) -> Status {
     const auto existing = index_.find(key);
     if (existing) {
-        const auto* previous_segment = manager_.find(existing->segment_id);
+        const auto* previous_segment = find_owned_segment(existing->segment_id);
         if (!previous_segment) {
-            return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
+            return fail(ErrorCode::invalid_reference,
+                        "existing record targets a segment not owned by this worker");
         }
         if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
             return valid;
@@ -185,7 +210,7 @@ auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> v
     if (!ref) {
         return unexpected(ref.error());
     }
-    return publish(key, *ref);
+    return publish(key, *ref, *active_);
 }
 
 auto Worker::erase_locked(const HashedKey& key) -> Status {
@@ -193,9 +218,10 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
     }
-    const auto* previous_segment = manager_.find(existing->segment_id);
+    const auto* previous_segment = find_owned_segment(existing->segment_id);
     if (!previous_segment) {
-        return fail(ErrorCode::invalid_reference, "existing record targets a missing segment");
+        return fail(ErrorCode::invalid_reference,
+                    "existing record targets a segment not owned by this worker");
     }
     if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
         return valid;

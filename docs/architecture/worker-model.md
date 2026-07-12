@@ -23,7 +23,13 @@ is intentionally outside this bootstrap.
 
 The public `Store` API (`get`, `put`, `erase`) is thread-safe by routing each key to one Worker
 and serializing callers on that Worker's mutex. Independent keys on different Workers execute in
-parallel. `GlobalSegmentManager` uses its own mutex for catalog mutations and lookups.
+parallel. Each Worker resolves records through its local catalog of owned Segments, so the hot
+`get`, `put`, and `erase` paths do not consult the global catalog. `GlobalSegmentManager` is the
+control plane for Segment allocation, rotation, retirement, and global snapshots.
+
+Routing ownership is authoritative: a miss in the routed Worker is a Store miss, not a request to
+search peer Workers. Future rebalancing must transfer ownership through an explicit routing-table
+state transition; it must not introduce peer-to-peer fallback searches in the normal data path.
 
 Lock ordering for maintenance: `verify_index()` acquires every Worker mutex in ascending index order
 before scanning Segments or comparing Index partitions. Direct use of `Worker::index()` bypasses

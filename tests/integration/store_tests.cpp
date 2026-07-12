@@ -124,7 +124,8 @@ GLYPHA_TEST("store verify index matches segment scan rebuild") {
     GLYPHA_REQUIRE(store.put("two", bytes("22")).has_value());
     GLYPHA_REQUIRE(store.erase("one").has_value());
     GLYPHA_REQUIRE(store.verify_index().has_value());
-    const auto rebuilt = glyphastore::rebuild_index_from_segments(store.segments());
+    const auto segments = store.segments();
+    const auto rebuilt = glyphastore::rebuild_index_from_segments(segments);
     GLYPHA_REQUIRE(rebuilt.has_value());
     GLYPHA_REQUIRE(rebuilt->index.find("one") == std::nullopt);
     GLYPHA_REQUIRE(rebuilt->index.find("two").has_value());

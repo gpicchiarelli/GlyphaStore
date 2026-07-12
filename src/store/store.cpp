@@ -40,7 +40,8 @@ auto Store::verify_index() const -> Status {
         worker_locks.emplace_back(workers_.worker(index).mutex_);
     }
 
-    const auto rebuilt = rebuild_index_from_segments(segment_manager_.segment_snapshot());
+    const auto segments = segment_manager_.segments();
+    const auto rebuilt = rebuild_index_from_segments(segments);
     if (!rebuilt) {
         return unexpected(rebuilt.error());
     }

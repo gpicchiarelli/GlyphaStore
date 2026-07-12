@@ -11,6 +11,7 @@
 #include <mutex>
 #include <span>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
 
 namespace glyphastore {
@@ -47,9 +48,13 @@ class Worker final {
                                   std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] auto erase_locked(const HashedKey& key) -> Status;
     [[nodiscard]] auto next_sequence() -> SequenceNumber;
+    void register_owned_segment(SegmentPtr segment);
+    [[nodiscard]] auto find_owned_segment(SegmentId id) noexcept -> Segment*;
+    [[nodiscard]] auto find_owned_segment(SegmentId id) const noexcept -> const Segment*;
+    void maybe_retire(Segment& segment);
     [[nodiscard]] auto append_record(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read_ref(const RecordRef& ref) const -> Result<RecordView>;
-    [[nodiscard]] auto publish(const HashedKey& key, const RecordRef& ref) -> Status;
+    [[nodiscard]] auto publish(const HashedKey& key, const RecordRef& ref, Segment& segment) -> Status;
     [[nodiscard]] auto unpublish(const HashedKey& key) -> Status;
 
     WorkerId id_;
@@ -58,6 +63,7 @@ class Worker final {
     SegmentPtr active_;
     SequenceNumber next_sequence_{SequenceNumber{1}};
     std::vector<SegmentPtr> owned_;
+    std::unordered_map<SegmentId, Segment*> owned_by_id_;
     mutable std::mutex mutex_;
 
     friend class Store;

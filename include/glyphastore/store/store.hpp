@@ -40,7 +40,7 @@ class Store final {
     [[nodiscard]] auto segment_manager() const noexcept -> const GlobalSegmentManager& {
         return segment_manager_;
     }
-    [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>& {
+    [[nodiscard]] auto segments() const -> std::vector<SegmentPtr> {
         return segment_manager_.segments();
     }
 

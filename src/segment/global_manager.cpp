@@ -62,17 +62,12 @@ auto GlobalSegmentManager::find(const SegmentId id) noexcept -> Segment* {
     return find_in_catalog(catalog_, first_id_, id);
 }
 
-auto GlobalSegmentManager::segments() const noexcept -> const std::vector<SegmentPtr>& {
+auto GlobalSegmentManager::segments() const -> std::vector<SegmentPtr> {
     const std::lock_guard lock{mutex_};
     return segments_;
 }
 
-auto GlobalSegmentManager::segment_snapshot() const -> std::vector<SegmentPtr> {
-    const std::lock_guard lock{mutex_};
-    return segments_;
-}
-
-auto GlobalSegmentManager::retired_pool() const noexcept -> const std::vector<SegmentId>& {
+auto GlobalSegmentManager::retired_pool() const -> std::vector<SegmentId> {
     const std::lock_guard lock{mutex_};
     return retired_pool_;
 }

@@ -98,11 +98,30 @@ GLYPHA_TEST("store get verifies checksum after mutable segment corruption") {
     const auto route = glyphastore::route_worker("integrity", store.worker_count());
     const auto ref = store.worker(route).index().find("integrity");
     GLYPHA_REQUIRE(ref.has_value());
-    GLYPHA_REQUIRE(!store.segments().empty());
-    auto& segment = *store.segments().front();
+    const auto segments = store.segments();
+    GLYPHA_REQUIRE(!segments.empty());
+    auto& segment = *segments.front();
     segment.mutable_base()[ref->offset.value + 32U] ^= std::byte{0xFF};
 
     const auto corrupted = store.get("integrity");
     GLYPHA_REQUIRE(!corrupted.has_value());
     GLYPHA_REQUIRE(corrupted.error().code == glyphastore::ErrorCode::checksum_mismatch);
+}
+
+GLYPHA_TEST("worker local segment catalog resolves records across rotation") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string value(900U * 1024U, 'v');
+
+    for (std::size_t index = 0; index < 80; ++index) {
+        const auto key = "rotation-key-" + std::to_string(index);
+        GLYPHA_REQUIRE(store.put(key, bytes(value)).has_value());
+    }
+
+    GLYPHA_REQUIRE(store.worker(0).owned_segments().size() >= 2);
+    const auto first = store.get("rotation-key-0");
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(first->value.size() == value.size());
+    GLYPHA_REQUIRE(first->value.front() == std::byte{'v'});
 }

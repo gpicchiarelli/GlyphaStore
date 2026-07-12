@@ -19,9 +19,8 @@ class GlobalSegmentManager final {
     [[nodiscard]] auto rotate_active(SegmentPtr active, WorkerId owner) -> Result<SegmentPtr>;
     [[nodiscard]] auto find(SegmentId id) noexcept -> Segment*;
     [[nodiscard]] auto find(SegmentId id) const noexcept -> const Segment*;
-    [[nodiscard]] auto segments() const noexcept -> const std::vector<SegmentPtr>&;
-    [[nodiscard]] auto segment_snapshot() const -> std::vector<SegmentPtr>;
-    [[nodiscard]] auto retired_pool() const noexcept -> const std::vector<SegmentId>&;
+    [[nodiscard]] auto segments() const -> std::vector<SegmentPtr>;
+    [[nodiscard]] auto retired_pool() const -> std::vector<SegmentId>;
     [[nodiscard]] auto try_retire(SegmentId id) -> Status;
 
   private:
