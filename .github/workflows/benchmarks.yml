@@ -73,13 +73,25 @@ jobs:
               | tee "$RESULTS_DIR/parallel-${distribution}.txt"
           done
 
-      - name: Run TCP server benchmark
+      - name: Run TCP scalability matrix
+        run: |
+          set -o pipefail
+          for workers in 1 2 4; do
+            for pipeline in 1 8 32 128; do
+              ./build/unix-release/glyphastore_server_benchmarks \
+                --ops 100000 --workers "$workers" --clients "$workers" --pipeline "$pipeline" \
+                --executor-affinity --warmup 1 --repeats 7 \
+                | tee "$RESULTS_DIR/server-tcp-w${workers}-p${pipeline}.txt"
+            done
+          done
+
+      - name: Measure pipelined TCP latency
         run: |
           set -o pipefail
           ./build/unix-release/glyphastore_server_benchmarks \
             --ops 100000 --workers 2 --clients 2 --pipeline 32 \
-            --executor-affinity --warmup 1 --repeats 7 \
-            | tee "$RESULTS_DIR/server-tcp.txt"
+            --executor-affinity --latency --warmup 1 --repeats 7 \
+            | tee "$RESULTS_DIR/server-latency-w2-p32.txt"
 
       - name: Download previous successful baseline
         continue-on-error: true

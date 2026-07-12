@@ -165,6 +165,10 @@ The TCP benchmark runs the real binary protocol over loopback with validated pip
 Its output includes exact timed ingress and egress frame bytes, ingress/egress/duplex bandwidth,
 current RSS, RSS growth from the post-setup baseline, and peak process RSS. `INIT`, `BIND_WORKER`,
 connection setup, and client-thread creation remain outside the timed region.
+Add `--latency` to record pipelined response latency from batch submission through each validated
+response, including p50, p95, p99, and p99.9. Latency collection is opt-in so its per-response
+clock reads do not distort throughput-only runs. The automated workflow exercises 1, 2, and 4
+workers at pipeline depths 1, 8, 32, and 128, plus a dedicated latency run.
 
 ```bash
 ./scripts/dev.sh build

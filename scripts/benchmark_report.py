@@ -67,6 +67,17 @@ def decimal(value: Any, suffix: str = "") -> str:
     return f"{number(value):,.2f}{suffix}"
 
 
+def latency(value: Any) -> str:
+    amount = number(value)
+    if amount <= 0:
+        return "—"
+    if amount >= 1_000_000:
+        return f"{amount / 1_000_000:.2f} ms"
+    if amount >= 1_000:
+        return f"{amount / 1_000:.2f} µs"
+    return f"{amount:.2f} ns"
+
+
 def mib(value: Any) -> str:
     return decimal(number(value) / (1024 * 1024), " MiB")
 
@@ -146,8 +157,8 @@ def render_markdown(
 
     lines.extend(
         [
-            "| Suite | Benchmark | Configuration | Median ops/s | Δ ops/s | Median ns/op | RSS | Duplex |",
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: |",
+            "| Suite | Benchmark | Configuration | Median ops/s | Δ ops/s | Median ns/op | p50 | p95 | p99 | p99.9 | RSS | Duplex |",
+            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for run in runs:
@@ -158,6 +169,9 @@ def render_markdown(
                 f"w={result.get('workers', '?')}, t={result.get('threads', '?')}, "
                 f"{result.get('distribution', '?')}"
             )
+            pipeline = run["metadata"].get("pipeline")
+            if pipeline is not None:
+                config += f", p={pipeline}"
             lines.append(
                 "| "
                 + " | ".join(
@@ -168,6 +182,10 @@ def render_markdown(
                         rate(result.get("median_ops_per_second", 0)),
                         delta(result),
                         decimal(result.get("median_ns_per_op", 0)),
+                        latency(result.get("p50_latency_ns", 0)),
+                        latency(result.get("p95_latency_ns", 0)),
+                        latency(result.get("p99_latency_ns", 0)),
+                        latency(result.get("p999_latency_ns", 0)),
                         mib(result.get("median_rss_bytes", 0)),
                         rate(result.get("median_duplex_bytes_per_second", 0)),
                     ]
@@ -218,7 +236,7 @@ def main() -> int:
     generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
     baseline_generated_at = baseline.get("generated_at") if baseline else None
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": generated_at,
         "baseline_generated_at": baseline_generated_at,
         "matched_baseline_results": matched_results,

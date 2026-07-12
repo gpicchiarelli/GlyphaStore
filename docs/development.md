@@ -22,6 +22,11 @@ uploads raw benchmark output, `results.json`, and the rendered `summary.md` for 
 summary is shown directly on the GitHub Actions run page and includes throughput deltas against
 the latest successful retained run on `main`.
 
+The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
+depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined
+response latency. Keeping latency instrumentation separate avoids charging a clock read to every
+response in throughput measurements.
+
 The report parser can also be used locally with one or more benchmark output files:
 
 ```bash

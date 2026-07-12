@@ -10,10 +10,12 @@
 #include <cerrno>
 #include <charconv>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <iterator>
 #include <latch>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -38,6 +40,7 @@ struct Options {
     RunSettings settings{};
     std::size_t pipeline{32};
     bool executor_affinity{};
+    bool latency{};
 };
 
 struct ClientWork {
@@ -49,6 +52,7 @@ struct Sample {
     std::size_t hits{};
     double seconds{};
     glyphastore::bench::ResourceSample resources{};
+    std::vector<double> latency_ns;
     bool valid{};
 };
 
@@ -56,6 +60,7 @@ struct ClientResult {
     std::size_t hits{};
     std::size_t ingress_bytes{};
     std::size_t egress_bytes{};
+    std::vector<double> latency_ns;
 };
 
 [[nodiscard]] auto parse_size(const std::string_view value, const char* flag) -> std::size_t {
@@ -97,10 +102,12 @@ struct ClientResult {
             result.settings.measured_iterations = next_size("--repeats");
         } else if (argument == "--executor-affinity") {
             result.executor_affinity = true;
+        } else if (argument == "--latency") {
+            result.latency = true;
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
-                         " [--executor-affinity]"
+                         " [--executor-affinity] [--latency]"
                          " [--warmup N] [--repeats N]\n";
             std::exit(0);
         } else {
@@ -159,22 +166,6 @@ struct ClientResult {
     return true;
 }
 
-[[nodiscard]] auto receive_exact(const int descriptor, const std::span<std::byte> output) -> bool {
-    std::size_t received{};
-    while (received < output.size()) {
-        const auto count = ::recv(descriptor, output.data() + received, output.size() - received, 0);
-        if (count > 0) {
-            received += static_cast<std::size_t>(count);
-            continue;
-        }
-        if (count < 0 && errno == EINTR) {
-            continue;
-        }
-        return false;
-    }
-    return true;
-}
-
 [[nodiscard]] auto load_u32(const std::span<const std::byte> input) noexcept -> std::uint32_t {
     std::uint32_t value{};
     for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
@@ -183,24 +174,55 @@ struct ClientResult {
     return value;
 }
 
-[[nodiscard]] auto receive_response(const int descriptor, std::vector<std::byte>& frame)
-    -> glyphastore::Result<glyphastore::server::DecodedFrame<glyphastore::server::ResponseView>> {
-    frame.resize(glyphastore::server::kResponseHeaderBytes);
-    if (!receive_exact(descriptor, frame)) {
-        return glyphastore::fail(glyphastore::ErrorCode::io_error, "benchmark response header failed");
+class BufferedResponseReader final {
+  public:
+    explicit BufferedResponseReader(const std::size_t reserve_bytes) {
+        buffer_.reserve(reserve_bytes);
     }
-    const auto size = static_cast<std::size_t>(load_u32(frame));
-    if (size < frame.size() || size > glyphastore::server::kMaxFrameBytes) {
-        return glyphastore::fail(glyphastore::ErrorCode::invalid_record,
-                                 "benchmark response size is invalid");
+
+    [[nodiscard]] auto receive(const int descriptor)
+        -> glyphastore::Result<glyphastore::server::DecodedFrame<glyphastore::server::ResponseView>> {
+        while (true) {
+            const auto available = buffer_.size() - offset_;
+            if (available >= sizeof(std::uint32_t)) {
+                const std::span<const std::byte> pending{buffer_.data() + offset_, available};
+                const auto size = static_cast<std::size_t>(load_u32(pending));
+                if (size < glyphastore::server::kResponseHeaderBytes ||
+                    size > glyphastore::server::kMaxFrameBytes) {
+                    return glyphastore::fail(glyphastore::ErrorCode::invalid_record,
+                                             "benchmark response size is invalid");
+                }
+                if (available >= size) {
+                    auto decoded = glyphastore::server::decode_response(pending.first(size));
+                    if (decoded) {
+                        offset_ += size;
+                    }
+                    return decoded;
+                }
+            }
+
+            if (offset_ > 0) {
+                buffer_.erase(buffer_.begin(), buffer_.begin() + static_cast<std::ptrdiff_t>(offset_));
+                offset_ = 0;
+            }
+            std::array<std::byte, 64U * 1024U> chunk;
+            const auto count = ::recv(descriptor, chunk.data(), chunk.size(), 0);
+            if (count > 0) {
+                buffer_.insert(buffer_.end(), chunk.begin(),
+                               chunk.begin() + static_cast<std::ptrdiff_t>(count));
+                continue;
+            }
+            if (count < 0 && errno == EINTR) {
+                continue;
+            }
+            return glyphastore::fail(glyphastore::ErrorCode::io_error, "benchmark response receive failed");
+        }
     }
-    const auto header_size = frame.size();
-    frame.resize(size);
-    if (!receive_exact(descriptor, std::span<std::byte>{frame}.subspan(header_size))) {
-        return glyphastore::fail(glyphastore::ErrorCode::io_error, "benchmark response body failed");
-    }
-    return glyphastore::server::decode_response(frame);
-}
+
+  private:
+    std::vector<std::byte> buffer_;
+    std::size_t offset_{};
+};
 
 [[nodiscard]] auto make_material(const Config& config) -> glyphastore::bench::KeyMaterial {
     glyphastore::bench::KeyMaterial material;
@@ -258,24 +280,38 @@ struct ClientResult {
 }
 
 [[nodiscard]] auto run_client(const int descriptor, const ClientWork& work,
-                              const glyphastore::bench::KeyMaterial& material, const std::size_t pipeline)
-    -> ClientResult {
-    std::vector<std::byte> response;
+                              const glyphastore::bench::KeyMaterial& material, const std::size_t pipeline,
+                              const bool measure_latency) -> ClientResult {
+    const auto bytes_per_pair =
+        2U * (glyphastore::server::kResponseHeaderBytes + material.values.front().size());
+    const auto response_capacity = pipeline > glyphastore::server::kMaxFrameBytes / bytes_per_pair
+                                       ? glyphastore::server::kMaxFrameBytes
+                                       : pipeline * bytes_per_pair;
+    BufferedResponseReader responses{response_capacity};
     ClientResult result;
+    if (measure_latency) {
+        result.latency_ns.reserve(work.response_count);
+    }
     std::size_t responses_remaining = work.response_count;
     for (const auto& batch : work.batches) {
+        const auto batch_started =
+            measure_latency ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
         if (!send_all(descriptor, batch)) {
             return {};
         }
         result.ingress_bytes += batch.size();
         const auto batch_responses = std::min(pipeline * 2U, responses_remaining);
         for (std::size_t index = 0; index < batch_responses; ++index) {
-            auto decoded = receive_response(descriptor, response);
+            auto decoded = responses.receive(descriptor);
             if (!decoded || !decoded->complete ||
                 decoded->frame.status != glyphastore::server::ResponseStatus::ok) {
                 return {};
             }
-            result.egress_bytes += response.size();
+            result.egress_bytes += decoded->consumed;
+            if (measure_latency) {
+                const auto elapsed = std::chrono::steady_clock::now() - batch_started;
+                result.latency_ns.push_back(std::chrono::duration<double, std::nano>(elapsed).count());
+            }
             const auto request_id = decoded->frame.request_id;
             const auto operation = request_id / 2U;
             if (operation >= material.values.size()) {
@@ -321,7 +357,7 @@ struct ClientResult {
         descriptors.push_back(descriptor);
     }
     for (std::size_t client = 0; client < descriptors.size(); ++client) {
-        std::vector<std::byte> response;
+        BufferedResponseReader responses{glyphastore::server::kResponseHeaderBytes + 64U};
         const auto init = glyphastore::server::encode_request({
             .opcode = glyphastore::server::RequestOpcode::init,
             .request_id = 0xFFFF'FFFF'0000'0000ULL + client * 2U,
@@ -335,14 +371,14 @@ struct ClientResult {
             cleanup();
             return {};
         }
-        auto initialized = receive_response(descriptors[client], response);
+        auto initialized = responses.receive(descriptors[client]);
         if (!initialized || initialized->frame.status != glyphastore::server::ResponseStatus::ok ||
             initialized->frame.worker_count != options.config.workers ||
             !send_all(descriptors[client], *bind)) {
             cleanup();
             return {};
         }
-        auto bound = receive_response(descriptors[client], response);
+        auto bound = responses.receive(descriptors[client]);
         if (!bound || bound->frame.status != glyphastore::server::ResponseStatus::ok ||
             bound->frame.owner_worker != client % options.config.workers) {
             cleanup();
@@ -361,7 +397,7 @@ struct ClientResult {
             ready.count_down();
             start.wait();
             client_results[client] =
-                run_client(descriptors[client], work[client], material, options.pipeline);
+                run_client(descriptors[client], work[client], material, options.pipeline, options.latency);
         });
     }
     ready.wait();
@@ -380,16 +416,33 @@ struct ClientResult {
         resources.ingress_bytes += client_result.ingress_bytes;
         resources.egress_bytes += client_result.egress_bytes;
     }
+    const auto expected = options.config.operations * 2U;
+    std::vector<double> latency_ns;
+    if (options.latency) {
+        latency_ns.reserve(expected);
+        for (auto& client_result : client_results) {
+            latency_ns.insert(latency_ns.end(), std::make_move_iterator(client_result.latency_ns.begin()),
+                              std::make_move_iterator(client_result.latency_ns.end()));
+        }
+    }
     for (const auto descriptor : descriptors) {
         static_cast<void>(::close(descriptor));
     }
     (*server)->request_stop();
     const auto stopped = (*server)->join();
-    const auto expected = options.config.operations * 2U;
     return {.hits = hits,
             .seconds = elapsed,
             .resources = resources,
+            .latency_ns = std::move(latency_ns),
             .valid = stopped.has_value() && hits == expected};
+}
+
+[[nodiscard]] auto percentile(const std::vector<double>& sorted, const double quantile) -> double {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+    const auto rank = static_cast<std::size_t>(std::ceil(quantile * static_cast<double>(sorted.size())));
+    return sorted[std::min(std::max(std::size_t{1}, rank), sorted.size()) - 1U];
 }
 
 [[nodiscard]] auto run_benchmark(const Options& options) -> Result {
@@ -405,6 +458,7 @@ struct ClientResult {
     }
     std::vector<double> seconds;
     std::vector<glyphastore::bench::ResourceSample> resources;
+    std::vector<double> latency_ns;
     seconds.reserve(options.settings.measured_iterations);
     resources.reserve(options.settings.measured_iterations);
     std::size_t hits{};
@@ -416,10 +470,21 @@ struct ClientResult {
         hits = sample.hits;
         seconds.push_back(sample.seconds);
         resources.push_back(sample.resources);
+        latency_ns.insert(latency_ns.end(), std::make_move_iterator(sample.latency_ns.begin()),
+                          std::make_move_iterator(sample.latency_ns.end()));
     }
-    return glyphastore::bench::finalize_result("server_tcp_read_after_write", options.config,
-                                               options.settings, options.config.operations * 2U, hits,
-                                               std::move(seconds), std::move(resources));
+    auto result = glyphastore::bench::finalize_result("server_tcp_read_after_write", options.config,
+                                                      options.settings, options.config.operations * 2U, hits,
+                                                      std::move(seconds), std::move(resources));
+    if (!latency_ns.empty()) {
+        std::ranges::sort(latency_ns);
+        result.latency_samples = latency_ns.size();
+        result.p50_latency_ns = percentile(latency_ns, 0.50);
+        result.p95_latency_ns = percentile(latency_ns, 0.95);
+        result.p99_latency_ns = percentile(latency_ns, 0.99);
+        result.p999_latency_ns = percentile(latency_ns, 0.999);
+    }
+    return result;
 }
 
 } // namespace
@@ -436,6 +501,7 @@ int main(int argc, char** argv) {
     std::cout << "# traffic_scope=timed-protocol-frames-excluding-init-bind\n";
     std::cout << "# memory_scope=whole-benchmark-process-rss\n";
     std::cout << "# executor_affinity_requested=" << (parsed.executor_affinity ? 1 : 0) << '\n';
+    std::cout << "# latency_measurement=" << (parsed.latency ? "pipelined-response" : "disabled") << '\n';
 #if defined(__APPLE__)
     std::cout << "# executor_affinity_semantics=mach-advisory\n";
 #elif defined(__linux__)

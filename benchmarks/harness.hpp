@@ -139,6 +139,11 @@ struct Result {
     double median_duplex_bytes_per_second{};
     double min_duplex_bytes_per_second{};
     double max_duplex_bytes_per_second{};
+    std::size_t latency_samples{};
+    double p50_latency_ns{};
+    double p95_latency_ns{};
+    double p99_latency_ns{};
+    double p999_latency_ns{};
 };
 
 struct KeyMaterial {
@@ -457,7 +462,11 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "max_egress_bytes_per_second=" << result.max_egress_bytes_per_second << ' '
         << "median_duplex_bytes_per_second=" << result.median_duplex_bytes_per_second << ' '
         << "min_duplex_bytes_per_second=" << result.min_duplex_bytes_per_second << ' '
-        << "max_duplex_bytes_per_second=" << result.max_duplex_bytes_per_second << '\n';
+        << "max_duplex_bytes_per_second=" << result.max_duplex_bytes_per_second << ' '
+        << "latency_samples=" << result.latency_samples << ' ' << "p50_latency_ns=" << result.p50_latency_ns
+        << ' ' << "p95_latency_ns=" << result.p95_latency_ns << ' '
+        << "p99_latency_ns=" << result.p99_latency_ns << ' ' << "p999_latency_ns=" << result.p999_latency_ns
+        << '\n';
 }
 
 [[nodiscard]] inline auto parse_kind(std::string_view value) -> BenchmarkKind {
