@@ -17,6 +17,8 @@ struct Options {
     std::optional<std::size_t> key_size;
     std::optional<std::size_t> value_size;
     std::optional<std::size_t> workers;
+    std::optional<std::size_t> threads;
+    std::optional<glyphastore::bench::ParallelDistribution> distribution;
     std::optional<bool> random_access;
 };
 
@@ -64,6 +66,19 @@ struct Options {
             options.workers = parse_size(argv[++index], "--workers");
             continue;
         }
+        if (arg == "--threads" && index + 1 < argc) {
+            options.threads = parse_size(argv[++index], "--threads");
+            continue;
+        }
+        if (arg == "--distribution" && index + 1 < argc) {
+            const auto distribution = glyphastore::bench::parse_distribution(argv[++index]);
+            if (!distribution) {
+                std::cerr << "unknown distribution: " << argv[index] << '\n';
+                std::exit(2);
+            }
+            options.distribution = *distribution;
+            continue;
+        }
         if (arg == "--warmup" && index + 1 < argc) {
             options.settings.warmup_iterations = parse_size(argv[++index], "--warmup");
             continue;
@@ -76,8 +91,10 @@ struct Options {
             std::cout << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu]\n"
                       << "       [--filter all|index-all|index|index-insert|index-replace|index-find-hit|\n"
                       << "                index-find-miss|index-erase|store-put|store-get|store-put-get|\n"
-                      << "                store-read-after-write]\n"
-                      << "       [--ops N] [--key-size N] [--value-size N] [--workers N]\n"
+                      << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
+                      << "                store-parallel-read-after-write|store-parallel-all]\n"
+                      << "       [--ops N] [--key-size N] [--value-size N] [--workers N] [--threads N]\n"
+                      << "       [--distribution uniform|worker-affine|single-worker|zipf]\n"
                       << "       [--warmup N] [--repeats N]\n";
             std::exit(0);
         }
@@ -100,6 +117,12 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
     if (options.workers) {
         config.workers = *options.workers;
     }
+    if (options.threads) {
+        config.threads = *options.threads;
+    }
+    if (options.distribution) {
+        config.distribution = *options.distribution;
+    }
     if (options.random_access) {
         config.random_access = *options.random_access;
     }
@@ -107,7 +130,7 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
 
 [[nodiscard]] auto has_custom_config(const Options& options) -> bool {
     return options.operations || options.key_size || options.value_size || options.workers ||
-           options.random_access;
+           options.threads || options.distribution || options.random_access;
 }
 
 [[nodiscard]] auto result_is_valid(const glyphastore::bench::Result& result) -> bool {
@@ -118,6 +141,11 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
 
 int main(int argc, char** argv) {
     const auto options = parse_options(argc, argv);
+    if ((options.threads || options.distribution) &&
+        !glyphastore::bench::is_parallel_benchmark(options.kind)) {
+        std::cerr << "benchmark error: --threads and --distribution require a store-parallel filter\n";
+        return 2;
+    }
     std::vector<glyphastore::bench::Config> configs;
     if (has_custom_config(options)) {
         glyphastore::bench::Config config;

@@ -83,11 +83,14 @@ valid records and retaining the highest sequence for each full key. See the
 ./scripts/dev.sh asan
 ./scripts/dev.sh tsan
 ./scripts/dev.sh benchmark
+./scripts/dev.sh benchmark --filter store-parallel-all --workers 4 --threads 4 --distribution uniform
 ./scripts/dev.sh fuzz-build
 ```
 
 Fuzzers use Clang/libFuzzer and are disabled in normal builds. Benchmarks are bootstrap
-microbenchmarks, not comparative product claims.
+microbenchmarks, not comparative product claims. Parallel Store benchmarks support `uniform`
+(independent clients crossing Worker boundaries), `worker-affine` (one client thread per Worker),
+`single-worker` (maximum contention), and `zipf` (skewed ownership) distributions.
 
 ## Supported platforms
 

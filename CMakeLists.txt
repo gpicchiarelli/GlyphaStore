@@ -117,6 +117,21 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_set_warnings(glyphastore_benchmarks)
     glyphastore_enable_ipo(glyphastore_benchmarks)
     set_target_properties(glyphastore_benchmarks PROPERTIES XCODE_GENERATE_SCHEME TRUE)
+    if(BUILD_TESTING)
+        foreach(distribution IN ITEMS uniform worker-affine single-worker zipf)
+            add_test(
+                NAME glyphastore_benchmark_parallel_${distribution}
+                COMMAND glyphastore_benchmarks
+                    --filter store-parallel-all
+                    --ops 512
+                    --workers 4
+                    --threads 4
+                    --distribution ${distribution}
+                    --warmup 0
+                    --repeats 1
+            )
+        endforeach()
+    endif()
 endif()
 
 if(GLYPHASTORE_BUILD_FUZZERS)

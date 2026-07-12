@@ -30,14 +30,60 @@ enum class BenchmarkKind {
     store_get,
     store_put_get,
     store_read_after_write,
+    store_parallel_put,
+    store_parallel_get,
+    store_parallel_read_after_write,
+    store_parallel_all,
     all
 };
+
+enum class ParallelDistribution { uniform, worker_affine, single_worker, zipf };
+
+[[nodiscard]] inline auto is_parallel_benchmark(const BenchmarkKind kind) noexcept -> bool {
+    return kind == BenchmarkKind::store_parallel_put || kind == BenchmarkKind::store_parallel_get ||
+           kind == BenchmarkKind::store_parallel_read_after_write ||
+           kind == BenchmarkKind::store_parallel_all;
+}
+
+[[nodiscard]] inline auto distribution_name(const ParallelDistribution distribution) noexcept
+    -> std::string_view {
+    switch (distribution) {
+    case ParallelDistribution::uniform:
+        return "uniform";
+    case ParallelDistribution::worker_affine:
+        return "worker-affine";
+    case ParallelDistribution::single_worker:
+        return "single-worker";
+    case ParallelDistribution::zipf:
+        return "zipf";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] inline auto parse_distribution(const std::string_view value)
+    -> std::optional<ParallelDistribution> {
+    if (value == "uniform") {
+        return ParallelDistribution::uniform;
+    }
+    if (value == "worker-affine") {
+        return ParallelDistribution::worker_affine;
+    }
+    if (value == "single-worker") {
+        return ParallelDistribution::single_worker;
+    }
+    if (value == "zipf") {
+        return ParallelDistribution::zipf;
+    }
+    return std::nullopt;
+}
 
 struct Config {
     std::size_t operations{kDefaultOperations};
     std::size_t key_size{16};
     std::size_t value_size{64};
     std::size_t workers{1};
+    std::size_t threads{1};
+    ParallelDistribution distribution{ParallelDistribution::uniform};
     bool random_access{false};
 };
 
@@ -77,6 +123,22 @@ struct KeyMaterial {
 [[nodiscard]] inline auto validate_run_settings(const RunSettings& settings, const Config& config) -> bool {
     if (config.operations == 0) {
         std::cerr << "benchmark error: --ops must be greater than zero\n";
+        return false;
+    }
+    if (config.workers == 0) {
+        std::cerr << "benchmark error: --workers must be greater than zero\n";
+        return false;
+    }
+    if (config.threads == 0) {
+        std::cerr << "benchmark error: --threads must be greater than zero\n";
+        return false;
+    }
+    if (config.distribution == ParallelDistribution::worker_affine && config.threads > config.workers) {
+        std::cerr << "benchmark error: worker-affine requires --threads <= --workers\n";
+        return false;
+    }
+    if (settings.pin_cpu && config.threads > 1) {
+        std::cerr << "benchmark error: --pin-cpu cannot be used with multi-thread benchmarks\n";
         return false;
     }
     if (settings.measured_iterations == 0) {
@@ -273,6 +335,8 @@ inline void print_metadata(std::ostream& out, const RunSettings& settings) {
 inline void print_result(std::ostream& out, const Result& result) {
     out << "name=" << result.name << ' ' << "key_size=" << result.config.key_size << ' '
         << "value_size=" << result.config.value_size << ' ' << "workers=" << result.config.workers << ' '
+        << "threads=" << result.config.threads << ' '
+        << "distribution=" << distribution_name(result.config.distribution) << ' '
         << "random=" << (result.config.random_access ? 1 : 0) << ' ' << "operations=" << result.operations
         << ' ' << "hits=" << result.hits << ' ' << "samples=" << result.samples << ' '
         << "warmup=" << result.settings.warmup_iterations << ' ' << "median_seconds=" << result.median_seconds
@@ -317,6 +381,18 @@ inline void print_result(std::ostream& out, const Result& result) {
     }
     if (value == "store-read-after-write") {
         return BenchmarkKind::store_read_after_write;
+    }
+    if (value == "store-parallel-put") {
+        return BenchmarkKind::store_parallel_put;
+    }
+    if (value == "store-parallel-get") {
+        return BenchmarkKind::store_parallel_get;
+    }
+    if (value == "store-parallel-read-after-write") {
+        return BenchmarkKind::store_parallel_read_after_write;
+    }
+    if (value == "store-parallel-all") {
+        return BenchmarkKind::store_parallel_all;
     }
     return BenchmarkKind::all;
 }

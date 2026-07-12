@@ -53,6 +53,10 @@ run_case --filter store-put --ops 200000 --repeats 2 --warmup 1 --key-size 16
 run_case --filter store-get --ops 200000 --repeats 2 --warmup 1 --key-size 16
 run_case --filter store-read-after-write --ops 100000 --repeats 2 --warmup 1 --key-size 16
 run_case --filter store-put-get --ops 100000 --repeats 1 --warmup 1 --key-size 16 --random
+run_case --filter store-parallel-all --ops 50000 --repeats 1 --warmup 1 --key-size 16 \
+    --workers 4 --threads 4 --distribution worker-affine
+run_case --filter store-parallel-all --ops 50000 --repeats 1 --warmup 1 --key-size 16 \
+    --workers 4 --threads 4 --distribution uniform
 
 shopt -s nullglob
 profraw_files=("$profile_dir"/*.profraw)
