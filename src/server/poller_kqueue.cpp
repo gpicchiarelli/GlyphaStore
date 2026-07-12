@@ -5,22 +5,17 @@
 #endif
 
 #include "glyphastore/server/socket.hpp"
+#include "system_error.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cerrno>
-#include <cstring>
-#include <string>
 #include <sys/event.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 namespace glyphastore::server {
 namespace {
-
-[[nodiscard]] auto system_error(const char* operation) -> Unexpected {
-    return fail(ErrorCode::io_error, std::string{operation} + ": " + std::strerror(errno));
-}
 
 [[nodiscard]] auto token_pointer(const std::uint64_t token) noexcept -> void* {
     return reinterpret_cast<void*>(static_cast<std::uintptr_t>(token));

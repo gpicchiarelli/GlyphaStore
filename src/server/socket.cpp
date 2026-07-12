@@ -1,21 +1,17 @@
 #include "glyphastore/server/socket.hpp"
 
+#include "system_error.hpp"
+
 #include <arpa/inet.h>
 #include <cerrno>
-#include <cstring>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
-#include <string>
 #include <sys/socket.h>
 #include <unistd.h>
 
 namespace glyphastore::server {
 namespace {
-
-[[nodiscard]] auto system_error(const char* operation) -> Unexpected {
-    return fail(ErrorCode::io_error, std::string{operation} + ": " + std::strerror(errno));
-}
 
 [[nodiscard]] auto configure_client_socket(const int descriptor) -> Status {
     if (auto nonblocking = set_nonblocking(descriptor); !nonblocking) {

@@ -1,10 +1,13 @@
-.PHONY: bootstrap xcode configure build test asan tsan benchmark format clean
+.PHONY: bootstrap xcode xcode-verify configure build test asan tsan benchmark format clean
 
 bootstrap:
 	./scripts/bootstrap-macos.sh
 
 xcode:
 	./scripts/open-xcode.sh
+
+xcode-verify:
+	./scripts/verify-xcode.sh
 
 configure:
 	./scripts/dev.sh configure

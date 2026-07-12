@@ -2,12 +2,8 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cmake="$root/.tools/venv/bin/cmake"
+project="$root/build/xcode/GlyphaStore.xcodeproj"
 
-if [[ ! -x "$cmake" ]]; then
-    "$root/scripts/bootstrap-macos.sh"
-else
-    PATH="$root/.tools/venv/bin:$PATH" "$cmake" --preset xcode
-fi
+"$root/scripts/generate-xcode.sh" >/dev/null
 
-open "$root/build/xcode/GlyphaStore.xcodeproj"
+open "$project"

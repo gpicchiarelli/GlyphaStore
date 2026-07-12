@@ -1,10 +1,10 @@
 #include "glyphastore/server/wakeup.hpp"
 
+#include "system_error.hpp"
+
 #include <array>
 #include <cerrno>
 #include <cstdint>
-#include <cstring>
-#include <string>
 #include <unistd.h>
 
 #if defined(__linux__)
@@ -12,13 +12,6 @@
 #endif
 
 namespace glyphastore::server {
-namespace {
-
-[[nodiscard]] auto system_error(const char* operation) -> Unexpected {
-    return fail(ErrorCode::io_error, std::string{operation} + ": " + std::strerror(errno));
-}
-
-} // namespace
 
 auto Wakeup::create() -> Result<Wakeup> {
 #if defined(__linux__)

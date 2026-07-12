@@ -1,114 +1,293 @@
+#include "cli/arguments.hpp"
 #include "glyphastore/server/server.hpp"
 
-#include <charconv>
+#include <array>
+#include <cerrno>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
-#include <cstdlib>
+#include <exception>
 #include <iostream>
 #include <limits>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <thread>
 
 namespace {
 
-volatile std::sig_atomic_t g_stop_requested = 0;
+volatile std::sig_atomic_t g_stop_signal = 0;
 
-extern "C" void request_stop(int) {
-    g_stop_requested = 1;
+extern "C" void request_stop(const int signal) {
+    g_stop_signal = signal;
 }
 
-struct Options {
-    std::string bind_address{"127.0.0.1"};
-    std::uint16_t port{7379};
-    std::size_t maximum_connections{4096};
-    std::size_t workers{1};
-    std::size_t handoff_capacity{4096};
-    bool executor_affinity{};
+enum OptionId : std::size_t {
+    help,
+    version,
+    bind,
+    port,
+    maximum_connections,
+    workers,
+    handoff_capacity,
+    event_batch_size,
+    maximum_input_bytes,
+    maximum_output_bytes,
+    reuse_port,
+    no_reuse_port,
+    executor_affinity,
+    quiet,
 };
 
-template <typename T> [[nodiscard]] auto parse_integer(const std::string_view text, const char* flag) -> T {
-    std::uint64_t parsed{};
-    const auto converted = std::from_chars(text.data(), text.data() + text.size(), parsed);
-    if (converted.ec != std::errc{} || converted.ptr != text.data() + text.size() ||
-        parsed > std::numeric_limits<T>::max()) {
-        std::cerr << "invalid value for " << flag << ": " << text << '\n';
-        std::exit(2);
+constexpr std::array kOptionSpecs{
+    glyphastore::cli::OptionSpec{
+        help, "help", 'h', glyphastore::cli::OptionArity::none, {}, "Show this help message and exit"},
+    glyphastore::cli::OptionSpec{version,
+                                 "version",
+                                 'V',
+                                 glyphastore::cli::OptionArity::none,
+                                 {},
+                                 "Show version information and exit"},
+    glyphastore::cli::OptionSpec{bind, "bind", 'b', glyphastore::cli::OptionArity::required, "IPv4",
+                                 "Bind to an IPv4 address (default: 127.0.0.1)"},
+    glyphastore::cli::OptionSpec{port, "port", 'p', glyphastore::cli::OptionArity::required, "PORT",
+                                 "Listen on PORT; 0 selects an ephemeral port (default: 7379)"},
+    glyphastore::cli::OptionSpec{workers, "workers", 'w', glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Run COUNT Store workers and reactor executors (default: 1)"},
+    glyphastore::cli::OptionSpec{maximum_connections, "max-connections", '\0',
+                                 glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Limit concurrent connections (default: 4096)"},
+    glyphastore::cli::OptionSpec{handoff_capacity, "handoff-capacity", '\0',
+                                 glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Bound each connection handoff queue (default: 4096)"},
+    glyphastore::cli::OptionSpec{event_batch_size, "event-batch-size", '\0',
+                                 glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Process at most COUNT readiness events per wait (default: 256)"},
+    glyphastore::cli::OptionSpec{maximum_input_bytes, "max-input-bytes", '\0',
+                                 glyphastore::cli::OptionArity::required, "BYTES",
+                                 "Limit buffered input per connection (default: 4MiB)"},
+    glyphastore::cli::OptionSpec{maximum_output_bytes, "max-output-bytes", '\0',
+                                 glyphastore::cli::OptionArity::required, "BYTES",
+                                 "Limit buffered output per connection (default: 4MiB)"},
+    glyphastore::cli::OptionSpec{reuse_port,
+                                 "reuse-port",
+                                 '\0',
+                                 glyphastore::cli::OptionArity::none,
+                                 {},
+                                 "Enable per-executor SO_REUSEPORT listeners where supported"},
+    glyphastore::cli::OptionSpec{no_reuse_port,
+                                 "no-reuse-port",
+                                 '\0',
+                                 glyphastore::cli::OptionArity::none,
+                                 {},
+                                 "Disable SO_REUSEPORT listeners"},
+    glyphastore::cli::OptionSpec{executor_affinity,
+                                 "executor-affinity",
+                                 '\0',
+                                 glyphastore::cli::OptionArity::none,
+                                 {},
+                                 "Request executor CPU affinity where supported"},
+    glyphastore::cli::OptionSpec{quiet,
+                                 "quiet",
+                                 'q',
+                                 glyphastore::cli::OptionArity::none,
+                                 {},
+                                 "Suppress normal startup and shutdown messages"},
+};
+
+struct Options {
+    glyphastore::server::ReactorConfig server;
+    bool show_help{};
+    bool show_version{};
+    bool quiet{};
+};
+
+[[nodiscard]] auto set_size_option(const glyphastore::cli::ParsedArguments& parsed, const OptionId id,
+                                   const std::string_view name, const std::size_t minimum,
+                                   const std::size_t maximum, std::size_t& destination)
+    -> glyphastore::Status {
+    const auto text = parsed.value(id);
+    if (!text) {
+        return {};
     }
-    return static_cast<T>(parsed);
+    auto value = glyphastore::cli::parse_size(*text, name, minimum, maximum);
+    if (!value) {
+        return glyphastore::unexpected(value.error());
+    }
+    destination = *value;
+    return {};
 }
 
-[[nodiscard]] auto options(int argc, char** argv) -> Options {
-    Options result;
-    for (int index = 1; index < argc; ++index) {
-        const std::string_view argument{argv[index]};
-        if (argument == "--bind" && index + 1 < argc) {
-            result.bind_address = argv[++index];
-            continue;
-        }
-        if (argument == "--port" && index + 1 < argc) {
-            result.port = parse_integer<std::uint16_t>(argv[++index], "--port");
-            continue;
-        }
-        if (argument == "--max-connections" && index + 1 < argc) {
-            result.maximum_connections = parse_integer<std::size_t>(argv[++index], "--max-connections");
-            continue;
-        }
-        if (argument == "--workers" && index + 1 < argc) {
-            result.workers = parse_integer<std::size_t>(argv[++index], "--workers");
-            continue;
-        }
-        if (argument == "--handoff-capacity" && index + 1 < argc) {
-            result.handoff_capacity = parse_integer<std::size_t>(argv[++index], "--handoff-capacity");
-            continue;
-        }
-        if (argument == "--executor-affinity") {
-            result.executor_affinity = true;
-            continue;
-        }
-        if (argument == "--help" || argument == "-h") {
-            std::cout << "usage: glyphastored [--bind IPv4] [--port N] [--max-connections N]"
-                         " [--workers N] [--handoff-capacity N] [--executor-affinity]\n";
-            std::exit(0);
-        }
-        std::cerr << "unknown or incomplete argument: " << argument << '\n';
-        std::exit(2);
+[[nodiscard]] auto set_byte_size_option(const glyphastore::cli::ParsedArguments& parsed, const OptionId id,
+                                        const std::string_view name, const std::size_t minimum,
+                                        const std::size_t maximum, std::size_t& destination)
+    -> glyphastore::Status {
+    const auto text = parsed.value(id);
+    if (!text) {
+        return {};
     }
-    return result;
+    auto value = glyphastore::cli::parse_byte_size(*text, name, minimum, maximum);
+    if (!value) {
+        return glyphastore::unexpected(value.error());
+    }
+    destination = *value;
+    return {};
+}
+
+[[nodiscard]] auto parse_options(const int argc, char* const argv[]) -> glyphastore::Result<Options> {
+    auto parsed = glyphastore::cli::parse_arguments(argc, argv, kOptionSpecs);
+    if (!parsed) {
+        return glyphastore::unexpected(parsed.error());
+    }
+    if (!parsed->positionals.empty()) {
+        return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                 "unexpected positional argument: " +
+                                     std::string{parsed->positionals.front()});
+    }
+
+    Options options;
+    options.show_help = parsed->has(help);
+    options.show_version = parsed->has(version);
+    options.quiet = parsed->has(quiet);
+    if (const auto address = parsed->value(bind)) {
+        options.server.bind_address = *address;
+    }
+
+    std::size_t parsed_port = options.server.port;
+    if (auto status = set_size_option(*parsed, port, "--port", 0, std::numeric_limits<std::uint16_t>::max(),
+                                      parsed_port);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    options.server.port = static_cast<std::uint16_t>(parsed_port);
+
+    constexpr auto maximum_size = std::numeric_limits<std::size_t>::max();
+    if (auto status = set_size_option(*parsed, workers, "--workers", 1, glyphastore::kMaximumWorkerCount,
+                                      options.server.worker_count);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status =
+            set_size_option(*parsed, maximum_connections, "--max-connections", 1,
+                            std::numeric_limits<std::uint32_t>::max(), options.server.maximum_connections);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status = set_size_option(*parsed, handoff_capacity, "--handoff-capacity", 1,
+                                      std::size_t{1} << 30U, options.server.connection_handoff_capacity);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status = set_size_option(*parsed, event_batch_size, "--event-batch-size", 1, maximum_size,
+                                      options.server.event_batch_size);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status = set_byte_size_option(*parsed, maximum_input_bytes, "--max-input-bytes",
+                                           glyphastore::server::kRequestHeaderBytes, maximum_size,
+                                           options.server.maximum_input_bytes);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status = set_byte_size_option(*parsed, maximum_output_bytes, "--max-output-bytes",
+                                           glyphastore::server::kResponseHeaderBytes, maximum_size,
+                                           options.server.maximum_output_bytes);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (parsed->has(reuse_port) && parsed->has(no_reuse_port)) {
+        return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                 "--reuse-port and --no-reuse-port are mutually exclusive");
+    }
+    if (parsed->has(reuse_port)) {
+        options.server.reuse_port = true;
+    }
+    if (parsed->has(no_reuse_port)) {
+        options.server.reuse_port = false;
+    }
+    options.server.executor_affinity = parsed->has(executor_affinity);
+    return options;
+}
+
+[[nodiscard]] auto install_signal_handler(const int signal, const char* name) -> glyphastore::Status {
+    struct sigaction action{};
+    action.sa_handler = request_stop;
+    if (sigemptyset(&action.sa_mask) != 0 || ::sigaction(signal, &action, nullptr) != 0) {
+        const auto error_number = errno;
+        return glyphastore::fail(glyphastore::ErrorCode::io_error,
+                                 std::string{"cannot install "} + name + " handler: " +
+                                     std::error_code{error_number, std::system_category()}.message());
+    }
+    return {};
+}
+
+void print_help(const std::string_view program) {
+    glyphastore::cli::write_help(std::cout, program, "GlyphaStore native binary key-value server.",
+                                 "[OPTIONS]", kOptionSpecs);
 }
 
 } // namespace
 
-int main(int argc, char** argv) {
-    const auto arguments = options(argc, argv);
-    auto server =
-        glyphastore::server::Server::create({.bind_address = arguments.bind_address,
-                                             .port = arguments.port,
-                                             .maximum_connections = arguments.maximum_connections,
-                                             .worker_count = arguments.workers,
-                                             .connection_handoff_capacity = arguments.handoff_capacity,
-                                             .executor_affinity = arguments.executor_affinity});
-    if (!server) {
-        std::cerr << "glyphastored: " << server.error().message << '\n';
-        return 1;
+int main(const int argc, char** argv) try {
+    const auto program = glyphastore::cli::executable_name(argc > 0 ? argv[0] : "glyphastored");
+    auto arguments = parse_options(argc, argv);
+    if (!arguments) {
+        std::cerr << program << ": error: " << arguments.error().message << "\nTry '" << program
+                  << " --help' for more information.\n";
+        return 2;
+    }
+    if (arguments->show_help) {
+        print_help(program);
+        return 0;
+    }
+    if (arguments->show_version) {
+        std::cout << program << ' ' << GLYPHASTORE_VERSION << '\n';
+        return 0;
     }
 
-    std::signal(SIGINT, request_stop);
-    std::signal(SIGTERM, request_stop);
-    if (auto started = (*server)->start(); !started) {
-        std::cerr << "glyphastored: " << started.error().message << '\n';
+    auto server = glyphastore::server::Server::create(arguments->server);
+    if (!server) {
+        std::cerr << program << ": error: " << server.error().message << '\n';
         return 1;
     }
-    std::cout << "glyphastored listening on " << arguments.bind_address << ':' << (*server)->port()
-              << " with " << (*server)->executor_count() << " executors\n";
-    while (g_stop_requested == 0 && (*server)->healthy()) {
+    if (auto installed = install_signal_handler(SIGINT, "SIGINT"); !installed) {
+        std::cerr << program << ": error: " << installed.error().message << '\n';
+        return 1;
+    }
+    if (auto installed = install_signal_handler(SIGTERM, "SIGTERM"); !installed) {
+        std::cerr << program << ": error: " << installed.error().message << '\n';
+        return 1;
+    }
+    if (auto started = (*server)->start(); !started) {
+        std::cerr << program << ": error: " << started.error().message << '\n';
+        return 1;
+    }
+    if (!arguments->quiet) {
+        std::cout << program << ": listening address=" << arguments->server.bind_address
+                  << " port=" << (*server)->port() << " executors=" << (*server)->executor_count() << '\n';
+    }
+    while (g_stop_signal == 0 && (*server)->healthy()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
     (*server)->request_stop();
     if (auto stopped = (*server)->join(); !stopped) {
-        std::cerr << "glyphastored: reactor failure: " << stopped.error().message << '\n';
+        std::cerr << program << ": error: reactor failure: " << stopped.error().message << '\n';
         return 1;
     }
+    if (!arguments->quiet) {
+        std::cout << program << ": stopped";
+        if (g_stop_signal != 0) {
+            std::cout << " signal=" << g_stop_signal;
+        }
+        std::cout << '\n';
+    }
     return 0;
+} catch (const std::exception& exception) {
+    const auto program = glyphastore::cli::executable_name(argc > 0 ? argv[0] : "glyphastored");
+    std::cerr << program << ": fatal: " << exception.what() << '\n';
+    return 1;
+} catch (...) {
+    const auto program = glyphastore::cli::executable_name(argc > 0 ? argv[0] : "glyphastored");
+    std::cerr << program << ": fatal: unknown non-standard exception\n";
+    return 1;
 }

@@ -29,7 +29,7 @@ fi
 "$venv/bin/python" -m pip install --disable-pip-version-check \
     "cmake>=3.25,<5" "ninja>=1.11,<2" "clang-format==21.1.8"
 
-PATH="$venv/bin:$PATH" "$venv/bin/cmake" --preset xcode
+"$root/scripts/generate-xcode.sh" >/dev/null
 
 cat <<EOF
 GlyphaStore macOS environment is ready.

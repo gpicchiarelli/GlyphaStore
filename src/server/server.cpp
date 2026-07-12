@@ -18,6 +18,13 @@ namespace {
         config.maximum_connections > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "server capacity configuration is outside supported limits");
     }
+    if (config.worker_count > kMaximumWorkerCount) {
+        return fail(ErrorCode::invalid_argument, "server worker count exceeds the supported maximum");
+    }
+    if (config.maximum_input_bytes < kRequestHeaderBytes ||
+        config.maximum_output_bytes < kResponseHeaderBytes) {
+        return fail(ErrorCode::invalid_argument, "server buffers are smaller than protocol headers");
+    }
     return {};
 }
 

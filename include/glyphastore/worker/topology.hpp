@@ -7,6 +7,8 @@
 
 namespace glyphastore {
 
+inline constexpr std::size_t kMaximumWorkerCount = 256;
+
 struct WorkerTopology {
     std::size_t logical_cpus{1};
     std::size_t physical_cores{1};
@@ -17,7 +19,7 @@ struct WorkerTopology {
 struct WorkerCountConfig {
     std::optional<std::size_t> explicit_count{};
     std::size_t reserved_cores{1};
-    std::size_t maximum_workers{256};
+    std::size_t maximum_workers{kMaximumWorkerCount};
     std::size_t minimum_memory_per_worker{kSegmentSizeBytes};
 };
 

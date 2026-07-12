@@ -1,10 +1,11 @@
 #include "glyphastore/server/reactor.hpp"
 
+#include "system_error.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
-#include <cstring>
 #include <span>
 #include <string_view>
 #include <sys/socket.h>
@@ -36,10 +37,6 @@ namespace {
 [[nodiscard]] auto current_time_ns() noexcept -> std::uint64_t {
     const auto elapsed = std::chrono::system_clock::now().time_since_epoch();
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count());
-}
-
-[[nodiscard]] auto system_error(const char* operation) -> Unexpected {
-    return fail(ErrorCode::io_error, std::string{operation} + ": " + std::strerror(errno));
 }
 
 [[nodiscard]] auto send_flags() noexcept -> int {

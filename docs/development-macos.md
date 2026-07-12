@@ -16,6 +16,13 @@ The script verifies the selected Xcode developer directory and creates `.tools/v
 CMake and Ninja. This avoids requiring `sudo`, Homebrew, or MacPorts. The generated project is
 `build/xcode/GlyphaStore.xcodeproj`.
 
+The `.xcodeproj` is generated state and is intentionally not committed. CMake remains the source
+of truth, so rerunning either setup or the daily open command safely refreshes targets, schemes,
+headers, scripts, and documentation in the Xcode navigator.
+
+`scripts/generate-xcode.sh` also removes obsolete shared schemes left by older generations while
+preserving personal `xcuserdata`, then recreates only the repository-supported schemes.
+
 If `xcode-select -p` points at Command Line Tools instead of full Xcode:
 
 ```bash
@@ -30,10 +37,17 @@ sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
 Select one of these generated schemes:
 
-- `glyphastore_demo` to inspect detected topology.
-- `glyphastore_tests` to build and run the test executable.
-- `glyphastore_benchmarks` in Release configuration only for local measurements.
-- `ALL_BUILD` when changing CMake structure.
+- `glyphastore_demo` to inspect detected topology in Debug.
+- `glyphastored` to run the daemon on `127.0.0.1:7379` with two Workers.
+- `glyphastore_tests` to build or run the standalone test executable.
+- `check` to build the test dependencies and execute the complete CTest suite.
+- `glyphastore_benchmarks` and `glyphastore_server_benchmarks` for focused Release measurements.
+- `glyphastore_inspect_segment` and `glyphastore_rebuild_index` for tool debugging.
+
+Because GlyphaStore uses a standalone CTest executable rather than XCTest bundles, use the
+`check` scheme's **Build** action for the full suite. The `glyphastore_tests` scheme's **Run** action
+launches the test process directly; Xcode's XCTest-specific **Test** action is intentionally not
+used.
 
 Use Product > Scheme > Edit Scheme to add temporary diagnostics locally. Do not commit
 `xcuserdata`. For repeatable sanitizer runs, prefer the repository presets:
@@ -43,9 +57,20 @@ Use Product > Scheme > Edit Scheme to add temporary diagnostics locally. Do not 
 ./scripts/dev.sh tsan
 ```
 
+To verify the complete generated project from the command line:
+
+```bash
+./scripts/verify-xcode.sh
+# or: make xcode-verify
+```
+
+This regenerates the project, builds `ALL_BUILD` in Debug and Release, runs the `check` scheme, and
+smoke-tests `glyphastore_demo`.
+
 ## Instruments
 
-Build Release with debug information before profiling. In Xcode choose Product > Profile and use:
+Use `RelWithDebInfo` before profiling when symbols are required. In Xcode choose Product > Profile
+and use:
 
 - Time Profiler for hot paths.
 - Allocations for unexpected heap traffic.
@@ -69,6 +94,7 @@ The root `Makefile` wraps the same scripts:
 ```bash
 make bootstrap
 make xcode
+make xcode-verify
 make test
 make asan
 make benchmark
