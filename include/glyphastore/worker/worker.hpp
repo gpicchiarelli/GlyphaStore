@@ -55,7 +55,6 @@ class Worker final {
     [[nodiscard]] auto append_record(const RecordInput& input) -> Result<RecordRef>;
     [[nodiscard]] auto read_ref(const RecordRef& ref) const -> Result<RecordView>;
     [[nodiscard]] auto publish(const HashedKey& key, const RecordRef& ref, Segment& segment) -> Status;
-    [[nodiscard]] auto unpublish(const HashedKey& key) -> Status;
 
     WorkerId id_;
     GlobalSegmentManager& manager_;

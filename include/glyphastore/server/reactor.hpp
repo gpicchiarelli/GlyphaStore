@@ -69,6 +69,7 @@ class Reactor final {
         std::optional<std::uint32_t> bound_worker;
         bool initialized{};
         bool peer_read_closed{};
+        bool write_armed{};
     };
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener listener, Poller poller, Wakeup wakeup,
@@ -81,9 +82,10 @@ class Reactor final {
     [[nodiscard]] auto process_frames(ConnectionToken token) -> Status;
     [[nodiscard]] auto bind_connection(ConnectionToken token, const RequestView& request) -> Status;
     [[nodiscard]] auto transfer_connection(ConnectionToken token, std::size_t target_worker) -> Status;
-    [[nodiscard]] auto dispatch_request(ConnectionToken token, const RequestView& request) -> Status;
+    [[nodiscard]] auto dispatch_request(ConnectionToken token, const RequestView& request,
+                                        std::uint64_t& cached_now_ns) -> Status;
     [[nodiscard]] auto execute_local(ConnectionToken token, const RequestView& request,
-                                     std::uint64_t key_hash) -> Status;
+                                     std::uint64_t key_hash, std::uint64_t& cached_now_ns) -> Status;
     [[nodiscard]] auto process_messages() -> Status;
     [[nodiscard]] auto process_handoffs() -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;

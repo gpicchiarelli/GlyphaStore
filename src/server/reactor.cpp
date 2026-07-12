@@ -118,6 +118,7 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->bound_worker.reset();
     current->initialized = false;
     current->peer_read_closed = false;
+    current->write_armed = false;
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -160,6 +161,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.bound_worker = handoff.bound_worker;
     current.initialized = handoff.initialized;
     current.peer_read_closed = handoff.peer_read_closed;
+    current.write_armed = !current.output.empty();
     const ConnectionToken token{.slot = slot, .generation = current.generation};
     auto interest = IoInterest::none;
     if (!current.peer_read_closed) {
@@ -181,6 +183,12 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
             return {};
         }
     }
+    if (auto* adopted = connection(token);
+        adopted != nullptr && adopted->output_offset < adopted->output.size()) {
+        if (auto flushed = write_ready(token); !flushed) {
+            close_connection(token);
+        }
+    }
     return {};
 }
 
@@ -194,7 +202,6 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
         return unexpected(encoded_size.error());
     }
     const auto pending = current->output.size() - current->output_offset;
-    const bool enable_write_notifications = pending == 0;
     if (*encoded_size > config_.maximum_output_bytes ||
         pending > config_.maximum_output_bytes - *encoded_size) {
         return fail(ErrorCode::record_too_large, "connection output high watermark exceeded");
@@ -211,11 +218,6 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
         current->output.resize(output_offset);
         return unexpected(encoded.error());
     }
-    if (enable_write_notifications) {
-        const auto interest =
-            current->peer_read_closed ? IoInterest::write : IoInterest::read | IoInterest::write;
-        return poller_.modify(current->socket.descriptor(), token.encode(), interest);
-    }
     return {};
 }
 
@@ -224,6 +226,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
     if (current == nullptr) {
         return {};
     }
+    std::uint64_t cached_now_ns{};
     while (current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
@@ -257,7 +260,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         case RequestOpcode::put:
         case RequestOpcode::erase:
             immediate_response = false;
-            if (auto dispatched = dispatch_request(token, decoded->frame); !dispatched) {
+            if (auto dispatched = dispatch_request(token, decoded->frame, cached_now_ns); !dispatched) {
                 return dispatched;
             }
             break;
@@ -332,6 +335,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->bound_worker.reset();
     current->initialized = false;
     current->peer_read_closed = false;
+    current->write_armed = false;
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -342,7 +346,8 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     return {};
 }
 
-auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& request) -> Status {
+auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& request,
+                               std::uint64_t& cached_now_ns) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
@@ -367,11 +372,11 @@ auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& r
                                       .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                       .routing_epoch = kRoutingEpoch});
     }
-    return execute_local(token, request, key_hash);
+    return execute_local(token, request, key_hash, cached_now_ns);
 }
 
 auto Reactor::execute_local(const ConnectionToken token, const RequestView& request,
-                            const std::uint64_t key_hash) -> Status {
+                            const std::uint64_t key_hash, std::uint64_t& cached_now_ns) -> Status {
     const auto key_string = key_text(request.key);
     const HashedKey key{.key = key_string, .hash = key_hash};
     ResponseView response{.status = ResponseStatus::ok,
@@ -381,7 +386,10 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                           .routing_epoch = kRoutingEpoch};
     switch (request.opcode) {
     case RequestOpcode::get: {
-        auto record = store_.get_owned(executor_id_, key, current_time_ns());
+        if (cached_now_ns == 0) {
+            cached_now_ns = current_time_ns();
+        }
+        auto record = store_.get_owned(executor_id_, key, cached_now_ns);
         if (record) {
             response.value = record->value;
         } else {
@@ -448,6 +456,15 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             if (current == nullptr) {
                 return {};
             }
+            if (current->output_offset < current->output.size()) {
+                if (auto flushed = write_ready(token); !flushed) {
+                    return flushed;
+                }
+                current = connection(token);
+                if (current == nullptr) {
+                    return {};
+                }
+            }
             continue;
         }
         if (received == 0) {
@@ -456,7 +473,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                 close_connection(token);
                 return {};
             }
-            return poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::write);
+            return write_ready(token);
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
             return {};
@@ -482,6 +499,16 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
             continue;
         }
         if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            if (current->write_armed) {
+                return {};
+            }
+            const auto interest =
+                current->peer_read_closed ? IoInterest::write : IoInterest::read | IoInterest::write;
+            if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                !modified) {
+                return modified;
+            }
+            current->write_armed = true;
             return {};
         }
         if (written < 0 && errno == EINTR) {
@@ -495,7 +522,15 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         close_connection(token);
         return {};
     }
-    return poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
+    if (!current->write_armed) {
+        return {};
+    }
+    if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
+        !modified) {
+        return modified;
+    }
+    current->write_armed = false;
+    return {};
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
@@ -545,6 +580,8 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
                            poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::write);
                        !modified) {
                 close_connection(token);
+            } else {
+                current->write_armed = true;
             }
         }
     }

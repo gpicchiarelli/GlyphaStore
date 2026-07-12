@@ -81,68 +81,61 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
                     "new record reference targets a segment not owned by this worker");
     }
 
-    const auto previous = index_.find(key);
+    auto mutation = index_.insert_or_assign(key, ref);
+    if (!mutation) {
+        return unexpected(mutation.error());
+    }
+    const auto rollback_index = [&]() -> Status {
+        if (mutation->previous) {
+            auto restored = index_.insert_or_assign(key, *mutation->previous);
+            if (!restored || restored->previous != ref) {
+                return fail(ErrorCode::corrupted_data, "failed to restore replaced index entry");
+            }
+            return {};
+        }
+        const auto removed = index_.erase(key);
+        if (removed.previous != ref) {
+            return fail(ErrorCode::corrupted_data, "failed to remove unpublished index entry");
+        }
+        return {};
+    };
+
     Segment* previous_segment = nullptr;
-    if (previous) {
-        previous_segment = find_owned_segment(previous->segment_id);
+    if (mutation->previous) {
+        previous_segment = find_owned_segment(mutation->previous->segment_id);
         if (!previous_segment) {
+            if (auto rolled_back = rollback_index(); !rolled_back) {
+                return rolled_back;
+            }
             return fail(ErrorCode::invalid_reference,
                         "previous record reference targets a segment not owned by this worker");
         }
-        if (auto valid = validate_live_record(*previous_segment, *previous); !valid) {
+        if (auto valid = validate_live_record(*previous_segment, *mutation->previous); !valid) {
+            if (auto rolled_back = rollback_index(); !rolled_back) {
+                return rolled_back;
+            }
             return valid;
         }
     }
 
     if (auto live = segment.mark_live(ref); !live) {
+        if (auto rolled_back = rollback_index(); !rolled_back) {
+            return rolled_back;
+        }
         return live;
     }
-    if (previous) {
-        if (auto dead = previous_segment->mark_dead(*previous); !dead) {
+    if (mutation->previous) {
+        if (auto dead = previous_segment->mark_dead(*mutation->previous); !dead) {
             static_cast<void>(segment.mark_dead(ref));
+            if (auto rolled_back = rollback_index(); !rolled_back) {
+                return rolled_back;
+            }
             return dead;
         }
     }
-
-    auto mutation = index_.insert_or_assign(key, ref);
-    if (!mutation) {
-        if (previous) {
-            static_cast<void>(previous_segment->mark_live(*previous));
-        }
-        static_cast<void>(segment.mark_dead(ref));
-        return unexpected(mutation.error());
-    }
-    if (mutation->previous != previous) {
-        return fail(ErrorCode::corrupted_data, "index changed during record publication");
-    }
-    if (previous) {
+    if (mutation->previous) {
         maybe_retire(*previous_segment);
     }
-    return {};
-}
-
-auto Worker::unpublish(const HashedKey& key) -> Status {
-    const auto previous = index_.find(key);
-    if (!previous) {
-        return fail(ErrorCode::not_found, "key is not present in worker index");
-    }
-    auto* segment = find_owned_segment(previous->segment_id);
-    if (!segment) {
-        return fail(ErrorCode::invalid_reference,
-                    "erased record reference targets a segment not owned by this worker");
-    }
-    if (auto valid = validate_live_record(*segment, *previous); !valid) {
-        return valid;
-    }
-    if (auto dead = segment->mark_dead(*previous); !dead) {
-        return dead;
-    }
-    const auto mutation = index_.erase(key);
-    if (mutation.previous != previous) {
-        static_cast<void>(segment->mark_live(*previous));
-        return fail(ErrorCode::corrupted_data, "index changed during record removal");
-    }
-    maybe_retire(*segment);
     return {};
 }
 
@@ -185,19 +178,6 @@ auto Worker::get_locked(const HashedKey& key, const std::uint64_t now_ns) -> Res
 
 auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> value,
                         const std::uint64_t expire_at_ns) -> Status {
-    const auto existing = index_.find(key);
-    if (existing) {
-        const auto* previous_segment = find_owned_segment(existing->segment_id);
-        if (!previous_segment) {
-            return fail(ErrorCode::invalid_reference,
-                        "existing record targets a segment not owned by this worker");
-        }
-        if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
-            return valid;
-        }
-    } else if (auto reserved = index_.reserve(index_.stats().size + 1U); !reserved) {
-        return reserved;
-    }
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::put,
@@ -218,7 +198,7 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
     }
-    const auto* previous_segment = find_owned_segment(existing->segment_id);
+    auto* previous_segment = find_owned_segment(existing->segment_id);
     if (!previous_segment) {
         return fail(ErrorCode::invalid_reference,
                     "existing record targets a segment not owned by this worker");
@@ -236,7 +216,16 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
     if (!ref) {
         return unexpected(ref.error());
     }
-    return unpublish(key);
+    if (auto dead = previous_segment->mark_dead(*existing); !dead) {
+        return dead;
+    }
+    const auto mutation = index_.erase(key);
+    if (mutation.previous != existing) {
+        static_cast<void>(previous_segment->mark_live(*existing));
+        return fail(ErrorCode::corrupted_data, "index changed during record removal");
+    }
+    maybe_retire(*previous_segment);
+    return {};
 }
 
 } // namespace glyphastore
