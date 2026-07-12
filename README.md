@@ -1,8 +1,33 @@
 # GlyphaStore
 
-GlyphaStore is an early C++23 architecture prototype for a high-performance, log-indexed,
-segmented, memory-first key-value store. It is designed around immutable records, fixed 64 MiB
+<!-- build and quality -->
+[![CI](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/ci.yml)
+[![Sanitizers](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml)
+[![Static analysis](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml)
+[![CodeQL](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg)](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml)
+
+<!-- toolchain and release posture -->
+[![C++](https://img.shields.io/badge/C%2B%2B-23-00599C?logo=cplusplus&logoColor=white)](https://en.cppreference.com/w/cpp/23.html)
+[![CMake](https://img.shields.io/badge/CMake-3.25%2B-064F8C?logo=cmake&logoColor=white)](CMakeLists.txt)
+[![Version](https://img.shields.io/badge/version-0.1.0-blue)](CHANGELOG.md)
+[![Status](https://img.shields.io/badge/status-architectural%20prototype-orange)](#project-status)
+[![Maturity](https://img.shields.io/badge/maturity-pre--alpha-lightgrey)](#project-status)
+
+<!-- project identity -->
+[![Storage](https://img.shields.io/badge/storage-log--indexed-6f42c1)](#architecture)
+[![Segments](https://img.shields.io/badge/segments-64%20MiB%20append--only-2ea44f)](docs/architecture/storage-model.md)
+[![CI platforms](https://img.shields.io/badge/CI-Linux%20%7C%20macOS-informational)](#supported-platforms)
+[![FreeBSD](https://img.shields.io/badge/target-FreeBSD-lightgrey?logo=freebsd&logoColor=white)](#supported-platforms)
+[![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
+![GlyphaStore storage engine laboratory](docs/assets/glyphastore-hero.png)
+
+**A high-performance, log-indexed, segmented, memory-first key-value store in C++23.**
+
+GlyphaStore is an early architecture prototype built around immutable records, fixed 64 MiB
 segments, a derived exact-key Index, automatic worker sizing, and bounded background maintenance.
+
+## Project status
 
 > **Status:** architectural prototype. Not production ready. There is no stable disk format,
 > network protocol, durability contract, or compatibility promise yet.
