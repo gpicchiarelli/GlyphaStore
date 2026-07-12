@@ -22,6 +22,7 @@
 [![macOS](https://img.shields.io/badge/target-macOS%20since%200.1.0-000000?logo=apple&logoColor=white)](#supported-platforms)
 [![FreeBSD](https://img.shields.io/badge/target-FreeBSD%20since%200.1.0-AB2B28?logo=freebsd&logoColor=white)](#supported-platforms)
 [![OpenBSD](https://img.shields.io/badge/target-OpenBSD%20since%200.1.0-F2CA30?logo=openbsd&logoColor=black)](#supported-platforms)
+[![Security policy](https://img.shields.io/badge/security-policy-critical?logo=github)](SECURITY.md)
 [![License](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 
 ![GlyphaStore storage engine laboratory](docs/assets/glyphastore-hero.png)
@@ -165,8 +166,9 @@ See the [server model](docs/architecture/server-model.md) for framing and concur
 
 ## Security
 
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md). Persisted bytes are
-treated as untrusted input and all encoded lengths and offsets must be validated.
+Read the [security policy](SECURITY.md) before reporting a vulnerability. Do not disclose suspected
+security issues through public issues or pull requests. Persisted bytes are treated as untrusted
+input and all encoded lengths and offsets must be validated.
 
 ## Contributing
 
