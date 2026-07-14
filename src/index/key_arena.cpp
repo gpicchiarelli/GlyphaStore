@@ -48,10 +48,22 @@ void KeyArena::clear() noexcept {
     bump_ = 0;
 }
 
-void KeyArena::reserve(const std::size_t bytes) {
+auto KeyArena::reserve(const std::size_t bytes) -> Status {
+    if (bytes > std::numeric_limits<std::uint32_t>::max()) {
+        return fail(ErrorCode::arithmetic_overflow, "index key arena reserve exceeds offset limits");
+    }
     if (bytes > storage_.size()) {
         storage_.reserve(bytes);
     }
+    return {};
+}
+
+auto KeyArena::prepare_allocate(const std::size_t size) -> Status {
+    const auto needed = checked_add(bump_, size);
+    if (!needed) {
+        return unexpected(needed.error());
+    }
+    return reserve(*needed);
 }
 
 } // namespace glyphastore

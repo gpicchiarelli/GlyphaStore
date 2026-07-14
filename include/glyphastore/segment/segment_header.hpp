@@ -65,6 +65,8 @@ struct DecodedSegmentHeader {
 struct SelectedSegmentCommit {
     std::size_t slot_index{};
     SegmentCommit commit;
+
+    auto operator==(const SelectedSegmentCommit&) const -> bool = default;
 };
 
 [[nodiscard]] auto encode_segment_commit_slot(std::span<std::byte> out, const SegmentCommit& commit)

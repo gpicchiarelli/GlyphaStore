@@ -121,12 +121,12 @@ Before the first committed Record enters a new Segment, durable-sync mode must:
    directory synchronization;
 5. only then make the Segment writable by its owner.
 
-Rotation creates and synchronizes the replacement, seals and synchronizes the old Segment, and then
-publishes the manifest that makes the replacement active. A crash after sealing but before manifest
-publication may therefore leave the selected manifest naming a now-sealed Segment as active.
-Recovery recognizes only this monotonic transitional mismatch, creates a fresh replacement, and
-publishes the completed rotation before serving writes. It must not reopen the sealed Segment for
-append. Other lifecycle mismatches are corruption.
+Rotation seals and synchronizes the old Segment first, creating an unambiguous intent marker. It then
+creates and synchronizes the exact next-identity replacement and publishes the manifest that makes
+the replacement active. A crash may therefore leave the selected manifest naming a sealed active
+Segment, with or without one pristine prepared replacement. Runtime open validates or creates only
+that exact replacement and publishes the completed rotation before serving writes. It never reopens
+the sealed Segment for append; other lifecycle mismatches are corruption.
 
 A created Segment absent from the selected manifest is an orphan, not part of the Store. Engine
 temporary files and otherwise valid orphan Segments may be quarantined without adoption; malformed
@@ -144,8 +144,9 @@ creation, alternate-slot commit/seal, and bounded recovery scan are implemented 
 Index rebuild, sequence restoration, and interrupted-rotation detection are implemented in the
 [durable recovery orchestrator](recovery-implementation.md). Descriptor-relative namespace audit and
 strict normal-recovery policy are implemented in the [namespace policy](namespace-policy.md).
-Runtime Store materialization, explicit quarantine/repair, collision-safe orphan reservation,
-transition completion, and crash evidence remain pending.
+Bounded verified reads, durable mutation ordering, and exact-intent rotation completion are
+implemented in the [durable runtime catalog](durable-runtime-catalog.md). Public Store integration,
+explicit repair for arbitrary orphans, retirement, and crash evidence remain pending.
 
 ## Recovery
 

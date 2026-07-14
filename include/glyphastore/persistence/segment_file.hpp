@@ -17,8 +17,10 @@ struct RecordView;
 
 enum class SegmentFileCreationOutcome { durable, not_published, indeterminate };
 enum class SegmentCommitOutcome { committed, not_committed, indeterminate };
+enum class SegmentFileOpenMode { read_only, read_write };
 using CommittedRecordVisitor = Status (*)(void* context, const RecordRef& reference,
                                           const RecordView& record);
+using RecordVisitor = Status (*)(void* context, const RecordView& record);
 
 struct SegmentFileCreationResult;
 
@@ -35,7 +37,8 @@ class DurableSegmentFile final {
   public:
     [[nodiscard]] static auto create(DataDirectory& directory, const SegmentHeaderIdentity& identity)
         -> SegmentFileCreationResult;
-    [[nodiscard]] static auto open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity)
+    [[nodiscard]] static auto open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
+                                   SegmentFileOpenMode mode = SegmentFileOpenMode::read_write)
         -> Result<DurableSegmentFile>;
 
     DurableSegmentFile(const DurableSegmentFile&) = delete;
@@ -48,6 +51,9 @@ class DurableSegmentFile final {
     [[nodiscard]] auto visit_committed_records(void* context, CommittedRecordVisitor visitor) const -> Status;
     [[nodiscard]] auto scan_committed() const -> Result<std::vector<RecordRef>>;
     [[nodiscard]] auto read_record(const RecordRef& reference) const -> Result<std::vector<std::byte>>;
+    // The RecordView is valid only for the synchronous visitor invocation.
+    [[nodiscard]] auto visit_record(const RecordRef& reference, void* context, RecordVisitor visitor) const
+        -> Status;
 
     [[nodiscard]] auto identity() const noexcept -> const SegmentHeaderIdentity& {
         return identity_;
@@ -61,12 +67,15 @@ class DurableSegmentFile final {
 
   private:
     DurableSegmentFile(FileDescriptor file, SegmentHeaderIdentity identity, SelectedSegmentCommit selected,
-                       FilesystemHooks hooks, std::shared_ptr<std::atomic_bool> directory_health) noexcept
+                       FilesystemHooks hooks, std::shared_ptr<std::atomic_bool> directory_health,
+                       bool writable) noexcept
         : file_(std::move(file)), identity_(identity), selected_(selected), hooks_(hooks),
-          directory_health_(std::move(directory_health)) {}
+          directory_health_(std::move(directory_health)), writable_(writable) {}
 
     [[nodiscard]] auto before(FilesystemOperation operation) const -> Status;
     [[nodiscard]] auto publish_commit(const SegmentCommit& commit) -> SegmentCommitResult;
+    [[nodiscard]] auto read_record_into(const RecordRef& reference, std::vector<std::byte>& bytes,
+                                        RecordView& record) const -> Status;
     void poison() noexcept;
 
     FileDescriptor file_;
@@ -74,6 +83,7 @@ class DurableSegmentFile final {
     SelectedSegmentCommit selected_;
     FilesystemHooks hooks_{};
     std::shared_ptr<std::atomic_bool> directory_health_;
+    bool writable_{};
 };
 
 struct SegmentFileCreationResult {

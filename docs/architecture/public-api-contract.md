@@ -1,8 +1,9 @@
 # Public C++ API contract
 
 This document defines the supported C++ surface being prepared for the alpha release. The Store
-header now uses PImpl, owning reads, and a deliberate installed header set. Persistence, stable
-error evolution, injected clock configuration, and pinned zero-copy reads remain future work.
+header now uses PImpl, owning reads, and a deliberate installed header set. An internal durable
+runtime can now serve bounded verified owning reads, but public persistence, stable error evolution,
+injected clock configuration, and pinned zero-copy reads remain future work.
 
 ## Supported surface
 

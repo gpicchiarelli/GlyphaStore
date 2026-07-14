@@ -30,7 +30,12 @@ class SwissTableIndex final {
     [[nodiscard]] auto insert_or_assign(const HashedKey& key, RecordRef ref) -> Result<IndexMutationResult>;
     auto erase(std::string_view key) -> IndexMutationResult;
     auto erase(const HashedKey& key) -> IndexMutationResult;
+    auto erase_no_compact(const HashedKey& key) -> IndexMutationResult;
     [[nodiscard]] auto reserve(std::size_t count) -> Status;
+    // Prepares every allocation needed to insert this key. With external
+    // serialization, the subsequent insert_or_assign cannot grow the table or
+    // the heap-key arena.
+    [[nodiscard]] auto prepare_insert(const HashedKey& key) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
     [[nodiscard]] auto clone_empty() const -> SwissTableIndex;

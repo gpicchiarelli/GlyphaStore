@@ -3,8 +3,10 @@
 This document describes the implemented internal recovery orchestrator. It converts one locked,
 validated data directory into a deterministic manifest-aligned catalog, one rebuilt Index per
 Worker, restored next sequences, and explicit rotation requirements. Public `durable_sync` remains
-disabled because runtime Segment reads/writes, collision-safe orphan quarantine/reservation, and
-automatic completion of recovery transitions are not integrated yet.
+disabled because runtime durable mutation, collision-safe orphan quarantine/reservation, and
+automatic completion of recovery transitions are not integrated yet. Recovered state can now be
+moved into the internal [durable runtime catalog](durable-runtime-catalog.md) for bounded verified
+reads.
 
 ## Recovery pipeline
 
@@ -89,9 +91,9 @@ Hash equality never substitutes for full-key equality.
 | active | active | accepted as writable candidate |
 | active | sealed | accepted only as the documented interrupted-rotation transition; Worker is marked `active_requires_rotation` |
 
-The orchestrator does not append to a sealed active Segment. Future Store integration must create and
-synchronize a replacement, publish the completed manifest rotation, and rerun or update recovery
-state before serving writes.
+The recovery scan does not append to a sealed active Segment. The durable runtime treats it as an
+intent marker and completes only the exact next-identity pristine replacement transition before
+serving writes.
 
 ## Returned state and remaining gates
 
@@ -101,6 +103,11 @@ active Segment, and rotation flag. Segment descriptors are closed after scanning
 must retain the locked `DataDirectory` and reopen backing files through verified identities when the
 runtime durable catalog is integrated.
 
+`DurableRuntimeCatalog` consumes this state without copying Index keys, retains the directory lock,
+serves CRC-verified owning reads through at most one cached Segment descriptor per Worker, and
+performs preflighted durable Record/slot/Index mutations. It completes a sealed-active marker only by
+creating or validating the exact pristine next Segment and durably publishing the next manifest.
+
 Integration tests cover multi-Worker rebuild, cross-Segment newest-value selection, tombstones,
 expiration, sequence restoration, lifecycle transitions, missing files, Store-ID mismatch, stored
 hash mismatch, wrong-Worker routing, equal winning sequences, sequence exhaustion, crash temporaries,
@@ -108,8 +115,6 @@ and unlisted-Segment rejection without adoption.
 
 Still required before enabling `durable_sync`:
 
-- add explicit operator quarantine/repair and collision-safe orphan identity reservation;
-- materialize the runtime durable Segment catalog and read path;
-- complete interrupted rotation before service;
-- integrate Record commit with Index/liveness publication and network acknowledgement;
+- add explicit operator quarantine/repair for arbitrary orphans;
+- integrate the durable runtime with Store/daemon construction and network acknowledgement;
 - run process-kill, disk-full, native-platform, and power-loss matrices.

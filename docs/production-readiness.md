@@ -39,8 +39,10 @@ implementation or design document alone is not sufficient.
   Manifest-driven committed scans now rebuild partitioned Indexes, next Worker sequences, and the
   sealed-active rotation marker deterministically. A bounded descriptor-relative namespace audit
   tolerates only recognizable crash temporaries and rejects unlisted/unknown/unsafe entries without
-  mutation. Runtime materialization, explicit orphan quarantine/reservation, transition completion,
-  and process-kill coverage remain pending.
+  mutation. Recovered Indexes now feed a bounded per-Worker runtime whose disk reads revalidate
+  CRC/key/reference metadata and remain fail-closed after corruption. Existing stores support
+  ordered durable puts/tombstones and exact-intent rotation completion; public Store integration,
+  new-store creation, and process-kill coverage remain pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
   Segment unit recovery rejects committed corruption and ignores uncommitted tails; system-level
   disk-full, missing-catalog-file, and process-kill matrices remain pending.
@@ -50,8 +52,8 @@ implementation or design document alone is not sufficient.
 
 - [ ] Unit, integration, property, concurrency, crash, recovery, and compatibility suites are distinct.
   Durable recovery now has a separate integration suite for catalog, lifecycle, routing, visibility,
-  namespace policy, missing-file, conflict, and overflow behavior; crash and released-artifact suites
-  remain pending.
+  namespace policy, bounded runtime reads, sticky corruption failure, missing-file, conflict, and
+  overflow behavior; crash and released-artifact suites remain pending.
 - [ ] Fault injection covers allocation and relevant filesystem, clock, socket, and thread failures.
 - [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.

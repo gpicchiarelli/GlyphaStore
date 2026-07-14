@@ -107,11 +107,18 @@ Positional Record reads require a matching Segment ID/generation, an aligned ful
 extent, and the expected sequence, then revalidate the Record checksum. Stale generations and
 malformed extents cannot escape the selected recovery boundary.
 
+Runtime reads open Segment handles read-only; the active owner upgrades its one cached handle to
+read-write for mutation. Read-only handles reject append and seal. The single-Record visitor performs
+one positional read and one canonical CRC-verified decode, then exposes a view only for the callback
+lifetime. The bounded cache, commit-snapshot check, mutation ordering, and fail-closed behavior are specified in the
+[durable runtime catalog](durable-runtime-catalog.md).
+
 ## Current evidence and limits
 
 Unit tests cover exact size and identity, duplicate creation, durable reopen, alternating slots,
 sealing, uncommitted tail recovery, indeterminate slot poisoning, committed-region corruption, and
-directory-lifetime fail-closed behavior, plus allocation/write/sync fault boundaries. The macOS
+directory-lifetime fail-closed behavior, read-only mutation rejection, plus allocation/write/sync
+fault boundaries. The macOS
 implementation is exercised locally. Linux,
 FreeBSD, and OpenBSD paths still require native CI plus real disk-full, short-I/O, process-kill, and
 power-loss testing before any platform is certified for durable service.

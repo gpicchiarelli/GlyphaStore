@@ -29,6 +29,12 @@ public API exists.
 - Add bounded descriptor-relative namespace audit with strict canonical Segment parsing,
   deterministic anomaly reports, crash-temporary tolerance, no-follow object checks, and fail-closed
   rejection of unlisted, malformed, unknown, unsafe, or missing entries before recovery scans.
+- Add read-only durable runtime materialization with moved recovered Indexes, one cached Segment
+  descriptor per Worker, read-only/no-follow reopening, per-read CRC/key/reference verification,
+  sticky fail-closed corruption handling, and interrupted-rotation service refusal.
+- Add the internal durable mutation state machine with preflighted allocation-free Index publication,
+  ordered Record and commit-slot synchronization, explicit mutation outcomes, shared catalog
+  concurrency, and exact-intent crash-safe Segment rotation completion.
 - Add OpenBSD as a `kqueue` architectural target from the `0.1.0` prototype line.
 - Bootstrap the C++23 architecture prototype.
 - Add fixed 64 MiB append-only segments, explicit record codec, derived Index, rebuild, vacuum,

@@ -46,8 +46,16 @@ auto Index::erase(const HashedKey& key) -> IndexMutationResult {
     return table_.erase(key);
 }
 
+auto Index::erase_no_compact(const HashedKey& key) -> IndexMutationResult {
+    return table_.erase_no_compact(key);
+}
+
 auto Index::reserve(const std::size_t count) -> Status {
     return table_.reserve(count);
+}
+
+auto Index::prepare_insert(const HashedKey& key) -> Status {
+    return table_.prepare_insert(key);
 }
 
 auto Index::entries() const -> std::vector<IndexEntry> {

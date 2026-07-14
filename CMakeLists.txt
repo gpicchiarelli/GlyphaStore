@@ -43,6 +43,7 @@ add_library(glyphastore_core
     src/persistence/manifest.cpp
     src/persistence/namespace_audit.cpp
     src/persistence/recovery.cpp
+    src/persistence/runtime_catalog.cpp
     src/persistence/segment_file.cpp
     src/segment/crc32c.cpp
     src/segment/global_manager.cpp

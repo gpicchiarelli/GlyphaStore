@@ -231,20 +231,24 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         return creation_failure(SegmentFileCreationOutcome::indeterminate, synced.error());
     }
 
-    DurableSegmentFile file{std::move(temporary), identity,
+    DurableSegmentFile file{std::move(temporary),
+                            identity,
                             SelectedSegmentCommit{.slot_index = 0, .commit = initial_commit},
-                            directory.hooks_, directory.health_};
+                            directory.hooks_,
+                            directory.health_,
+                            true};
     return {.outcome = SegmentFileCreationOutcome::durable, .file = std::move(file), .error = std::nullopt};
 }
 
-auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity)
-    -> Result<DurableSegmentFile> {
+auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
+                              const SegmentFileOpenMode mode) -> Result<DurableSegmentFile> {
     if (!directory.healthy()) {
         return fail(ErrorCode::io_error, "cannot open a Segment through a poisoned data directory");
     }
     const auto name = segment_filename(expected_identity);
+    const auto access = mode == SegmentFileOpenMode::read_only ? O_RDONLY : O_RDWR;
     FileDescriptor file{interrupted_open_at(directory.directory_.get(), name.c_str(),
-                                            O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+                                            access | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
     if (!file.valid()) {
         if (errno == ENOENT) {
             return fail(ErrorCode::not_found, "Segment does not exist");
@@ -277,8 +281,8 @@ auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdent
     if (!selected) {
         return unexpected(selected.error());
     }
-    return DurableSegmentFile{std::move(file), header->identity, *selected, directory.hooks_,
-                              directory.health_};
+    return DurableSegmentFile{std::move(file),  header->identity,  *selected,
+                              directory.hooks_, directory.health_, mode == SegmentFileOpenMode::read_write};
 }
 
 auto DurableSegmentFile::before(const FilesystemOperation operation) const -> Status {
@@ -328,6 +332,11 @@ auto DurableSegmentFile::append(const std::span<const std::byte> encoded_record)
     if (!healthy()) {
         return commit_failure(SegmentCommitOutcome::indeterminate,
                               Error{ErrorCode::io_error, "Segment file is poisoned"});
+    }
+    if (!writable_) {
+        return commit_failure(
+            SegmentCommitOutcome::not_committed,
+            Error{ErrorCode::invalid_argument, "cannot append through a read-only Segment handle"});
     }
     if (selected_.commit.state != PersistedSegmentState::active) {
         return commit_failure(SegmentCommitOutcome::not_committed,
@@ -387,6 +396,11 @@ auto DurableSegmentFile::seal() -> SegmentCommitResult {
     if (!healthy()) {
         return commit_failure(SegmentCommitOutcome::indeterminate,
                               Error{ErrorCode::io_error, "Segment file is poisoned"});
+    }
+    if (!writable_) {
+        return commit_failure(
+            SegmentCommitOutcome::not_committed,
+            Error{ErrorCode::invalid_argument, "cannot seal through a read-only Segment handle"});
     }
     if (selected_.commit.state == PersistedSegmentState::sealed) {
         return commit_failure(SegmentCommitOutcome::not_committed,
@@ -489,7 +503,8 @@ auto DurableSegmentFile::scan_committed() const -> Result<std::vector<RecordRef>
     return Result<std::vector<RecordRef>>{std::move(records)};
 }
 
-auto DurableSegmentFile::read_record(const RecordRef& reference) const -> Result<std::vector<std::byte>> {
+auto DurableSegmentFile::read_record_into(const RecordRef& reference, std::vector<std::byte>& bytes,
+                                          RecordView& record) const -> Status {
     if (!healthy()) {
         return fail(ErrorCode::io_error, "cannot read a poisoned Segment file");
     }
@@ -503,18 +518,41 @@ auto DurableSegmentFile::read_record(const RecordRef& reference) const -> Result
         offset > selected_.commit.committed_end || size > selected_.commit.committed_end - offset) {
         return fail(ErrorCode::invalid_reference, "Record reference is outside the committed Segment extent");
     }
-    std::vector<std::byte> bytes(reference.size.value);
+    bytes.resize(reference.size.value);
     if (auto read = file_.read_exact_at(bytes, offset); !read) {
         return unexpected(read.error());
     }
-    const auto record = decode_record(bytes);
-    if (!record) {
-        return unexpected(record.error());
+    const auto decoded = decode_record(bytes);
+    if (!decoded) {
+        return unexpected(decoded.error());
     }
-    if (record->sequence != reference.sequence) {
-        return fail(ErrorCode::invalid_reference, "Record reference sequence does not match encoded data");
+    if (decoded->sequence != reference.sequence || decoded->encoded_size != reference.size.value) {
+        return fail(ErrorCode::invalid_reference, "Record reference metadata does not match encoded data");
+    }
+    record = *decoded;
+    return {};
+}
+
+auto DurableSegmentFile::read_record(const RecordRef& reference) const -> Result<std::vector<std::byte>> {
+    std::vector<std::byte> bytes;
+    RecordView record{};
+    if (auto read = read_record_into(reference, bytes, record); !read) {
+        return unexpected(read.error());
     }
     return Result<std::vector<std::byte>>{std::move(bytes)};
+}
+
+auto DurableSegmentFile::visit_record(const RecordRef& reference, void* context,
+                                      const RecordVisitor visitor) const -> Status {
+    if (!visitor) {
+        return fail(ErrorCode::invalid_argument, "Record visitor cannot be null");
+    }
+    std::vector<std::byte> bytes;
+    RecordView record{};
+    if (auto read = read_record_into(reference, bytes, record); !read) {
+        return unexpected(read.error());
+    }
+    return visitor(context, record);
 }
 
 } // namespace glyphastore

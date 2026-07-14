@@ -51,3 +51,18 @@ GLYPHA_TEST("index grows and rejects impossible reserve sizes") {
     GLYPHA_REQUIRE(index.stats().size == 1'000);
     GLYPHA_REQUIRE(!index.reserve(std::numeric_limits<std::size_t>::max()).has_value());
 }
+
+GLYPHA_TEST("index preflights long-key publication before a durable commit") {
+    glyphastore::Index index;
+    const std::string key(80'000, 'k');
+    const glyphastore::HashedKey hashed{key, glyphastore::hash_key(key)};
+    GLYPHA_REQUIRE(index.prepare_insert(hashed).has_value());
+    const glyphastore::RecordRef ref{glyphastore::SegmentId{3}, glyphastore::RecordOffset{4096},
+                                     glyphastore::RecordSize{80'056}, glyphastore::SequenceNumber{7},
+                                     glyphastore::GenerationId{1}};
+    const auto inserted = index.insert_or_assign(hashed, ref);
+    GLYPHA_REQUIRE(inserted.has_value());
+    GLYPHA_REQUIRE(inserted->inserted);
+    GLYPHA_REQUIRE(index.find(hashed) == ref);
+    GLYPHA_REQUIRE(index.erase(hashed).previous == ref);
+}

@@ -191,6 +191,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Durable Segment files](docs/architecture/segment-filesystem.md) | Platform allocation, alternate commit slots, and bounded recovery scan |
 | [Recovery implementation](docs/architecture/recovery-implementation.md) | Manifest validation, partitioned Index rebuild, and sequence restoration |
 | [Namespace audit](docs/architecture/namespace-policy.md) | Descriptor-relative enumeration, orphan/temporary policy, and fail-closed limits |
+| [Durable runtime catalog](docs/architecture/durable-runtime-catalog.md) | Bounded file handles, verified reads, and sticky fail-closed state |
 | [Public API contract](docs/architecture/public-api-contract.md) | Supported surface, read ownership, errors, and compatibility |
 | [Index model](docs/architecture/index-model.md) | Exact-key lookup and SwissTable-oriented design |
 | [Worker model](docs/architecture/worker-model.md) | Ownership, routing, topology, and concurrency |

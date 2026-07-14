@@ -17,7 +17,8 @@ class KeyArena final {
     [[nodiscard]] auto data(std::uint32_t offset, std::size_t size) const -> std::span<const std::byte>;
     [[nodiscard]] auto allocated_bytes() const noexcept -> std::size_t;
     void clear() noexcept;
-    void reserve(std::size_t bytes);
+    [[nodiscard]] auto reserve(std::size_t bytes) -> Status;
+    [[nodiscard]] auto prepare_allocate(std::size_t size) -> Status;
 
   private:
     std::vector<std::byte> storage_;

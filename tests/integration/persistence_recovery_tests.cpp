@@ -1,9 +1,11 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/persistence/recovery.hpp"
+#include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "test.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
@@ -14,6 +16,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -104,6 +107,21 @@ void create_private_file(const std::filesystem::path& path) {
     GLYPHA_REQUIRE(::close(descriptor) == 0);
 }
 
+struct OneShotFilesystemFailure {
+    glyphastore::FilesystemOperation target;
+    bool fired{};
+
+    static auto before(void* opaque, glyphastore::FilesystemOperation operation) -> glyphastore::Status {
+        auto& state = *static_cast<OneShotFilesystemFailure*>(opaque);
+        if (!state.fired && operation == state.target) {
+            state.fired = true;
+            return glyphastore::fail(glyphastore::ErrorCode::io_error,
+                                     "injected durable runtime filesystem failure");
+        }
+        return {};
+    }
+};
+
 auto recovery_manifest(const glyphastore::StoreId& store_id, std::uint32_t workers,
                        std::vector<glyphastore::ManifestSegmentEntry> segments) -> glyphastore::Manifest {
     const auto next_id = segments.empty() ? 1 : segments.back().segment_id.value + 1;
@@ -117,6 +135,10 @@ auto recovery_manifest(const glyphastore::StoreId& store_id, std::uint32_t worke
         .next_segment_generation = glyphastore::GenerationId{1},
         .segments = std::move(segments),
     };
+}
+
+auto owned_text(const glyphastore::OwnedValue& value) -> std::string {
+    return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 
 } // namespace
@@ -426,5 +448,383 @@ GLYPHA_TEST("recovery rejects equal winning sequences and exhausted Worker seque
         const auto recovered = glyphastore::recover_durable_state(*directory);
         GLYPHA_REQUIRE(!recovered.has_value());
         GLYPHA_REQUIRE(recovered.error().code == glyphastore::ErrorCode::arithmetic_overflow);
+    }
+}
+
+GLYPHA_TEST("durable runtime materializes recovered Indexes with bounded concurrent reads") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    const std::string binary_key{"bin\0key", 7};
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto sealed = create_segment(*directory, store_id, entries[0]);
+        append_record(sealed, 1, "alpha", "one");
+        append_record(sealed, 2, binary_key, "binary");
+        GLYPHA_REQUIRE(sealed.seal().committed());
+        auto active = create_segment(*directory, store_id, entries[1]);
+        append_record(active, 3, "beta", "two");
+        append_record(active, 4, "expired", "old", glyphastore::Opcode::put, 100);
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->worker_count() == 1);
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 2);
+    GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
+    GLYPHA_REQUIRE((*runtime)->next_sequence(0).has_value());
+    GLYPHA_REQUIRE((*runtime)->next_sequence(0)->value == 5);
+    GLYPHA_REQUIRE((*runtime)->active_segment(0)->value == 2);
+
+    const auto alpha = (*runtime)->get("alpha");
+    const auto beta = (*runtime)->get("beta");
+    const auto binary = (*runtime)->get(binary_key);
+    GLYPHA_REQUIRE(alpha.has_value());
+    GLYPHA_REQUIRE(beta.has_value());
+    GLYPHA_REQUIRE(binary.has_value());
+    GLYPHA_REQUIRE(owned_text(*alpha) == "one");
+    GLYPHA_REQUIRE(owned_text(*beta) == "two");
+    GLYPHA_REQUIRE(owned_text(*binary) == "binary");
+    const auto expired = (*runtime)->get("expired", 100);
+    GLYPHA_REQUIRE(!expired.has_value());
+    GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+
+    std::atomic_bool failed{};
+    std::vector<std::thread> readers;
+    for (std::size_t thread = 0; thread < 8; ++thread) {
+        readers.emplace_back([&, thread] {
+            for (std::size_t iteration = 0; iteration < 32; ++iteration) {
+                const bool choose_alpha = (thread + iteration) % 2 == 0;
+                const auto value = (*runtime)->get(choose_alpha ? "alpha" : "beta");
+                if (!value || owned_text(*value) != (choose_alpha ? "one" : "two")) {
+                    failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    for (auto& reader : readers) {
+        reader.join();
+    }
+    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
+    GLYPHA_REQUIRE((*runtime)->healthy());
+
+    const auto locked_again = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(!locked_again.has_value());
+}
+
+GLYPHA_TEST("durable runtime detects post-recovery Record corruption and remains fail-closed") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    glyphastore::RecordRef reference{};
+    glyphastore::SegmentHeaderIdentity identity{};
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        append_record(segment, 1, "stable", "value");
+        const auto records = segment.scan_committed();
+        GLYPHA_REQUIRE(records.has_value());
+        GLYPHA_REQUIRE(records->size() == 1);
+        reference = records->front();
+        identity = segment.identity();
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE((*runtime)->get("stable").has_value());
+
+    const auto path = temporary.path() / glyphastore::segment_filename(identity);
+    const auto descriptor = ::open(path.c_str(), O_RDWR | O_CLOEXEC);
+    GLYPHA_REQUIRE(descriptor >= 0);
+    const std::byte corruption{0xFF};
+    const auto value_offset =
+        static_cast<off_t>(reference.offset.value + glyphastore::kEncodedRecordHeaderSize + 6U);
+    GLYPHA_REQUIRE(::pwrite(descriptor, &corruption, 1, value_offset) == 1);
+    GLYPHA_REQUIRE(::close(descriptor) == 0);
+
+    const auto corrupted = (*runtime)->get("stable");
+    GLYPHA_REQUIRE(!corrupted.has_value());
+    GLYPHA_REQUIRE(corrupted.error().code == glyphastore::ErrorCode::checksum_mismatch);
+    GLYPHA_REQUIRE(!(*runtime)->healthy());
+    const auto after_failure = (*runtime)->get("stable");
+    GLYPHA_REQUIRE(!after_failure.has_value());
+    GLYPHA_REQUIRE(after_failure.error().code == glyphastore::ErrorCode::unavailable);
+}
+
+GLYPHA_TEST("durable runtime completes a sealed-active interrupted rotation") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        GLYPHA_REQUIRE(segment.seal().committed());
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    const auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 2);
+    GLYPHA_REQUIRE((*runtime)->manifest().segments[0].role == glyphastore::ManifestSegmentRole::sealed);
+    GLYPHA_REQUIRE((*runtime)->active_segment(0)->value == 2);
+    GLYPHA_REQUIRE(std::filesystem::exists(
+        temporary.path() / glyphastore::segment_filename(segment_identity(store_id, active))));
+}
+
+GLYPHA_TEST("durable runtime adopts only the exact pristine prepared rotation Segment") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto old = create_segment(*directory, store_id, active);
+        GLYPHA_REQUIRE(old.seal().committed());
+        auto manifest = recovery_manifest(store_id, 1, {active});
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+        const glyphastore::SegmentHeaderIdentity prepared{
+            .store_id = store_id,
+            .segment_id = manifest.next_segment_id,
+            .generation = manifest.next_segment_generation,
+            .owner_worker = active.owner_worker,
+        };
+        const auto replacement = glyphastore::DurableSegmentFile::create(*directory, prepared);
+        GLYPHA_REQUIRE(replacement.durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 2);
+    GLYPHA_REQUIRE((*runtime)->manifest().manifest_generation == 2);
+    GLYPHA_REQUIRE((*runtime)->active_segment(0)->value == 2);
+}
+
+GLYPHA_TEST("durable runtime commits puts replacements erases and recovers them") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        GLYPHA_REQUIRE(segment.selected_commit().commit.record_count == 0);
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    const std::string long_key(96, 'L');
+    const auto long_bytes = std::as_bytes(std::span{long_key});
+    const std::string first{"first"};
+    const std::string second{"second"};
+    {
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(runtime.has_value());
+        const auto inserted = (*runtime)->put(long_bytes, std::as_bytes(std::span{first}), 500);
+        GLYPHA_REQUIRE(inserted.committed());
+        GLYPHA_REQUIRE(inserted.sequence->value == 1);
+        GLYPHA_REQUIRE(owned_text(*(*runtime)->get(long_key, 499)) == "first");
+
+        const auto replaced = (*runtime)->put(long_bytes, std::as_bytes(std::span{second}));
+        GLYPHA_REQUIRE(replaced.committed());
+        GLYPHA_REQUIRE(replaced.sequence->value == 2);
+        GLYPHA_REQUIRE(owned_text(*(*runtime)->get(long_key)) == "second");
+
+        const auto erased = (*runtime)->erase(long_bytes);
+        GLYPHA_REQUIRE(erased.committed());
+        GLYPHA_REQUIRE(erased.sequence->value == 3);
+        const auto missing = (*runtime)->get(long_key);
+        GLYPHA_REQUIRE(!missing.has_value());
+        GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+        GLYPHA_REQUIRE((*runtime)->next_sequence(0)->value == 4);
+    }
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->next_sequence(0)->value == 4);
+    const auto missing = (*reopened)->get(long_key);
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+}
+
+GLYPHA_TEST("durable runtime commits different Worker mutations concurrently") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{1},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto first = create_segment(*directory, store_id, entries[0]);
+        auto second = create_segment(*directory, store_id, entries[1]);
+        GLYPHA_REQUIRE(first.selected_commit().commit.record_count == 0);
+        GLYPHA_REQUIRE(second.selected_commit().commit.record_count == 0);
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 2, entries)).durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto first_key = key_for_worker(0, 2, "parallel-a");
+    const auto second_key = key_for_worker(1, 2, "parallel-b");
+    std::atomic_bool failed{};
+    std::thread first([&] {
+        for (std::size_t iteration = 0; iteration < 8; ++iteration) {
+            const auto value = std::string{"a-"} + std::to_string(iteration);
+            if (!(*runtime)
+                     ->put(std::as_bytes(std::span{first_key}), std::as_bytes(std::span{value}))
+                     .committed()) {
+                failed.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+    std::thread second([&] {
+        for (std::size_t iteration = 0; iteration < 8; ++iteration) {
+            const auto value = std::string{"b-"} + std::to_string(iteration);
+            if (!(*runtime)
+                     ->put(std::as_bytes(std::span{second_key}), std::as_bytes(std::span{value}))
+                     .committed()) {
+                failed.store(true, std::memory_order_relaxed);
+            }
+        }
+    });
+    first.join();
+    second.join();
+    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(first_key)) == "a-7");
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(second_key)) == "b-7");
+    GLYPHA_REQUIRE((*runtime)->next_sequence(0)->value == 9);
+    GLYPHA_REQUIRE((*runtime)->next_sequence(1)->value == 9);
+}
+
+GLYPHA_TEST("durable runtime rotates a full active Segment before committing the Record") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    const std::string fill_key{"fill"};
+    const std::string maximum_value(
+        glyphastore::kMaxNormalRecordSize - glyphastore::kEncodedRecordHeaderSize - fill_key.size(), 'x');
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        for (std::uint64_t sequence = 1; sequence <= 63; ++sequence) {
+            append_record(segment, sequence, fill_key, maximum_value);
+        }
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    const std::string next_key{"next"};
+    {
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(runtime.has_value());
+        const auto committed =
+            (*runtime)->put(std::as_bytes(std::span{next_key}), std::as_bytes(std::span{maximum_value}));
+        GLYPHA_REQUIRE(committed.committed());
+        GLYPHA_REQUIRE(committed.sequence->value == 64);
+        GLYPHA_REQUIRE((*runtime)->active_segment(0)->value == 2);
+        GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 2);
+        const auto visible = (*runtime)->get(next_key);
+        GLYPHA_REQUIRE(visible.has_value());
+        GLYPHA_REQUIRE(visible->bytes.size() == maximum_value.size());
+    }
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->active_segment(0)->value == 2);
+    GLYPHA_REQUIRE((*reopened)->next_sequence(0)->value == 65);
+    GLYPHA_REQUIRE((*reopened)->get(next_key).has_value());
+}
+
+GLYPHA_TEST("durable runtime reports an indeterminate slot sync and recovery resolves one boundary") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        GLYPHA_REQUIRE(segment.selected_commit().commit.record_count == 0);
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    OneShotFilesystemFailure failure{.target = glyphastore::FilesystemOperation::sync_commit_slot};
+    {
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(
+            temporary.path(), 0,
+            glyphastore::FilesystemHooks{.context = &failure, .before = &OneShotFilesystemFailure::before});
+        GLYPHA_REQUIRE(runtime.has_value());
+        const std::string key{"uncertain"};
+        const std::string value{"value"};
+        const auto result = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableMutationOutcome::indeterminate);
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(!(*runtime)->healthy());
+    }
+    GLYPHA_REQUIRE(failure.fired);
+
+    auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(recovered.has_value());
+    const auto next = (*recovered)->next_sequence(0)->value;
+    GLYPHA_REQUIRE(next == 1 || next == 2);
+    const auto resolved = (*recovered)->get("uncertain");
+    if (next == 1) {
+        GLYPHA_REQUIRE(!resolved.has_value());
+        GLYPHA_REQUIRE(resolved.error().code == glyphastore::ErrorCode::not_found);
+    } else {
+        GLYPHA_REQUIRE(resolved.has_value());
+        GLYPHA_REQUIRE(owned_text(*resolved) == "value");
     }
 }

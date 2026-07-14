@@ -149,7 +149,7 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns)
                 .generation = entry.generation,
                 .owner_worker = entry.owner_worker,
             };
-            auto file = DurableSegmentFile::open(directory, expected);
+            auto file = DurableSegmentFile::open(directory, expected, SegmentFileOpenMode::read_only);
             if (!file) {
                 return segment_error(entry, file.error());
             }

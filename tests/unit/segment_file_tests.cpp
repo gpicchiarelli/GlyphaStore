@@ -162,6 +162,14 @@ GLYPHA_TEST("Segment append synchronizes data before alternating commit slots an
     GLYPHA_REQUIRE(recovered.has_value());
     GLYPHA_REQUIRE(recovered->size() == 2);
     GLYPHA_REQUIRE(reopened->selected_commit().commit.state == glyphastore::PersistedSegmentState::sealed);
+
+    auto read_only = glyphastore::DurableSegmentFile::open(*directory, identity,
+                                                           glyphastore::SegmentFileOpenMode::read_only);
+    GLYPHA_REQUIRE(read_only.has_value());
+    const auto rejected_append = read_only->append(*second);
+    GLYPHA_REQUIRE(rejected_append.outcome == glyphastore::SegmentCommitOutcome::not_committed);
+    GLYPHA_REQUIRE(rejected_append.error.has_value());
+    GLYPHA_REQUIRE(rejected_append.error->code == glyphastore::ErrorCode::invalid_argument);
 }
 
 GLYPHA_TEST("preallocation failure publishes no Segment and keeps directory healthy") {
