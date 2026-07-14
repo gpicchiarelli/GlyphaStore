@@ -382,14 +382,16 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                           .owner_worker = static_cast<std::uint32_t>(executor_id_),
                           .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                           .routing_epoch = kRoutingEpoch};
+    OwnedValue owned_response;
     switch (request.opcode) {
     case RequestOpcode::get: {
         if (cached_now_ns == 0) {
             cached_now_ns = current_time_ns();
         }
-        auto record = detail::StoreAccess::get_view(store_, executor_id_, key, cached_now_ns);
+        auto record = detail::StoreAccess::get_owned(store_, executor_id_, key, cached_now_ns);
         if (record) {
-            response.value = record->value;
+            owned_response = std::move(*record);
+            response.value = owned_response.bytes;
         } else {
             response.status = response_status(record.error());
         }

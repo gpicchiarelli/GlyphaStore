@@ -50,9 +50,9 @@ explicit.
 
 > [!IMPORTANT]
 > **Architectural prototype — not production ready.** The target alpha durability and public API
-> contracts are documented and low-level manifest/Segment persistence exists, but end-to-end
-> durable Store recovery, stable formats, compatibility evidence, and production guarantees are not
-> implemented yet.
+> contracts are documented and `Store::open(durable_sync)` supports crash-recoverable creation,
+> mutation, rotation, and restart on the current development format. Stable formats, cross-platform
+> crash evidence, compatibility guarantees, and production certification do not exist yet.
 
 ## Design at a glance
 
@@ -108,6 +108,22 @@ ctest --preset macos-debug
 ```
 
 On Linux, FreeBSD, and OpenBSD, use the `unix-debug` and `unix-release` presets.
+
+### Embedded durable Store
+
+```cpp
+glyphastore::StoreConfig config{
+    .worker_config = {.explicit_count = 4},
+    .storage_mode = glyphastore::StorageMode::durable_sync,
+    .data_directory = "/private/path/to/store",
+    .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,
+};
+auto store = glyphastore::Store::open(config);
+```
+
+`create_new` refuses an existing leaf, `open_existing` never initializes one, and
+`open_or_create` initializes only a missing or otherwise pristine directory. Reopening uses the
+persisted Worker count; an explicit conflicting count is rejected.
 
 ## Architecture
 

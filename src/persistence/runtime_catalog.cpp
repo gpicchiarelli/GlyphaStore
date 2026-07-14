@@ -209,10 +209,15 @@ auto DurableRuntimeCatalog::open_existing(const std::filesystem::path& path,
     if (!directory) {
         return unexpected(directory.error());
     }
-    if (auto completed = complete_interrupted_rotation(*directory); !completed) {
+    return open_locked(std::move(*directory), recovery_now_ns);
+}
+
+auto DurableRuntimeCatalog::open_locked(DataDirectory directory, const std::uint64_t recovery_now_ns)
+    -> Result<std::unique_ptr<DurableRuntimeCatalog>> {
+    if (auto completed = complete_interrupted_rotation(directory); !completed) {
         return unexpected(completed.error());
     }
-    auto recovered = recover_durable_state(*directory, recovery_now_ns);
+    auto recovered = recover_durable_state(directory, recovery_now_ns);
     if (!recovered) {
         return unexpected(recovered.error());
     }
@@ -227,7 +232,7 @@ auto DurableRuntimeCatalog::open_existing(const std::filesystem::path& path,
                     "durable Store requires interrupted rotation completion before runtime service");
     }
     return std::unique_ptr<DurableRuntimeCatalog>(
-        new DurableRuntimeCatalog(std::move(*directory), std::move(*recovered)));
+        new DurableRuntimeCatalog(std::move(directory), std::move(*recovered)));
 }
 
 auto DurableRuntimeCatalog::fail_closed(Error error) -> Unexpected {
@@ -242,11 +247,16 @@ auto DurableRuntimeCatalog::get(const std::string_view key, const std::uint64_t 
 
 auto DurableRuntimeCatalog::get(const std::span<const std::byte> key, const std::uint64_t now_ns)
     -> Result<OwnedValue> {
+    return get(HashedKey{.key = as_string_view(key), .hash = hash_key(key)}, now_ns);
+}
+
+auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<OwnedValue> {
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
-    const auto key_hash = hash_key(key);
-    const auto worker_index = route_worker(key_hash, workers_.size());
+    const auto key_bytes =
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()};
+    const auto worker_index = route_worker(key.hash, workers_.size());
     auto& worker = *workers_[worker_index];
     const std::lock_guard lock{worker.mutex};
     const std::shared_lock catalog_lock{catalog_mutex_};
@@ -254,8 +264,7 @@ auto DurableRuntimeCatalog::get(const std::span<const std::byte> key, const std:
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
 
-    const HashedKey hashed{.key = as_string_view(key), .hash = key_hash};
-    const auto reference = worker.index.find(hashed);
+    const auto reference = worker.index.find(key);
     if (!reference) {
         return fail(ErrorCode::not_found, "key is not present");
     }
@@ -304,7 +313,7 @@ auto DurableRuntimeCatalog::get(const std::span<const std::byte> key, const std:
         worker.cached_writable = false;
     }
 
-    ReadContext context{.expected_key = key, .expected_hash = key_hash, .now_ns = now_ns};
+    ReadContext context{.expected_key = key_bytes, .expected_hash = key.hash, .now_ns = now_ns};
     if (auto visited = worker.cached_file->visit_record(*reference, &context, &copy_verified_value);
         !visited) {
         if (visited.error().code == ErrorCode::not_found) {
@@ -318,11 +327,25 @@ auto DurableRuntimeCatalog::get(const std::span<const std::byte> key, const std:
 auto DurableRuntimeCatalog::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
                                 const std::uint64_t expire_at_ns, const ValueType type,
                                 const std::uint32_t flags) -> DurableMutationResult {
-    return mutate(key, value, Opcode::put, expire_at_ns, type, flags);
+    return mutate(key, value, Opcode::put, hash_key(key), expire_at_ns, type, flags);
+}
+
+auto DurableRuntimeCatalog::put(const HashedKey& key, const std::span<const std::byte> value,
+                                const std::uint64_t expire_at_ns, const ValueType type,
+                                const std::uint32_t flags) -> DurableMutationResult {
+    return mutate(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()}, value,
+        Opcode::put, key.hash, expire_at_ns, type, flags);
 }
 
 auto DurableRuntimeCatalog::erase(const std::span<const std::byte> key) -> DurableMutationResult {
-    return mutate(key, {}, Opcode::erase, 0, ValueType::bytes, 0);
+    return mutate(key, {}, Opcode::erase, hash_key(key), 0, ValueType::bytes, 0);
+}
+
+auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult {
+    return mutate(
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()}, {},
+        Opcode::erase, key.hash, 0, ValueType::bytes, 0);
 }
 
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutationResult {
@@ -421,13 +444,12 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
 
 auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                                    const std::span<const std::byte> value, const Opcode opcode,
-                                   const std::uint64_t expire_at_ns, const ValueType type,
-                                   const std::uint32_t flags) -> DurableMutationResult {
+                                   const std::uint64_t key_hash, const std::uint64_t expire_at_ns,
+                                   const ValueType type, const std::uint32_t flags) -> DurableMutationResult {
     if (!healthy()) {
         return mutation_failure(DurableMutationOutcome::indeterminate,
                                 Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
     }
-    const auto key_hash = hash_key(key);
     const auto worker_index = route_worker(key_hash, workers_.size());
     auto& worker = *workers_[worker_index];
     const std::lock_guard worker_lock{worker.mutex};
@@ -442,6 +464,10 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
     }
 
     const HashedKey hashed{.key = as_string_view(key), .hash = key_hash};
+    if (opcode == Opcode::erase && !worker.index.find(hashed)) {
+        return mutation_failure(DurableMutationOutcome::not_committed,
+                                Error{ErrorCode::not_found, "key is not present"});
+    }
     if (opcode == Opcode::put) {
         if (auto prepared = worker.index.prepare_insert(hashed); !prepared) {
             return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
@@ -582,6 +608,30 @@ auto DurableRuntimeCatalog::active_segment(const std::size_t worker_index) const
     }
     const std::lock_guard lock{workers_[worker_index]->mutex};
     return workers_[worker_index]->active_segment;
+}
+
+auto DurableRuntimeCatalog::verify_index() -> Status {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    std::vector<std::string> keys;
+    for (std::size_t worker_index = 0; worker_index < workers_.size(); ++worker_index) {
+        auto& worker = *workers_[worker_index];
+        const std::lock_guard lock{worker.mutex};
+        auto entries = worker.index.entries();
+        for (auto& entry : entries) {
+            if (route_worker(entry.key, workers_.size()) != worker_index) {
+                return fail(ErrorCode::corrupted_data, "durable Index entry is routed to the wrong Worker");
+            }
+            keys.push_back(std::move(entry.key));
+        }
+    }
+    for (const auto& key : keys) {
+        if (auto verified = get(key); !verified) {
+            return unexpected(verified.error());
+        }
+    }
+    return {};
 }
 
 } // namespace glyphastore

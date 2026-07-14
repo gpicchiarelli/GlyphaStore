@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
 
 namespace glyphastore {
@@ -14,6 +15,12 @@ enum class StorageMode : std::uint8_t {
     durable_sync,
 };
 
+enum class DurableOpenMode : std::uint8_t {
+    open_or_create,
+    open_existing,
+    create_new,
+};
+
 struct WorkerCountConfig {
     std::optional<std::size_t> explicit_count{};
     std::size_t reserved_cores{1};
@@ -24,6 +31,9 @@ struct WorkerCountConfig {
 struct StoreConfig {
     WorkerCountConfig worker_config{};
     StorageMode storage_mode{StorageMode::volatile_memory};
+    std::optional<std::filesystem::path> data_directory{};
+    DurableOpenMode durable_open_mode{DurableOpenMode::open_or_create};
+    std::uint64_t recovery_now_ns{};
 };
 
 } // namespace glyphastore

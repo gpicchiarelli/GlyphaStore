@@ -1,0 +1,173 @@
+#include "glyphastore/persistence/bootstrap.hpp"
+
+#include "glyphastore/persistence/segment_file.hpp"
+#include "system_error.hpp"
+
+#include <algorithm>
+#include <cstdint>
+#include <limits>
+#if defined(__APPLE__) || defined(__linux__)
+#include <sys/random.h>
+#else
+#include <unistd.h>
+#endif
+
+namespace glyphastore {
+namespace {
+
+auto new_store_id() -> Result<StoreId> {
+    StoreId id{};
+    if (::getentropy(id.data(), id.size()) != 0) {
+        return persistence_system_error("getentropy(Store ID)");
+    }
+    if (std::ranges::all_of(id, [](const std::byte byte) { return byte == std::byte{0}; })) {
+        return fail(ErrorCode::io_error, "entropy source returned an invalid all-zero Store ID");
+    }
+    return id;
+}
+
+auto initial_manifest(const std::size_t worker_count) -> Result<Manifest> {
+    if (worker_count == 0 || worker_count > kMaximumWorkerCount ||
+        worker_count >= std::numeric_limits<std::uint32_t>::max()) {
+        return fail(ErrorCode::invalid_argument, "bootstrap Worker count is outside supported bounds");
+    }
+    auto store_id = new_store_id();
+    if (!store_id) {
+        return unexpected(store_id.error());
+    }
+    Manifest manifest{
+        .store_id = *store_id,
+        .manifest_generation = 1,
+        .routing_algorithm = RoutingAlgorithm::fnv1a64_v1,
+        .worker_count = static_cast<std::uint32_t>(worker_count),
+        .routing_epoch = 1,
+        .next_segment_id = SegmentId{worker_count + 1U},
+        .next_segment_generation = GenerationId{1},
+    };
+    manifest.segments.reserve(worker_count);
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        manifest.segments.push_back({.segment_id = SegmentId{worker + 1U},
+                                     .generation = GenerationId{1},
+                                     .owner_worker = WorkerId{static_cast<std::uint32_t>(worker)},
+                                     .role = ManifestSegmentRole::active});
+    }
+    return manifest;
+}
+
+auto validate_initial_manifest(const Manifest& manifest) -> Status {
+    if (manifest.manifest_generation != 1 || manifest.routing_epoch != 1 ||
+        manifest.routing_algorithm != RoutingAlgorithm::fnv1a64_v1 ||
+        manifest.next_segment_generation != GenerationId{1} ||
+        manifest.segments.size() != manifest.worker_count ||
+        manifest.next_segment_id.value != static_cast<std::uint64_t>(manifest.worker_count) + 1U) {
+        return fail(ErrorCode::corrupted_data, "bootstrap intent is not a canonical initial manifest");
+    }
+    for (std::size_t index = 0; index < manifest.segments.size(); ++index) {
+        const auto& entry = manifest.segments[index];
+        if (entry.segment_id.value != index + 1U || entry.generation != GenerationId{1} ||
+            entry.owner_worker.value != index || entry.role != ManifestSegmentRole::active) {
+            return fail(ErrorCode::corrupted_data, "bootstrap intent Segment catalog is not canonical");
+        }
+    }
+    return {};
+}
+
+auto require_worker_count(const Manifest& manifest, const std::optional<std::size_t> required) -> Status {
+    if (required && *required != manifest.worker_count) {
+        return fail(ErrorCode::invalid_argument,
+                    "requested Worker count disagrees with durable Store metadata");
+    }
+    return {};
+}
+
+auto complete_bootstrap(DataDirectory& directory, const Manifest& intent,
+                        const std::optional<std::size_t> required_worker_count) -> Status {
+    if (auto valid = validate_initial_manifest(intent); !valid) {
+        return valid;
+    }
+    if (auto compatible = require_worker_count(intent, required_worker_count); !compatible) {
+        return compatible;
+    }
+    auto published = directory.read_manifest();
+    if (published) {
+        if (*published != intent) {
+            return fail(ErrorCode::corrupted_data, "published manifest disagrees with bootstrap intent");
+        }
+    } else if (published.error().code == ErrorCode::not_found) {
+        const auto result = directory.publish_manifest(intent);
+        if (!result.durable()) {
+            return unexpected(
+                result.error.value_or(Error{ErrorCode::io_error, "initial manifest publication failed"}));
+        }
+    } else {
+        return unexpected(published.error());
+    }
+
+    for (const auto& entry : intent.segments) {
+        const SegmentHeaderIdentity identity{.store_id = intent.store_id,
+                                             .segment_id = entry.segment_id,
+                                             .generation = entry.generation,
+                                             .owner_worker = entry.owner_worker};
+        auto existing = DurableSegmentFile::open(directory, identity, SegmentFileOpenMode::read_only);
+        if (existing) {
+            const auto& commit = existing->selected_commit().commit;
+            if (commit.commit_generation != 1 || commit.committed_end != kSegmentHeaderReservedBytes ||
+                commit.state != PersistedSegmentState::active || commit.record_count != 0) {
+                return fail(ErrorCode::corrupted_data,
+                            "bootstrap Segment is not in its pristine initial state");
+            }
+            continue;
+        }
+        if (existing.error().code != ErrorCode::not_found) {
+            return unexpected(existing.error());
+        }
+        auto created = DurableSegmentFile::create(directory, identity);
+        if (!created.durable()) {
+            return unexpected(
+                created.error.value_or(Error{ErrorCode::io_error, "initial Segment creation failed"}));
+        }
+    }
+    return directory.finish_bootstrap();
+}
+
+} // namespace
+
+auto prepare_durable_store(DataDirectory& directory, const DurableOpenMode mode,
+                           const std::size_t creation_worker_count,
+                           const std::optional<std::size_t> required_worker_count) -> Status {
+    auto intent = directory.read_bootstrap_intent();
+    if (intent) {
+        return complete_bootstrap(directory, *intent, required_worker_count);
+    }
+    if (intent.error().code != ErrorCode::not_found) {
+        return unexpected(intent.error());
+    }
+
+    auto manifest = directory.read_manifest();
+    if (manifest) {
+        return require_worker_count(*manifest, required_worker_count);
+    }
+    if (manifest.error().code != ErrorCode::not_found) {
+        return unexpected(manifest.error());
+    }
+    if (mode == DurableOpenMode::open_existing) {
+        return fail(ErrorCode::not_found, "durable Store manifest does not exist");
+    }
+    auto pristine = directory.pristine_for_bootstrap();
+    if (!pristine) {
+        return unexpected(pristine.error());
+    }
+    if (!*pristine) {
+        return fail(ErrorCode::invalid_argument, "refusing to initialize a non-empty data directory");
+    }
+    auto created = initial_manifest(creation_worker_count);
+    if (!created) {
+        return unexpected(created.error());
+    }
+    if (auto published = directory.publish_bootstrap_intent(*created); !published) {
+        return published;
+    }
+    return complete_bootstrap(directory, *created, required_worker_count);
+}
+
+} // namespace glyphastore

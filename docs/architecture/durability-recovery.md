@@ -145,8 +145,8 @@ Index rebuild, sequence restoration, and interrupted-rotation detection are impl
 [durable recovery orchestrator](recovery-implementation.md). Descriptor-relative namespace audit and
 strict normal-recovery policy are implemented in the [namespace policy](namespace-policy.md).
 Bounded verified reads, durable mutation ordering, and exact-intent rotation completion are
-implemented in the [durable runtime catalog](durable-runtime-catalog.md). Public Store integration,
-explicit repair for arbitrary orphans, retirement, and crash evidence remain pending.
+implemented in the [durable runtime catalog](durable-runtime-catalog.md) and owned by the public
+Store PImpl. Explicit repair for arbitrary orphans, retirement, and crash evidence remain pending.
 
 ## Recovery
 

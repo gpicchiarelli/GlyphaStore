@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Enable public `Store::open(durable_sync)` with explicit create/open policies, persisted Worker-count
+  validation, entropy-backed Store IDs, crash-recoverable bootstrap intents, and the durable
+  mutation/rotation runtime behind the PImpl.
 - Define the target alpha durability, recovery, routing persistence, and public read ownership
   contracts in ADRs 0008 and 0009.
 - Separate the installed C++ API from engine internals with a PImpl Store, owning reads, byte-key

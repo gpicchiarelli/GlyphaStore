@@ -41,8 +41,8 @@ implementation or design document alone is not sufficient.
   tolerates only recognizable crash temporaries and rejects unlisted/unknown/unsafe entries without
   mutation. Recovered Indexes now feed a bounded per-Worker runtime whose disk reads revalidate
   CRC/key/reference metadata and remain fail-closed after corruption. Existing stores support
-  ordered durable puts/tombstones and exact-intent rotation completion; public Store integration,
-  new-store creation, and process-kill coverage remain pending.
+  ordered durable puts/tombstones, exact-intent rotation completion, and crash-recoverable public
+  Store creation. Exhaustive process-kill and native-platform coverage remain pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
   Segment unit recovery rejects committed corruption and ignores uncommitted tails; system-level
   disk-full, missing-catalog-file, and process-kill matrices remain pending.

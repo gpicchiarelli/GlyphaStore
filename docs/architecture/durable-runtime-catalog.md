@@ -1,8 +1,16 @@
 # Durable runtime catalog and mutation state machine
 
-This internal layer materializes a recovered durable Store into per-Worker Indexes and a bounded
-file-backed runtime. Public `durable_sync` remains disabled while public Store construction and
-creation of a new durable directory are still separate.
+This layer materializes a recovered durable Store into per-Worker Indexes and a bounded file-backed
+runtime. `Store::open(durable_sync)` owns it through the public PImpl.
+
+## Initial bootstrap
+
+Creation publishes a CRC-protected bootstrap intent containing the complete canonical initial
+manifest using temporary-file, file-sync, rename, and directory-sync ordering. The manifest is then
+published, one pristine active Segment is created per Worker, and finally the intent is removed and
+the directory synchronized. A restart may complete missing initial Segments only while this exact
+intent exists and only after verifying every present Segment is pristine. Without the intent, a
+missing catalog Segment is corruption rather than an initialization state.
 
 ## Open and ownership
 
@@ -61,9 +69,8 @@ Tests cover binary reads, expiration, concurrent readers, lock lifetime, sticky 
 preflighted long-key publication, puts/replacements/tombstones across restart, sealed-active
 completion, and exact prepared-replacement adoption.
 
-Still required before public durable mode is enabled:
+Still required before durability can be certified:
 
-- public Store integration and new-directory creation;
 - fault injection and process-kill tests at every mutation and rotation boundary;
 - retirement/vacuum manifest publication;
 - disk-full and native Linux/FreeBSD/OpenBSD evidence.

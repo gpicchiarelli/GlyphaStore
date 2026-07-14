@@ -1,8 +1,7 @@
 # Durable Segment files
 
-This document describes the implemented internal Segment-file layer. It is the persistence boundary
-below `Store`: end-to-end `durable_sync` remains disabled until manifest orchestration, startup
-recovery, in-memory publication, and process-kill evidence are integrated.
+This document describes the Segment-file layer backing end-to-end `durable_sync` creation,
+recovery, and mutation. Process-kill evidence remains a certification gate.
 
 ## Names and creation
 

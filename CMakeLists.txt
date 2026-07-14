@@ -39,6 +39,7 @@ add_library(glyphastore_core
     src/index/index.cpp
     src/index/key_arena.cpp
     src/index/swiss_table.cpp
+    src/persistence/bootstrap.cpp
     src/persistence/filesystem.cpp
     src/persistence/manifest.cpp
     src/persistence/namespace_audit.cpp

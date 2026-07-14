@@ -1,8 +1,8 @@
 # Format compatibility matrix
 
 This document records the formats understood by the current `0.1.x` code line. It is an executable
-development matrix, not yet a released persistence guarantee: `durable_sync` remains disabled and
-no released artifact migration has been exercised.
+development matrix, not yet a released persistence guarantee: `durable_sync` is enabled for
+development use, but no released artifact migration has been exercised.
 
 Format versions are independent. A library version never implies that manifest, Segment, Record,
 and wire versions advance together.

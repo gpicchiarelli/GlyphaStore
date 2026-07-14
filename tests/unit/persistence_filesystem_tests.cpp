@@ -204,3 +204,35 @@ GLYPHA_TEST("invalid manifest fails before creating a publication") {
     GLYPHA_REQUIRE(result.error.has_value());
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kManifestFilename));
 }
+
+GLYPHA_TEST("bootstrap intent publication cleans pre-rename failures") {
+    TemporaryDirectory temporary;
+    InjectedFailure failure{.operation = glyphastore::FilesystemOperation::sync_bootstrap, .enabled = true};
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path(),
+                                                               {.context = &failure, .before = &fail_before});
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto published = directory->publish_bootstrap_intent(test_manifest());
+    GLYPHA_REQUIRE(!published.has_value());
+    GLYPHA_REQUIRE(directory->healthy());
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kBootstrapTemporaryFilename));
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kBootstrapIntentFilename));
+}
+
+GLYPHA_TEST("bootstrap intent post-rename sync failure reopens as a complete intent") {
+    TemporaryDirectory temporary;
+    InjectedFailure failure{.operation = glyphastore::FilesystemOperation::sync_directory, .enabled = true};
+    const auto expected = test_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), {.context = &failure, .before = &fail_before});
+        GLYPHA_REQUIRE(directory.has_value());
+        const auto published = directory->publish_bootstrap_intent(expected);
+        GLYPHA_REQUIRE(!published.has_value());
+        GLYPHA_REQUIRE(!directory->healthy());
+    }
+    auto reopened = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto intent = reopened->read_bootstrap_intent();
+    GLYPHA_REQUIRE(intent.has_value());
+    GLYPHA_REQUIRE(*intent == expected);
+}

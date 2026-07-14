@@ -17,8 +17,11 @@ namespace glyphastore {
 inline constexpr auto kManifestFilename = "manifest.glypha";
 inline constexpr auto kManifestTemporaryFilename = ".manifest.glypha.tmp";
 inline constexpr auto kStoreLockFilename = ".glyphastore.lock";
+inline constexpr auto kBootstrapIntentFilename = ".glyphastore.bootstrap";
+inline constexpr auto kBootstrapTemporaryFilename = ".glyphastore.bootstrap.tmp";
 
 enum class FileSyncMode { data, full };
+enum class DataDirectoryOpenMode { existing, open_or_create, create_new };
 
 class FileDescriptor final {
   public:
@@ -62,6 +65,10 @@ enum class FilesystemOperation {
     sync_record,
     write_commit_slot,
     sync_commit_slot,
+    write_bootstrap,
+    sync_bootstrap,
+    rename_bootstrap,
+    remove_bootstrap,
 };
 
 struct FilesystemHooks {
@@ -87,6 +94,8 @@ class DataDirectory final {
   public:
     [[nodiscard]] static auto open_and_lock(const std::filesystem::path& path, FilesystemHooks hooks = {})
         -> Result<DataDirectory>;
+    [[nodiscard]] static auto open_and_lock(const std::filesystem::path& path, DataDirectoryOpenMode mode,
+                                            FilesystemHooks hooks = {}) -> Result<DataDirectory>;
 
     ~DataDirectory();
     DataDirectory(const DataDirectory&) = delete;
@@ -96,6 +105,10 @@ class DataDirectory final {
 
     [[nodiscard]] auto publish_manifest(const Manifest& manifest) -> ManifestPublicationResult;
     [[nodiscard]] auto read_manifest() const -> Result<Manifest>;
+    [[nodiscard]] auto publish_bootstrap_intent(const Manifest& manifest) -> Status;
+    [[nodiscard]] auto read_bootstrap_intent() const -> Result<Manifest>;
+    [[nodiscard]] auto finish_bootstrap() -> Status;
+    [[nodiscard]] auto pristine_for_bootstrap() const -> Result<bool>;
     // Returns an independently positioned descriptor for descriptor-relative
     // namespace enumeration. The caller owns the returned descriptor.
     [[nodiscard]] auto open_directory_for_enumeration() const -> Result<FileDescriptor>;

@@ -2,11 +2,9 @@
 
 This document describes the implemented internal recovery orchestrator. It converts one locked,
 validated data directory into a deterministic manifest-aligned catalog, one rebuilt Index per
-Worker, restored next sequences, and explicit rotation requirements. Public `durable_sync` remains
-disabled because runtime durable mutation, collision-safe orphan quarantine/reservation, and
-automatic completion of recovery transitions are not integrated yet. Recovered state can now be
-moved into the internal [durable runtime catalog](durable-runtime-catalog.md) for bounded verified
-reads.
+Worker, restored next sequences, and explicit rotation requirements. The public durable Store moves
+this state into the [durable runtime catalog](durable-runtime-catalog.md) after completing only
+validated bootstrap or rotation intents.
 
 ## Recovery pipeline
 

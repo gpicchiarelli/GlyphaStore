@@ -3,12 +3,15 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
+#include "glyphastore/persistence/bootstrap.hpp"
+#include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
 #include "store/store_internal.hpp"
 
+#include <exception>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -32,23 +35,66 @@ namespace {
     };
 }
 
+[[nodiscard]] auto as_bytes(const std::string_view value) noexcept -> std::span<const std::byte> {
+    return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
+}
+
+auto durable_status(DurableMutationResult result) -> Status {
+    if (result.committed() && !result.error) {
+        return {};
+    }
+    auto error = result.error.value_or(Error{ErrorCode::io_error, "durable mutation failed"});
+    if (result.committed()) {
+        error.code = ErrorCode::unavailable;
+        error.message = "mutation committed but runtime publication failed: " + error.message;
+    } else if (result.outcome == DurableMutationOutcome::indeterminate) {
+        error.message = "mutation outcome is indeterminate: " + error.message;
+    }
+    return unexpected(std::move(error));
+}
+
+auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOpenMode {
+    switch (mode) {
+    case DurableOpenMode::open_existing:
+        return DataDirectoryOpenMode::existing;
+    case DurableOpenMode::create_new:
+        return DataDirectoryOpenMode::create_new;
+    case DurableOpenMode::open_or_create:
+        return DataDirectoryOpenMode::open_or_create;
+    }
+    return DataDirectoryOpenMode::existing;
+}
+
 } // namespace
 
-struct Store::Impl {
-    Impl(const SegmentId first_segment_id, const std::size_t worker_count)
+struct VolatileStoreRuntime {
+    VolatileStoreRuntime(const SegmentId first_segment_id, const std::size_t worker_count)
         : segment_manager(first_segment_id), workers(segment_manager, worker_count) {}
 
     GlobalSegmentManager segment_manager;
     WorkerPool workers;
 };
 
+struct Store::Impl {
+    explicit Impl(std::unique_ptr<VolatileStoreRuntime> runtime) : volatile_runtime(std::move(runtime)) {}
+    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime) : durable_runtime(std::move(runtime)) {}
+
+    std::unique_ptr<VolatileStoreRuntime> volatile_runtime;
+    std::unique_ptr<DurableRuntimeCatalog> durable_runtime;
+};
+
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() = default;
 
 auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
-    if (config.storage_mode != StorageMode::volatile_memory) {
-        return fail(ErrorCode::invalid_argument,
-                    "durable_sync storage is specified but not implemented in the current prototype");
+    if (config.storage_mode != StorageMode::volatile_memory &&
+        config.storage_mode != StorageMode::durable_sync) {
+        return fail(ErrorCode::invalid_argument, "storage mode is unsupported");
+    }
+    if (config.durable_open_mode != DurableOpenMode::open_or_create &&
+        config.durable_open_mode != DurableOpenMode::open_existing &&
+        config.durable_open_mode != DurableOpenMode::create_new) {
+        return fail(ErrorCode::invalid_argument, "durable open mode is unsupported");
     }
     if (config.worker_config.maximum_workers == 0 ||
         config.worker_config.maximum_workers > kMaximumWorkerCount) {
@@ -61,12 +107,39 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
     }
     const auto topology = detect_worker_topology();
     const auto count = WorkerCountPolicy::choose(topology, config.worker_config);
-    auto impl = std::make_unique<Impl>(SegmentId{1}, count);
+    if (config.storage_mode == StorageMode::volatile_memory) {
+        if (config.data_directory || config.durable_open_mode != DurableOpenMode::open_or_create ||
+            config.recovery_now_ns != 0) {
+            return fail(ErrorCode::invalid_argument,
+                        "volatile storage cannot use durable-only configuration");
+        }
+        auto impl = std::make_unique<Impl>(std::make_unique<VolatileStoreRuntime>(SegmentId{1}, count));
+        return std::unique_ptr<Store>(new Store(std::move(impl)));
+    }
+    if (!config.data_directory || config.data_directory->empty()) {
+        return fail(ErrorCode::invalid_argument, "durable_sync requires a data directory");
+    }
+    auto directory =
+        DataDirectory::open_and_lock(*config.data_directory, data_directory_mode(config.durable_open_mode));
+    if (!directory) {
+        return unexpected(directory.error());
+    }
+    if (auto prepared = prepare_durable_store(*directory, config.durable_open_mode, count,
+                                              config.worker_config.explicit_count);
+        !prepared) {
+        return unexpected(prepared.error());
+    }
+    auto runtime = DurableRuntimeCatalog::open_locked(std::move(*directory), config.recovery_now_ns);
+    if (!runtime) {
+        return unexpected(runtime.error());
+    }
+    auto impl = std::make_unique<Impl>(std::move(*runtime));
     return std::unique_ptr<Store>(new Store(std::move(impl)));
 }
 
 auto Store::worker_count() const noexcept -> std::size_t {
-    return impl_->workers.size();
+    return impl_->volatile_runtime ? impl_->volatile_runtime->workers.size()
+                                   : impl_->durable_runtime->worker_count();
 }
 
 auto Store::get(const std::string_view key, const std::uint64_t now_ns) -> Result<OwnedValue> {
@@ -78,8 +151,11 @@ auto Store::get(const std::span<const std::byte> key, const std::uint64_t now_ns
 }
 
 auto Store::get_copy(const std::string_view key, const std::uint64_t now_ns) -> Result<OwnedValue> {
+    if (impl_->durable_runtime) {
+        return impl_->durable_runtime->get(key, now_ns);
+    }
     const auto hashed = HashedKey::compute(key);
-    auto& worker = impl_->workers.route(hashed);
+    auto& worker = impl_->volatile_runtime->workers.route(hashed);
     const std::lock_guard lock{worker.mutex_};
     auto record = worker.get_locked(hashed, now_ns);
     if (!record) {
@@ -89,37 +165,56 @@ auto Store::get_copy(const std::string_view key, const std::uint64_t now_ns) -> 
 }
 
 auto Store::get_copy(const std::span<const std::byte> key, const std::uint64_t now_ns) -> Result<OwnedValue> {
+    if (impl_->durable_runtime) {
+        return impl_->durable_runtime->get(key, now_ns);
+    }
     return get_copy(as_string_view(key), now_ns);
 }
 
 auto Store::put(const std::string_view key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status {
+    if (impl_->durable_runtime) {
+        return durable_status(impl_->durable_runtime->put(as_bytes(key), value, expire_at_ns));
+    }
     const auto hashed = HashedKey::compute(key);
-    return impl_->workers.route(hashed).put(hashed, value, expire_at_ns);
+    return impl_->volatile_runtime->workers.route(hashed).put(hashed, value, expire_at_ns);
 }
 
 auto Store::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status {
+    if (impl_->durable_runtime) {
+        return durable_status(impl_->durable_runtime->put(key, value, expire_at_ns));
+    }
     return put(as_string_view(key), value, expire_at_ns);
 }
 
 auto Store::erase(const std::string_view key) -> Status {
+    if (impl_->durable_runtime) {
+        return durable_status(impl_->durable_runtime->erase(as_bytes(key)));
+    }
     const auto hashed = HashedKey::compute(key);
-    return impl_->workers.route(hashed).erase(hashed);
+    return impl_->volatile_runtime->workers.route(hashed).erase(hashed);
 }
 
 auto Store::erase(const std::span<const std::byte> key) -> Status {
+    if (impl_->durable_runtime) {
+        return durable_status(impl_->durable_runtime->erase(key));
+    }
     return erase(as_string_view(key));
 }
 
 auto Store::verify_index() const -> Status {
+    if (impl_->durable_runtime) {
+        return impl_->durable_runtime->verify_index();
+    }
+    auto& runtime = *impl_->volatile_runtime;
     std::vector<std::unique_lock<std::mutex>> worker_locks;
-    worker_locks.reserve(impl_->workers.size());
-    for (std::size_t index = 0; index < impl_->workers.size(); ++index) {
-        worker_locks.emplace_back(impl_->workers.worker(index).mutex_);
+    worker_locks.reserve(runtime.workers.size());
+    for (std::size_t index = 0; index < runtime.workers.size(); ++index) {
+        worker_locks.emplace_back(runtime.workers.worker(index).mutex_);
     }
 
-    const auto segments = impl_->segment_manager.segments();
+    const auto segments = runtime.segment_manager.segments();
     const auto rebuilt = rebuild_index_from_segments(segments);
     if (!rebuilt) {
         return unexpected(rebuilt.error());
@@ -128,14 +223,14 @@ auto Store::verify_index() const -> Status {
         return fail(ErrorCode::corrupted_data, "rebuilt index size does not match visible record count");
     }
     std::size_t worker_entry_count{};
-    for (std::size_t index = 0; index < impl_->workers.size(); ++index) {
-        const auto& worker = impl_->workers.worker(index);
+    for (std::size_t index = 0; index < runtime.workers.size(); ++index) {
+        const auto& worker = runtime.workers.worker(index);
         if (worker.index().stats().size > rebuilt->index.stats().size) {
             return fail(ErrorCode::corrupted_data, "worker index exceeds rebuilt index size");
         }
         for (const auto& entry : worker.index().entries()) {
             ++worker_entry_count;
-            if (route_worker(entry.key, impl_->workers.size()) != index) {
+            if (route_worker(entry.key, runtime.workers.size()) != index) {
                 return fail(ErrorCode::corrupted_data, "worker index entry is in the wrong partition");
             }
             const auto ref = rebuilt->index.find(entry.key);
@@ -148,8 +243,8 @@ auto Store::verify_index() const -> Status {
         return fail(ErrorCode::corrupted_data, "worker indexes do not contain every rebuilt entry");
     }
     for (const auto& entry : rebuilt->index.entries()) {
-        const auto worker_index = route_worker(entry.key, impl_->workers.size());
-        const auto ref = impl_->workers.worker(worker_index).index().find(entry.key);
+        const auto worker_index = route_worker(entry.key, runtime.workers.size());
+        const auto ref = runtime.workers.worker(worker_index).index().find(entry.key);
         if (!ref || *ref != entry.record) {
             return fail(ErrorCode::corrupted_data, "rebuilt entry is missing from its worker index");
         }
@@ -157,40 +252,59 @@ auto Store::verify_index() const -> Status {
     return {};
 }
 
-auto detail::StoreAccess::get_view(Store& store, const std::size_t worker_index, const HashedKey& key,
-                                   const std::uint64_t now_ns) -> Result<RecordView> {
-    if (worker_index >= store.impl_->workers.size() ||
-        route_worker(key.hash, store.impl_->workers.size()) != worker_index) {
+auto detail::StoreAccess::get_owned(Store& store, const std::size_t worker_index, const HashedKey& key,
+                                    const std::uint64_t now_ns) -> Result<OwnedValue> {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "exclusive get targets the wrong Worker owner");
     }
-    return store.impl_->workers.worker(worker_index).get_locked(key, now_ns);
+    if (store.impl_->durable_runtime) {
+        return store.impl_->durable_runtime->get(key, now_ns);
+    }
+    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
+    if (!record) {
+        return unexpected(record.error());
+    }
+    return copy_value(*record);
 }
 
 auto detail::StoreAccess::put(Store& store, const std::size_t worker_index, const HashedKey& key,
                               const std::span<const std::byte> value, const std::uint64_t expire_at_ns)
     -> Status {
-    if (worker_index >= store.impl_->workers.size() ||
-        route_worker(key.hash, store.impl_->workers.size()) != worker_index) {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "exclusive put targets the wrong Worker owner");
     }
-    return store.impl_->workers.worker(worker_index).put_locked(key, value, expire_at_ns);
+    if (store.impl_->durable_runtime) {
+        return durable_status(store.impl_->durable_runtime->put(key, value, expire_at_ns));
+    }
+    return store.impl_->volatile_runtime->workers.worker(worker_index).put_locked(key, value, expire_at_ns);
 }
 
 auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, const HashedKey& key)
     -> Status {
-    if (worker_index >= store.impl_->workers.size() ||
-        route_worker(key.hash, store.impl_->workers.size()) != worker_index) {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "exclusive erase targets the wrong Worker owner");
     }
-    return store.impl_->workers.worker(worker_index).erase_locked(key);
+    if (store.impl_->durable_runtime) {
+        return durable_status(store.impl_->durable_runtime->erase(key));
+    }
+    return store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked(key);
 }
 
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {
-    return store.impl_->workers.worker(index);
+    if (!store.impl_->volatile_runtime) {
+        std::terminate();
+    }
+    return store.impl_->volatile_runtime->workers.worker(index);
 }
 
 auto detail::StoreAccess::segments(const Store& store) -> std::vector<SegmentPtr> {
-    return store.impl_->segment_manager.segments();
+    if (!store.impl_->volatile_runtime) {
+        return {};
+    }
+    return store.impl_->volatile_runtime->segment_manager.segments();
 }
 
 } // namespace glyphastore

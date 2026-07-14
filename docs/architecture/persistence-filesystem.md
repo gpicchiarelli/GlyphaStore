@@ -1,8 +1,8 @@
 # Persistence filesystem layer
 
-This document specifies the implemented low-level filesystem primitives for durable storage. They
-are internal building blocks: `Store::open(durable_sync)` remains disabled until Segment files,
-recovery, and mutation acknowledgement are integrated and crash-tested.
+This document specifies the low-level filesystem primitives behind public
+`Store::open(durable_sync)` creation, recovery, and mutation. Production certification still
+requires native-platform and process-kill evidence.
 
 ## Security and namespace policy
 

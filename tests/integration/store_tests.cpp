@@ -1,11 +1,19 @@
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/persistence/filesystem.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
 #include <array>
+#include <fcntl.h>
+#include <filesystem>
 #include <memory>
+#include <string>
 #include <string_view>
+#include <system_error>
+#include <unistd.h>
+#include <vector>
 
 namespace {
 auto bytes(std::string_view value) -> std::span<const std::byte> {
@@ -14,6 +22,37 @@ auto bytes(std::string_view value) -> std::span<const std::byte> {
 
 auto value_string(const glyphastore::OwnedValue& value) -> std::string_view {
     return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
+}
+
+class StoreTemporaryDirectory final {
+  public:
+    StoreTemporaryDirectory() {
+        auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-store-XXXXXX").string();
+        std::vector<char> writable(pattern.begin(), pattern.end());
+        writable.push_back('\0');
+        const auto* created = ::mkdtemp(writable.data());
+        GLYPHA_REQUIRE(created != nullptr);
+        root_ = created;
+    }
+
+    ~StoreTemporaryDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root_, ignored);
+    }
+
+    [[nodiscard]] auto store_path() const -> std::filesystem::path {
+        return root_ / "store";
+    }
+
+  private:
+    std::filesystem::path root_;
+};
+
+auto bootstrap_store_id() -> glyphastore::StoreId {
+    return {std::byte{0x91}, std::byte{0x92}, std::byte{0x93}, std::byte{0x94},
+            std::byte{0x95}, std::byte{0x96}, std::byte{0x97}, std::byte{0x98},
+            std::byte{0x99}, std::byte{0x9A}, std::byte{0x9B}, std::byte{0x9C},
+            std::byte{0x9D}, std::byte{0x9E}, std::byte{0x9F}, std::byte{0xA0}};
 }
 } // namespace
 
@@ -181,10 +220,162 @@ GLYPHA_TEST("store byte key API preserves embedded zeros and empty keys") {
     GLYPHA_REQUIRE(value_string(*empty) == "empty");
 }
 
-GLYPHA_TEST("store rejects unsupported durable mode without creating volatile state") {
+GLYPHA_TEST("durable Store requires an explicit data directory") {
     const auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_sync});
     GLYPHA_REQUIRE(!opened.has_value());
     GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("public durable Store creates commits reopens and enforces persisted Worker count") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened =
+            glyphastore::Store::open({.worker_config = {.explicit_count = 2},
+                                      .storage_mode = glyphastore::StorageMode::durable_sync,
+                                      .data_directory = path,
+                                      .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->worker_count() == 2);
+        GLYPHA_REQUIRE((*opened)->put("stable", bytes("first")).has_value());
+        GLYPHA_REQUIRE(value_string(*(*opened)->get("stable")) == "first");
+        const auto server_key = glyphastore::HashedKey::compute("server-owned");
+        const auto owner = glyphastore::route_worker(server_key.hash, (*opened)->worker_count());
+        GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::put(**opened, owner, server_key, bytes("bridge"), 0)
+                           .has_value());
+        const auto bridged = glyphastore::detail::StoreAccess::get_owned(**opened, owner, server_key, 0);
+        GLYPHA_REQUIRE(bridged.has_value());
+        GLYPHA_REQUIRE(value_string(*bridged) == "bridge");
+        GLYPHA_REQUIRE((*opened)->verify_index().has_value());
+
+        const auto locked =
+            glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_sync,
+                                      .data_directory = path,
+                                      .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+        GLYPHA_REQUIRE(!locked.has_value());
+    }
+
+    {
+        auto reopened =
+            glyphastore::Store::open({.worker_config = {.explicit_count = 2},
+                                      .storage_mode = glyphastore::StorageMode::durable_sync,
+                                      .data_directory = path,
+                                      .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE(value_string(*(*reopened)->get("stable")) == "first");
+        GLYPHA_REQUIRE((*reopened)->put("stable", bytes("second")).has_value());
+        GLYPHA_REQUIRE((*reopened)->erase("stable").has_value());
+        GLYPHA_REQUIRE(!(*reopened)->get("stable").has_value());
+        const auto absent_erase = (*reopened)->erase("stable");
+        GLYPHA_REQUIRE(!absent_erase.has_value());
+        GLYPHA_REQUIRE(absent_erase.error().code == glyphastore::ErrorCode::not_found);
+    }
+
+    const auto mismatch =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(!mismatch.has_value());
+    GLYPHA_REQUIRE(mismatch.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    const auto duplicate =
+        glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(!duplicate.has_value());
+    GLYPHA_REQUIRE(duplicate.error().code == glyphastore::ErrorCode::sequence_conflict);
+}
+
+GLYPHA_TEST("public durable Store completes an interrupted bootstrap intent") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    const auto store_id = bootstrap_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{1},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    const glyphastore::Manifest intent{
+        .store_id = store_id,
+        .manifest_generation = 1,
+        .routing_algorithm = glyphastore::RoutingAlgorithm::fnv1a64_v1,
+        .worker_count = 2,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{3},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments = entries,
+    };
+    {
+        auto directory =
+            glyphastore::DataDirectory::open_and_lock(path, glyphastore::DataDirectoryOpenMode::create_new);
+        GLYPHA_REQUIRE(directory.has_value());
+        GLYPHA_REQUIRE(directory->publish_bootstrap_intent(intent).has_value());
+        GLYPHA_REQUIRE(directory->publish_manifest(intent).durable());
+        const glyphastore::SegmentHeaderIdentity first_identity{
+            .store_id = store_id,
+            .segment_id = entries[0].segment_id,
+            .generation = entries[0].generation,
+            .owner_worker = entries[0].owner_worker,
+        };
+        GLYPHA_REQUIRE(glyphastore::DurableSegmentFile::create(*directory, first_identity).durable());
+    }
+
+    auto completed =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 2},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(completed.has_value());
+    GLYPHA_REQUIRE((*completed)->worker_count() == 2);
+    GLYPHA_REQUIRE((*completed)->put("after-bootstrap", bytes("value")).has_value());
+    GLYPHA_REQUIRE(value_string(*(*completed)->get("after-bootstrap")) == "value");
+    GLYPHA_REQUIRE(!std::filesystem::exists(path / glyphastore::kBootstrapIntentFilename));
+}
+
+GLYPHA_TEST("durable open-or-create initializes only a pristine directory") {
+    {
+        StoreTemporaryDirectory temporary;
+        const auto path = temporary.store_path();
+        GLYPHA_REQUIRE(std::filesystem::create_directory(path));
+        std::filesystem::permissions(path, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace);
+        const auto stale_temporary = path / glyphastore::kBootstrapTemporaryFilename;
+        const auto stale_descriptor =
+            ::open(stale_temporary.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        GLYPHA_REQUIRE(stale_descriptor >= 0);
+        GLYPHA_REQUIRE(::close(stale_descriptor) == 0);
+        auto initialized = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                                     .storage_mode = glyphastore::StorageMode::durable_sync,
+                                                     .data_directory = path});
+        GLYPHA_REQUIRE(initialized.has_value());
+        GLYPHA_REQUIRE(!std::filesystem::exists(stale_temporary));
+        GLYPHA_REQUIRE((*initialized)->put("created", bytes("yes")).has_value());
+    }
+    {
+        StoreTemporaryDirectory temporary;
+        const auto path = temporary.store_path();
+        GLYPHA_REQUIRE(std::filesystem::create_directory(path));
+        std::filesystem::permissions(path, std::filesystem::perms::owner_all,
+                                     std::filesystem::perm_options::replace);
+        const auto foreign = path / "foreign-file";
+        const auto descriptor = ::open(foreign.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
+        GLYPHA_REQUIRE(descriptor >= 0);
+        GLYPHA_REQUIRE(::close(descriptor) == 0);
+        const auto rejected =
+            glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                      .storage_mode = glyphastore::StorageMode::durable_sync,
+                                      .data_directory = path});
+        GLYPHA_REQUIRE(!rejected.has_value());
+        GLYPHA_REQUIRE(rejected.error().code == glyphastore::ErrorCode::invalid_argument);
+        GLYPHA_REQUIRE(!std::filesystem::exists(path / glyphastore::kBootstrapIntentFilename));
+        GLYPHA_REQUIRE(std::filesystem::exists(foreign));
+    }
 }
 
 GLYPHA_TEST("store rejects invalid public worker configuration") {
