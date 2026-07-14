@@ -1,3 +1,4 @@
+#include "glyphastore/core/types.hpp"
 #include "glyphastore/worker/topology.hpp"
 #include "test.hpp"
 

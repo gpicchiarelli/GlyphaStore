@@ -39,10 +39,16 @@ add_library(glyphastore_core
     src/index/index.cpp
     src/index/key_arena.cpp
     src/index/swiss_table.cpp
+    src/persistence/filesystem.cpp
+    src/persistence/manifest.cpp
+    src/persistence/namespace_audit.cpp
+    src/persistence/recovery.cpp
+    src/persistence/segment_file.cpp
     src/segment/crc32c.cpp
     src/segment/global_manager.cpp
     src/segment/record.cpp
     src/segment/segment.cpp
+    src/segment/segment_header.cpp
     src/store/store.cpp
     src/vacuum/vacuum.cpp
     src/worker/pool.cpp
@@ -51,12 +57,17 @@ add_library(glyphastore_core
 )
 add_library(GlyphaStore::core ALIAS glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES EXPORT_NAME core)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set_source_files_properties(src/persistence/segment_file.cpp PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
+endif()
 
 target_compile_features(glyphastore_core PUBLIC cxx_std_23)
 target_include_directories(glyphastore_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 target_link_libraries(glyphastore_core PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>)
 glyphastore_set_warnings(glyphastore_core)
@@ -89,6 +100,8 @@ target_include_directories(glyphastore_server_core
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
         $<INSTALL_INTERFACE:include>
+    PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 target_link_libraries(glyphastore_server_core
     PUBLIC GlyphaStore::core
@@ -124,18 +137,24 @@ if(BUILD_TESTING)
     add_executable(glyphastore_tests
         tests/test_main.cpp
         tests/unit/index_tests.cpp
+        tests/unit/manifest_tests.cpp
+        tests/unit/namespace_audit_tests.cpp
+        tests/unit/persistence_filesystem_tests.cpp
+        tests/unit/segment_file_tests.cpp
         tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp
+        tests/unit/segment_header_tests.cpp
         tests/unit/segment_catalog_tests.cpp
         tests/unit/trusted_read_tests.cpp
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
+        tests/integration/persistence_recovery_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
         tests/integration/server_reactor_tests.cpp
         tests/integration/store_tests.cpp
@@ -144,7 +163,13 @@ if(BUILD_TESTING)
     target_link_libraries(glyphastore_tests
         PRIVATE GlyphaStore::server glyphastore_cli_support glyphastore_project_options
     )
-    target_include_directories(glyphastore_tests PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    target_include_directories(glyphastore_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/src"
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+    )
+    target_compile_definitions(glyphastore_tests
+        PRIVATE GLYPHASTORE_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
     glyphastore_set_warnings(glyphastore_tests)
     glyphastore_enable_hardening(glyphastore_tests)
     glyphastore_enable_ipo(glyphastore_tests)
@@ -336,7 +361,7 @@ endif()
 
 glyphastore_add_xcode_project_files()
 
-install(TARGETS glyphastore_core glyphastore_server_core
+install(TARGETS glyphastore_core
     EXPORT GlyphaStoreTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime NAMELINK_COMPONENT Development
@@ -347,11 +372,17 @@ install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glypha
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Runtime
 )
-install(
-    DIRECTORY include/glyphastore
-    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+install(FILES
+    include/glyphastore/core/error.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/core"
     COMPONENT Development
-    FILES_MATCHING PATTERN "*.hpp"
+)
+install(FILES
+    include/glyphastore/store/config.hpp
+    include/glyphastore/store/store.hpp
+    include/glyphastore/store/value.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/store"
+    COMPONENT Development
 )
 
 install(

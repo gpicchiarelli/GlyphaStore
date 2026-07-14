@@ -1,6 +1,7 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/store/store.hpp"
+#include "store/store_internal.hpp"
 #include "test.hpp"
 
 #include <cstdint>
@@ -96,9 +97,9 @@ GLYPHA_TEST("store get verifies checksum after mutable segment corruption") {
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("integrity", bytes("payload")).has_value());
     const auto route = glyphastore::route_worker("integrity", store.worker_count());
-    const auto ref = store.worker(route).index().find("integrity");
+    const auto ref = glyphastore::detail::StoreAccess::worker(store, route).index().find("integrity");
     GLYPHA_REQUIRE(ref.has_value());
-    const auto segments = store.segments();
+    const auto segments = glyphastore::detail::StoreAccess::segments(store);
     GLYPHA_REQUIRE(!segments.empty());
     auto& segment = *segments.front();
     segment.mutable_base()[ref->offset.value + 32U] ^= std::byte{0xFF};
@@ -119,9 +120,9 @@ GLYPHA_TEST("worker local segment catalog resolves records across rotation") {
         GLYPHA_REQUIRE(store.put(key, bytes(value)).has_value());
     }
 
-    GLYPHA_REQUIRE(store.worker(0).owned_segments().size() >= 2);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::worker(store, 0).owned_segments().size() >= 2);
     const auto first = store.get("rotation-key-0");
     GLYPHA_REQUIRE(first.has_value());
-    GLYPHA_REQUIRE(first->value.size() == value.size());
-    GLYPHA_REQUIRE(first->value.front() == std::byte{'v'});
+    GLYPHA_REQUIRE(first->bytes.size() == value.size());
+    GLYPHA_REQUIRE(first->bytes.front() == std::byte{'v'});
 }

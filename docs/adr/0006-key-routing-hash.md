@@ -13,3 +13,6 @@ untrusted clients are out of scope for this routing step.
 The hash is also stored in each Record as metadata for future diagnostics and alternative lookup
 paths. Changing the routing hash function is an architectural decision and requires a new ADR plus
 compatibility tests because it changes Worker ownership for existing keys.
+
+Durable Store creation persists the routing algorithm identifier, Worker count, and routing epoch.
+Reopen rejects incompatible requested values instead of silently repartitioning existing Records.

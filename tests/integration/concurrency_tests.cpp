@@ -16,8 +16,8 @@ auto bytes(std::string_view value) -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
-auto value_string(const glyphastore::RecordView& record) -> std::string_view {
-    return {reinterpret_cast<const char*>(record.value.data()), record.value.size()};
+auto value_string(const glyphastore::OwnedValue& value) -> std::string_view {
+    return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 } // namespace
 

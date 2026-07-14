@@ -17,6 +17,9 @@
 namespace glyphastore {
 
 class Store;
+namespace detail {
+class StoreAccess;
+}
 
 class Worker final {
   public:
@@ -66,6 +69,7 @@ class Worker final {
     mutable std::mutex mutex_;
 
     friend class Store;
+    friend class detail::StoreAccess;
 };
 
 } // namespace glyphastore

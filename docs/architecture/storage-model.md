@@ -31,6 +31,10 @@ Publishing the Index reference makes a new Record visible. Replacing or removing
 updates Segment liveness accounting; the old Record remains physically present until its Segment
 is reclaimed or vacuumed.
 
+In target durable-sync mode, successful synchronization of the alternate Segment commit slot is
+the durable commit point and precedes in-memory publication. The full ordering and acknowledgement
+rules are specified in the [durability and recovery contract](durability-recovery.md).
+
 ## Recovery
 
 The Index can be reconstructed by scanning valid Records. Recovery compares full keys, never only
@@ -39,6 +43,9 @@ tombstone removes visibility; a newest expired Record is omitted from the rebuil
 
 An optional persisted Index checkpoint may accelerate startup later, but corruption of that cache
 must always permit fallback to Segment scanning.
+
+Durable recovery uses the persisted routing algorithm, Worker count, and routing epoch. Machine
+topology does not silently repartition an existing Store during reopen.
 
 ## Complexity
 

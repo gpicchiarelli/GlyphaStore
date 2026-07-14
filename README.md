@@ -49,8 +49,10 @@ explicit.
 ## Project status
 
 > [!IMPORTANT]
-> **Architectural prototype — not production ready.** There is no stable disk format, network
-> protocol, durability contract, or compatibility promise yet.
+> **Architectural prototype — not production ready.** The target alpha durability and public API
+> contracts are documented and low-level manifest/Segment persistence exists, but end-to-end
+> durable Store recovery, stable formats, compatibility evidence, and production guarantees are not
+> implemented yet.
 
 ## Design at a glance
 
@@ -185,6 +187,11 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | --- | --- |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
+| [Durability and recovery](docs/architecture/durability-recovery.md) | Alpha commit point, manifest ordering, crash states, and recovery |
+| [Durable Segment files](docs/architecture/segment-filesystem.md) | Platform allocation, alternate commit slots, and bounded recovery scan |
+| [Recovery implementation](docs/architecture/recovery-implementation.md) | Manifest validation, partitioned Index rebuild, and sequence restoration |
+| [Namespace audit](docs/architecture/namespace-policy.md) | Descriptor-relative enumeration, orphan/temporary policy, and fail-closed limits |
+| [Public API contract](docs/architecture/public-api-contract.md) | Supported surface, read ownership, errors, and compatibility |
 | [Index model](docs/architecture/index-model.md) | Exact-key lookup and SwissTable-oriented design |
 | [Worker model](docs/architecture/worker-model.md) | Ownership, routing, topology, and concurrency |
 | [Server model](docs/architecture/server-model.md) | Reactors, protocol framing, handoff, and backpressure |

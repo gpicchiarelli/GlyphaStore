@@ -22,6 +22,10 @@ with Redis or any text protocol.
   never persists a process address.
 - The Index is derived acceleration state. Records in Segments are sufficient to rebuild it; for
   the same full key, the highest valid sequence defines visibility.
+- Durable alpha mode uses a versioned manifest plus alternating CRC-protected Segment commit slots;
+  bytes beyond the newest valid committed extent are never recovery input.
+- Durable Store creation persists the routing algorithm, Worker count, and routing epoch. Reopen
+  uses that configuration until an explicit migration changes it.
 - Vacuum uses copy-build-validate-publish-retire and never rewrites published records in place.
 - The Index and active Segments are RAM-resident. Sealed Segments may be persisted, mapped, or
   evicted by explicit policy.
@@ -37,6 +41,9 @@ with Redis or any text protocol.
 - Claims that a design alone outperforms another product.
 - GPU/NPU dependencies in the key-value fast path.
 - A stable on-disk or wire format before explicit versioning and compatibility tests exist.
+
+The accepted target contracts do not make the current prototype durable. Implementation and
+automated crash/compatibility evidence remain required by the production-readiness gates.
 
 ## Performance contract
 

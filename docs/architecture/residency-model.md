@@ -19,3 +19,7 @@ without hard-coding paths in the core.
 Residency policy uses high/low watermarks to avoid oscillation, never evicts active or pinned
 Segments, and must expose page-fault and load latency to SLA metrics. `mmap` offers positional
 access but does not guarantee physical residency or durability.
+
+A public pinned read keeps its exact Segment generation resident independently of current Index
+visibility and Store object lifetime. Eviction, unmapping, deletion, and Segment reuse wait until
+all pins for that generation are released.

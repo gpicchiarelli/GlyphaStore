@@ -1,3 +1,4 @@
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "test.hpp"

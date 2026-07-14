@@ -1,5 +1,6 @@
 #include "glyphastore/server/reactor.hpp"
 
+#include "store/store_internal.hpp"
 #include "system_error.hpp"
 
 #include <algorithm>
@@ -386,7 +387,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (cached_now_ns == 0) {
             cached_now_ns = current_time_ns();
         }
-        auto record = store_.get_owned(executor_id_, key, cached_now_ns);
+        auto record = detail::StoreAccess::get_view(store_, executor_id_, key, cached_now_ns);
         if (record) {
             response.value = record->value;
         } else {
@@ -395,12 +396,14 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         break;
     }
     case RequestOpcode::put:
-        if (auto stored = store_.put_owned(executor_id_, key, request.value, request.expire_at_ns); !stored) {
+        if (auto stored =
+                detail::StoreAccess::put(store_, executor_id_, key, request.value, request.expire_at_ns);
+            !stored) {
             response.status = response_status(stored.error());
         }
         break;
     case RequestOpcode::erase:
-        if (auto erased = store_.erase_owned(executor_id_, key); !erased) {
+        if (auto erased = detail::StoreAccess::erase(store_, executor_id_, key); !erased) {
             response.status = response_status(erased.error());
         }
         break;

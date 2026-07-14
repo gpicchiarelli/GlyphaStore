@@ -1,5 +1,7 @@
 #include "glyphastore/worker/topology.hpp"
 
+#include "glyphastore/core/types.hpp"
+
 #include <algorithm>
 #include <thread>
 
@@ -16,6 +18,8 @@
 #endif
 
 namespace glyphastore {
+
+static_assert(kDefaultMinimumMemoryPerWorker == kSegmentSizeBytes);
 
 auto WorkerCountPolicy::choose(const WorkerTopology& topology, const WorkerCountConfig& config) noexcept
     -> std::size_t {

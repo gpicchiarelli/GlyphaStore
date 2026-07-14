@@ -103,3 +103,8 @@ the server, together with ingress, egress, and aggregate duplex bytes per second
 report current RSS after each sample, its change from the post-setup baseline, and process peak RSS.
 Because the benchmark server and loopback clients run in one process, RSS describes the complete
 benchmark process rather than an isolated daemon.
+
+When durable-sync storage is integrated, a successful mutation response may be encoded only after
+the Store crosses the durable commit point and publishes coherent in-memory state. A disconnect
+between commit and response delivery is an indeterminate client outcome as defined by the
+[durability and recovery contract](durability-recovery.md).

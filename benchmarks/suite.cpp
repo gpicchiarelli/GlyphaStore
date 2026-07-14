@@ -346,7 +346,7 @@ template <typename SetupFn, typename BodyFn>
 [[nodiscard]] auto run_store_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
-        settings, config.operations, config, "store_get", config.operations,
+        settings, config.operations, config, "store_get_copy", config.operations,
         [&]() -> std::unique_ptr<Store> {
             auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
             if (!opened) {
@@ -378,7 +378,7 @@ template <typename SetupFn, typename BodyFn>
 [[nodiscard]] auto run_store_put_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
-        settings, config.operations * 2U, config, "store_put_get", config.operations,
+        settings, config.operations * 2U, config, "store_put_get_copy", config.operations,
         [&]() -> std::unique_ptr<Store> {
             auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
             if (!opened) {
@@ -410,7 +410,7 @@ template <typename SetupFn, typename BodyFn>
     const auto material = make_key_material(config);
     const auto expected_hits = config.operations * 2U;
     return benchmark_collect_timed(
-        settings, expected_hits, config, "store_read_after_write", expected_hits,
+        settings, expected_hits, config, "store_read_after_write_copy", expected_hits,
         [&]() -> std::unique_ptr<Store> {
             auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
             if (!opened) {
@@ -464,7 +464,7 @@ template <typename SetupFn, typename BodyFn>
 [[nodiscard]] auto run_store_parallel_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_parallel_material(config);
     return benchmark_collect_parallel(
-        settings, config.operations, config, "store_parallel_get", config.operations,
+        settings, config.operations, config, "store_parallel_get_copy", config.operations,
         [&]() -> std::unique_ptr<Store> {
             auto store = open_parallel_store(config);
             if (store == nullptr) {
@@ -495,7 +495,7 @@ template <typename SetupFn, typename BodyFn>
     const auto material = make_parallel_material(config);
     const auto expected_hits = config.operations * 2U;
     return benchmark_collect_parallel(
-        settings, expected_hits, config, "store_parallel_read_after_write", expected_hits,
+        settings, expected_hits, config, "store_parallel_read_after_write_copy", expected_hits,
         [&]() { return open_parallel_store(config); },
         [&](std::unique_ptr<Store>& store, const std::size_t thread) -> std::size_t {
             if (store == nullptr) {

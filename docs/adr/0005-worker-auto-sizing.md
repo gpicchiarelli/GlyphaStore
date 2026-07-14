@@ -7,3 +7,7 @@ GlyphaStore detects usable physical CPU and memory topology at startup, applies 
 maximum-Worker, memory-per-Worker, and explicit-override policies, and fixes the Worker count for
 the process lifetime. The Store remains one logical key-space; physical Index partitions and
 Segment assignment are internal.
+
+For a durable Store, this selection occurs only at creation. Reopen uses the Worker count persisted
+in the manifest; changing it requires an explicit migration because modulo routing would otherwise
+change key ownership.

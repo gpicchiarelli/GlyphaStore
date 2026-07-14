@@ -1,7 +1,10 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/store.hpp"
+#include "store/store_internal.hpp"
 #include "test.hpp"
 
+#include <array>
+#include <memory>
 #include <string_view>
 
 namespace {
@@ -9,8 +12,8 @@ auto bytes(std::string_view value) -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
-auto value_string(const glyphastore::RecordView& record) -> std::string_view {
-    return {reinterpret_cast<const char*>(record.value.data()), record.value.size()};
+auto value_string(const glyphastore::OwnedValue& value) -> std::string_view {
+    return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 } // namespace
 
@@ -27,7 +30,6 @@ GLYPHA_TEST("store put get round trip preserves value") {
     GLYPHA_REQUIRE(store.put("hello", bytes("world")).has_value());
     const auto record = store.get("hello");
     GLYPHA_REQUIRE(record.has_value());
-    GLYPHA_REQUIRE(record->key_string() == "hello");
     GLYPHA_REQUIRE(value_string(*record) == "world");
 }
 
@@ -41,7 +43,7 @@ GLYPHA_TEST("store replace updates visible value and sequence") {
     GLYPHA_REQUIRE(store.put("key", bytes("new")).has_value());
     const auto second = store.get("key");
     GLYPHA_REQUIRE(second.has_value());
-    GLYPHA_REQUIRE(second->sequence.value > first->sequence.value);
+    GLYPHA_REQUIRE(second->sequence > first->sequence);
     GLYPHA_REQUIRE(value_string(*second) == "new");
 }
 
@@ -67,7 +69,8 @@ GLYPHA_TEST("store get hides expired keys") {
     GLYPHA_REQUIRE(!hidden.has_value());
     GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
     const auto route = glyphastore::route_worker("expired", store.worker_count());
-    GLYPHA_REQUIRE(!store.worker(route).index().find("expired").has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::detail::StoreAccess::worker(store, route).index().find("expired").has_value());
     GLYPHA_REQUIRE(store.verify_index().has_value());
 }
 
@@ -93,10 +96,12 @@ GLYPHA_TEST("store keeps partitioned keys on routed workers only") {
 
     GLYPHA_REQUIRE(store.put(key_a, bytes("a")).has_value());
     GLYPHA_REQUIRE(store.put(key_b, bytes("b")).has_value());
-    GLYPHA_REQUIRE(store.worker(route_a).index().find(key_a).has_value());
-    GLYPHA_REQUIRE(!store.worker(route_a).index().find(key_b).has_value());
-    GLYPHA_REQUIRE(store.worker(route_b).index().find(key_b).has_value());
-    GLYPHA_REQUIRE(!store.worker(route_b).index().find(key_a).has_value());
+    const auto& worker_a = glyphastore::detail::StoreAccess::worker(store, route_a);
+    const auto& worker_b = glyphastore::detail::StoreAccess::worker(store, route_b);
+    GLYPHA_REQUIRE(worker_a.index().find(key_a).has_value());
+    GLYPHA_REQUIRE(!worker_a.index().find(key_b).has_value());
+    GLYPHA_REQUIRE(worker_b.index().find(key_b).has_value());
+    GLYPHA_REQUIRE(!worker_b.index().find(key_a).has_value());
 }
 
 GLYPHA_TEST("store routes keys to distinct worker partitions") {
@@ -124,7 +129,7 @@ GLYPHA_TEST("store verify index matches segment scan rebuild") {
     GLYPHA_REQUIRE(store.put("two", bytes("22")).has_value());
     GLYPHA_REQUIRE(store.erase("one").has_value());
     GLYPHA_REQUIRE(store.verify_index().has_value());
-    const auto segments = store.segments();
+    const auto segments = glyphastore::detail::StoreAccess::segments(store);
     const auto rebuilt = glyphastore::rebuild_index_from_segments(segments);
     GLYPHA_REQUIRE(rebuilt.has_value());
     GLYPHA_REQUIRE(rebuilt->index.find("one") == std::nullopt);
@@ -140,6 +145,55 @@ GLYPHA_TEST("store round trips a key larger than 16-bit lengths") {
     GLYPHA_REQUIRE(store.put(key, bytes("value")).has_value());
     const auto record = store.get(key);
     GLYPHA_REQUIRE(record.has_value());
-    GLYPHA_REQUIRE(record->key_string() == key);
+    GLYPHA_REQUIRE(value_string(*record) == "value");
     GLYPHA_REQUIRE(store.verify_index().has_value());
+}
+
+GLYPHA_TEST("owned store reads survive replacement and store destruction") {
+    glyphastore::OwnedValue snapshot;
+    {
+        auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("stable", bytes("first")).has_value());
+        auto first = store.get_copy("stable");
+        GLYPHA_REQUIRE(first.has_value());
+        snapshot = std::move(*first);
+        GLYPHA_REQUIRE(store.put("stable", bytes("second")).has_value());
+        GLYPHA_REQUIRE(value_string(snapshot) == "first");
+    }
+    GLYPHA_REQUIRE(value_string(snapshot) == "first");
+}
+
+GLYPHA_TEST("store byte key API preserves embedded zeros and empty keys") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::array binary_key{std::byte{'a'}, std::byte{0}, std::byte{'b'}};
+    const std::span<const std::byte> empty_key;
+    GLYPHA_REQUIRE(store.put(binary_key, bytes("binary")).has_value());
+    GLYPHA_REQUIRE(store.put(empty_key, bytes("empty")).has_value());
+    const auto binary = store.get(binary_key);
+    const auto empty = store.get(empty_key);
+    GLYPHA_REQUIRE(binary.has_value());
+    GLYPHA_REQUIRE(empty.has_value());
+    GLYPHA_REQUIRE(value_string(*binary) == "binary");
+    GLYPHA_REQUIRE(value_string(*empty) == "empty");
+}
+
+GLYPHA_TEST("store rejects unsupported durable mode without creating volatile state") {
+    const auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_sync});
+    GLYPHA_REQUIRE(!opened.has_value());
+    GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("store rejects invalid public worker configuration") {
+    const auto zero_workers = glyphastore::Store::open({.worker_config = {.explicit_count = 0}});
+    GLYPHA_REQUIRE(!zero_workers.has_value());
+    GLYPHA_REQUIRE(zero_workers.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    const auto too_many_workers = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = glyphastore::kMaximumWorkerCount + 1U}});
+    GLYPHA_REQUIRE(!too_many_workers.has_value());
+    GLYPHA_REQUIRE(too_many_workers.error().code == glyphastore::ErrorCode::invalid_argument);
 }

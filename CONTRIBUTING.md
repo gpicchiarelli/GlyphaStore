@@ -10,6 +10,11 @@ GlyphaStore is currently an architecture prototype under active design.
 4. Add regression tests for every correctness or memory-safety fix.
 5. Update an ADR when changing a fixed architectural decision.
 
+Persistence work must follow the accepted
+[durability and recovery contract](docs/architecture/durability-recovery.md). Public API work must
+preserve the [ownership and compatibility contract](docs/architecture/public-api-contract.md).
+Changing a commit point, routing metadata, recovery authority, or read lifetime requires a new ADR.
+
 Use Conventional Commits. Keep public terminology aligned with the architecture documents: the
 public model has a Store, Workers, an Index, and Segments. Do not introduce Redis compatibility,
 text protocols, or unbounded client-controlled work without an accepted design change.

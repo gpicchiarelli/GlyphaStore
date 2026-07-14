@@ -3,6 +3,7 @@
 #include "glyphastore/core/checked_math.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 
+#include <algorithm>
 #include <cstring>
 #include <limits>
 
@@ -170,8 +171,16 @@ auto decode_record(const std::span<const std::byte> bytes, const bool verify_che
         return fail(ErrorCode::invalid_record, "record total size is invalid");
     }
     auto payload_size = checked_add<std::size_t>(key_size, value_size);
-    if (!payload_size || *payload_size > total_size - kEncodedRecordHeaderSize) {
+    if (!payload_size) {
         return fail(ErrorCode::invalid_record, "record payload extent is invalid");
+    }
+    auto raw_size = checked_add<std::size_t>(kEncodedRecordHeaderSize, *payload_size);
+    if (!raw_size) {
+        return fail(ErrorCode::invalid_record, "record payload extent overflows its encoded size");
+    }
+    auto expected_size = align_up_checked<std::size_t>(*raw_size, kRecordAlignment);
+    if (!expected_size || *expected_size != total_size) {
+        return fail(ErrorCode::invalid_record, "record total size is not its canonical aligned extent");
     }
     const auto encoded = bytes.first(total_size);
     if (verify_checksum && get_u32(bytes, 20) != crc32c_with_zeroed_checksum_field(encoded)) {
@@ -188,6 +197,11 @@ auto decode_record(const std::span<const std::byte> bytes, const bool verify_che
         return fail(ErrorCode::invalid_record, "unknown record value type");
     }
     const auto key_begin = static_cast<std::size_t>(kEncodedRecordHeaderSize);
+    const auto payload_end = key_begin + *payload_size;
+    if (!std::ranges::all_of(encoded.subspan(payload_end),
+                             [](std::byte value) { return value == std::byte{0}; })) {
+        return fail(ErrorCode::invalid_record, "record alignment padding is not zero");
+    }
     return RecordView{
         .sequence = SequenceNumber{get_u64(bytes, 24)},
         .opcode = static_cast<Opcode>(opcode_raw),

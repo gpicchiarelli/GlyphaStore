@@ -1,9 +1,12 @@
 #include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "hex_fixture.hpp"
 #include "test.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
+#include <filesystem>
 #include <string_view>
 #include <vector>
 
@@ -13,7 +16,62 @@ auto as_bytes(std::string_view value) -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
+void put_u32(std::span<std::byte> out, std::size_t offset, std::uint32_t value) {
+    for (std::size_t index = 0; index < 4; ++index) {
+        out[offset + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xFFU);
+    }
+}
+
 } // namespace
+
+GLYPHA_TEST("record v1 matches its golden binary-key fixture") {
+    static constexpr std::array key{std::byte{0x00}, std::byte{0x6B}, std::byte{0xFF}};
+    static constexpr std::array value{std::byte{0x10}, std::byte{0x20}, std::byte{0x30}, std::byte{0x40}};
+    const auto encoded = glyphastore::encode_record({
+        .sequence = glyphastore::SequenceNumber{0x0102030405060708ULL},
+        .flags = 0x11223344U,
+        .key_hash = 0x1112131415161718ULL,
+        .expire_at_ns = 0x2122232425262728ULL,
+        .key = key,
+        .value = value,
+    });
+    GLYPHA_REQUIRE(encoded.has_value());
+    const auto fixture = glyphastore::test::read_hex_fixture(std::filesystem::path{GLYPHASTORE_SOURCE_DIR} /
+                                                             "tests/fixtures/record_v1.hex");
+    GLYPHA_REQUIRE(*encoded == fixture);
+
+    const auto decoded = glyphastore::decode_record(fixture);
+    GLYPHA_REQUIRE(decoded.has_value());
+    GLYPHA_REQUIRE(decoded->sequence.value == 0x0102030405060708ULL);
+    GLYPHA_REQUIRE(decoded->flags == 0x11223344U);
+    GLYPHA_REQUIRE(decoded->key_hash == 0x1112131415161718ULL);
+    GLYPHA_REQUIRE(decoded->expire_at_ns == 0x2122232425262728ULL);
+    GLYPHA_REQUIRE(std::equal(decoded->key.begin(), decoded->key.end(), key.begin(), key.end()));
+    GLYPHA_REQUIRE(std::equal(decoded->value.begin(), decoded->value.end(), value.begin(), value.end()));
+    GLYPHA_REQUIRE(fixture.back() == std::byte{0});
+
+    auto future = fixture;
+    future[4] = std::byte{2};
+    put_u32(future, 20, glyphastore::crc32c_with_zeroed_checksum_field(future));
+    const auto unknown_version = glyphastore::decode_record(future);
+    GLYPHA_REQUIRE(!unknown_version.has_value());
+    GLYPHA_REQUIRE(unknown_version.error().code == glyphastore::ErrorCode::invalid_record);
+
+    auto nonzero_padding = fixture;
+    nonzero_padding.back() = std::byte{1};
+    put_u32(nonzero_padding, 20, glyphastore::crc32c_with_zeroed_checksum_field(nonzero_padding));
+    const auto noncanonical_padding = glyphastore::decode_record(nonzero_padding);
+    GLYPHA_REQUIRE(!noncanonical_padding.has_value());
+    GLYPHA_REQUIRE(noncanonical_padding.error().code == glyphastore::ErrorCode::invalid_record);
+
+    auto oversized_extent = fixture;
+    oversized_extent.resize(fixture.size() + glyphastore::kRecordAlignment, std::byte{0});
+    put_u32(oversized_extent, 8, static_cast<std::uint32_t>(oversized_extent.size()));
+    put_u32(oversized_extent, 20, glyphastore::crc32c_with_zeroed_checksum_field(oversized_extent));
+    const auto noncanonical_extent = glyphastore::decode_record(oversized_extent);
+    GLYPHA_REQUIRE(!noncanonical_extent.has_value());
+    GLYPHA_REQUIRE(noncanonical_extent.error().code == glyphastore::ErrorCode::invalid_record);
+}
 
 GLYPHA_TEST("record codec round-trips explicit little-endian fields") {
     const auto encoded = glyphastore::encode_record({
