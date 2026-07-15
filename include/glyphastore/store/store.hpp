@@ -30,11 +30,10 @@ class Store final {
 
     // Thread-safe owning read. Returned bytes and metadata are independent of
     // later Store operations and remain valid after Store destruction.
-    [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) -> Result<OwnedValue>;
-    [[nodiscard]] auto get(std::span<const std::byte> key, std::uint64_t now_ns = 0) -> Result<OwnedValue>;
-    [[nodiscard]] auto get_copy(std::string_view key, std::uint64_t now_ns = 0) -> Result<OwnedValue>;
-    [[nodiscard]] auto get_copy(std::span<const std::byte> key, std::uint64_t now_ns = 0)
-        -> Result<OwnedValue>;
+    [[nodiscard]] auto get(std::string_view key) -> Result<OwnedValue>;
+    [[nodiscard]] auto get(std::span<const std::byte> key) -> Result<OwnedValue>;
+    [[nodiscard]] auto get_copy(std::string_view key) -> Result<OwnedValue>;
+    [[nodiscard]] auto get_copy(std::span<const std::byte> key) -> Result<OwnedValue>;
 
     [[nodiscard]] auto put(std::string_view key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;

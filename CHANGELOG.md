@@ -5,6 +5,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Make ordinary Store reads and durable recovery share a checked Unix-epoch clock, add thread-safe
+  `StoreClock` injection, clamp backward movement per Store instance, and remove public per-read
+  timestamp overrides that silently disabled TTL expiration by default.
+- Preallocate hot-cache publication nodes before persistent writes, translate public/background
+  exceptions into stable failures with fail-closed waiter release, and reject overlapping or
+  reversed per-Worker sequence ranges across persistence v1 Segments.
 - Add strict `durable_group` batching with whole-batch publication, absolute batch deadlines, a
   dedicated one-Worker v1 commit executor, bounded threshold admission, latency benchmarks,
   crash/rotation coverage, and macOS `F_BARRIERFSYNC` ordering before the final full durable flush.

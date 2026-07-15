@@ -67,12 +67,16 @@ For every committed Record, recovery requires:
 
 - canonical Record extent and valid CRC32C;
 - non-zero, strictly increasing sequence within its Segment;
+- a first sequence strictly greater than the preceding non-empty manifest-ordered Segment owned by
+  the same Worker;
 - persisted key hash equal to FNV-1a over the complete binary key;
 - `hash % persisted_worker_count` equal to the Segment owner;
 - reference Segment ID/generation equal to the opened file.
 
-The highest sequence for each exact key wins independently of Segment enumeration order. Equal
-winning sequences for one key are a conflict. A newest tombstone or newest expired Record suppresses
+Filesystem enumeration never determines recovery order. Within canonical Manifest order, non-empty
+per-Worker Segment sequence ranges must be globally strict and non-overlapping. The highest sequence
+for each exact key then wins. Equal or reversed cross-Segment ranges are corruption; equal winning
+sequences for one key are a conflict. A newest tombstone or newest expired Record suppresses
 older values; it is never skipped early in a way that could resurrect history. Sequence restoration
 uses the maximum committed sequence across all of a Worker's Records, including tombstones and
 expired decisions. `UINT64_MAX` fails read-write recovery instead of wrapping to zero.

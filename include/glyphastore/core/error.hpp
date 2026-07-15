@@ -19,6 +19,8 @@ enum class ErrorCode {
     sequence_conflict,
     corrupted_data,
     not_found,
+    resource_exhausted,
+    internal_error,
     unavailable,
     io_error,
 };

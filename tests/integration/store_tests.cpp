@@ -9,6 +9,7 @@
 #include <atomic>
 #include <fcntl.h>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -48,6 +49,22 @@ class StoreTemporaryDirectory final {
 
   private:
     std::filesystem::path root_;
+};
+
+class ManualStoreClock final : public glyphastore::StoreClock {
+  public:
+    explicit ManualStoreClock(const std::uint64_t initial_now_ns) : now_ns_(initial_now_ns) {}
+
+    [[nodiscard]] auto now_ns() const noexcept -> std::uint64_t override {
+        return now_ns_.load(std::memory_order_relaxed);
+    }
+
+    void set(const std::uint64_t now_ns) noexcept {
+        now_ns_.store(now_ns, std::memory_order_relaxed);
+    }
+
+  private:
+    std::atomic<std::uint64_t> now_ns_;
 };
 
 auto bootstrap_store_id() -> glyphastore::StoreId {
@@ -100,19 +117,58 @@ GLYPHA_TEST("store erase removes key and rejects subsequent reads") {
 }
 
 GLYPHA_TEST("store get hides expired keys") {
-    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    const auto clock = std::make_shared<ManualStoreClock>(99);
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}, .clock = clock});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("expired", bytes("v"), 100).has_value());
-    const auto visible = store.get("expired", 99);
+    const auto visible = store.get("expired");
     GLYPHA_REQUIRE(visible.has_value());
-    const auto hidden = store.get("expired", 100);
+    clock->set(100);
+    const auto hidden = store.get("expired");
     GLYPHA_REQUIRE(!hidden.has_value());
     GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
     const auto route = glyphastore::route_worker("expired", store.worker_count());
     GLYPHA_REQUIRE(
         !glyphastore::detail::StoreAccess::worker(store, route).index().find("expired").has_value());
     GLYPHA_REQUIRE(store.verify_index().has_value());
+}
+
+GLYPHA_TEST("store clock never moves backward within one Store instance") {
+    const auto clock = std::make_shared<ManualStoreClock>(100);
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}, .clock = clock});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("past", bytes("v"), 75).has_value());
+    clock->set(50);
+    const auto hidden = store.get("past");
+    GLYPHA_REQUIRE(!hidden.has_value());
+    GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
+}
+
+GLYPHA_TEST("store clock handles maximum timestamp and no-expiration sentinel") {
+    constexpr auto maximum_time = std::numeric_limits<std::uint64_t>::max();
+    const auto clock = std::make_shared<ManualStoreClock>(maximum_time - 1U);
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}, .clock = clock});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("maximum", bytes("v"), maximum_time).has_value());
+    GLYPHA_REQUIRE(store.get("maximum").has_value());
+    clock->set(maximum_time);
+    const auto expired = store.get("maximum");
+    GLYPHA_REQUIRE(!expired.has_value());
+    GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE(store.put("forever", bytes("v"), 0).has_value());
+    GLYPHA_REQUIRE(store.get("forever").has_value());
+}
+
+GLYPHA_TEST("default Store clock expires timestamps in the Unix epoch past") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    GLYPHA_REQUIRE((*opened)->put("past", bytes("v"), 1).has_value());
+    const auto hidden = (*opened)->get("past");
+    GLYPHA_REQUIRE(!hidden.has_value());
+    GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
 }
 
 GLYPHA_TEST("store keeps partitioned keys on routed workers only") {
@@ -224,6 +280,40 @@ GLYPHA_TEST("store byte key API preserves embedded zeros and empty keys") {
 
 GLYPHA_TEST("durable Store requires an explicit data directory") {
     const auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_sync});
+    GLYPHA_REQUIRE(!opened.has_value());
+    GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("durable Store recovery and reads share the injected clock") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    const auto clock = std::make_shared<ManualStoreClock>(99);
+    {
+        auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                                .storage_mode = glyphastore::StorageMode::durable_sync,
+                                                .data_directory = path,
+                                                .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                                .clock = clock});
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("expires", bytes("v"), 100).has_value());
+        GLYPHA_REQUIRE((*opened)->get("expires").has_value());
+    }
+
+    clock->set(100);
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                  .clock = clock});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto expired = (*reopened)->get("expires");
+    GLYPHA_REQUIRE(!expired.has_value());
+    GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+}
+
+GLYPHA_TEST("Store rejects legacy recovery timestamp overrides") {
+    const auto opened = glyphastore::Store::open({.recovery_now_ns = 1});
     GLYPHA_REQUIRE(!opened.has_value());
     GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
 }

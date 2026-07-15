@@ -2,8 +2,8 @@
 
 This document defines the supported C++ surface being prepared for the alpha release. The Store
 header uses PImpl, owning reads, and a deliberate installed header set. `durable_sync` creation and
-reopen use the same public operations as volatile mode; stable error evolution, injected clock
-configuration, and pinned zero-copy reads remain future work.
+reopen use the same public operations as volatile mode. Store-owned clock injection is implemented;
+stable error evolution and pinned zero-copy reads remain future work.
 
 Durable mode requires `data_directory`. `create_new` rejects an existing leaf, `open_existing`
 requires durable metadata, and `open_or_create` initializes only a missing or pristine directory.
@@ -33,7 +33,16 @@ alignment, does not exceed the normal 1 MiB Record limit.
 `put` stores byte values and an optional absolute expiration timestamp expressed as Unix-epoch
 nanoseconds. Zero means no expiration. A value is expired when the Store clock is greater than or
 equal to its nonzero expiration. Production calls use the Store clock; deterministic tests inject
-a clock through construction rather than passing arbitrary time into each public read.
+a thread-safe, non-throwing `StoreClock` through construction rather than passing arbitrary time
+into each public read. With no injected clock, the Store reads `system_clock` and clamps values
+before the Unix epoch to zero and values beyond the encoded range to `uint64_t` maximum.
+
+Each Store instance maintains an atomic high-water mark, so a backward wall-clock adjustment cannot
+make time move backward during that instance's lifetime. Recovery samples the same clock once and
+uses that snapshot for its complete scan; subsequent reads advance from that value. A process
+restart cannot preserve the high-water mark without adding persistent state, so operators requiring
+strict TTL behavior across large clock corrections must keep the host Unix clock synchronized and
+nondecreasing. Expiration removes visibility but durable byte reclamation remains compaction work.
 
 Callers do not provide a precomputed routing hash. The Store hashes the exact key bytes once and
 uses that result consistently for routing, Record metadata, and Index lookup. This prevents a
@@ -116,6 +125,7 @@ The migration checklist is:
 5. [x] Move corruption and owner-checked hooks into a build-tree-only internal bridge.
 6. [x] Export and install only the supported header set.
 7. [x] Update the external consumer test to use only the installed owning API.
+8. [x] Make ordinary reads and durable recovery use one Store-owned injectable clock.
 
 Temporary compatibility adapters may exist during development, but they must be visibly marked as
 deprecated prototype surface and must not survive the alpha release boundary.

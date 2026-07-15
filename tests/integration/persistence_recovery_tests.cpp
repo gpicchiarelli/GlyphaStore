@@ -235,15 +235,15 @@ GLYPHA_TEST("durable recovery rebuilds partitioned visibility and Worker sequenc
 
     auto first = create_segment(*directory, store_id, entries[0]);
     append_record(first, 1, expired, "older-visible");
-    append_record(first, 3, gone, "present");
-    append_record(first, 4, gone, {}, glyphastore::Opcode::erase);
-    append_record(first, 5, alpha, "new");
-    append_record(first, 7, binary, "binary-value");
+    append_record(first, 2, gone, "present");
+    append_record(first, 3, gone, {}, glyphastore::Opcode::erase);
+    append_record(first, 4, alpha, "old");
+    append_record(first, 5, binary, "binary-value");
     GLYPHA_REQUIRE(first.seal().committed());
 
     auto second = create_segment(*directory, store_id, entries[1]);
-    append_record(second, 2, alpha, "old");
-    append_record(second, 6, expired, "stale", glyphastore::Opcode::put, 100);
+    append_record(second, 6, alpha, "new");
+    append_record(second, 7, expired, "stale", glyphastore::Opcode::put, 100);
 
     auto third = create_segment(*directory, store_id, entries[2]);
     append_record(third, 9, beta, "visible");
@@ -262,8 +262,8 @@ GLYPHA_TEST("durable recovery rebuilds partitioned visibility and Worker sequenc
 
     const auto alpha_ref = recovered->workers[0].index.find(alpha);
     GLYPHA_REQUIRE(alpha_ref.has_value());
-    GLYPHA_REQUIRE(alpha_ref->segment_id.value == 1);
-    GLYPHA_REQUIRE(alpha_ref->sequence.value == 5);
+    GLYPHA_REQUIRE(alpha_ref->segment_id.value == 2);
+    GLYPHA_REQUIRE(alpha_ref->sequence.value == 6);
     GLYPHA_REQUIRE(!recovered->workers[0].index.find(gone).has_value());
     GLYPHA_REQUIRE(!recovered->workers[0].index.find(expired).has_value());
     GLYPHA_REQUIRE(recovered->workers[0].index.find(binary).has_value());
@@ -492,7 +492,7 @@ GLYPHA_TEST("recovery rejects equal winning sequences and exhausted Worker seque
         GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
         const auto recovered = glyphastore::recover_durable_state(*directory);
         GLYPHA_REQUIRE(!recovered.has_value());
-        GLYPHA_REQUIRE(recovered.error().code == glyphastore::ErrorCode::sequence_conflict);
+        GLYPHA_REQUIRE(recovered.error().code == glyphastore::ErrorCode::corrupted_data);
     }
 
     {
@@ -513,6 +513,34 @@ GLYPHA_TEST("recovery rejects equal winning sequences and exhausted Worker seque
         GLYPHA_REQUIRE(!recovered.has_value());
         GLYPHA_REQUIRE(recovered.error().code == glyphastore::ErrorCode::arithmetic_overflow);
     }
+}
+
+GLYPHA_TEST("recovery rejects overlapping sequence ranges across Worker Segments") {
+    RecoveryTemporaryDirectory temporary;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto store_id = recovery_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    auto first = create_segment(*directory, store_id, entries[0]);
+    append_record(first, 10, "first", "value");
+    GLYPHA_REQUIRE(first.seal().committed());
+    auto second = create_segment(*directory, store_id, entries[1]);
+    append_record(second, 9, "different-key", "value");
+    GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
+
+    const auto recovered = glyphastore::recover_durable_state(*directory);
+    GLYPHA_REQUIRE(!recovered.has_value());
+    GLYPHA_REQUIRE(recovered.error().code == glyphastore::ErrorCode::corrupted_data);
+    GLYPHA_REQUIRE(recovered.error().message.find("overlaps or reverses") != std::string::npos);
 }
 
 GLYPHA_TEST("durable runtime materializes recovered Indexes with bounded concurrent reads") {

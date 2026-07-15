@@ -222,14 +222,17 @@ Recovery executes before network listeners start and before the Store accepts op
 4. open every manifest-listed Segment and validate its identity against the catalog;
 5. select the newest valid commit slot for each Segment;
 6. scan exactly each committed extent and validate every Record checksum and bound;
-7. rebuild visibility by full key and highest sequence, with tombstones and expiration suppressing
+7. require every non-empty Segment's first sequence to exceed the preceding committed range for
+   that Worker;
+8. rebuild visibility by full key and highest sequence, with tombstones and expiration suppressing
    older values;
-8. partition rebuilt entries using the persisted routing configuration;
-9. restore each Worker's next sequence using checked `maximum + 1` arithmetic;
-10. validate the complete rebuilt state before publishing the Store as ready.
+9. partition rebuilt entries using the persisted routing configuration;
+10. restore each Worker's next sequence using checked `maximum + 1` arithmetic;
+11. validate the complete rebuilt state before publishing the Store as ready.
 
-Segment scan order must not affect the result. Equal highest sequences for the same key are a
-conflict and fail recovery. Sequence exhaustion fails read-write open. A future read-only salvage
+Filesystem enumeration order must not affect the result; canonical Manifest order is authoritative.
+Equal, overlapping, or reversed per-Worker Segment ranges fail recovery. Equal highest sequences for
+the same key are a conflict. Sequence exhaustion fails read-write open. A future read-only salvage
 mode must be a separate, explicit operator action and must never silently weaken normal open.
 
 Expiration uses absolute Unix-epoch nanoseconds. Recovery retains the newest Record decision even

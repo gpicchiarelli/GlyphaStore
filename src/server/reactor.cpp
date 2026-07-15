@@ -30,6 +30,9 @@ namespace {
     case ErrorCode::invalid_argument:
     case ErrorCode::record_too_large:
         return ResponseStatus::invalid_request;
+    case ErrorCode::resource_exhausted:
+    case ErrorCode::unavailable:
+        return ResponseStatus::overloaded;
     default:
         return ResponseStatus::internal_error;
     }

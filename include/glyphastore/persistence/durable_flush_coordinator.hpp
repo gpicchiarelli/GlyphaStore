@@ -51,6 +51,7 @@ class DurableFlushCoordinator final {
     std::uint64_t flush_all_generation_{};
     std::uint64_t completed_generation_{};
     std::optional<Error> last_flush_all_error_;
+    std::optional<Error> background_error_;
     std::jthread worker_;
 };
 

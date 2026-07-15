@@ -3,9 +3,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <optional>
 
 namespace glyphastore {
+
+class StoreClock {
+  public:
+    virtual ~StoreClock() = default;
+
+    // Implementations must be thread-safe and must not throw. Values are
+    // absolute nanoseconds since the Unix epoch; zero represents the epoch.
+    [[nodiscard]] virtual auto now_ns() const noexcept -> std::uint64_t = 0;
+};
 
 inline constexpr std::size_t kMaximumWorkerCount = 256;
 inline constexpr std::size_t kDefaultMinimumMemoryPerWorker = 64ULL * 1024ULL * 1024ULL;
@@ -49,7 +59,10 @@ struct StoreConfig {
     DurableOpenMode durable_open_mode{DurableOpenMode::open_or_create};
     DurablePeriodicConfig durable_periodic{};
     DurableGroupConfig durable_group{};
+    // Deprecated compatibility field. Nonzero values are rejected; inject a
+    // StoreClock instead so reads and recovery observe one time source.
     std::uint64_t recovery_now_ns{};
+    std::shared_ptr<const StoreClock> clock{};
 };
 
 } // namespace glyphastore

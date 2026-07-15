@@ -4,6 +4,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 
 GLYPHA_TEST("durable flush coordinator executes an exact requested deadline") {
@@ -52,4 +53,18 @@ GLYPHA_TEST("blocking durable flush runs on the coordinator and propagates failu
     GLYPHA_REQUIRE(flushed.error().code == glyphastore::ErrorCode::io_error);
     GLYPHA_REQUIRE(callback_thread != std::thread::id{});
     GLYPHA_REQUIRE(callback_thread != caller);
+}
+
+GLYPHA_TEST("durable flush coordinator translates callback exceptions and stops") {
+    glyphastore::DurableFlushCoordinator coordinator{
+        60'000, 60'000, false, true,
+        [](const bool) -> glyphastore::Status { throw std::runtime_error("injected callback exception"); }};
+
+    const auto first = coordinator.flush_all_blocking();
+    GLYPHA_REQUIRE(!first.has_value());
+    GLYPHA_REQUIRE(first.error().code == glyphastore::ErrorCode::internal_error);
+    const auto repeated = coordinator.flush_all_blocking();
+    GLYPHA_REQUIRE(!repeated.has_value());
+    GLYPHA_REQUIRE(repeated.error().code == glyphastore::ErrorCode::internal_error);
+    coordinator.stop();
 }

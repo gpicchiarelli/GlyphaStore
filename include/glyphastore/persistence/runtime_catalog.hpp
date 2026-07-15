@@ -88,6 +88,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
+    void mark_fail_closed() noexcept;
 
   private:
     struct PendingGroupMutation;
@@ -100,6 +101,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto flush_dirty_segments() -> Status;
     [[nodiscard]] auto flush_worker_batch(RuntimeWorker& worker, SegmentCommitSync sync) -> Status;
     [[nodiscard]] auto should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool;
+    void abandon_pending_batches() noexcept;
     void wait_for_batch_close(RuntimeWorker& worker, PendingGroupMutation& mutation,
                               std::unique_lock<std::mutex>& lock);
     [[nodiscard]] auto fail_closed(Error error) -> Unexpected;

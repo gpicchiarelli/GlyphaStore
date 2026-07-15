@@ -11,7 +11,11 @@
 #include "glyphastore/worker/topology.hpp"
 #include "store/store_internal.hpp"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <exception>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string_view>
@@ -43,14 +47,20 @@ auto durable_status(DurableMutationResult result) -> Status {
     if (result.committed() && !result.error) {
         return {};
     }
-    auto error = result.error.value_or(Error{ErrorCode::io_error, "durable mutation failed"});
+    auto error =
+        result.error ? std::move(*result.error) : Error{ErrorCode::io_error, "durable mutation failed"};
     if (result.committed()) {
         error.code = ErrorCode::unavailable;
-        error.message = "mutation committed but runtime publication failed: " + error.message;
-    } else if (result.outcome == DurableMutationOutcome::indeterminate) {
-        error.message = "mutation outcome is indeterminate: " + error.message;
     }
     return unexpected(std::move(error));
+}
+
+[[nodiscard]] auto resource_exhausted() -> Unexpected {
+    return unexpected(Error{ErrorCode::resource_exhausted, {}});
+}
+
+[[nodiscard]] auto internal_failure() -> Unexpected {
+    return unexpected(Error{ErrorCode::internal_error, {}});
 }
 
 auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOpenMode {
@@ -73,6 +83,33 @@ auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOp
     return {};
 }
 
+[[nodiscard]] auto system_time_ns() noexcept -> std::uint64_t {
+    using namespace std::chrono;
+    const auto elapsed = system_clock::now().time_since_epoch();
+    if (elapsed <= system_clock::duration::zero()) {
+        return 0;
+    }
+
+    const auto whole_seconds = duration_cast<seconds>(elapsed);
+    const auto fractional_ns = duration_cast<nanoseconds>(elapsed - whole_seconds);
+    constexpr auto kNanosecondsPerSecond = std::uint64_t{1'000'000'000};
+    constexpr auto kMaximumSeconds = std::numeric_limits<std::uint64_t>::max() / kNanosecondsPerSecond;
+    const auto seconds_count = static_cast<std::uint64_t>(whole_seconds.count());
+    if (seconds_count > kMaximumSeconds) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    const auto base = seconds_count * kNanosecondsPerSecond;
+    const auto fraction = static_cast<std::uint64_t>(fractional_ns.count());
+    if (fraction > std::numeric_limits<std::uint64_t>::max() - base) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return base + fraction;
+}
+
+[[nodiscard]] auto sample_clock(const std::shared_ptr<const StoreClock>& clock) noexcept -> std::uint64_t {
+    return clock ? clock->now_ns() : system_time_ns();
+}
+
 } // namespace
 
 struct VolatileStoreRuntime {
@@ -84,17 +121,33 @@ struct VolatileStoreRuntime {
 };
 
 struct Store::Impl {
-    explicit Impl(std::unique_ptr<VolatileStoreRuntime> runtime) : volatile_runtime(std::move(runtime)) {}
-    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime) : durable_runtime(std::move(runtime)) {}
+    explicit Impl(std::unique_ptr<VolatileStoreRuntime> runtime, std::shared_ptr<const StoreClock> clock,
+                  const std::uint64_t initial_now_ns)
+        : volatile_runtime(std::move(runtime)), clock(std::move(clock)), latest_now_ns(initial_now_ns) {}
+    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime, std::shared_ptr<const StoreClock> clock,
+                  const std::uint64_t initial_now_ns)
+        : durable_runtime(std::move(runtime)), clock(std::move(clock)), latest_now_ns(initial_now_ns) {}
+
+    [[nodiscard]] auto now_ns() noexcept -> std::uint64_t {
+        const auto sampled = sample_clock(clock);
+        auto observed = latest_now_ns.load(std::memory_order_relaxed);
+        while (observed < sampled &&
+               !latest_now_ns.compare_exchange_weak(observed, sampled, std::memory_order_relaxed,
+                                                    std::memory_order_relaxed)) {
+        }
+        return std::max(observed, sampled);
+    }
 
     std::unique_ptr<VolatileStoreRuntime> volatile_runtime;
     std::unique_ptr<DurableRuntimeCatalog> durable_runtime;
+    std::shared_ptr<const StoreClock> clock;
+    std::atomic<std::uint64_t> latest_now_ns{};
 };
 
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() = default;
 
-auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
+auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> try {
     if (config.storage_mode != StorageMode::volatile_memory &&
         config.storage_mode != StorageMode::durable_sync &&
         config.storage_mode != StorageMode::durable_periodic &&
@@ -115,15 +168,20 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
          *config.worker_config.explicit_count > config.worker_config.maximum_workers)) {
         return fail(ErrorCode::invalid_argument, "explicit worker count is outside the supported range");
     }
+    if (config.recovery_now_ns != 0) {
+        return fail(ErrorCode::invalid_argument,
+                    "recovery_now_ns is no longer supported; inject StoreConfig::clock instead");
+    }
     const auto topology = detect_worker_topology();
     const auto count = WorkerCountPolicy::choose(topology, config.worker_config);
     if (config.storage_mode == StorageMode::volatile_memory) {
-        if (config.data_directory || config.durable_open_mode != DurableOpenMode::open_or_create ||
-            config.recovery_now_ns != 0) {
+        if (config.data_directory || config.durable_open_mode != DurableOpenMode::open_or_create) {
             return fail(ErrorCode::invalid_argument,
                         "volatile storage cannot use durable-only configuration");
         }
-        auto impl = std::make_unique<Impl>(std::make_unique<VolatileStoreRuntime>(SegmentId{1}, count));
+        const auto initial_now_ns = sample_clock(config.clock);
+        auto impl = std::make_unique<Impl>(std::make_unique<VolatileStoreRuntime>(SegmentId{1}, count),
+                                           config.clock, initial_now_ns);
         return std::unique_ptr<Store>(new Store(std::move(impl)));
     }
     if (!config.data_directory || config.data_directory->empty()) {
@@ -165,13 +223,18 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
         runtime_options.strict_ack = true;
         runtime_options.sync_interval_ms = config.durable_group.max_wait_ms;
     }
+    const auto recovery_now_ns = sample_clock(config.clock);
     auto runtime =
-        DurableRuntimeCatalog::open_locked(std::move(*directory), config.recovery_now_ns, runtime_options);
+        DurableRuntimeCatalog::open_locked(std::move(*directory), recovery_now_ns, runtime_options);
     if (!runtime) {
         return unexpected(runtime.error());
     }
-    auto impl = std::make_unique<Impl>(std::move(*runtime));
+    auto impl = std::make_unique<Impl>(std::move(*runtime), config.clock, recovery_now_ns);
     return std::unique_ptr<Store>(new Store(std::move(impl)));
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    return internal_failure();
 }
 
 auto Store::worker_count() const noexcept -> std::size_t {
@@ -179,15 +242,16 @@ auto Store::worker_count() const noexcept -> std::size_t {
                                    : impl_->durable_runtime->worker_count();
 }
 
-auto Store::get(const std::string_view key, const std::uint64_t now_ns) -> Result<OwnedValue> {
-    return get_copy(key, now_ns);
+auto Store::get(const std::string_view key) -> Result<OwnedValue> {
+    return get_copy(key);
 }
 
-auto Store::get(const std::span<const std::byte> key, const std::uint64_t now_ns) -> Result<OwnedValue> {
-    return get_copy(key, now_ns);
+auto Store::get(const std::span<const std::byte> key) -> Result<OwnedValue> {
+    return get_copy(key);
 }
 
-auto Store::get_copy(const std::string_view key, const std::uint64_t now_ns) -> Result<OwnedValue> {
+auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
+    const auto now_ns = impl_->now_ns();
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->get(key, now_ns);
     }
@@ -199,55 +263,112 @@ auto Store::get_copy(const std::string_view key, const std::uint64_t now_ns) -> 
         return unexpected(record.error());
     }
     return copy_value(*record);
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
-auto Store::get_copy(const std::span<const std::byte> key, const std::uint64_t now_ns) -> Result<OwnedValue> {
+auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue> try {
+    const auto now_ns = impl_->now_ns();
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->get(key, now_ns);
     }
-    return get_copy(as_string_view(key), now_ns);
+    const auto hashed = HashedKey::compute(as_string_view(key));
+    auto& worker = impl_->volatile_runtime->workers.route(hashed);
+    const std::lock_guard lock{worker.mutex_};
+    auto record = worker.get_locked(hashed, now_ns);
+    if (!record) {
+        return unexpected(record.error());
+    }
+    return copy_value(*record);
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
 auto Store::put(const std::string_view key, const std::span<const std::byte> value,
-                const std::uint64_t expire_at_ns) -> Status {
+                const std::uint64_t expire_at_ns) -> Status try {
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(as_bytes(key), value, expire_at_ns));
     }
     const auto hashed = HashedKey::compute(key);
     return impl_->volatile_runtime->workers.route(hashed).put(hashed, value, expire_at_ns);
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
 auto Store::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
-                const std::uint64_t expire_at_ns) -> Status {
+                const std::uint64_t expire_at_ns) -> Status try {
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(key, value, expire_at_ns));
     }
     return put(as_string_view(key), value, expire_at_ns);
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
-auto Store::erase(const std::string_view key) -> Status {
+auto Store::erase(const std::string_view key) -> Status try {
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(as_bytes(key)));
     }
     const auto hashed = HashedKey::compute(key);
     return impl_->volatile_runtime->workers.route(hashed).erase(hashed);
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
-auto Store::erase(const std::span<const std::byte> key) -> Status {
+auto Store::erase(const std::span<const std::byte> key) -> Status try {
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(key));
     }
     return erase(as_string_view(key));
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
-auto Store::flush() -> Status {
+auto Store::flush() -> Status try {
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->flush();
     }
     return {};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
-auto Store::verify_index() const -> Status {
+auto Store::verify_index() const -> Status try {
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->verify_index();
     }
@@ -294,6 +415,13 @@ auto Store::verify_index() const -> Status {
         }
     }
     return {};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    if (impl_->durable_runtime) {
+        impl_->durable_runtime->mark_fail_closed();
+    }
+    return internal_failure();
 }
 
 auto detail::StoreAccess::get_owned(Store& store, const std::size_t worker_index, const HashedKey& key,

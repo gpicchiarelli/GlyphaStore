@@ -165,6 +165,13 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns)
                 active_requires_rotation = segment_requires_rotation;
             }
 
+            const auto& commit = file->selected_commit().commit;
+            if (commit.record_count != 0 && context.maximum_sequence.value != 0 &&
+                commit.first_sequence.value <= context.maximum_sequence.value) {
+                return segment_error(
+                    entry, Error{ErrorCode::corrupted_data,
+                                 "committed sequence range overlaps or reverses a preceding Worker Segment"});
+            }
             context.segment_id = entry.segment_id;
             if (auto scanned = file->visit_committed_records(&context, &visit_recovery_record); !scanned) {
                 return segment_error(entry, scanned.error());

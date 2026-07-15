@@ -21,12 +21,12 @@ It is not production ready yet. The most important gaps are behavioral rather th
 
 - `glyphastored` always opens a volatile Store, so durable embedded operation does not yet imply a
   durable network service;
-- default embedded reads and default recovery use timestamp zero, contrary to the documented TTL
-  contract;
-- allocation and unexpected exceptions can still escape around the durable commit boundary, and
-  some runtime publication allocates after the bytes are committed;
-- recovery validates sequence order inside each Segment but not the monotonic sequence range across
-  all Segments owned by one Worker;
+- Store-owned TTL time is now implemented; long-running native-platform clock evidence remains a
+  release gate;
+- exception translation and prepared hot-cache publication are implemented, while exhaustive
+  deterministic allocation-failure injection remains incomplete;
+- recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
+  Worker; released-artifact and native-platform evidence remains to be accumulated;
 - durable Segments and manifest entries have no crash-safe compaction and retirement lifecycle;
 - disk, memory, descriptor, recovery, and write-amplification budgets are not configurable;
 - process-kill coverage is useful but is not evidence for sudden power loss, every supported
@@ -77,14 +77,17 @@ conflicting configuration fails before listening.
 
 ### P0-02 — Implement the documented Store clock and TTL semantics
 
-**Current evidence:** public `get` and `recovery_now_ns` default to zero, and zero disables expiry.
-The server supplies wall-clock time, but the embedded API has no Store-owned injectable clock.
+**Status:** implemented in the current tree; native-platform and long-running clock evidence remains
+part of the release gate.
 
-**Required change:** add a Store-owned clock interface. Production defaults to checked Unix-epoch
-nanoseconds; deterministic tests inject a fake clock. Deprecate per-call timestamps and
-`recovery_now_ns`, or move them to internal test access. Define behavior before the Unix epoch,
-after `uint64_t` range, and across wall-clock jumps. Use monotonic time only for batching deadlines,
-never for persisted absolute expiry.
+**Root cause:** public `get` and `recovery_now_ns` defaulted to zero, which disabled expiry. The
+server supplied wall-clock time, but the embedded API had no Store-owned injectable clock.
+
+**Implemented change:** ordinary reads and durable recovery now share a Store-owned clock.
+Production defaults to checked Unix-epoch nanoseconds; deterministic tests inject a thread-safe
+`StoreClock`. Per-call public timestamps were removed and nonzero `recovery_now_ns` is rejected.
+Each Store clamps backward movement with an atomic high-water mark. Monotonic time remains reserved
+for batching deadlines, never persisted absolute expiry.
 
 **Acceptance:** an ordinary `get(key)` expires data without caller assistance; restart prunes the
 same logical expirations; tests cover equality, zero/no-expiry, maximum timestamp, backward and
@@ -92,9 +95,15 @@ forward clock jumps, and conversion overflow.
 
 ### P0-03 — Close every exception and allocation boundary around commit
 
-**Current evidence:** public operations do not provide a complete exception barrier. Durable
-publication inserts strings and values into `hot_records` after commit; coordinator callbacks can
-throw from a background thread.
+**Status:** in progress. Public operations translate allocation and unexpected exceptions;
+background callback exceptions stop the coordinator, fail-close the runtime, and release batch
+waiters. Hot-cache key/value/node/capacity preparation now occurs before persistent writes and
+post-commit publication uses prepared node insertion. Deterministic allocation-failure coverage for
+every site remains required before this gate is complete.
+
+**Root cause:** public operations did not provide a complete exception barrier. Durable publication
+inserted strings and values into `hot_records` after commit, and coordinator callbacks could throw
+from a background thread.
 
 **Required change:** inventory every allocation and throwing operation before and after commit.
 Preconstruct all fallible publication state before commit, publish prepared/no-throw nodes, or
@@ -109,8 +118,12 @@ released, and no exception terminates a worker or crosses the supported API.
 
 ### P0-04 — Enforce cross-Segment sequence ranges
 
-**Current evidence:** each Segment scan checks its own sequence order; recovery tracks a maximum but
-does not reject an overlapping or reversed range in a later Segment belonging to the same Worker.
+**Status:** implemented in the current tree. Recovery rejects equal, overlapping, or reversed
+non-empty ranges in later manifest-ordered Segments of the same Worker before scanning their
+Records.
+
+**Root cause:** each Segment scan checked its own sequence order; recovery tracked a maximum but did
+not reject an overlapping or reversed range in a later Segment belonging to the same Worker.
 
 **Required change:** validate the first and last committed sequences of every non-empty Segment
 against the preceding Segment in manifest order. Define empty active Segment behavior explicitly.
@@ -121,8 +134,12 @@ an empty new active Segment continue to recover.
 
 ### P0-05 — Make background flush failure and shutdown observable
 
-**Current evidence:** `DurableFlushCoordinator::run` invokes its callback without an exception
-barrier, and destruction suppresses final flush errors.
+**Status:** in progress. Coordinator callback exceptions are translated to sticky
+`resource_exhausted`/`internal_error` failures, stop the coordinator, fail-close the durable runtime,
+and release queued batch waiters. An explicit public `close()` result is still missing.
+
+**Root cause:** `DurableFlushCoordinator::run` invoked its callback without an exception barrier,
+and destruction suppressed final flush errors.
 
 **Required change:** catch callback failures, persist a sticky fail-closed error, complete every
 generation/waiter, and prevent new mutations. Add explicit idempotent `close()`/shutdown returning a

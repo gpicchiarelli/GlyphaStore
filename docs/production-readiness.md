@@ -26,6 +26,10 @@ implementation or design document alone is not sufficient.
   round-trip evidence exist; wire golden fixtures and cross-release artifact evidence remain pending.
   Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
+  Ordinary reads and recovery now share a Store-owned clock with deterministic injection and
+  per-instance backward clamping. Public allocation/unexpected exceptions and background flush
+  callback exceptions are translated to stable categories; exhaustive fault injection and explicit
+  close semantics remain pending.
 
 ### Durability and recovery
 

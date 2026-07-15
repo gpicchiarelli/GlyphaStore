@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <new>
 
 namespace glyphastore {
 
@@ -55,6 +56,9 @@ auto DurableFlushCoordinator::flush_all_blocking() -> Status {
     const std::lock_guard call_lock{flush_all_call_mutex_};
     std::unique_lock lock{mutex_};
     if (stopped_) {
+        if (background_error_) {
+            return unexpected(*background_error_);
+        }
         return fail(ErrorCode::unavailable, "durable flush coordinator is stopped");
     }
     if (flush_all_generation_ == std::numeric_limits<std::uint64_t>::max()) {
@@ -65,6 +69,9 @@ auto DurableFlushCoordinator::flush_all_blocking() -> Status {
     wake_.notify_one();
     completed_.wait(lock, [&] { return completed_generation_ >= generation || stopped_; });
     if (completed_generation_ < generation) {
+        if (background_error_) {
+            return unexpected(*background_error_);
+        }
         return fail(ErrorCode::unavailable, "durable flush coordinator stopped before completion");
     }
     if (last_flush_all_error_) {
@@ -136,14 +143,28 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
         if (periodic_timed_out) {
             next_deadline = clock::now() + interval;
         }
-        auto flushed = flush_callback_(force_all);
+        Status flushed;
+        try {
+            flushed = flush_callback_(force_all);
+        } catch (const std::bad_alloc&) {
+            flushed = unexpected(Error{ErrorCode::resource_exhausted, {}});
+        } catch (...) {
+            flushed = unexpected(Error{ErrorCode::internal_error, {}});
+        }
+        if (!flushed) {
+            std::lock_guard lock{mutex_};
+            background_error_ = flushed.error();
+            if (force_all) {
+                last_flush_all_error_ = flushed.error();
+                completed_generation_ = flush_all_generation;
+            }
+            stopped_ = true;
+            completed_.notify_all();
+            return;
+        }
         if (force_all) {
             std::lock_guard lock{mutex_};
-            if (flushed) {
-                last_flush_all_error_.reset();
-            } else {
-                last_flush_all_error_ = flushed.error();
-            }
+            last_flush_all_error_.reset();
             completed_generation_ = flush_all_generation;
             completed_.notify_all();
         }
