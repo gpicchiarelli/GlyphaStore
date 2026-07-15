@@ -32,7 +32,7 @@ The engine-owned names are:
 | Platform | Data synchronization | Metadata/publication synchronization |
 |---|---|---|
 | Linux | `fdatasync` when only retrievable file data is required | `fsync` for manifests and directory entries |
-| macOS | `fcntl(F_FULLFSYNC)` | `fcntl(F_FULLFSYNC)` for both manifest and directory descriptors |
+| macOS | `F_BARRIERFSYNC` for Record-before-slot ordering; `F_FULLFSYNC` for the durable commit point | `fcntl(F_FULLFSYNC)` for both manifest and directory descriptors |
 | FreeBSD | `fdatasync` for data-only requests | `fsync` for manifests and directories |
 | OpenBSD | `fdatasync` API, currently implemented as `fsync` by the OS | `fsync` for manifests and directories |
 
@@ -42,9 +42,12 @@ size metadata needed to retrieve written data. See the current Linux
 [`fsync(2)`](https://man7.org/linux/man-pages/man2/fsync.2.html) and
 [`rename(2)`](https://man7.org/linux/man-pages/man2/rename.2.html) manuals.
 
-Apple documents that ordinary `fsync` may leave data in a drive cache and provides `F_FULLFSYNC` for
-database-style ordering. GlyphaStore therefore does not silently downgrade to `fsync` on macOS; an
-unsupported full flush is an I/O failure. See Apple's [`fsync(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
+Apple documents that `F_BARRIERFSYNC` orders I/O synchronized before the barrier ahead of I/O issued
+after it, while `F_FULLFSYNC` drains the device queue and makes earlier synchronized data persistent.
+GlyphaStore uses that two-phase protocol for Segment Record and commit-slot publication on supported
+HFS/APFS storage. The final commit point, manifest publication, and directory publication still use
+`F_FULLFSYNC`; there is no downgrade to ordinary `fsync`. An unsupported barrier or full flush is an
+I/O failure. See Apple's [`fsync(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fsync.2.html)
 and [`fcntl(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/fcntl.2.html)
 manuals.
 

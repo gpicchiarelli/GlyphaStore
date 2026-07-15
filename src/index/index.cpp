@@ -58,6 +58,11 @@ auto Index::prepare_insert(const HashedKey& key) -> Status {
     return table_.prepare_insert(key);
 }
 
+auto Index::prepare_batch_insert(const std::size_t additional_entries,
+                                 const std::size_t additional_heap_key_bytes) -> Status {
+    return table_.prepare_batch_insert(additional_entries, additional_heap_key_bytes);
+}
+
 auto Index::entries() const -> std::vector<IndexEntry> {
     return table_.entries();
 }

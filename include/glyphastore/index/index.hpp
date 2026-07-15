@@ -37,6 +37,8 @@ class Index final {
     auto erase_no_compact(const HashedKey& key) -> IndexMutationResult;
     [[nodiscard]] auto reserve(std::size_t count) -> Status;
     [[nodiscard]] auto prepare_insert(const HashedKey& key) -> Status;
+    [[nodiscard]] auto prepare_batch_insert(std::size_t additional_entries,
+                                            std::size_t additional_heap_key_bytes) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
     [[nodiscard]] auto make_empty() const -> Index;

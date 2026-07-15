@@ -5,12 +5,18 @@
 #include "glyphastore/segment/record.hpp"
 #include "test.hpp"
 
+#include <algorithm>
+#include <array>
 #include <atomic>
+#include <barrier>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -117,6 +123,64 @@ struct OneShotFilesystemFailure {
             state.fired = true;
             return glyphastore::fail(glyphastore::ErrorCode::io_error,
                                      "injected durable runtime filesystem failure");
+        }
+        return {};
+    }
+};
+
+struct SyncThreadObserver {
+    std::mutex mutex;
+    std::thread::id sync_thread;
+    std::vector<std::thread::id> sync_threads;
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        if (operation == glyphastore::FilesystemOperation::sync_record) {
+            auto& observer = *static_cast<SyncThreadObserver*>(opaque);
+            const std::lock_guard lock{observer.mutex};
+            observer.sync_thread = std::this_thread::get_id();
+            observer.sync_threads.push_back(observer.sync_thread);
+        }
+        return {};
+    }
+};
+
+struct BatchBoundaryObserver {
+    std::mutex mutex;
+    std::size_t writes_since_sync{};
+    std::size_t maximum_writes_before_sync{};
+    std::size_t sync_count{};
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& observer = *static_cast<BatchBoundaryObserver*>(opaque);
+        const std::lock_guard lock{observer.mutex};
+        if (operation == glyphastore::FilesystemOperation::write_record) {
+            ++observer.writes_since_sync;
+        } else if (operation == glyphastore::FilesystemOperation::sync_record) {
+            observer.maximum_writes_before_sync =
+                std::max(observer.maximum_writes_before_sync, observer.writes_since_sync);
+            observer.writes_since_sync = 0;
+            ++observer.sync_count;
+        }
+        return {};
+    }
+};
+
+struct RecordWriteObserver {
+    std::mutex mutex;
+    std::condition_variable written;
+    bool record_written{};
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        if (operation == glyphastore::FilesystemOperation::write_record) {
+            auto& observer = *static_cast<RecordWriteObserver*>(opaque);
+            {
+                const std::lock_guard lock{observer.mutex};
+                observer.record_written = true;
+            }
+            observer.written.notify_all();
         }
         return {};
     }
@@ -783,6 +847,241 @@ GLYPHA_TEST("durable runtime rotates a full active Segment before committing the
     GLYPHA_REQUIRE((*reopened)->get(next_key).has_value());
 }
 
+GLYPHA_TEST("durable group closes a pending batch before rotating a full Segment") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    const std::string first_key{"one!"};
+    const std::string second_key{"two!"};
+    const std::string maximum_value(
+        glyphastore::kMaxNormalRecordSize - glyphastore::kEncodedRecordHeaderSize - first_key.size(), 'x');
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        for (std::uint64_t sequence = 1; sequence <= 62; ++sequence) {
+            append_record(segment, sequence, "fill", maximum_value);
+        }
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    SyncThreadObserver observer;
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(),
+            glyphastore::FilesystemHooks{.context = &observer, .before = &SyncThreadObserver::before});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+            std::move(*directory), 0,
+            {.commit_sync = glyphastore::SegmentCommitSync::immediate,
+             .sync_interval_ms = 50,
+             .batch = glyphastore::DurableGroupConfig{.max_records = 2,
+                                                      .max_bytes = 2U * glyphastore::kMaxNormalRecordSize,
+                                                      .max_wait_ms = 50},
+             .strict_ack = true});
+        GLYPHA_REQUIRE(runtime.has_value());
+
+        std::atomic committed{0};
+        std::array<std::thread::id, 2> producer_threads{};
+        const auto put = [&](const std::size_t producer, const std::string& key) {
+            producer_threads[producer] = std::this_thread::get_id();
+            const auto result =
+                (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{maximum_value}));
+            if (result.committed()) {
+                committed.fetch_add(1);
+            }
+        };
+        std::thread first{[&] { put(0, first_key); }};
+        std::thread second{[&] { put(1, second_key); }};
+        first.join();
+        second.join();
+
+        GLYPHA_REQUIRE(committed.load() == 2);
+        GLYPHA_REQUIRE((*runtime)->active_segment(0)->value == 2);
+        GLYPHA_REQUIRE((*runtime)->next_sequence(0)->value == 65);
+        GLYPHA_REQUIRE((*runtime)->get(first_key).has_value());
+        GLYPHA_REQUIRE((*runtime)->get(second_key).has_value());
+        const std::lock_guard lock{observer.mutex};
+        GLYPHA_REQUIRE(!observer.sync_threads.empty());
+        GLYPHA_REQUIRE(std::ranges::none_of(observer.sync_threads, [&](const std::thread::id thread) {
+            return thread == producer_threads[0] || thread == producer_threads[1];
+        }));
+    }
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->active_segment(0)->value == 2);
+    GLYPHA_REQUIRE((*reopened)->next_sequence(0)->value == 65);
+    GLYPHA_REQUIRE((*reopened)->get(first_key).has_value());
+    GLYPHA_REQUIRE((*reopened)->get(second_key).has_value());
+}
+
+GLYPHA_TEST("one-Worker durable group commits on the dedicated commit executor") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    SyncThreadObserver observer;
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &observer, .before = &SyncThreadObserver::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 0,
+        {.commit_sync = glyphastore::SegmentCommitSync::immediate,
+         .sync_interval_ms = 60'000,
+         .batch =
+             glyphastore::DurableGroupConfig{.max_records = 2, .max_bytes = 65536, .max_wait_ms = 60'000},
+         .strict_ack = true});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    std::array<std::thread::id, 2> producer_threads{};
+    std::atomic committed{0};
+    const auto put = [&](const std::size_t producer, const std::string key) {
+        producer_threads[producer] = std::this_thread::get_id();
+        const std::string value{"value"};
+        if ((*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed()) {
+            committed.fetch_add(1, std::memory_order_relaxed);
+        }
+    };
+    std::thread first{put, 0, "first"};
+    std::thread second{put, 1, "second"};
+    first.join();
+    second.join();
+
+    GLYPHA_REQUIRE(committed.load(std::memory_order_relaxed) == 2);
+    std::thread::id sync_thread;
+    {
+        const std::lock_guard lock{observer.mutex};
+        sync_thread = observer.sync_thread;
+    }
+    GLYPHA_REQUIRE(sync_thread != std::thread::id{});
+    GLYPHA_REQUIRE(sync_thread != producer_threads[0]);
+    GLYPHA_REQUIRE(sync_thread != producer_threads[1]);
+}
+
+GLYPHA_TEST("one-Worker commit executor bounds admission at the batch record limit") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    BatchBoundaryObserver observer;
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &observer, .before = &BatchBoundaryObserver::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 0,
+        {.commit_sync = glyphastore::SegmentCommitSync::immediate,
+         .sync_interval_ms = 60'000,
+         .batch =
+             glyphastore::DurableGroupConfig{.max_records = 2, .max_bytes = 65536, .max_wait_ms = 60'000},
+         .strict_ack = true});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    static constexpr std::size_t kProducerCount = 32;
+    std::barrier start{static_cast<std::ptrdiff_t>(kProducerCount + 1)};
+    std::atomic committed{0};
+    std::vector<std::thread> producers;
+    producers.reserve(kProducerCount);
+    for (std::size_t producer = 0; producer < kProducerCount; ++producer) {
+        producers.emplace_back([&, producer] {
+            start.arrive_and_wait();
+            const auto key = std::string{"key-"} + std::to_string(producer);
+            const std::string value{"value"};
+            if ((*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed()) {
+                committed.fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    }
+    start.arrive_and_wait();
+    for (auto& producer : producers) {
+        producer.join();
+    }
+
+    GLYPHA_REQUIRE(committed.load(std::memory_order_relaxed) == kProducerCount);
+    const std::lock_guard lock{observer.mutex};
+    GLYPHA_REQUIRE(observer.maximum_writes_before_sync == 2);
+    GLYPHA_REQUIRE(observer.writes_since_sync == 0);
+    GLYPHA_REQUIRE(observer.sync_count == kProducerCount / 2);
+}
+
+GLYPHA_TEST("explicit flush completes a partial sequenced durable group") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    RecordWriteObserver observer;
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &observer, .before = &RecordWriteObserver::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 0,
+        {.commit_sync = glyphastore::SegmentCommitSync::immediate,
+         .sync_interval_ms = 60'000,
+         .batch =
+             glyphastore::DurableGroupConfig{.max_records = 32, .max_bytes = 65536, .max_wait_ms = 60'000},
+         .strict_ack = true});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    std::atomic committed{false};
+    std::thread producer{[&] {
+        const std::string key{"partial"};
+        const std::string value{"value"};
+        committed.store(
+            (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed(),
+            std::memory_order_relaxed);
+    }};
+    {
+        std::unique_lock lock{observer.mutex};
+        GLYPHA_REQUIRE(observer.written.wait_for(lock, std::chrono::seconds{5},
+                                                 [&] { return observer.record_written; }));
+    }
+    GLYPHA_REQUIRE((*runtime)->flush().has_value());
+    producer.join();
+    GLYPHA_REQUIRE(committed.load(std::memory_order_relaxed));
+    GLYPHA_REQUIRE((*runtime)->get("partial").has_value());
+}
+
 GLYPHA_TEST("durable runtime reports an indeterminate slot sync and recovery resolves one boundary") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();
@@ -827,4 +1126,53 @@ GLYPHA_TEST("durable runtime reports an indeterminate slot sync and recovery res
         GLYPHA_REQUIRE(resolved.has_value());
         GLYPHA_REQUIRE(owned_text(*resolved) == "value");
     }
+}
+
+GLYPHA_TEST("durable group flush failure wakes every batch waiter fail-closed") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto segment = create_segment(*directory, store_id, active);
+        GLYPHA_REQUIRE(segment.selected_commit().commit.record_count == 0);
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    OneShotFilesystemFailure failure{.target = glyphastore::FilesystemOperation::sync_record};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &failure, .before = &OneShotFilesystemFailure::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 0,
+        {.commit_sync = glyphastore::SegmentCommitSync::immediate,
+         .sync_interval_ms = 60'000,
+         .batch =
+             glyphastore::DurableGroupConfig{.max_records = 2, .max_bytes = 65536, .max_wait_ms = 60'000},
+         .strict_ack = true});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    std::atomic outcomes{0};
+    const auto put = [&](std::string key) {
+        const std::string value{"value"};
+        const auto result = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+        if (result.outcome == glyphastore::DurableMutationOutcome::indeterminate) {
+            outcomes.fetch_add(1);
+        }
+    };
+    std::thread first{put, "first"};
+    std::thread second{put, "second"};
+    first.join();
+    second.join();
+
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(outcomes.load() == 2);
+    GLYPHA_REQUIRE(!(*runtime)->healthy());
 }

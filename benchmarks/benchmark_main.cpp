@@ -46,6 +46,10 @@ struct Options {
             options.settings.pin_cpu = true;
             continue;
         }
+        if (arg == "--latency") {
+            options.settings.latency = true;
+            continue;
+        }
         if (arg == "--filter" && index + 1 < argc) {
             options.kind = glyphastore::bench::parse_kind(argv[++index]);
             continue;
@@ -89,7 +93,7 @@ struct Options {
         }
         if (arg == "--help" || arg == "-h") {
             std::cout
-                << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu]\n"
+                << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu] [--latency]\n"
                 << "       [--filter all|index-all|index|index-insert|index-replace|index-find-hit|\n"
                 << "                index-find-miss|index-erase|store-put|store-get|store-put-get|\n"
                 << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
@@ -102,6 +106,7 @@ struct Options {
                 << "                store-durable-group-put|store-durable-group-get|\n"
                 << "                store-durable-group-put-get|\n"
                 << "                store-durable-group-read-after-write|store-durable-group-all|\n"
+                << "                store-durable-group-parallel-put|\n"
                 << "                store-durable-parallel-put|store-durable-parallel-get|\n"
                 << "                store-durable-parallel-read-after-write|store-durable-all|\n"
                 << "                store-durable-parallel-all]\n"
@@ -149,6 +154,11 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
     return result.samples == result.settings.measured_iterations;
 }
 
+[[nodiscard]] auto supports_latency(const glyphastore::bench::BenchmarkKind kind) noexcept -> bool {
+    return kind == glyphastore::bench::BenchmarkKind::store_durable_group_parallel_put ||
+           kind == glyphastore::bench::BenchmarkKind::store_durable_parallel_put;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -156,6 +166,11 @@ int main(int argc, char** argv) {
     if ((options.threads || options.distribution) &&
         !glyphastore::bench::is_parallel_benchmark(options.kind)) {
         std::cerr << "benchmark error: --threads and --distribution require a store-parallel filter\n";
+        return 2;
+    }
+    if (options.settings.latency && !supports_latency(options.kind)) {
+        std::cerr << "benchmark error: --latency requires store-durable-group-parallel-put or "
+                     "store-durable-parallel-put\n";
         return 2;
     }
     std::vector<glyphastore::bench::Config> configs;
@@ -178,6 +193,8 @@ int main(int argc, char** argv) {
     std::cout << "# glyphastore benchmark\n";
     (void)glyphastore::bench::try_cpu_pin(options.settings.pin_cpu);
     glyphastore::bench::print_metadata(std::cout, options.settings);
+    std::cout << "# latency_measurement="
+              << (options.settings.latency ? "per-operation-steady-clock" : "disabled") << '\n';
 
     for (auto config : configs) {
         apply_overrides(config, options);

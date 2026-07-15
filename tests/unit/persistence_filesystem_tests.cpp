@@ -83,6 +83,7 @@ GLYPHA_TEST("positional file IO completes exact extents and rejects offset overf
 
     static constexpr std::array payload{std::byte{0xA1}, std::byte{0xB2}, std::byte{0xC3}};
     GLYPHA_REQUIRE(file.write_all_at(payload, 3).has_value());
+    GLYPHA_REQUIRE(file.sync(glyphastore::FileSyncMode::ordered).has_value());
     GLYPHA_REQUIRE(file.sync(glyphastore::FileSyncMode::data).has_value());
     const auto size = file.size();
     GLYPHA_REQUIRE(size.has_value());

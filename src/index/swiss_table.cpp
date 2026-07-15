@@ -405,6 +405,17 @@ auto SwissTableIndex::prepare_insert(const HashedKey& key) -> Status {
     return {};
 }
 
+auto SwissTableIndex::prepare_batch_insert(const std::size_t additional_entries,
+                                           const std::size_t additional_heap_key_bytes) -> Status {
+    if (additional_entries > std::numeric_limits<std::size_t>::max() - size_) {
+        return fail(ErrorCode::arithmetic_overflow, "swiss table batch reserve overflow");
+    }
+    if (auto prepared = reserve(size_ + additional_entries); !prepared) {
+        return prepared;
+    }
+    return heap_keys_.prepare_allocate(additional_heap_key_bytes);
+}
+
 auto SwissTableIndex::reserve(const std::size_t count) -> Status {
     const auto extra = count / 7U + (count % 7U == 0 ? 0U : 1U);
     if (extra > std::numeric_limits<std::size_t>::max() - count) {

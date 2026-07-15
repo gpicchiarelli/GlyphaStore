@@ -112,8 +112,13 @@ On Linux, FreeBSD, and OpenBSD, use the `unix-debug` and `unix-release` presets.
 ### Embedded durable Store
 
 Deployment-oriented experiments should prefer `durable_periodic` unless strict acknowledgement is
-required. `durable_group` preserves strict acknowledgement while sharing the two ordered durability
-barriers across concurrent writers; `durable_sync` applies those barriers to every mutation.
+required. `durable_group` preserves strict acknowledgement while sharing the ordered Record and
+commit-slot durability phases across concurrent writers; `durable_sync` applies them to every
+mutation. On supported macOS storage the first phase uses an ordering barrier and the final phase
+retains the full durable flush.
+
+All durable modes use the same persistent v1 Manifest, Segment, commit-slot, and Record formats.
+There is no alternate persistent format or automatic format migration path.
 
 ```cpp
 glyphastore::StoreConfig config{
@@ -197,8 +202,12 @@ CLI knobs as volatile Store benchmarks.
 ./scripts/dev.sh benchmark --filter store-durable-parallel-all --workers 4 --threads 4 \
     --distribution worker-affine
 ./scripts/dev.sh benchmark --filter store-durable-group-parallel-put --ops 4096 \
-    --workers 1 --threads 32 --distribution single-worker
+    --workers 1 --threads 32 --distribution single-worker --latency
 ```
+
+`--latency` is available for durable parallel-put filters and records per-request p50, p95, p99,
+and p99.9 latency with `steady_clock`. Leave it disabled for throughput-only regression comparisons
+that must avoid per-operation timing overhead.
 
 The [benchmark workflow](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml)
 runs a fixed Release suite on pushes to `main`, every Monday, and on manual dispatch. Every run
@@ -258,6 +267,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Vacuum model](docs/architecture/vacuum-model.md) | Copy-build-validate publication and reclamation |
 | [Development guide](docs/development.md) | Portable workflow and automated benchmark reports |
 | [Production readiness](docs/production-readiness.md) | Explicit gates from prototype to stable release |
+| [Persistence v1 production roadmap](docs/v1-production-roadmap.md) | Repository-wide audit, priorities, and acceptance criteria |
 
 ## Supported platforms
 

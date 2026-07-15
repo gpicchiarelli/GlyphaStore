@@ -4,6 +4,9 @@ This document records the formats understood by the current `0.1.x` code line. I
 development matrix, not yet a released persistence guarantee: `durable_sync` is enabled for
 development use, but no released artifact migration has been exercised.
 
+Durable persistence has one format family: v1. All durable policies differ only in commit timing and
+acknowledgement semantics; they read and write the same v1 bytes.
+
 Format versions are independent. A library version never implies that manifest, Segment, Record,
 and wire versions advance together.
 
@@ -61,5 +64,5 @@ The persistent fixtures are emitted independently by `scripts/generate_format_fi
 validated by decode-only tests in `tests/unit/format_compatibility_tests.cpp`. Those tests also
 exercise durable Store artifact round-trip reopen and on-disk Segment header prefixes. They do not
 yet prove compatibility across released binaries or wire-protocol golden fixtures. Crash recovery
-evidence lives in the `glyphastore_crash_persistence` CTest target and the [durability and recovery
-contract](durability-recovery.md).
+evidence for the persistent v1 runtime lives in the `glyphastore_crash_persistence` CTest target and
+the [durability and recovery contract](durability-recovery.md).

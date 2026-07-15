@@ -21,7 +21,9 @@ inline constexpr auto kStoreLockFilename = ".glyphastore.lock";
 inline constexpr auto kBootstrapIntentFilename = ".glyphastore.bootstrap";
 inline constexpr auto kBootstrapTemporaryFilename = ".glyphastore.bootstrap.tmp";
 
-enum class FileSyncMode { data, full };
+// `ordered` establishes the Record-before-commit ordering boundary. Platforms
+// without a distinct storage barrier conservatively implement it as a data sync.
+enum class FileSyncMode { ordered, data, full };
 enum class DataDirectoryOpenMode { existing, open_or_create, create_new };
 
 class FileDescriptor final {

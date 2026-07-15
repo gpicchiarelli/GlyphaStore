@@ -22,6 +22,7 @@ SEGMENT_HEADER_RESERVED_BYTES = 4096
 SEGMENT_COMMIT_SLOT_BYTES = 128
 SEGMENT_COMMIT_SLOTS_OFFSET = 128
 SEGMENT_HEADER_FIXTURE_BYTES = SEGMENT_COMMIT_SLOTS_OFFSET + 2 * SEGMENT_COMMIT_SLOT_BYTES
+SEGMENT_IMMUTABLE_CHECKSUM_OFFSET = 52
 
 RECORD_MAGIC = 0x52594C47
 RECORD_VERSION = 1
@@ -74,12 +75,25 @@ def manifest_fixture() -> bytes:
     header = bytearray(MANIFEST_HEADER_BYTES)
     struct.pack_into("<IHHII", header, 0, MANIFEST_MAGIC, MANIFEST_VERSION, MANIFEST_HEADER_BYTES, total_size, MANIFEST_SEGMENT_ENTRY_BYTES)
     header[16:32] = store_id
-    struct.pack_into("<QIIQIHHI", header, 32, 0x0102030405060708, 1, 2, 0x1112131415161718, len(segments), 1, 1, 1, 1)
+    struct.pack_into(
+        "<QIIQIHHHH",
+        header,
+        32,
+        0x0102030405060708,
+        1,
+        2,
+        0x1112131415161718,
+        len(segments),
+        1,
+        1,
+        1,
+        1,
+    )
     struct.pack_into("<QI", header, 68, 4, 1)
     body = bytearray()
     for segment_id, generation, owner, role in segments:
         entry = bytearray(MANIFEST_SEGMENT_ENTRY_BYTES)
-        struct.pack_into("<QQIH", entry, 0, segment_id, generation, owner, role)
+        struct.pack_into("<QIIH", entry, 0, segment_id, generation, owner, role)
         body.extend(entry)
     payload = bytearray(header) + body
     struct.pack_into("<I", payload, MANIFEST_CHECKSUM_OFFSET, crc32c(bytes(payload[:MANIFEST_CHECKSUM_OFFSET]) + b"\x00\x00\x00\x00" + bytes(payload[MANIFEST_CHECKSUM_OFFSET + 4 :])))
@@ -99,6 +113,12 @@ def segment_header_fixture() -> bytes:
     struct.pack_into("<IHHHHI", header, 0, SEGMENT_HEADER_MAGIC, SEGMENT_HEADER_VERSION, 128, 1, 1, SEGMENT_HEADER_RESERVED_BYTES)
     header[16:32] = store_id
     struct.pack_into("<QII", header, 32, 0x0102030405060708, 0x11223344, 0x55667788)
+    struct.pack_into(
+        "<I",
+        header,
+        SEGMENT_IMMUTABLE_CHECKSUM_OFFSET,
+        crc32c_with_zeroed_checksum_field(bytes(header[:128]), SEGMENT_IMMUTABLE_CHECKSUM_OFFSET),
+    )
     empty = segment_commit_slot(1, SEGMENT_HEADER_RESERVED_BYTES, 1, 0, 0, 0)
     populated = segment_commit_slot(2, 0x1100, 2, 2, 10, 11)
     header[SEGMENT_COMMIT_SLOTS_OFFSET : SEGMENT_COMMIT_SLOTS_OFFSET + SEGMENT_COMMIT_SLOT_BYTES] = empty
@@ -112,8 +132,24 @@ def record_fixture() -> bytes:
     total_size = RECORD_HEADER_SIZE + len(key) + len(value)
     total_size = ((total_size + RECORD_ALIGNMENT - 1) // RECORD_ALIGNMENT) * RECORD_ALIGNMENT
     payload = bytearray(total_size)
-    struct.pack_into("<IHHIIQQQ", payload, 0, RECORD_MAGIC, RECORD_VERSION, RECORD_HEADER_SIZE, total_size, 1, 0x11223344, 0x1112131415161718, 0x2122232425262728)
-    struct.pack_into("<II", payload, 40, len(key), len(value))
+    struct.pack_into(
+        "<IHHIIIIQQQHHI",
+        payload,
+        0,
+        RECORD_MAGIC,
+        RECORD_VERSION,
+        RECORD_HEADER_SIZE,
+        total_size,
+        len(key),
+        len(value),
+        0,
+        0x0102030405060708,
+        0x1112131415161718,
+        0x2122232425262728,
+        1,
+        1,
+        0x11223344,
+    )
     payload[RECORD_HEADER_SIZE : RECORD_HEADER_SIZE + len(key)] = key
     payload[RECORD_HEADER_SIZE + len(key) : RECORD_HEADER_SIZE + len(key) + len(value)] = value
     struct.pack_into("<I", payload, 20, crc32c_with_zeroed_checksum_field(bytes(payload)))
@@ -152,6 +188,9 @@ def verify_segment_header(data: bytes) -> None:
         raise ValueError("segment header prefix mismatch")
     if segment_version != 1 or record_version != 1 or reserved != SEGMENT_HEADER_RESERVED_BYTES:
         raise ValueError("segment header format fields mismatch")
+    checksum = struct.unpack_from("<I", data, SEGMENT_IMMUTABLE_CHECKSUM_OFFSET)[0]
+    if checksum != crc32c_with_zeroed_checksum_field(data[:128], SEGMENT_IMMUTABLE_CHECKSUM_OFFSET):
+        raise ValueError("segment immutable checksum mismatch")
     for slot_index in range(2):
         offset = SEGMENT_COMMIT_SLOTS_OFFSET + slot_index * SEGMENT_COMMIT_SLOT_BYTES
         slot = data[offset : offset + SEGMENT_COMMIT_SLOT_BYTES]

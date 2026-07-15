@@ -7,6 +7,7 @@
 #include "harness.hpp"
 
 #include <atomic>
+#include <cmath>
 #include <filesystem>
 #include <latch>
 #include <memory>
@@ -32,6 +33,7 @@ struct ParallelMaterial {
 struct ParallelSample {
     std::size_t hits{};
     double seconds{};
+    std::vector<double> latency_ns;
 };
 
 struct DurableContext {
@@ -167,18 +169,30 @@ struct DurableContext {
 }
 
 template <typename Fn>
-[[nodiscard]] auto run_parallel_threads(const std::size_t thread_count, Fn&& fn) -> ParallelSample {
+[[nodiscard]] auto run_parallel_threads(const std::size_t thread_count,
+                                        const std::size_t latency_capacity_per_thread, Fn&& fn)
+    -> ParallelSample {
     std::latch ready{static_cast<std::ptrdiff_t>(thread_count)};
     std::latch start{1};
     std::latch done{static_cast<std::ptrdiff_t>(thread_count)};
     std::vector<std::size_t> thread_hits(thread_count);
+    std::vector<std::vector<double>> thread_latencies(thread_count);
+    if (latency_capacity_per_thread != 0) {
+        for (auto& latency : thread_latencies) {
+            latency.reserve(latency_capacity_per_thread);
+        }
+    }
     std::vector<std::thread> threads;
     threads.reserve(thread_count);
     for (std::size_t thread = 0; thread < thread_count; ++thread) {
         threads.emplace_back([&, thread]() {
             ready.count_down();
             start.wait();
-            thread_hits[thread] = fn(thread);
+            if constexpr (requires { fn(thread, thread_latencies[thread]); }) {
+                thread_hits[thread] = fn(thread, thread_latencies[thread]);
+            } else {
+                thread_hits[thread] = fn(thread);
+            }
             done.count_down();
         });
     }
@@ -194,7 +208,37 @@ template <typename Fn>
     for (const auto thread_result : thread_hits) {
         hits += thread_result;
     }
-    return {.hits = hits, .seconds = elapsed};
+    std::vector<double> latency_ns;
+    if (latency_capacity_per_thread != 0) {
+        std::size_t latency_count = 0;
+        for (const auto& thread_latency : thread_latencies) {
+            latency_count += thread_latency.size();
+        }
+        latency_ns.reserve(latency_count);
+        for (auto& thread_latency : thread_latencies) {
+            latency_ns.insert(latency_ns.end(), std::make_move_iterator(thread_latency.begin()),
+                              std::make_move_iterator(thread_latency.end()));
+        }
+    }
+    return {.hits = hits, .seconds = elapsed, .latency_ns = std::move(latency_ns)};
+}
+
+template <typename BodyFn, typename Context>
+[[nodiscard]] auto invoke_parallel_body(BodyFn& body, Context& context, const std::size_t thread,
+                                        std::vector<double>& latency_ns) -> std::size_t {
+    if constexpr (requires { body(context, thread, latency_ns); }) {
+        return body(context, thread, latency_ns);
+    } else {
+        return body(context, thread);
+    }
+}
+
+[[nodiscard]] auto percentile(const std::vector<double>& sorted, const double quantile) -> double {
+    if (sorted.empty()) {
+        return 0.0;
+    }
+    const auto rank = static_cast<std::size_t>(std::ceil(quantile * static_cast<double>(sorted.size())));
+    return sorted[std::min(std::max(std::size_t{1}, rank), sorted.size()) - 1U];
 }
 
 template <typename SetupFn, typename BodyFn>
@@ -204,20 +248,29 @@ template <typename SetupFn, typename BodyFn>
     -> Result {
     for (std::size_t iteration = 0; iteration < settings.warmup_iterations; ++iteration) {
         auto context = setup();
-        (void)run_parallel_threads(config.threads,
-                                   [&](const std::size_t thread) { return body(context, thread); });
+        (void)run_parallel_threads(config.threads, 0,
+                                   [&](const std::size_t thread, std::vector<double>& latency_ns) {
+                                       return invoke_parallel_body(body, context, thread, latency_ns);
+                                   });
     }
 
     std::vector<double> samples;
     std::vector<ResourceSample> resources;
+    std::vector<double> latency_ns;
     samples.reserve(settings.measured_iterations);
     resources.reserve(settings.measured_iterations);
     std::size_t hits = 0;
     for (std::size_t iteration = 0; iteration < settings.measured_iterations; ++iteration) {
         auto context = setup();
         auto resource = process_memory_snapshot();
-        const auto sample = run_parallel_threads(
-            config.threads, [&](const std::size_t thread) { return body(context, thread); });
+        const auto latency_capacity =
+            settings.latency ? operations / config.threads + (operations % config.threads == 0 ? 0U : 1U)
+                             : 0U;
+        auto sample =
+            run_parallel_threads(config.threads, latency_capacity,
+                                 [&](const std::size_t thread, std::vector<double>& thread_latency_ns) {
+                                     return invoke_parallel_body(body, context, thread, thread_latency_ns);
+                                 });
         const auto after = process_memory_snapshot();
         resource.rss_after_bytes = after.rss_after_bytes;
         resource.peak_rss_bytes = after.peak_rss_bytes;
@@ -228,9 +281,20 @@ template <typename SetupFn, typename BodyFn>
         hits = sample.hits;
         samples.push_back(sample.seconds);
         resources.push_back(resource);
+        latency_ns.insert(latency_ns.end(), std::make_move_iterator(sample.latency_ns.begin()),
+                          std::make_move_iterator(sample.latency_ns.end()));
     }
-    return finalize_result(std::move(name), config, settings, operations, hits, std::move(samples),
-                           std::move(resources));
+    auto result = finalize_result(std::move(name), config, settings, operations, hits, std::move(samples),
+                                  std::move(resources));
+    if (!latency_ns.empty()) {
+        std::ranges::sort(latency_ns);
+        result.latency_samples = latency_ns.size();
+        result.p50_latency_ns = percentile(latency_ns, 0.50);
+        result.p95_latency_ns = percentile(latency_ns, 0.95);
+        result.p99_latency_ns = percentile(latency_ns, 0.99);
+        result.p999_latency_ns = percentile(latency_ns, 0.999);
+    }
+    return result;
 }
 
 [[nodiscard]] auto make_index_ref(const std::size_t index_in_order) -> RecordRef {
@@ -799,15 +863,22 @@ template <typename SetupFn, typename BodyFn>
             return {std::move(context), std::move(store)};
         },
         [&](std::pair<std::unique_ptr<DurableContext>, std::unique_ptr<Store>>& context,
-            const std::size_t thread) -> std::size_t {
+            const std::size_t thread, std::vector<double>& latency_ns) -> std::size_t {
             if (context.second == nullptr) {
                 return 0;
             }
             std::size_t writes = 0;
             for (const auto index_in_order : material.thread_order[thread]) {
-                if (durable_put_succeeded(
-                        context.second->put(material.material.keys[index_in_order],
-                                            bytes(material.material.values[index_in_order])))) {
+                const auto started = settings.latency ? std::chrono::steady_clock::now()
+                                                      : std::chrono::steady_clock::time_point{};
+                const auto succeeded = durable_put_succeeded(context.second->put(
+                    material.material.keys[index_in_order], bytes(material.material.values[index_in_order])));
+                if (settings.latency) {
+                    latency_ns.push_back(
+                        std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started)
+                            .count());
+                }
+                if (succeeded) {
                     ++writes;
                 }
             }

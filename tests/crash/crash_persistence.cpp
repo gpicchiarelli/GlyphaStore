@@ -8,6 +8,7 @@
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/store.hpp"
 
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -29,6 +30,13 @@ constexpr std::string_view kSeedValue{"seed-value"};
 constexpr std::string_view kCrashKey{"crash-key"};
 constexpr std::string_view kCrashValue{"crash-value"};
 constexpr std::string_view kRotateKey{"rotate-key"};
+
+[[nodiscard]] auto crash_run_suffix() -> const std::string& {
+    static const auto suffix = std::to_string(static_cast<unsigned long long>(::getpid())) + "-" +
+                               std::to_string(static_cast<unsigned long long>(
+                                   std::chrono::steady_clock::now().time_since_epoch().count()));
+    return suffix;
+}
 
 struct Options {
     std::string mode{"matrix"};
@@ -463,6 +471,12 @@ enum class RecoveryExpectation { absent, optional, present };
     return true;
 }
 
+void cleanup_matrix_case(const Options& options) {
+    std::error_code ignored;
+    std::filesystem::remove_all(options.data_dir.parent_path(), ignored);
+    std::filesystem::remove_all(options.checkpoint_dir, ignored);
+}
+
 [[nodiscard]] auto run_matrix() -> bool {
     const std::vector<std::string_view> scenarios{"bootstrap", "put", "rotate"};
     bool success = true;
@@ -473,19 +487,18 @@ enum class RecoveryExpectation { absent, optional, present };
                 .scenario = std::string{scenario},
                 .boundary = std::string{boundary},
                 .data_dir = std::filesystem::temp_directory_path() /
-                            ("glyphastore-crash-" + std::string{scenario} + "-" + std::string{boundary}) /
+                            ("glyphastore-crash-" + crash_run_suffix() + "-" + std::string{scenario} + "-" +
+                             std::string{boundary}) /
                             "store",
-                .checkpoint_dir =
-                    std::filesystem::temp_directory_path() /
-                    ("glyphastore-crash-checkpoints-" + std::string{scenario} + "-" + std::string{boundary}),
+                .checkpoint_dir = std::filesystem::temp_directory_path() /
+                                  ("glyphastore-crash-checkpoints-" + crash_run_suffix() + "-" +
+                                   std::string{scenario} + "-" + std::string{boundary}),
             };
             std::cout << "# crash scenario=" << scenario << " boundary=" << boundary << '\n';
             if (!run_single_case(options)) {
                 success = false;
             }
-            std::error_code ignored;
-            std::filesystem::remove_all(options.data_dir, ignored);
-            std::filesystem::remove_all(options.checkpoint_dir, ignored);
+            cleanup_matrix_case(options);
         }
     }
     return success;
@@ -501,18 +514,19 @@ enum class RecoveryExpectation { absent, optional, present };
             .scenario = "put",
             .boundary = std::string{boundary},
             .storage = "periodic",
-            .data_dir = std::filesystem::temp_directory_path() /
-                        ("glyphastore-crash-periodic-put-" + std::string{boundary}) / "store",
+            .data_dir =
+                std::filesystem::temp_directory_path() /
+                ("glyphastore-crash-periodic-" + crash_run_suffix() + "-put-" + std::string{boundary}) /
+                "store",
             .checkpoint_dir = std::filesystem::temp_directory_path() /
-                              ("glyphastore-crash-periodic-checkpoints-put-" + std::string{boundary}),
+                              ("glyphastore-crash-periodic-checkpoints-" + crash_run_suffix() + "-put-" +
+                               std::string{boundary}),
         };
         std::cout << "# crash storage=periodic scenario=put boundary=" << boundary << '\n';
         if (!run_single_case(options)) {
             success = false;
         }
-        std::error_code ignored;
-        std::filesystem::remove_all(options.data_dir, ignored);
-        std::filesystem::remove_all(options.checkpoint_dir, ignored);
+        cleanup_matrix_case(options);
     }
     return success;
 }
@@ -528,17 +542,17 @@ enum class RecoveryExpectation { absent, optional, present };
             .boundary = std::string{boundary},
             .storage = "group",
             .data_dir = std::filesystem::temp_directory_path() /
-                        ("glyphastore-crash-group-put-" + std::string{boundary}) / "store",
+                        ("glyphastore-crash-group-" + crash_run_suffix() + "-put-" + std::string{boundary}) /
+                        "store",
             .checkpoint_dir = std::filesystem::temp_directory_path() /
-                              ("glyphastore-crash-group-checkpoints-put-" + std::string{boundary}),
+                              ("glyphastore-crash-group-checkpoints-" + crash_run_suffix() + "-put-" +
+                               std::string{boundary}),
         };
         std::cout << "# crash storage=group scenario=put boundary=" << boundary << '\n';
         if (!run_single_case(options)) {
             success = false;
         }
-        std::error_code ignored;
-        std::filesystem::remove_all(options.data_dir, ignored);
-        std::filesystem::remove_all(options.checkpoint_dir, ignored);
+        cleanup_matrix_case(options);
     }
     return success;
 }

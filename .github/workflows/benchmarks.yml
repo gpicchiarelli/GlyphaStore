@@ -86,7 +86,7 @@ jobs:
           ./build/unix-release/glyphastore_benchmarks \
             --filter store-durable-group-parallel-put \
             --ops 1024 --workers 1 --threads 32 --distribution single-worker \
-            --warmup 1 --repeats 3 \
+            --latency --warmup 1 --repeats 3 \
             | tee "$RESULTS_DIR/durable-group.txt"
 
       - name: Run TCP scalability matrix

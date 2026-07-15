@@ -90,6 +90,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto flush() -> Status;
 
   private:
+    struct PendingGroupMutation;
     struct RuntimeWorker;
 
     DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
@@ -99,7 +100,8 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto flush_dirty_segments() -> Status;
     [[nodiscard]] auto flush_worker_batch(RuntimeWorker& worker, SegmentCommitSync sync) -> Status;
     [[nodiscard]] auto should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool;
-    void wait_for_batch_close(RuntimeWorker& worker, std::unique_lock<std::mutex>& lock);
+    void wait_for_batch_close(RuntimeWorker& worker, PendingGroupMutation& mutation,
+                              std::unique_lock<std::mutex>& lock);
     [[nodiscard]] auto fail_closed(Error error) -> Unexpected;
     [[nodiscard]] auto mutate(std::span<const std::byte> key, std::span<const std::byte> value, Opcode opcode,
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
@@ -116,6 +118,7 @@ class DurableRuntimeCatalog final {
     DurableRecoveryStats recovery_stats_;
     DurableRuntimeOptions options_;
     std::unique_ptr<DurableFlushCoordinator> flusher_;
+    bool dedicated_commit_executor_{};
     std::atomic_bool healthy_{true};
     mutable std::shared_mutex catalog_mutex_;
 };

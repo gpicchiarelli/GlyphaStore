@@ -51,6 +51,13 @@ deliberately non-compacting, non-allocating Index removal after commit; volatile
 arena reclamation. Results distinguish `committed`, `not_committed`, and `indeterminate`. Any
 post-commit publication error reports the committed boundary and makes the runtime fail closed.
 
+Strict group commit with one v1 Worker separates admission from commit execution. Producers stage
+bounded pending mutations and wait for completion; the durability coordinator owns Record ordering,
+commit-slot synchronization, whole-batch Index publication, and waiter wakeup. A threshold closes
+admission until that batch completes. The first Record schedules an absolute batch deadline, and
+explicit `flush()` is dispatched to and completed by the same coordinator thread. A multi-Worker
+Store retains independent Worker-local batches and commit domains.
+
 ## Crash-safe rotation
 
 Rotation first seals the old manifest-active Segment. That durable lifecycle change is its intent

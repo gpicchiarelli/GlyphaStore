@@ -235,17 +235,17 @@ auto FileDescriptor::sync(const FileSyncMode mode) const -> Status {
     int result{};
     do {
 #if defined(__APPLE__)
-        static_cast<void>(mode);
-        result = ::fcntl(descriptor_, F_FULLFSYNC, 0);
+        result = ::fcntl(descriptor_, mode == FileSyncMode::ordered ? F_BARRIERFSYNC : F_FULLFSYNC, 0);
 #else
-        result = mode == FileSyncMode::data ? ::fdatasync(descriptor_) : ::fsync(descriptor_);
+        result = mode == FileSyncMode::full ? ::fsync(descriptor_) : ::fdatasync(descriptor_);
 #endif
     } while (result != 0 && errno == EINTR);
     if (result != 0) {
 #if defined(__APPLE__)
-        return persistence_system_error("fcntl(F_FULLFSYNC)");
+        return persistence_system_error(mode == FileSyncMode::ordered ? "fcntl(F_BARRIERFSYNC)"
+                                                                      : "fcntl(F_FULLFSYNC)");
 #else
-        return persistence_system_error(mode == FileSyncMode::data ? "fdatasync" : "fsync");
+        return persistence_system_error(mode == FileSyncMode::full ? "fsync" : "fdatasync");
 #endif
     }
     return {};

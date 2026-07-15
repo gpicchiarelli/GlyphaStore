@@ -1,6 +1,7 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/index/swiss_table.hpp"
 #include "glyphastore/persistence/durable_flush_coordinator.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
@@ -194,6 +195,16 @@ auto complete_interrupted_rotation(DataDirectory& directory) -> Status {
 
 } // namespace
 
+struct DurableRuntimeCatalog::PendingGroupMutation {
+    std::string key;
+    std::vector<std::byte> value_bytes;
+    RecordRef reference{};
+    Opcode opcode{Opcode::put};
+    std::uint64_t key_hash{};
+    std::uint64_t expire_at_ns{};
+    bool completed{};
+};
+
 struct DurableRuntimeCatalog::RuntimeWorker {
     explicit RuntimeWorker(RecoveredWorkerState recovered)
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
@@ -209,7 +220,11 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     bool cached_writable{};
     std::vector<std::byte> encode_scratch;
     std::unordered_map<std::string, HotRecordEntry> hot_records;
+    std::vector<PendingGroupMutation*> pending_group_mutations;
+    std::size_t pending_group_insertions{};
+    std::size_t pending_group_heap_key_bytes{};
     std::chrono::steady_clock::time_point batch_started{};
+    bool batch_closing{};
     std::condition_variable batch_closed;
 };
 
@@ -222,12 +237,22 @@ DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRec
     for (auto& worker : recovered.workers) {
         workers_.push_back(std::make_unique<RuntimeWorker>(std::move(worker)));
     }
+    // A single Worker has one file-backed commit domain, so its dedicated
+    // executor can own batch closure without cross-Worker coordination.
+    dedicated_commit_executor_ = options_.strict_ack && options_.batch.has_value() && workers_.size() == 1;
     if (options_.commit_sync == SegmentCommitSync::deferred || options_.batch) {
         const bool periodic_sync = options_.commit_sync == SegmentCommitSync::deferred;
         const bool batch_timer = options_.batch.has_value();
         const auto batch_wait = options_.batch ? options_.batch->max_wait_ms : 0U;
         flusher_ = std::make_unique<DurableFlushCoordinator>(
-            options_.sync_interval_ms, batch_wait, periodic_sync, batch_timer, [this]() {
+            options_.sync_interval_ms, batch_wait, periodic_sync, batch_timer, [this](const bool force_all) {
+                if (force_all) {
+                    const auto flushed = flush_pending_batches(SegmentCommitSync::immediate);
+                    if (!flushed) {
+                        return flushed;
+                    }
+                    return flush_dirty_segments();
+                }
                 if (options_.strict_ack) {
                     return flush_due_batches(SegmentCommitSync::immediate);
                 }
@@ -242,6 +267,13 @@ DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRec
 }
 
 DurableRuntimeCatalog::~DurableRuntimeCatalog() {
+    if (dedicated_commit_executor_ && flusher_) {
+        if (auto flushed = flush(); !flushed) {
+            healthy_.store(false, std::memory_order_release);
+        }
+        flusher_->stop();
+        return;
+    }
     if (flusher_) {
         flusher_->stop();
     }
@@ -255,6 +287,9 @@ DurableRuntimeCatalog::~DurableRuntimeCatalog() {
 auto DurableRuntimeCatalog::should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool {
     if (!options_.batch || !worker.cached_file || !worker.cached_file->has_pending_commit()) {
         return false;
+    }
+    if (worker.batch_closing) {
+        return true;
     }
     const auto& config = *options_.batch;
     if (worker.cached_file->pending_record_count() >= config.max_records) {
@@ -280,25 +315,65 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
     const auto flushed = worker.cached_file->flush_pending_commit(sync);
     if (!flushed.committed()) {
         healthy_.store(false, std::memory_order_release);
+        for (auto* mutation : worker.pending_group_mutations) {
+            mutation->completed = true;
+        }
+        worker.pending_group_mutations.clear();
+        worker.pending_group_insertions = 0;
+        worker.pending_group_heap_key_bytes = 0;
+        worker.batch_closing = false;
         worker.batch_closed.notify_all();
         return unexpected(flushed.error.value_or(Error{ErrorCode::io_error, "batch flush failed"}));
     }
     if (worker.cached_catalog_index) {
         segments_[*worker.cached_catalog_index].selected = worker.cached_file->selected_commit();
     }
+    for (auto* mutation : worker.pending_group_mutations) {
+        const HashedKey hashed{.key = mutation->key, .hash = mutation->key_hash};
+        if (mutation->opcode == Opcode::put) {
+            const auto published = worker.index.insert_or_assign(hashed, mutation->reference);
+            if (!published) {
+                healthy_.store(false, std::memory_order_release);
+                for (auto* pending : worker.pending_group_mutations) {
+                    pending->completed = true;
+                }
+                worker.pending_group_mutations.clear();
+                worker.pending_group_insertions = 0;
+                worker.pending_group_heap_key_bytes = 0;
+                worker.batch_closing = false;
+                worker.batch_closed.notify_all();
+                return unexpected(published.error());
+            }
+            worker.hot_records[mutation->key] = HotRecordEntry{
+                .reference = mutation->reference,
+                .value_bytes = std::move(mutation->value_bytes),
+                .sequence = mutation->reference.sequence,
+                .expire_at_ns = mutation->expire_at_ns,
+            };
+        } else {
+            static_cast<void>(worker.index.erase_no_compact(hashed));
+            worker.hot_records.erase(mutation->key);
+        }
+        mutation->completed = true;
+    }
+    worker.pending_group_mutations.clear();
+    worker.pending_group_insertions = 0;
+    worker.pending_group_heap_key_bytes = 0;
     worker.batch_started = {};
+    worker.batch_closing = false;
     worker.batch_closed.notify_all();
     return {};
 }
 
-void DurableRuntimeCatalog::wait_for_batch_close(RuntimeWorker& worker, std::unique_lock<std::mutex>& lock) {
-    worker.batch_closed.wait(
-        lock, [&] { return !healthy() || !worker.cached_file || !worker.cached_file->has_pending_commit(); });
+void DurableRuntimeCatalog::wait_for_batch_close(RuntimeWorker& worker, PendingGroupMutation& mutation,
+                                                 std::unique_lock<std::mutex>& lock) {
+    worker.batch_closed.wait(lock, [&] { return mutation.completed || !healthy(); });
 }
 
 auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) -> Status {
     for (auto& worker : workers_) {
         std::lock_guard lock{worker->mutex};
+        const std::shared_lock catalog_lock{catalog_mutex_};
         if (auto flushed = flush_worker_batch(*worker, sync); !flushed) {
             return flushed;
         }
@@ -312,6 +387,7 @@ auto DurableRuntimeCatalog::flush_due_batches(const SegmentCommitSync sync) -> S
         if (!should_flush_batch(*worker)) {
             continue;
         }
+        const std::shared_lock catalog_lock{catalog_mutex_};
         if (auto flushed = flush_worker_batch(*worker, sync); !flushed) {
             return flushed;
         }
@@ -371,6 +447,9 @@ auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
 auto DurableRuntimeCatalog::flush() -> Status {
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    if (dedicated_commit_executor_ && flusher_) {
+        return flusher_->flush_all_blocking();
     }
     if (options_.batch || options_.commit_sync == SegmentCommitSync::deferred) {
         if (auto flushed = flush_pending_batches(SegmentCommitSync::immediate); !flushed) {
@@ -518,7 +597,8 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
             Error{ErrorCode::corrupted_data, "runtime active Segment disagrees with the manifest"});
     }
     const auto old_index = static_cast<std::size_t>(old_position - manifest_.segments.begin());
-    auto next_manifest = rotation_manifest(manifest_, *old_position);
+    const auto old_entry = *old_position;
+    auto next_manifest = rotation_manifest(manifest_, old_entry);
     if (!next_manifest) {
         return mutation_failure(DurableMutationOutcome::not_committed, next_manifest.error());
     }
@@ -530,9 +610,9 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         worker.cached_catalog_index.reset();
         worker.cached_writable = false;
         const SegmentHeaderIdentity identity{.store_id = manifest_.store_id,
-                                             .segment_id = old_position->segment_id,
-                                             .generation = old_position->generation,
-                                             .owner_worker = old_position->owner_worker};
+                                             .segment_id = old_entry.segment_id,
+                                             .generation = old_entry.generation,
+                                             .owner_worker = old_entry.owner_worker};
         auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_write);
         if (!opened || opened->selected_commit() != segments_[old_index].selected) {
             auto error = opened ? Error{ErrorCode::corrupted_data, "active Segment changed after recovery"}
@@ -596,7 +676,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     worker.cached_catalog_index = segments_.size() - 1U;
     worker.cached_writable = true;
     std::erase_if(worker.hot_records, [&](const auto& entry) {
-        return entry.second.reference.segment_id == old_position->segment_id;
+        return entry.second.reference.segment_id == old_entry.segment_id;
     });
     return {.outcome = DurableMutationOutcome::committed, .sequence = std::nullopt, .error = std::nullopt};
 }
@@ -612,6 +692,9 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
     const auto worker_index = route_worker(key_hash, workers_.size());
     auto& worker = *workers_[worker_index];
     std::unique_lock worker_lock{worker.mutex};
+    if (dedicated_commit_executor_) {
+        worker.batch_closed.wait(worker_lock, [&] { return !worker.batch_closing || !healthy(); });
+    }
     if (!healthy()) {
         return mutation_failure(DurableMutationOutcome::indeterminate,
                                 Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
@@ -623,13 +706,43 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
     }
 
     const HashedKey hashed{.key = as_string_view(key), .hash = key_hash};
-    if (opcode == Opcode::erase && !worker.index.find(hashed)) {
+    const bool strict_batch = options_.batch.has_value() && options_.strict_ack;
+    bool key_present = worker.index.find(hashed).has_value();
+    if (strict_batch) {
+        const auto pending =
+            std::find_if(worker.pending_group_mutations.rbegin(), worker.pending_group_mutations.rend(),
+                         [&](const PendingGroupMutation* mutation) { return mutation->key == hashed.key; });
+        if (pending != worker.pending_group_mutations.rend()) {
+            key_present = (*pending)->opcode == Opcode::put;
+        }
+    }
+    if (opcode == Opcode::erase && !key_present) {
         return mutation_failure(DurableMutationOutcome::not_committed,
                                 Error{ErrorCode::not_found, "key is not present"});
     }
+    std::size_t prospective_group_insertions = worker.pending_group_insertions;
+    std::size_t prospective_group_heap_key_bytes = worker.pending_group_heap_key_bytes;
     if (opcode == Opcode::put) {
         if (auto prepared = worker.index.prepare_insert(hashed); !prepared) {
             return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
+        }
+        if (strict_batch && !key_present) {
+            if (prospective_group_insertions == std::numeric_limits<std::size_t>::max() ||
+                (key.size() > kSwissInlineKeyBytes &&
+                 key.size() > std::numeric_limits<std::size_t>::max() - prospective_group_heap_key_bytes)) {
+                return mutation_failure(
+                    DurableMutationOutcome::not_committed,
+                    Error{ErrorCode::arithmetic_overflow, "group publication capacity overflow"});
+            }
+            ++prospective_group_insertions;
+            if (key.size() > kSwissInlineKeyBytes) {
+                prospective_group_heap_key_bytes += key.size();
+            }
+            if (auto prepared = worker.index.prepare_batch_insert(prospective_group_insertions,
+                                                                  prospective_group_heap_key_bytes);
+                !prepared) {
+                return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
+            }
         }
     }
     const RecordInput input{.sequence = worker.next_sequence,
@@ -648,6 +761,15 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
     worker.encode_scratch.resize(*encoded_size);
     if (auto encoded = encode_record(worker.encode_scratch, input); !encoded) {
         return mutation_failure(DurableMutationOutcome::not_committed, encoded.error());
+    }
+    PendingGroupMutation group_mutation;
+    if (strict_batch) {
+        group_mutation.key.assign(hashed.key);
+        group_mutation.value_bytes.assign(value.begin(), value.end());
+        group_mutation.opcode = opcode;
+        group_mutation.key_hash = key_hash;
+        group_mutation.expire_at_ns = expire_at_ns;
+        worker.pending_group_mutations.reserve(worker.pending_group_mutations.size() + 1U);
     }
 
     for (unsigned attempt = 0; attempt < 2; ++attempt) {
@@ -700,7 +822,31 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                 (appended.error->code == ErrorCode::segment_full ||
                  appended.error->code == ErrorCode::segment_sealed) &&
                 attempt == 0) {
-                catalog_lock.unlock();
+                if (strict_batch && !worker.pending_group_mutations.empty()) {
+                    if (dedicated_commit_executor_) {
+                        worker.batch_closing = true;
+                        catalog_lock.unlock();
+                        flusher_->request_flush();
+                        worker.batch_closed.wait(worker_lock, [&] {
+                            return worker.pending_group_mutations.empty() || !healthy();
+                        });
+                        if (!healthy()) {
+                            return mutation_failure(
+                                DurableMutationOutcome::indeterminate,
+                                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+                        }
+                    } else if (auto flushed = flush_worker_batch(worker, SegmentCommitSync::immediate);
+                               !flushed) {
+                        return mutation_failure(DurableMutationOutcome::indeterminate, flushed.error());
+                    }
+                    prospective_group_insertions = opcode == Opcode::put && !key_present ? 1U : 0U;
+                    prospective_group_heap_key_bytes =
+                        prospective_group_insertions != 0 && key.size() > kSwissInlineKeyBytes ? key.size()
+                                                                                               : 0U;
+                }
+                if (catalog_lock.owns_lock()) {
+                    catalog_lock.unlock();
+                }
                 const auto rotated = rotate_active(worker);
                 if (!rotated.committed()) {
                     return rotated;
@@ -709,6 +855,14 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             }
             if (appended.outcome == SegmentCommitOutcome::indeterminate || !directory_.healthy()) {
                 healthy_.store(false, std::memory_order_release);
+                for (auto* mutation : worker.pending_group_mutations) {
+                    mutation->completed = true;
+                }
+                worker.pending_group_mutations.clear();
+                worker.pending_group_insertions = 0;
+                worker.pending_group_heap_key_bytes = 0;
+                worker.batch_closing = false;
+                worker.batch_closed.notify_all();
             }
             return mutation_failure(
                 appended.outcome == SegmentCommitOutcome::indeterminate
@@ -720,19 +874,47 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         segments_[catalog_index].selected = worker.cached_file->selected_commit();
         ++worker.next_sequence.value;
 
+        const RecordRef reference{.segment_id = position->segment_id,
+                                  .offset = RecordOffset{offset},
+                                  .size =
+                                      RecordSize{static_cast<std::uint32_t>(worker.encode_scratch.size())},
+                                  .sequence = committed_sequence,
+                                  .generation = position->generation};
+        if (strict_batch) {
+            group_mutation.reference = reference;
+            worker.pending_group_mutations.push_back(&group_mutation);
+            worker.pending_group_insertions = prospective_group_insertions;
+            worker.pending_group_heap_key_bytes = prospective_group_heap_key_bytes;
+        }
+
         if (batch_enabled) {
             if (worker.batch_started == std::chrono::steady_clock::time_point{}) {
                 worker.batch_started = std::chrono::steady_clock::now();
+                if (dedicated_commit_executor_ && flusher_) {
+                    flusher_->request_flush_at(worker.batch_started +
+                                               std::chrono::milliseconds{options_.batch->max_wait_ms});
+                }
             }
             if (options_.strict_ack) {
                 if (should_flush_batch(worker)) {
-                    if (auto flushed = flush_worker_batch(worker, SegmentCommitSync::immediate); !flushed) {
+                    if (dedicated_commit_executor_) {
+                        worker.batch_closing = true;
+                        catalog_lock.unlock();
+                        flusher_->request_flush();
+                        wait_for_batch_close(worker, group_mutation, worker_lock);
+                        if (!healthy() || !group_mutation.completed) {
+                            return mutation_failure(
+                                DurableMutationOutcome::indeterminate,
+                                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+                        }
+                    } else if (auto flushed = flush_worker_batch(worker, SegmentCommitSync::immediate);
+                               !flushed) {
                         return mutation_failure(DurableMutationOutcome::indeterminate, flushed.error());
                     }
                 } else {
                     catalog_lock.unlock();
-                    wait_for_batch_close(worker, worker_lock);
-                    if (!healthy()) {
+                    wait_for_batch_close(worker, group_mutation, worker_lock);
+                    if (!healthy() || !group_mutation.completed) {
                         return mutation_failure(
                             DurableMutationOutcome::indeterminate,
                             Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
@@ -749,12 +931,11 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             flusher_->notify_batch_activity();
         }
 
-        const RecordRef reference{.segment_id = position->segment_id,
-                                  .offset = RecordOffset{offset},
-                                  .size =
-                                      RecordSize{static_cast<std::uint32_t>(worker.encode_scratch.size())},
-                                  .sequence = committed_sequence,
-                                  .generation = position->generation};
+        if (strict_batch) {
+            return {.outcome = DurableMutationOutcome::committed,
+                    .sequence = committed_sequence,
+                    .error = std::nullopt};
+        }
         if (opcode == Opcode::put) {
             const auto published = worker.index.insert_or_assign(hashed, reference);
             if (!published) {

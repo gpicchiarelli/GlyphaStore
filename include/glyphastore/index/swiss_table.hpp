@@ -36,6 +36,10 @@ class SwissTableIndex final {
     // serialization, the subsequent insert_or_assign cannot grow the table or
     // the heap-key arena.
     [[nodiscard]] auto prepare_insert(const HashedKey& key) -> Status;
+    // Reserves the aggregate table and heap-key capacity required by staged
+    // inserts that will be published later as one externally serialized batch.
+    [[nodiscard]] auto prepare_batch_insert(std::size_t additional_entries,
+                                            std::size_t additional_heap_key_bytes) -> Status;
     [[nodiscard]] auto entries() const -> std::vector<IndexEntry>;
     [[nodiscard]] auto stats() const noexcept -> IndexStats;
     [[nodiscard]] auto clone_empty() const -> SwissTableIndex;

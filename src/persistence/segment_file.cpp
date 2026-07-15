@@ -467,7 +467,7 @@ auto DurableSegmentFile::flush_pending_commit(const SegmentCommitSync sync) -> S
         rollback_pending_metadata();
         return commit_failure(SegmentCommitOutcome::not_committed, allowed.error());
     }
-    if (auto synced = file_.sync(FileSyncMode::data); !synced) {
+    if (auto synced = file_.sync(FileSyncMode::ordered); !synced) {
         rollback_pending_metadata();
         poison();
         return commit_failure(SegmentCommitOutcome::not_committed, synced.error());

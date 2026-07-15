@@ -1,8 +1,10 @@
 # Durability and recovery contract
 
-This document defines the target contract for the alpha persistent engine. The current `0.1.x`
-prototype remains volatile until the implementation and automated evidence described here land.
-Normative terms such as **must**, **must not**, and **may** describe required alpha behavior.
+This document defines the target contract for the alpha persistent engine. The embedded Store now
+implements the persistence v1 path and process-termination evidence described below; production
+certification and the remaining gates are tracked in the
+[persistence v1 production roadmap](../v1-production-roadmap.md). Normative terms such as **must**,
+**must not**, and **may** describe required alpha behavior.
 
 ## Storage modes
 
@@ -100,7 +102,7 @@ Durable-sync mutation processing follows this order:
 1. Validate arguments, limits, ownership, sequence availability, and all fallible publication
    capacity needed by the in-memory Index.
 2. Encode the complete immutable Record outside the committed extent.
-3. Write all Record bytes and synchronize the Segment data.
+3. Write all Record bytes and establish the platform Record-before-slot ordering boundary.
 4. Encode the alternate commit slot with the new extent and sequence, write it, and synchronize
    the Segment again.
 5. Treat successful synchronization of that commit slot as the durable commit point.
@@ -129,8 +131,9 @@ Durable-periodic mutation processing follows this order:
 3. Write all Record bytes without synchronizing the Segment data or publishing a commit slot.
 4. Publish the `RecordRef`, liveness changes, and visibility in memory.
 5. Return success or encode the successful network response.
-6. When the batch closes, synchronize the accumulated Record extent, publish one alternate commit
-   slot, and synchronize that slot. `Store::flush()` and orderly shutdown force the same sequence.
+6. When the batch closes, establish the platform Record-before-slot ordering boundary, publish one
+   alternate commit slot, and synchronize that slot. `Store::flush()` and orderly shutdown force the
+   same sequence.
 
 Failures before step 4 return an error and must not become visible in the running process. A
 successful response does not imply restart durability until step 6 completes. An unflushed
@@ -147,14 +150,20 @@ Durable-group mutation processing follows this order:
 1. Validate arguments, limits, ownership, sequence availability, and publication capacity.
 2. Encode the complete immutable Record outside the committed extent.
 3. Write all Record bytes without publishing a commit slot.
-4. When the Worker batch closes by record count, byte threshold, or `max_wait_ms`, synchronize the
-   accumulated Record extent, publish one commit slot, and synchronize the Segment again.
+4. When the Worker batch closes by record count, byte threshold, or `max_wait_ms`, establish the
+   platform Record-before-slot ordering boundary, publish one commit slot, and synchronize the
+   Segment again.
 5. Publish the `RecordRef`, liveness changes, and visibility in memory for each mutation in the
-   closed batch.
+   closed batch while the commit executor owns the Worker lock.
 6. Return success or encode the successful network response.
 
 Failures before step 4 return an error and must not become visible after recovery. Once step 4 has
-succeeded for a batch, every mutation in that batch must survive restart.
+succeeded for a batch, every mutation in that batch must survive restart. The commit executor
+completes all in-memory publication before waking the batch waiters; a flush or publication failure
+wakes all waiters with the runtime fail-closed. A full Segment first closes any staged batch before
+rotation. The one-Worker runtime delegates the commit phases to its durability coordinator and
+bounds admission when `max_records` or `max_bytes` closes the batch. A multi-Worker Store keeps
+independent Worker-local producer-closed batches and commit domains.
 
 ### Durable-periodic batching
 
@@ -176,7 +185,9 @@ Before the first committed Record enters a new Segment, durable-sync mode must:
 
 Rotation seals and synchronizes the old Segment first, creating an unambiguous intent marker. It then
 creates and synchronizes the exact next-identity replacement and publishes the manifest that makes
-the replacement active. A crash may therefore leave the selected manifest naming a sealed active
+the replacement active. Runtime rotation copies the old Segment identity before replacing the
+in-memory manifest, so cache retirement never retains an iterator into the replaced catalog. A crash
+may therefore leave the selected manifest naming a sealed active
 Segment, with or without one pristine prepared replacement. Runtime open validates or creates only
 that exact replacement and publishes the completed rotation before serving writes. It never reopens
 the sealed Segment for append; other lifecycle mismatches are corruption.
@@ -250,7 +261,7 @@ The persistent implementation is incomplete until CI exercises:
 - process-kill and injected short-write, rename, disk-full, and real allocation failures (unit seams
   now cover allocation, write, file-sync, slot-sync, and directory-sync boundaries);
 - active-tail tolerance and committed-region corruption rejection (covered at Segment-file unit
-  level; restart/process-kill coverage remains pending);
+  level and by restart/process-kill coverage; power-loss/filesystem certification remains pending);
 - manifest rollback and explicit orphan quarantine/identity reservation;
 - routing and Worker-count mismatch rejection;
 - recovery independence from Segment enumeration order;

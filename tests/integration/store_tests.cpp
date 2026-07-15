@@ -484,7 +484,7 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
         workers.reserve(kBatchSize);
         for (std::uint32_t index = 0; index < kBatchSize; ++index) {
             workers.emplace_back([&, index]() {
-                const std::string key = "key-" + std::to_string(index);
+                const std::string key = std::string(96, 'K') + '-' + std::to_string(index);
                 if (!store.put(key, bytes("value-" + std::to_string(index))).has_value()) {
                     failed.store(true);
                 }
@@ -496,6 +496,25 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
         GLYPHA_REQUIRE(!failed.load());
         GLYPHA_REQUIRE(store.flush().has_value());
     }
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(path);
+        GLYPHA_REQUIRE(directory.has_value());
+        const auto manifest = directory->read_manifest();
+        GLYPHA_REQUIRE(manifest.has_value());
+        GLYPHA_REQUIRE(manifest->segments.size() == 1);
+        const auto& active = manifest->segments.front();
+        const glyphastore::SegmentHeaderIdentity identity{
+            .store_id = manifest->store_id,
+            .segment_id = active.segment_id,
+            .generation = active.generation,
+            .owner_worker = active.owner_worker,
+        };
+        const auto segment = glyphastore::DurableSegmentFile::open(
+            *directory, identity, glyphastore::SegmentFileOpenMode::read_only);
+        GLYPHA_REQUIRE(segment.has_value());
+        GLYPHA_REQUIRE(segment->selected_commit().commit.commit_generation == 2);
+        GLYPHA_REQUIRE(segment->selected_commit().commit.record_count == kBatchSize);
+    }
     auto reopened =
         glyphastore::Store::open({.worker_config = {.explicit_count = 1},
                                   .storage_mode = glyphastore::StorageMode::durable_group,
@@ -503,11 +522,56 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
                                   .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
     GLYPHA_REQUIRE(reopened.has_value());
     for (std::uint32_t index = 0; index < kBatchSize; ++index) {
-        const std::string key = "key-" + std::to_string(index);
+        const std::string key = std::string(96, 'K') + '-' + std::to_string(index);
         const auto value = (*reopened)->get(key);
         GLYPHA_REQUIRE(value.has_value());
         GLYPHA_REQUIRE(value_string(*value) == "value-" + std::to_string(index));
     }
+}
+
+GLYPHA_TEST("durable_group orders same-key put and erase within one batch") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened = glyphastore::Store::open(
+            {.worker_config = {.explicit_count = 1},
+             .storage_mode = glyphastore::StorageMode::durable_group,
+             .data_directory = path,
+             .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+             .durable_group = {.max_records = 2, .max_bytes = 65536, .max_wait_ms = 60'000}});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        std::atomic_bool put_completed{};
+        std::atomic_bool put_failed{};
+        std::thread putter([&] {
+            put_failed.store(!store.put("same-key", bytes("value")).has_value());
+            put_completed.store(true);
+        });
+
+        glyphastore::Status erased = glyphastore::fail(glyphastore::ErrorCode::not_found, "not tried");
+        while (!put_completed.load()) {
+            erased = store.erase("same-key");
+            if (erased.has_value() || erased.error().code != glyphastore::ErrorCode::not_found) {
+                break;
+            }
+            std::this_thread::yield();
+        }
+        putter.join();
+        GLYPHA_REQUIRE(!put_failed.load());
+        GLYPHA_REQUIRE(erased.has_value());
+        const auto missing = store.get("same-key");
+        GLYPHA_REQUIRE(!missing.has_value());
+        GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+    }
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_group,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto missing = (*reopened)->get("same-key");
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
 }
 
 GLYPHA_TEST("durable_group single put flushes within max_wait_ms") {

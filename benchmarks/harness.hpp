@@ -145,6 +145,7 @@ struct RunSettings {
     std::size_t warmup_iterations{kDefaultWarmupIterations};
     std::size_t measured_iterations{kDefaultMeasuredIterations};
     bool pin_cpu{false};
+    bool latency{false};
 };
 
 struct ResourceSample {

@@ -30,11 +30,13 @@ implementation or design document alone is not sufficient.
 ### Durability and recovery
 
 - [ ] Acknowledgement semantics state exactly when a mutation is durable. The target semantics are
-  specified; implementation and crash evidence remain pending.
+  specified and implemented for `durable_sync`, `durable_group`, and `durable_periodic`; process-kill
+  evidence covers their persistent write boundaries. Native filesystem and sudden-power-loss
+  certification remain pending.
 - [ ] Write ordering, synchronization, manifest publication, and directory synchronization are specified.
   The platform-aware descriptor, locking, full-I/O, atomic manifest publication, preallocated
-  Segment creation, and alternating commit-slot layer are implemented with fault tests; Store
-  integration and filesystem crash evidence remain pending.
+  Segment creation, alternating commit-slot layer, and Store integration are implemented with fault
+  and process-kill tests; filesystem/power-loss matrices remain pending.
 - [ ] Recovery is deterministic after process termination at every persistent state transition.
   Manifest-driven committed scans now rebuild partitioned Indexes, next Worker sequences, and the
   sealed-active rotation marker deterministically. A bounded descriptor-relative namespace audit
@@ -46,8 +48,9 @@ implementation or design document alone is not sufficient.
   rotation boundaries on Linux CI; native-platform exhaustive matrices and disk-full coverage remain
   pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
-  Segment unit recovery rejects committed corruption and ignores uncommitted tails; system-level
-  disk-full, missing-catalog-file, and process-kill matrices remain pending.
+  Segment unit recovery rejects committed corruption and ignores uncommitted tails; missing catalog
+  files and process termination are covered. System-level disk-full/quota/writeback-error and
+  power-loss matrices remain pending.
 - [ ] Backup, restore, verification, and version migration are tested with released artifacts.
 
 ### Verification
@@ -69,10 +72,21 @@ implementation or design document alone is not sufficient.
   strict batched group commit. On Apple Silicon (macos-release, 20k ops, key=16, value=64)
   the corrected two-barrier strict durable put path measures ~122 ops/s, while
   `store-durable-periodic-read-after-write` measures ~239k ops/s with the 4096-record/4 MiB/1000 ms
-  default batch. Strict `durable_group` remains performance-incomplete on the same Apple Silicon
-  system: 32 concurrent writers measured only ~136 put/s, so no group-throughput target is currently
-  claimed. Hot-cache durable get remains around 1.9M ops/s. These local measurements are
-  diagnostic baselines, not release claims; controlled-hardware CI evidence remains pending.
+  default batch. After moving whole-batch Index publication into the batch closer, strict
+  `durable_group` with 32 concurrent writers on one Worker measured ~3.6--3.9k put/s. Replacing the
+  first macOS full flush with the platform's ordered storage barrier raised the directly comparable
+  4,096-operation median from 3.80k to 6.21k put/s (+63%), while p50 fell from 8.53 to 5.02 ms and
+  p99 from 12.11 to 6.96 ms. Holding concurrency at 32 across four Workers also measured 6.22k put/s
+  and p99 6.05 ms, showing that partially filled independent Worker batches remain the limit. With
+  128 clients, four full Worker batches reached 8.52k put/s at p99 29.03 ms; one Worker at the same
+  concurrency reached 5.34k put/s at p99 75.20 ms. Concurrency can buy occupancy, but not an
+  acceptable latency curve by itself. The dedicated one-Worker commit-executor path measured
+  6.28k put/s over seven 4,096-operation samples, effectively neutral against its 6.21k baseline.
+  The four-Worker path measured 6.14k put/s in the same follow-up. With one sparse client and an
+  absolute 10 ms batch deadline, end-to-end p99 including both persistence phases measured 20.08 ms.
+  Hot-cache durable get remains around 1.9M ops/s. These local measurements are diagnostic baselines,
+  not release claims; controlled-hardware CI evidence and an enforced tail-latency target remain
+  pending.
 
 ### Operations and security
 
@@ -95,3 +109,7 @@ implementation or design document alone is not sufficient.
 Any change to routing, hashing, persisted bytes, protocol framing, acknowledgement semantics, or reclamation
 requires an ADR and new compatibility or recovery evidence. Performance changes must preserve all safety and
 durability gates; benchmark improvement is never evidence of correctness.
+
+The ordered implementation backlog and acceptance criteria are maintained in the
+[persistence v1 production roadmap](v1-production-roadmap.md). Persistence work remains on the v1
+format; storage modes are policies over that same format, not separate persistent versions.

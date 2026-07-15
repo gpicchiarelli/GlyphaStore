@@ -11,7 +11,7 @@ periodic visibility semantics.
 
 `durable_periodic` removed per-write synchronization but still performs one commit-slot `pwrite`
 per record. Group commit batches multiple records into one commit-slot publication and shares the
-two ordered persistence barriers across the complete batch, reducing synchronization overhead on
+ordered Record and commit-slot persistence phases across the complete batch, reducing overhead on
 both strict and periodic paths without weakening Record-before-slot ordering.
 
 ## Decision
@@ -21,8 +21,8 @@ both strict and periodic paths without weakening Record-before-slot ordering.
 `DurableSegmentFile` separates logical append state from the last persisted commit slot:
 
 1. `append_record` writes only Record bytes and advances logical metadata in memory.
-2. `flush_pending_commit` synchronizes accumulated Record data, publishes one commit slot, and
-   optionally synchronizes that slot immediately.
+2. `flush_pending_commit` establishes the platform Record-before-slot ordering boundary, publishes
+   one commit slot, and optionally synchronizes that slot immediately.
 3. `commit_generation` advances once per batch flush, not once per Record.
 
 ### `durable_group`
@@ -36,6 +36,12 @@ Add `StorageMode::durable_group` with configurable `DurableGroupConfig`:
 Acknowledgement occurs only after the batch containing the mutation completes the Record-data
 synchronization, commit-slot write, and commit-slot synchronization. Clients may block until the
 batch closes by size, byte threshold, or `max_wait_ms`. There is no durability loss window.
+The batch commit executor publishes every staged mutation to the Worker Index and hot cache before
+waking any waiter. In the v1 one-Worker path this executor is the dedicated durability coordinator;
+the compatibility multi-Worker path still uses the producer that closes each Worker batch. Waiters
+perform no serialized per-mutation publication work after the durability barriers, and readers
+observe either the pre-batch state or the complete committed batch while holding the Worker lock.
+The first Record establishes an absolute `max_wait_ms` deadline; later arrivals do not extend it.
 
 ### `durable_periodic` batching
 
@@ -63,16 +69,23 @@ All three parameters must be greater than zero when batching is enabled.
 
 ## Recovery
 
-Recovery selects the newest valid commit slot present after restart. Record data is synchronized
-before that slot is published, so a surviving slot cannot authorize unsynchronized Record bytes.
-Only completion of the final slot synchronization is a client-visible durability guarantee.
+Recovery selects the newest valid commit slot present after restart. The platform ordering boundary
+prevents a surviving slot from authorizing missing Record bytes. Only completion of the final slot
+synchronization is a client-visible durability guarantee. macOS uses `F_BARRIERFSYNC` for the first
+boundary and `F_FULLFSYNC` for the final one; other targets conservatively retain a data sync for the
+first boundary.
 
 ## Consequences
 
 - Strict throughput improves with larger batches at the cost of batch latency.
+- Batch publication is performed once by the commit executor; failure wakes every waiter and leaves the
+  runtime fail-closed.
 - Periodic throughput improves by eliminating per-record commit-slot writes.
 - Benchmarks and crash evidence must distinguish `durable_sync`, `durable_group`, and
   `durable_periodic`.
+- Strict parallel-put benchmarks can enable per-request latency sampling; scaling comparisons must
+  hold client concurrency constant and report batch occupancy effects separately from saturated
+  writer tests.
 
 Normative ordering rules are specified in
 [`durability-recovery.md`](../architecture/durability-recovery.md).

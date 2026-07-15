@@ -42,8 +42,10 @@ with Redis or any text protocol.
 - GPU/NPU dependencies in the key-value fast path.
 - A stable on-disk or wire format before explicit versioning and compatibility tests exist.
 
-The accepted target contracts do not make the current prototype durable. Implementation and
-automated crash/compatibility evidence remain required by the production-readiness gates.
+The embedded Store now implements persistence v1 and has automated process-termination evidence,
+but this does not make the project production durable. Filesystem/power-loss certification,
+resource bounds, durable compaction, operational tooling, and the remaining gates in the
+[persistence v1 production roadmap](../v1-production-roadmap.md) are still required.
 
 ## Performance contract
 

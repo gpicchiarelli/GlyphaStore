@@ -147,6 +147,7 @@ if(BUILD_TESTING)
         tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
+        tests/unit/durable_flush_coordinator_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp
@@ -348,8 +349,12 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                 --workers 1
                 --threads 32
                 --distribution single-worker
+                --latency
                 --warmup 0
                 --repeats 1
+        )
+        set_tests_properties(glyphastore_benchmark_durable_group_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION "latency_samples=64"
         )
         add_test(
             NAME glyphastore_benchmark_server_tcp

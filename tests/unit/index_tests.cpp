@@ -50,6 +50,7 @@ GLYPHA_TEST("index grows and rejects impossible reserve sizes") {
     }
     GLYPHA_REQUIRE(index.stats().size == 1'000);
     GLYPHA_REQUIRE(!index.reserve(std::numeric_limits<std::size_t>::max()).has_value());
+    GLYPHA_REQUIRE(!index.prepare_batch_insert(std::numeric_limits<std::size_t>::max(), 0).has_value());
 }
 
 GLYPHA_TEST("index preflights long-key publication before a durable commit") {

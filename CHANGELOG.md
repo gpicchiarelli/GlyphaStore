@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Add strict `durable_group` batching with whole-batch publication, absolute batch deadlines, a
+  dedicated one-Worker v1 commit executor, bounded threshold admission, latency benchmarks,
+  crash/rotation coverage, and macOS `F_BARRIERFSYNC` ordering before the final full durable flush.
 - Enable public `Store::open(durable_sync)` with explicit create/open policies, persisted Worker-count
   validation, entropy-backed Store IDs, crash-recoverable bootstrap intents, and the durable
   mutation/rotation runtime behind the PImpl.
