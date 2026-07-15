@@ -99,7 +99,9 @@ fail-closed state.
 
 Exceptions do not cross the supported API boundary for expected operational failures. Allocation
 and unexpected implementation exceptions are translated to a stable error or place the Store in a
-fail-closed state as required by the commit status.
+fail-closed state as required by the commit status. Deterministic allocator-interposition tests
+enumerate the actual allocation sites emitted by each native STL build instead of assuming a fixed
+implementation-specific allocation count.
 
 ## Compatibility policy
 

@@ -11,6 +11,10 @@ public API exists.
 - Preallocate hot-cache publication nodes before persistent writes, translate public/background
   exceptions into stable failures with fail-closed waiter release, and reject overlapping or
   reversed per-Worker sequence ranges across persistence v1 Segments.
+- Add an isolated deterministic allocation-fault executable that exhaustively fails each observed
+  durable put, update, erase, read, group-commit, and rotation allocation; verify recovery outcomes,
+  prohibit steady-state allocation after the Record write boundary, and exercise background waiter
+  release on `bad_alloc`.
 - Add strict `durable_group` batching with whole-batch publication, absolute batch deadlines, a
   dedicated one-Worker v1 commit executor, bounded threshold admission, latency benchmarks,
   crash/rotation coverage, and macOS `F_BARRIERFSYNC` ordering before the final full durable flush.

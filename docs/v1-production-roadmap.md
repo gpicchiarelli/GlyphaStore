@@ -23,8 +23,8 @@ It is not production ready yet. The most important gaps are behavioral rather th
   durable network service;
 - Store-owned TTL time is now implemented; long-running native-platform clock evidence remains a
   release gate;
-- exception translation and prepared hot-cache publication are implemented, while exhaustive
-  deterministic allocation-failure injection remains incomplete;
+- exception translation, prepared hot-cache publication, and deterministic allocation-failure
+  enumeration are implemented; native-platform evidence remains a release gate;
 - recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
   Worker; released-artifact and native-platform evidence remains to be accumulated;
 - durable Segments and manifest entries have no crash-safe compaction and retirement lifecycle;
@@ -95,11 +95,12 @@ forward clock jumps, and conversion overflow.
 
 ### P0-03 — Close every exception and allocation boundary around commit
 
-**Status:** in progress. Public operations translate allocation and unexpected exceptions;
-background callback exceptions stop the coordinator, fail-close the runtime, and release batch
-waiters. Hot-cache key/value/node/capacity preparation now occurs before persistent writes and
-post-commit publication uses prepared node insertion. Deterministic allocation-failure coverage for
-every site remains required before this gate is complete.
+**Status:** implemented in the current tree. Public operations translate allocation and unexpected
+exceptions; background callback exceptions stop the coordinator, fail-close the runtime, and
+release batch waiters. Hot-cache key/value/node/capacity preparation occurs before persistent
+writes and post-commit publication uses prepared node insertion. An isolated test executable
+interposes every throwing `new` form and fails each allocation observed by the native STL build in
+put, update, erase, owning read, strict group commit, and Segment rotation paths.
 
 **Root cause:** public operations did not provide a complete exception barrier. Durable publication
 inserted strings and values into `hot_records` after commit, and coordinator callbacks could throw
@@ -115,6 +116,12 @@ caller during cancellation, shutdown, or exception unwinding.
 **Acceptance:** deterministic allocation-failure injection at every site proves: pre-commit failure
 does not recover, post-commit failure never permits continued ambiguous use, all waiters are
 released, and no exception terminates a worker or crosses the supported API.
+
+**Evidence:** `glyphastore_allocation_fault_tests` creates a fresh v1 Store for every Nth-allocation
+failure, checks the persistent write boundary through filesystem hooks, reopens pre-write and
+interrupted-rotation states, verifies sticky fail-close after uncertain outcomes, and rejects any
+steady-state allocation after `write_record`. A background `bad_alloc` test joins every strict-group
+producer and proves no caller-stack pending pointer survives the failed batch.
 
 ### P0-04 — Enforce cross-Segment sequence ranges
 

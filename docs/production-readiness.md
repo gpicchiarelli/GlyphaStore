@@ -28,8 +28,9 @@ implementation or design document alone is not sufficient.
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
   Ordinary reads and recovery now share a Store-owned clock with deterministic injection and
   per-instance backward clamping. Public allocation/unexpected exceptions and background flush
-  callback exceptions are translated to stable categories; exhaustive fault injection and explicit
-  close semantics remain pending.
+  callback exceptions are translated to stable categories. A dedicated allocator-interposition
+  executable now fails every allocation observed in durable mutation, rotation, read, and group
+  paths; explicit close semantics remain pending.
 
 ### Durability and recovery
 
@@ -66,6 +67,10 @@ implementation or design document alone is not sufficient.
   artifact suites are separate from integration recovery tests; released-artifact suites remain
   pending.
 - [ ] Fault injection covers allocation and relevant filesystem, clock, socket, and thread failures.
+  Allocation sites in durable put/update/erase/read/group/rotation paths are enumerated
+  deterministically per native STL build, including pre-write recovery invariants, post-write
+  fail-close behavior, allocation-free steady-state publication, and background waiter release.
+  Exhaustive socket, thread-creation, and platform clock failures remain pending.
 - [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.

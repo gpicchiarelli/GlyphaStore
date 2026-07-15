@@ -1093,7 +1093,7 @@ auto DurableRuntimeCatalog::healthy() const noexcept -> bool {
 }
 
 void DurableRuntimeCatalog::mark_fail_closed() noexcept {
-    healthy_.store(false, std::memory_order_release);
+    abandon_pending_batches();
 }
 
 auto DurableRuntimeCatalog::worker_count() const noexcept -> std::size_t {

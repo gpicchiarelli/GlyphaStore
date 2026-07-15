@@ -261,8 +261,9 @@ The persistent implementation is incomplete until CI exercises:
 - golden fixtures for manifest, Segment header, commit slots, and Records (manifest, Segment header,
   both commit slots, and Record now have canonical v1 fixtures);
 - restart tests across every mutation and rotation transition;
-- process-kill and injected short-write, rename, disk-full, and real allocation failures (unit seams
-  now cover allocation, write, file-sync, slot-sync, and directory-sync boundaries);
+- process-kill and injected short-write, rename, disk-full, and allocation failures (an isolated
+  executable now fails every allocation observed in durable mutation/read/group/rotation paths;
+  filesystem seams cover write, file-sync, slot-sync, and directory-sync boundaries);
 - active-tail tolerance and committed-region corruption rejection (covered at Segment-file unit
   level and by restart/process-kill coverage; power-loss/filesystem certification remains pending);
 - manifest rollback and explicit orphan quarantine/identity reservation;

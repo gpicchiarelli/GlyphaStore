@@ -182,6 +182,22 @@ if(BUILD_TESTING)
     set_target_properties(glyphastore_tests PROPERTIES FOLDER "Quality")
     glyphastore_xcode_scheme(glyphastore_tests)
 
+    add_executable(glyphastore_allocation_fault_tests
+        tests/quality/allocation_fault_tests.cpp
+    )
+    target_link_libraries(glyphastore_allocation_fault_tests
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    glyphastore_set_warnings(glyphastore_allocation_fault_tests)
+    glyphastore_enable_hardening(glyphastore_allocation_fault_tests)
+    set_target_properties(glyphastore_allocation_fault_tests PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_allocation_fault_tests COMMAND glyphastore_allocation_fault_tests)
+    set_tests_properties(glyphastore_allocation_fault_tests PROPERTIES
+        TIMEOUT 180
+        LABELS "fault-injection"
+    )
+    glyphastore_xcode_scheme(glyphastore_allocation_fault_tests)
+
     add_executable(glyphastore_crash_persistence tests/crash/crash_persistence.cpp)
     target_link_libraries(glyphastore_crash_persistence PRIVATE GlyphaStore::core glyphastore_project_options)
     target_include_directories(glyphastore_crash_persistence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
