@@ -196,6 +196,7 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, allocated.error());
     }
+    directory.after(FilesystemOperation::preallocate_segment);
     if (auto allowed = directory.before(FilesystemOperation::write_segment_header); !allowed) {
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, allowed.error());
@@ -204,6 +205,7 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, written.error());
     }
+    directory.after(FilesystemOperation::write_segment_header);
     if (auto allowed = directory.before(FilesystemOperation::sync_segment_file); !allowed) {
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, allowed.error());
@@ -212,6 +214,7 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, synced.error());
     }
+    directory.after(FilesystemOperation::sync_segment_file);
     if (auto allowed = directory.before(FilesystemOperation::rename_segment); !allowed) {
         cleanup();
         return creation_failure(SegmentFileCreationOutcome::not_published, allowed.error());
@@ -222,6 +225,7 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         return creation_failure(SegmentFileCreationOutcome::indeterminate,
                                 persistence_system_error("renameat(Segment)").error);
     }
+    directory.after(FilesystemOperation::rename_segment);
     if (auto allowed = directory.before(FilesystemOperation::sync_directory); !allowed) {
         directory.health_->store(false, std::memory_order_release);
         return creation_failure(SegmentFileCreationOutcome::indeterminate, allowed.error());
@@ -230,6 +234,7 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         directory.health_->store(false, std::memory_order_release);
         return creation_failure(SegmentFileCreationOutcome::indeterminate, synced.error());
     }
+    directory.after(FilesystemOperation::sync_directory);
 
     DurableSegmentFile file{std::move(temporary),
                             identity,
@@ -292,29 +297,56 @@ auto DurableSegmentFile::before(const FilesystemOperation operation) const -> St
     return hooks_.before(hooks_.context, operation);
 }
 
+void DurableSegmentFile::after(const FilesystemOperation operation) const noexcept {
+    detail::invoke_filesystem_after(hooks_, operation);
+}
+
 void DurableSegmentFile::poison() noexcept {
     directory_health_->store(false, std::memory_order_release);
 }
 
-auto DurableSegmentFile::publish_commit(const SegmentCommit& commit) -> SegmentCommitResult {
+void DurableSegmentFile::rollback_pending_metadata() noexcept {
+    selected_.commit.committed_end = persisted_.commit.committed_end;
+    selected_.commit.record_count = persisted_.commit.record_count;
+    selected_.commit.first_sequence = persisted_.commit.first_sequence;
+    selected_.commit.last_sequence = persisted_.commit.last_sequence;
+    pending_record_count_ = 0;
+    pending_bytes_ = 0;
+}
+
+auto DurableSegmentFile::publish_commit(const SegmentCommit& commit, const SegmentCommitSync sync)
+    -> SegmentCommitResult {
     std::array<std::byte, kSegmentCommitSlotBytes> encoded{};
     if (auto valid = encode_segment_commit_slot(encoded, commit); !valid) {
+        rollback_pending_metadata();
         return commit_failure(SegmentCommitOutcome::not_committed, valid.error());
     }
-    if (commit.commit_generation != selected_.commit.commit_generation + 1) {
+    if (commit.commit_generation != persisted_.commit.commit_generation + 1) {
+        rollback_pending_metadata();
         return commit_failure(
             SegmentCommitOutcome::not_committed,
             Error{ErrorCode::sequence_conflict, "Segment commit generation must advance by exactly one"});
     }
 
-    const auto next_slot = (selected_.slot_index + 1) % kSegmentCommitSlotCount;
+    const auto next_slot = (persisted_.slot_index + 1) % kSegmentCommitSlotCount;
     const auto slot_offset = kSegmentCommitSlotsOffset + next_slot * kSegmentCommitSlotBytes;
     if (auto allowed = before(FilesystemOperation::write_commit_slot); !allowed) {
+        rollback_pending_metadata();
         return commit_failure(SegmentCommitOutcome::not_committed, allowed.error());
     }
     if (auto written = file_.write_all_at(encoded, slot_offset); !written) {
+        rollback_pending_metadata();
         poison();
         return commit_failure(SegmentCommitOutcome::indeterminate, written.error());
+    }
+    after(FilesystemOperation::write_commit_slot);
+    selected_ = {.slot_index = next_slot, .commit = commit};
+    persisted_ = selected_;
+    pending_record_count_ = 0;
+    pending_bytes_ = 0;
+    if (sync == SegmentCommitSync::deferred) {
+        dirty_ = true;
+        return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
     }
     if (auto allowed = before(FilesystemOperation::sync_commit_slot); !allowed) {
         poison();
@@ -324,11 +356,50 @@ auto DurableSegmentFile::publish_commit(const SegmentCommit& commit) -> SegmentC
         poison();
         return commit_failure(SegmentCommitOutcome::indeterminate, synced.error());
     }
-    selected_ = {.slot_index = next_slot, .commit = commit};
+    after(FilesystemOperation::sync_commit_slot);
+    dirty_ = false;
     return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
 }
 
-auto DurableSegmentFile::append(const std::span<const std::byte> encoded_record) -> SegmentCommitResult {
+auto DurableSegmentFile::sync_file() -> SegmentCommitResult {
+    if (!healthy()) {
+        return commit_failure(SegmentCommitOutcome::indeterminate,
+                              Error{ErrorCode::io_error, "Segment file is poisoned"});
+    }
+    if (!dirty_) {
+        return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
+    }
+    if (auto allowed = before(FilesystemOperation::sync_commit_slot); !allowed) {
+        poison();
+        return commit_failure(SegmentCommitOutcome::indeterminate, allowed.error());
+    }
+    if (auto synced = file_.sync(FileSyncMode::data); !synced) {
+        poison();
+        return commit_failure(SegmentCommitOutcome::indeterminate, synced.error());
+    }
+    after(FilesystemOperation::sync_commit_slot);
+    dirty_ = false;
+    return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
+}
+
+auto DurableSegmentFile::is_dirty() const noexcept -> bool {
+    return dirty_;
+}
+
+auto DurableSegmentFile::has_pending_commit() const noexcept -> bool {
+    return pending_record_count_ > 0;
+}
+
+auto DurableSegmentFile::pending_record_count() const noexcept -> std::uint64_t {
+    return pending_record_count_;
+}
+
+auto DurableSegmentFile::pending_bytes() const noexcept -> std::uint64_t {
+    return pending_bytes_;
+}
+
+auto DurableSegmentFile::append_record(const std::span<const std::byte> encoded_record)
+    -> SegmentCommitResult {
     if (!healthy()) {
         return commit_failure(SegmentCommitOutcome::indeterminate,
                               Error{ErrorCode::io_error, "Segment file is poisoned"});
@@ -353,7 +424,7 @@ auto DurableSegmentFile::append(const std::span<const std::byte> encoded_record)
             Error{ErrorCode::sequence_conflict, "Record sequence must increase strictly within a Segment"});
     }
     if (selected_.commit.record_count == std::numeric_limits<std::uint64_t>::max() ||
-        selected_.commit.commit_generation == std::numeric_limits<std::uint64_t>::max()) {
+        persisted_.commit.commit_generation == std::numeric_limits<std::uint64_t>::max()) {
         return commit_failure(SegmentCommitOutcome::not_committed,
                               Error{ErrorCode::arithmetic_overflow, "Segment commit metadata overflow"});
     }
@@ -371,25 +442,49 @@ auto DurableSegmentFile::append(const std::span<const std::byte> encoded_record)
         poison();
         return commit_failure(SegmentCommitOutcome::not_committed, written.error());
     }
-    if (auto allowed = before(FilesystemOperation::sync_record); !allowed) {
-        return commit_failure(SegmentCommitOutcome::not_committed, allowed.error());
-    }
-    if (auto synced = file_.sync(FileSyncMode::data); !synced) {
-        poison();
-        return commit_failure(SegmentCommitOutcome::not_committed, synced.error());
-    }
+    after(FilesystemOperation::write_record);
 
     const auto first_sequence =
         selected_.commit.record_count == 0 ? record->sequence : selected_.commit.first_sequence;
-    const SegmentCommit next{
-        .commit_generation = selected_.commit.commit_generation + 1,
-        .committed_end = static_cast<std::uint32_t>(record_offset + encoded_record.size()),
-        .state = PersistedSegmentState::active,
-        .record_count = selected_.commit.record_count + 1,
-        .first_sequence = first_sequence,
-        .last_sequence = record->sequence,
-    };
-    return publish_commit(next);
+    selected_.commit.committed_end = static_cast<std::uint32_t>(record_offset + encoded_record.size());
+    selected_.commit.record_count += 1;
+    selected_.commit.first_sequence = first_sequence;
+    selected_.commit.last_sequence = record->sequence;
+    ++pending_record_count_;
+    pending_bytes_ += encoded_record.size();
+    dirty_ = true;
+    return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
+}
+
+auto DurableSegmentFile::flush_pending_commit(const SegmentCommitSync sync) -> SegmentCommitResult {
+    if (!has_pending_commit()) {
+        if (dirty_ && sync == SegmentCommitSync::immediate) {
+            return sync_file();
+        }
+        return {.outcome = SegmentCommitOutcome::committed, .error = std::nullopt};
+    }
+    if (auto allowed = before(FilesystemOperation::sync_record); !allowed) {
+        rollback_pending_metadata();
+        return commit_failure(SegmentCommitOutcome::not_committed, allowed.error());
+    }
+    if (auto synced = file_.sync(FileSyncMode::data); !synced) {
+        rollback_pending_metadata();
+        poison();
+        return commit_failure(SegmentCommitOutcome::not_committed, synced.error());
+    }
+    after(FilesystemOperation::sync_record);
+    SegmentCommit next = selected_.commit;
+    next.commit_generation = persisted_.commit.commit_generation + 1;
+    return publish_commit(next, sync);
+}
+
+auto DurableSegmentFile::append(const std::span<const std::byte> encoded_record, const SegmentCommitSync sync)
+    -> SegmentCommitResult {
+    const auto appended = append_record(encoded_record);
+    if (!appended.committed()) {
+        return appended;
+    }
+    return flush_pending_commit(sync);
 }
 
 auto DurableSegmentFile::seal() -> SegmentCommitResult {
@@ -410,10 +505,16 @@ auto DurableSegmentFile::seal() -> SegmentCommitResult {
         return commit_failure(SegmentCommitOutcome::not_committed,
                               Error{ErrorCode::arithmetic_overflow, "Segment commit generation overflow"});
     }
+    if (has_pending_commit()) {
+        const auto flushed = flush_pending_commit(SegmentCommitSync::immediate);
+        if (!flushed.committed()) {
+            return flushed;
+        }
+    }
     auto sealed = selected_.commit;
     ++sealed.commit_generation;
     sealed.state = PersistedSegmentState::sealed;
-    return publish_commit(sealed);
+    return publish_commit(sealed, SegmentCommitSync::immediate);
 }
 
 auto DurableSegmentFile::visit_committed_records(void* context, const CommittedRecordVisitor visitor) const
@@ -425,12 +526,12 @@ auto DurableSegmentFile::visit_committed_records(void* context, const CommittedR
         return fail(ErrorCode::invalid_argument, "committed Record visitor cannot be null");
     }
     const auto data_size =
-        static_cast<std::size_t>(selected_.commit.committed_end) - kSegmentHeaderReservedBytes;
-    if (selected_.commit.record_count == 0) {
+        static_cast<std::size_t>(persisted_.commit.committed_end) - kSegmentHeaderReservedBytes;
+    if (persisted_.commit.record_count == 0) {
         return {};
     }
     const auto maximum_records = data_size / kEncodedRecordHeaderSize;
-    if (selected_.commit.record_count > maximum_records) {
+    if (persisted_.commit.record_count > maximum_records) {
         return fail(ErrorCode::corrupted_data, "Segment commit Record count exceeds its extent");
     }
 
@@ -478,8 +579,8 @@ auto DurableSegmentFile::visit_committed_records(void* context, const CommittedR
         previous = record->sequence;
         cursor += encoded_size;
     }
-    if (record_count != selected_.commit.record_count || first != selected_.commit.first_sequence ||
-        previous != selected_.commit.last_sequence) {
+    if (record_count != persisted_.commit.record_count || first != persisted_.commit.first_sequence ||
+        previous != persisted_.commit.last_sequence) {
         return fail(ErrorCode::corrupted_data, "Segment commit metadata does not match committed Records");
     }
     return {};
@@ -488,11 +589,11 @@ auto DurableSegmentFile::visit_committed_records(void* context, const CommittedR
 auto DurableSegmentFile::scan_committed() const -> Result<std::vector<RecordRef>> {
     std::vector<RecordRef> records;
     const auto data_size =
-        static_cast<std::size_t>(selected_.commit.committed_end) - kSegmentHeaderReservedBytes;
-    if (selected_.commit.record_count > data_size / kEncodedRecordHeaderSize) {
+        static_cast<std::size_t>(persisted_.commit.committed_end) - kSegmentHeaderReservedBytes;
+    if (persisted_.commit.record_count > data_size / kEncodedRecordHeaderSize) {
         return fail(ErrorCode::corrupted_data, "Segment commit Record count exceeds its extent");
     }
-    records.reserve(static_cast<std::size_t>(selected_.commit.record_count));
+    records.reserve(static_cast<std::size_t>(persisted_.commit.record_count));
     const auto collect = [](void* context, const RecordRef& reference, const RecordView&) -> Status {
         static_cast<std::vector<RecordRef>*>(context)->push_back(reference);
         return {};
@@ -515,7 +616,7 @@ auto DurableSegmentFile::read_record_into(const RecordRef& reference, std::vecto
     const auto size = static_cast<std::uint64_t>(reference.size.value);
     if (offset < kSegmentHeaderReservedBytes || offset % kRecordAlignment != 0 ||
         size < kEncodedRecordHeaderSize || size > kMaxNormalRecordSize || size % kRecordAlignment != 0 ||
-        offset > selected_.commit.committed_end || size > selected_.commit.committed_end - offset) {
+        offset > persisted_.commit.committed_end || size > persisted_.commit.committed_end - offset) {
         return fail(ErrorCode::invalid_reference, "Record reference is outside the committed Segment extent");
     }
     bytes.resize(reference.size.value);

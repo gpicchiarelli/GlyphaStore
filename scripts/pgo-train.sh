@@ -58,6 +58,22 @@ run_case --filter store-parallel-all --ops 50000 --repeats 1 --warmup 1 --key-si
 run_case --filter store-parallel-all --ops 50000 --repeats 1 --warmup 1 --key-size 16 \
     --workers 4 --threads 4 --distribution uniform
 
+run_case --filter store-durable-put --ops 4096 --repeats 1 --warmup 1 --key-size 16 --workers 1
+run_case --filter store-durable-get --ops 4096 --repeats 1 --warmup 1 --key-size 16 --workers 1
+run_case --filter store-durable-read-after-write --ops 2048 --repeats 1 --warmup 1 --key-size 16 --workers 1
+run_case --filter store-durable-periodic-read-after-write --ops 20000 --repeats 1 --warmup 1 --key-size 16 --workers 1
+run_case --filter store-durable-recovery-open --ops 4096 --repeats 1 --warmup 1 --key-size 16 --workers 1
+run_case --filter store-durable-parallel-all --ops 2048 --repeats 1 --warmup 1 --key-size 16 \
+    --workers 4 --threads 4 --distribution worker-affine
+
+pgo_durable="${PGO_DURABLE:-$root/build/${preset}/glyphastore_pgo_durable}"
+if [[ -x "$pgo_durable" ]]; then
+    echo "# durable PGO legacy binary: $pgo_durable (optional supplement)"
+    "$pgo_durable" "${PGO_DURABLE_OPS:-1024}" || true
+else
+    echo "# durable PGO legacy binary not found at $pgo_durable; durable filters above cover the hot path"
+fi
+
 shopt -s nullglob
 profraw_files=("$profile_dir"/*.profraw)
 if [[ ${#profraw_files[@]} -eq 0 ]]; then

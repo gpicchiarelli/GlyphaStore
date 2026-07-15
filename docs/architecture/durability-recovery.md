@@ -13,9 +13,18 @@ Normative terms such as **must**, **must not**, and **may** describe required al
 - **durable-sync:** a data directory is mandatory. A successful mutation means the mutation crossed
   the durable commit point and must be recovered after process or machine restart, subject to the
   documented filesystem and hardware guarantees.
+- **durable-periodic:** a data directory is mandatory. A successful mutation means the mutation was
+  published in memory and is visible to subsequent operations in the same process. The mutation is
+  not promised after restart until a background or explicit flush has synchronized its Segment
+  commit slot. The maximum loss window is `sync_interval_ms` plus any in-flight unflushed writes.
+  See [ADR 0010](../adr/0010-durable-periodic-policy.md).
+- **durable-group:** a data directory is mandatory. A successful mutation means the batch
+  containing the mutation completed commit-slot publication and platform synchronization. Clients
+  may block until the batch closes. There is no durability loss window. See
+  [ADR 0011](../adr/0011-durable-group-commit.md).
 
-There is no alpha mode named `async`, `buffered`, or `eventually durable`. Group commit may be added
-later, but it must preserve the same acknowledgement contract and receive a separate ADR.
+Group commit batching may also be enabled for `durable-periodic` to reduce per-record commit-slot
+writes while preserving the periodic visibility contract in [ADR 0010](../adr/0010-durable-periodic-policy.md).
 
 ## Persistent identities and versions
 
@@ -109,6 +118,50 @@ alpha contract.
 
 Volatile mode retains the current append-then-publish behavior but must still fail closed if a
 rollback cannot restore a coherent Index/liveness state.
+
+### Durable-periodic mutation ordering
+
+Durable-periodic mutation processing follows this order:
+
+1. Validate arguments, limits, ownership, sequence availability, and all fallible publication
+   capacity needed by the in-memory Index.
+2. Encode the complete immutable Record outside the committed extent.
+3. Write all Record bytes without synchronizing the Segment data or publishing a commit slot.
+4. Publish the `RecordRef`, liveness changes, and visibility in memory.
+5. Return success or encode the successful network response.
+6. When the batch closes, synchronize the accumulated Record extent, publish one alternate commit
+   slot, and synchronize that slot. `Store::flush()` and orderly shutdown force the same sequence.
+
+Failures before step 4 return an error and must not become visible in the running process. A
+successful response does not imply restart durability until step 6 completes. An unflushed
+mutation may or may not survive a crash, but Record-before-slot ordering ensures that a surviving
+valid slot never authorizes an unsynchronized Record extent.
+
+`Store::flush()` and orderly shutdown must synchronize all dirty Segment files before releasing the
+data-directory lock. Flush failure is fail-closed.
+
+### Durable-group mutation ordering
+
+Durable-group mutation processing follows this order:
+
+1. Validate arguments, limits, ownership, sequence availability, and publication capacity.
+2. Encode the complete immutable Record outside the committed extent.
+3. Write all Record bytes without publishing a commit slot.
+4. When the Worker batch closes by record count, byte threshold, or `max_wait_ms`, synchronize the
+   accumulated Record extent, publish one commit slot, and synchronize the Segment again.
+5. Publish the `RecordRef`, liveness changes, and visibility in memory for each mutation in the
+   closed batch.
+6. Return success or encode the successful network response.
+
+Failures before step 4 return an error and must not become visible after recovery. Once step 4 has
+succeeded for a batch, every mutation in that batch must survive restart.
+
+### Durable-periodic batching
+
+When batching is enabled for `durable-periodic`, step 3 writes Record bytes without publishing a
+commit slot. Steps 4 and 5 occur immediately after each Record write. A foreground threshold or
+background deadline then performs step 6 for the accumulated extent; `Store::flush()` and orderly
+shutdown force it synchronously.
 
 ## Segment creation, rotation, and manifest publication
 

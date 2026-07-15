@@ -340,6 +340,10 @@ auto DataDirectory::before(const FilesystemOperation operation) const -> Status 
     return hooks_.before(hooks_.context, operation);
 }
 
+void DataDirectory::after(const FilesystemOperation operation) const noexcept {
+    detail::invoke_filesystem_after(hooks_, operation);
+}
+
 auto DataDirectory::sync_directory() const -> Status {
     return directory_.sync(FileSyncMode::full);
 }
@@ -399,6 +403,7 @@ auto DataDirectory::publish_manifest(const Manifest& manifest) -> ManifestPublic
         static_cast<void>(unlink_temporary(directory_.get()));
         return publication_failure(ManifestPublicationOutcome::not_published, written.error());
     }
+    after(FilesystemOperation::write_manifest);
     if (auto allowed = before(FilesystemOperation::sync_manifest); !allowed) {
         static_cast<void>(unlink_temporary(directory_.get()));
         return publication_failure(ManifestPublicationOutcome::not_published, allowed.error());
@@ -407,6 +412,7 @@ auto DataDirectory::publish_manifest(const Manifest& manifest) -> ManifestPublic
         static_cast<void>(unlink_temporary(directory_.get()));
         return publication_failure(ManifestPublicationOutcome::not_published, synced.error());
     }
+    after(FilesystemOperation::sync_manifest);
     if (auto allowed = before(FilesystemOperation::rename_manifest); !allowed) {
         static_cast<void>(unlink_temporary(directory_.get()));
         return publication_failure(ManifestPublicationOutcome::not_published, allowed.error());
@@ -417,6 +423,7 @@ auto DataDirectory::publish_manifest(const Manifest& manifest) -> ManifestPublic
         return publication_failure(ManifestPublicationOutcome::indeterminate,
                                    persistence_system_error("renameat(manifest)").error);
     }
+    after(FilesystemOperation::rename_manifest);
     if (auto allowed = before(FilesystemOperation::sync_directory); !allowed) {
         health_->store(false, std::memory_order_release);
         return publication_failure(ManifestPublicationOutcome::indeterminate, allowed.error());
@@ -425,6 +432,7 @@ auto DataDirectory::publish_manifest(const Manifest& manifest) -> ManifestPublic
         health_->store(false, std::memory_order_release);
         return publication_failure(ManifestPublicationOutcome::indeterminate, synced.error());
     }
+    after(FilesystemOperation::sync_directory);
     return {.outcome = ManifestPublicationOutcome::durable, .error = std::nullopt};
 }
 
@@ -472,6 +480,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest) -> Status
         }
         return unexpected(written.error());
     }
+    after(FilesystemOperation::write_bootstrap);
     if (auto allowed = before(FilesystemOperation::sync_bootstrap); !allowed) {
         if (auto cleaned = cleanup(); !cleaned) {
             health_->store(false, std::memory_order_release);
@@ -486,6 +495,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest) -> Status
         }
         return unexpected(synced.error());
     }
+    after(FilesystemOperation::sync_bootstrap);
     if (auto allowed = before(FilesystemOperation::rename_bootstrap); !allowed) {
         if (auto cleaned = cleanup(); !cleaned) {
             health_->store(false, std::memory_order_release);
@@ -498,6 +508,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest) -> Status
         health_->store(false, std::memory_order_release);
         return persistence_system_error("renameat(bootstrap intent)");
     }
+    after(FilesystemOperation::rename_bootstrap);
     if (auto allowed = before(FilesystemOperation::sync_directory); !allowed) {
         health_->store(false, std::memory_order_release);
         return allowed;
@@ -506,6 +517,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest) -> Status
         health_->store(false, std::memory_order_release);
         return synced;
     }
+    after(FilesystemOperation::sync_directory);
     return {};
 }
 
@@ -529,6 +541,7 @@ auto DataDirectory::finish_bootstrap() -> Status {
         }
         return persistence_system_error("unlinkat(bootstrap intent)");
     }
+    after(FilesystemOperation::remove_bootstrap);
     if (auto allowed = before(FilesystemOperation::sync_directory); !allowed) {
         health_->store(false, std::memory_order_release);
         return allowed;
@@ -537,6 +550,7 @@ auto DataDirectory::finish_bootstrap() -> Status {
         health_->store(false, std::memory_order_release);
         return synced;
     }
+    after(FilesystemOperation::sync_directory);
     return {};
 }
 

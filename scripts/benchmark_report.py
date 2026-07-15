@@ -8,6 +8,7 @@ import datetime as dt
 import json
 import math
 import shlex
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -225,6 +226,11 @@ def main() -> int:
     parser.add_argument("--json", required=True, type=Path, dest="json_path")
     parser.add_argument("--markdown", required=True, type=Path, dest="markdown_path")
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument(
+        "--fail-regression-threshold",
+        type=float,
+        help="Exit with status 1 when median ops/s regresses more than this percent versus baseline.",
+    )
     args = parser.parse_args()
 
     inputs = sorted(path for path in args.inputs if path.name != "environment.txt")
@@ -249,6 +255,27 @@ def main() -> int:
     args.markdown_path.write_text(
         render_markdown(runs, generated_at, baseline_generated_at), encoding="utf-8"
     )
+
+    if args.fail_regression_threshold is not None:
+        threshold = args.fail_regression_threshold
+        regressions: list[str] = []
+        for run in runs:
+            suite = Path(run["source"]).stem
+            for result in run["results"]:
+                comparison = result.get("comparison")
+                if not isinstance(comparison, dict):
+                    continue
+                delta_percent = number(comparison.get("median_ops_per_second_delta_percent", 0))
+                if delta_percent < -threshold:
+                    regressions.append(
+                        f"{suite}/{result.get('name', 'unknown')}: {delta_percent:+.2f}% "
+                        f"(threshold -{threshold:.2f}%)"
+                    )
+        if regressions:
+            print("Benchmark regression gate failed:", file=sys.stderr)
+            for entry in regressions:
+                print(f"  - {entry}", file=sys.stderr)
+            return 1
     return 0
 
 

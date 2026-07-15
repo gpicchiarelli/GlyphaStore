@@ -43,6 +43,7 @@ add_library(glyphastore_core
     src/persistence/filesystem.cpp
     src/persistence/manifest.cpp
     src/persistence/namespace_audit.cpp
+    src/persistence/durable_flush_coordinator.cpp
     src/persistence/recovery.cpp
     src/persistence/runtime_catalog.cpp
     src/persistence/segment_file.cpp
@@ -154,6 +155,7 @@ if(BUILD_TESTING)
         tests/unit/trusted_read_tests.cpp
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
+        tests/unit/format_compatibility_tests.cpp
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/persistence_recovery_tests.cpp
@@ -178,6 +180,22 @@ if(BUILD_TESTING)
     add_test(NAME glyphastore_tests COMMAND glyphastore_tests)
     set_target_properties(glyphastore_tests PROPERTIES FOLDER "Quality")
     glyphastore_xcode_scheme(glyphastore_tests)
+
+    add_executable(glyphastore_crash_persistence tests/crash/crash_persistence.cpp)
+    target_link_libraries(glyphastore_crash_persistence PRIVATE GlyphaStore::core glyphastore_project_options)
+    target_include_directories(glyphastore_crash_persistence PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    glyphastore_set_warnings(glyphastore_crash_persistence)
+    glyphastore_enable_hardening(glyphastore_crash_persistence)
+    set_target_properties(glyphastore_crash_persistence PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_crash_sync COMMAND glyphastore_crash_persistence --mode matrix)
+    add_test(NAME glyphastore_crash_periodic COMMAND glyphastore_crash_persistence --mode periodic-matrix)
+    add_test(NAME glyphastore_crash_group COMMAND glyphastore_crash_persistence --mode group-matrix)
+    set_tests_properties(
+        glyphastore_crash_sync
+        glyphastore_crash_periodic
+        glyphastore_crash_group
+        PROPERTIES TIMEOUT 600 LABELS "crash"
+    )
 endif()
 
 add_executable(glyphastore_inspect_segment tools/inspect_segment.cpp)
@@ -199,6 +217,14 @@ glyphastore_set_warnings(glyphastore_rebuild_index)
 glyphastore_enable_ipo(glyphastore_rebuild_index)
 set_target_properties(glyphastore_rebuild_index PROPERTIES FOLDER "Tools")
 glyphastore_xcode_scheme(glyphastore_rebuild_index ARGUMENTS --help)
+
+if(GLYPHASTORE_BUILD_BENCHMARKS OR BUILD_TESTING)
+    add_executable(glyphastore_pgo_durable tools/pgo_durable.cpp)
+    target_link_libraries(glyphastore_pgo_durable PRIVATE GlyphaStore::core glyphastore_project_options)
+    glyphastore_set_warnings(glyphastore_pgo_durable)
+    glyphastore_enable_hardening(glyphastore_pgo_durable)
+    set_target_properties(glyphastore_pgo_durable PROPERTIES FOLDER "Tools")
+endif()
 
 if(BUILD_TESTING)
     add_test(NAME glyphastore_cli_daemon_help COMMAND glyphastored --help)
@@ -295,6 +321,37 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
             )
         endforeach()
         add_test(
+            NAME glyphastore_benchmark_durable_smoke
+            COMMAND glyphastore_benchmarks
+                --filter store-durable-all
+                --ops 128
+                --workers 1
+                --warmup 0
+                --repeats 1
+        )
+        add_test(
+            NAME glyphastore_benchmark_durable_parallel_smoke
+            COMMAND glyphastore_benchmarks
+                --filter store-durable-parallel-all
+                --ops 128
+                --workers 4
+                --threads 4
+                --distribution worker-affine
+                --warmup 0
+                --repeats 1
+        )
+        add_test(
+            NAME glyphastore_benchmark_durable_group_smoke
+            COMMAND glyphastore_benchmarks
+                --filter store-durable-group-parallel-put
+                --ops 64
+                --workers 1
+                --threads 32
+                --distribution single-worker
+                --warmup 0
+                --repeats 1
+        )
+        add_test(
             NAME glyphastore_benchmark_server_tcp
             COMMAND glyphastore_server_benchmarks
                 --ops 128
@@ -340,6 +397,7 @@ endif()
 if(BUILD_TESTING)
     set(glyphastore_check_dependencies
         glyphastore_tests
+        glyphastore_crash_persistence
         glyphastored
         glyphastore_inspect_segment
         glyphastore_rebuild_index

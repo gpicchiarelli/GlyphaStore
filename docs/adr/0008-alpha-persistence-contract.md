@@ -3,10 +3,13 @@
 - Status: accepted
 - Date: 2026-07-14
 
-The alpha storage engine supports two explicit modes: `volatile` and `durable_sync`. Volatile mode
-acknowledges after in-memory Index publication and makes no restart guarantee. Durable-sync mode
-requires a data directory and acknowledges a mutation only after its Record bytes and a newer,
-CRC-protected Segment commit slot have both reached the configured synchronization boundary.
+The alpha storage engine supports three explicit modes: `volatile`, `durable_sync`, and
+`durable_periodic`. Volatile mode acknowledges after in-memory Index publication and makes no
+restart guarantee. Durable-sync mode requires a data directory and acknowledges a mutation only
+after its Record bytes and a newer, CRC-protected Segment commit slot have both reached the
+configured synchronization boundary. Durable-periodic mode is specified in
+[ADR 0010](0010-durable-periodic-policy.md); it acknowledges after in-memory publication and
+defers Segment synchronization to a configurable periodic flusher.
 
 Each persistent Segment header contains two alternating commit slots. A valid slot identifies a
 monotonic commit generation, the committed byte extent, Record count, and last sequence. Recovery

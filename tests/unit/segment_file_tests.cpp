@@ -122,7 +122,15 @@ GLYPHA_TEST("durable Segment creation preallocates exact size and reopens verifi
 
 GLYPHA_TEST("Segment append synchronizes data before alternating commit slots and scans Records") {
     SegmentTemporaryDirectory temporary;
-    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    std::vector<glyphastore::FilesystemOperation> completed_operations;
+    const auto hooks = glyphastore::FilesystemHooks{
+        .context = &completed_operations,
+        .after =
+            [](void* context, const glyphastore::FilesystemOperation operation) {
+                static_cast<std::vector<glyphastore::FilesystemOperation>*>(context)->push_back(operation);
+            },
+    };
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path(), hooks);
     GLYPHA_REQUIRE(directory.has_value());
     const auto identity = segment_identity();
     auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
@@ -133,7 +141,15 @@ GLYPHA_TEST("Segment append synchronizes data before alternating commit slots an
     const auto second = encoded_record(11, "beta", "two");
     GLYPHA_REQUIRE(first.has_value());
     GLYPHA_REQUIRE(second.has_value());
+    completed_operations.clear();
     GLYPHA_REQUIRE(file.append(*first).committed());
+    const std::vector expected_operations{
+        glyphastore::FilesystemOperation::write_record,
+        glyphastore::FilesystemOperation::sync_record,
+        glyphastore::FilesystemOperation::write_commit_slot,
+        glyphastore::FilesystemOperation::sync_commit_slot,
+    };
+    GLYPHA_REQUIRE(completed_operations == expected_operations);
     GLYPHA_REQUIRE(file.selected_commit().slot_index == 1);
     GLYPHA_REQUIRE(file.append(*second).committed());
     GLYPHA_REQUIRE(file.selected_commit().slot_index == 0);
@@ -284,4 +300,101 @@ GLYPHA_TEST("Segment handles fail closed when their data directory lifetime ends
     GLYPHA_REQUIRE(record.has_value());
     GLYPHA_REQUIRE(surviving->append(*record).outcome == glyphastore::SegmentCommitOutcome::indeterminate);
     GLYPHA_REQUIRE(glyphastore::DataDirectory::open_and_lock(temporary.path()).has_value());
+}
+
+GLYPHA_TEST("deferred append defers synchronization until sync_file") {
+    SegmentTemporaryDirectory temporary;
+    struct SyncCounter {
+        std::size_t sync_record_calls{};
+        std::size_t sync_commit_slot_calls{};
+    } counter;
+    const auto hooks = glyphastore::FilesystemHooks{
+        .context = &counter,
+        .before = [](void* context, const glyphastore::FilesystemOperation operation) -> glyphastore::Status {
+            if (operation == glyphastore::FilesystemOperation::sync_record) {
+                ++static_cast<SyncCounter*>(context)->sync_record_calls;
+            }
+            if (operation == glyphastore::FilesystemOperation::sync_commit_slot) {
+                ++static_cast<SyncCounter*>(context)->sync_commit_slot_calls;
+            }
+            return {};
+        },
+    };
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path(), hooks);
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity();
+    auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+    GLYPHA_REQUIRE(created.durable());
+    const auto record = encoded_record(1, "periodic", "value");
+    GLYPHA_REQUIRE(record.has_value());
+    GLYPHA_REQUIRE(created.file->append(*record, glyphastore::SegmentCommitSync::deferred).committed());
+    GLYPHA_REQUIRE(created.file->is_dirty());
+    GLYPHA_REQUIRE(counter.sync_record_calls == 1);
+    GLYPHA_REQUIRE(counter.sync_commit_slot_calls == 0);
+    GLYPHA_REQUIRE(created.file->sync_file().committed());
+    GLYPHA_REQUIRE(!created.file->is_dirty());
+    GLYPHA_REQUIRE(counter.sync_commit_slot_calls == 1);
+
+    created.file.reset();
+    auto reopened = glyphastore::DurableSegmentFile::open(*directory, identity);
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto scan = reopened->scan_committed();
+    GLYPHA_REQUIRE(scan.has_value());
+    GLYPHA_REQUIRE(scan->size() == 1);
+}
+
+GLYPHA_TEST("batched append_record defers commit slot until flush_pending_commit") {
+    SegmentTemporaryDirectory temporary;
+    struct SlotCounter {
+        std::size_t sync_record_calls{};
+        std::size_t write_commit_slot_calls{};
+        std::size_t sync_commit_slot_calls{};
+    } counter;
+    const auto hooks = glyphastore::FilesystemHooks{
+        .context = &counter,
+        .before = [](void* context, const glyphastore::FilesystemOperation operation) -> glyphastore::Status {
+            auto& counts = *static_cast<SlotCounter*>(context);
+            if (operation == glyphastore::FilesystemOperation::sync_record) {
+                ++counts.sync_record_calls;
+            }
+            if (operation == glyphastore::FilesystemOperation::write_commit_slot) {
+                ++counts.write_commit_slot_calls;
+            }
+            if (operation == glyphastore::FilesystemOperation::sync_commit_slot) {
+                ++counts.sync_commit_slot_calls;
+            }
+            return {};
+        },
+    };
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path(), hooks);
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity();
+    auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+    GLYPHA_REQUIRE(created.durable());
+    auto& file = *created.file;
+
+    const auto first = encoded_record(1, "one", "alpha");
+    const auto second = encoded_record(2, "two", "beta");
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(file.append_record(*first).committed());
+    GLYPHA_REQUIRE(file.append_record(*second).committed());
+    GLYPHA_REQUIRE(file.has_pending_commit());
+    GLYPHA_REQUIRE(counter.sync_record_calls == 0);
+    GLYPHA_REQUIRE(counter.write_commit_slot_calls == 0);
+    GLYPHA_REQUIRE(counter.sync_commit_slot_calls == 0);
+
+    GLYPHA_REQUIRE(file.flush_pending_commit(glyphastore::SegmentCommitSync::immediate).committed());
+    GLYPHA_REQUIRE(counter.sync_record_calls == 1);
+    GLYPHA_REQUIRE(counter.write_commit_slot_calls == 1);
+    GLYPHA_REQUIRE(counter.sync_commit_slot_calls == 1);
+    GLYPHA_REQUIRE(file.selected_commit().commit.record_count == 2);
+    GLYPHA_REQUIRE(file.selected_commit().commit.commit_generation == 2);
+
+    created.file.reset();
+    const auto reopened = glyphastore::DurableSegmentFile::open(*directory, identity);
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto scan = reopened->scan_committed();
+    GLYPHA_REQUIRE(scan.has_value());
+    GLYPHA_REQUIRE(scan->size() == 2);
 }

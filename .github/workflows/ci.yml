@@ -48,6 +48,8 @@ jobs:
         run: cmake --build --preset unix-debug
       - name: Test
         run: ctest --preset unix-debug
+      - name: Verify format fixtures
+        run: python scripts/generate_format_fixtures.py --verify tests/fixtures
 
   install-consumer:
     name: Release install / external consumer

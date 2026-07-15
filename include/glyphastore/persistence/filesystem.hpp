@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string_view>
 #include <utility>
 
 namespace glyphastore {
@@ -72,10 +73,76 @@ enum class FilesystemOperation {
 };
 
 struct FilesystemHooks {
-    // Internal fault-injection seam. Production callers leave this empty.
+    // Internal fault-injection and crash-test checkpoint seam. Production callers leave this empty.
     void* context{};
     auto (*before)(void* context, FilesystemOperation operation) -> Status{};
+    void (*after)(void* context, FilesystemOperation operation){};
 };
+
+[[nodiscard]] inline auto filesystem_operation_name(const FilesystemOperation operation) -> std::string_view {
+    switch (operation) {
+    case FilesystemOperation::write_manifest:
+        return "write_manifest";
+    case FilesystemOperation::sync_manifest:
+        return "sync_manifest";
+    case FilesystemOperation::rename_manifest:
+        return "rename_manifest";
+    case FilesystemOperation::sync_directory:
+        return "sync_directory";
+    case FilesystemOperation::preallocate_segment:
+        return "preallocate_segment";
+    case FilesystemOperation::write_segment_header:
+        return "write_segment_header";
+    case FilesystemOperation::sync_segment_file:
+        return "sync_segment_file";
+    case FilesystemOperation::rename_segment:
+        return "rename_segment";
+    case FilesystemOperation::write_record:
+        return "write_record";
+    case FilesystemOperation::sync_record:
+        return "sync_record";
+    case FilesystemOperation::write_commit_slot:
+        return "write_commit_slot";
+    case FilesystemOperation::sync_commit_slot:
+        return "sync_commit_slot";
+    case FilesystemOperation::write_bootstrap:
+        return "write_bootstrap";
+    case FilesystemOperation::sync_bootstrap:
+        return "sync_bootstrap";
+    case FilesystemOperation::rename_bootstrap:
+        return "rename_bootstrap";
+    case FilesystemOperation::remove_bootstrap:
+        return "remove_bootstrap";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] inline auto parse_filesystem_operation(const std::string_view name)
+    -> std::optional<FilesystemOperation> {
+    for (const auto operation :
+         {FilesystemOperation::write_manifest, FilesystemOperation::sync_manifest,
+          FilesystemOperation::rename_manifest, FilesystemOperation::sync_directory,
+          FilesystemOperation::preallocate_segment, FilesystemOperation::write_segment_header,
+          FilesystemOperation::sync_segment_file, FilesystemOperation::rename_segment,
+          FilesystemOperation::write_record, FilesystemOperation::sync_record,
+          FilesystemOperation::write_commit_slot, FilesystemOperation::sync_commit_slot,
+          FilesystemOperation::write_bootstrap, FilesystemOperation::sync_bootstrap,
+          FilesystemOperation::rename_bootstrap, FilesystemOperation::remove_bootstrap}) {
+        if (name == filesystem_operation_name(operation)) {
+            return operation;
+        }
+    }
+    return std::nullopt;
+}
+
+namespace detail {
+inline void invoke_filesystem_after(const FilesystemHooks& hooks,
+                                    const FilesystemOperation operation) noexcept {
+    if (hooks.after != nullptr) {
+        hooks.after(hooks.context, operation);
+    }
+}
+} // namespace detail
 
 enum class ManifestPublicationOutcome { durable, not_published, indeterminate };
 
@@ -124,6 +191,7 @@ class DataDirectory final {
           health_(std::make_shared<std::atomic_bool>(true)) {}
 
     [[nodiscard]] auto before(FilesystemOperation operation) const -> Status;
+    void after(FilesystemOperation operation) const noexcept;
     [[nodiscard]] auto sync_directory() const -> Status;
 
     FileDescriptor directory_;

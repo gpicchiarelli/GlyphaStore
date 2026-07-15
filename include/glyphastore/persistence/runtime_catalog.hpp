@@ -7,10 +7,14 @@
 #include "glyphastore/persistence/manifest.hpp"
 #include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/persistence/recovery.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "glyphastore/store/config.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -24,7 +28,16 @@
 
 namespace glyphastore {
 
+class DurableFlushCoordinator;
+
 enum class DurableMutationOutcome { committed, not_committed, indeterminate };
+
+struct DurableRuntimeOptions {
+    SegmentCommitSync commit_sync{SegmentCommitSync::immediate};
+    std::uint32_t sync_interval_ms{1000};
+    std::optional<DurableGroupConfig> batch{};
+    bool strict_ack{false};
+};
 
 struct DurableMutationResult {
     DurableMutationOutcome outcome{DurableMutationOutcome::not_committed};
@@ -44,7 +57,8 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] static auto open_existing(const std::filesystem::path& path,
                                             std::uint64_t recovery_now_ns = 0, FilesystemHooks hooks = {})
         -> Result<std::unique_ptr<DurableRuntimeCatalog>>;
-    [[nodiscard]] static auto open_locked(DataDirectory directory, std::uint64_t recovery_now_ns = 0)
+    [[nodiscard]] static auto open_locked(DataDirectory directory, std::uint64_t recovery_now_ns = 0,
+                                          DurableRuntimeOptions options = {})
         -> Result<std::unique_ptr<DurableRuntimeCatalog>>;
 
     ~DurableRuntimeCatalog();
@@ -73,11 +87,19 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto verify_index() -> Status;
+    [[nodiscard]] auto flush() -> Status;
 
   private:
     struct RuntimeWorker;
 
-    DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered);
+    DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
+                          DurableRuntimeOptions options);
+    [[nodiscard]] auto flush_pending_batches(SegmentCommitSync sync) -> Status;
+    [[nodiscard]] auto flush_due_batches(SegmentCommitSync sync) -> Status;
+    [[nodiscard]] auto flush_dirty_segments() -> Status;
+    [[nodiscard]] auto flush_worker_batch(RuntimeWorker& worker, SegmentCommitSync sync) -> Status;
+    [[nodiscard]] auto should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool;
+    void wait_for_batch_close(RuntimeWorker& worker, std::unique_lock<std::mutex>& lock);
     [[nodiscard]] auto fail_closed(Error error) -> Unexpected;
     [[nodiscard]] auto mutate(std::span<const std::byte> key, std::span<const std::byte> value, Opcode opcode,
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
@@ -92,6 +114,8 @@ class DurableRuntimeCatalog final {
     std::vector<RecoveredSegmentState> segments_;
     std::vector<std::unique_ptr<RuntimeWorker>> workers_;
     DurableRecoveryStats recovery_stats_;
+    DurableRuntimeOptions options_;
+    std::unique_ptr<DurableFlushCoordinator> flusher_;
     std::atomic_bool healthy_{true};
     mutable std::shared_mutex catalog_mutex_;
 };

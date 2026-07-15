@@ -35,6 +35,27 @@ enum class BenchmarkKind {
     store_parallel_get,
     store_parallel_read_after_write,
     store_parallel_all,
+    store_durable_put,
+    store_durable_get,
+    store_durable_put_get,
+    store_durable_read_after_write,
+    store_durable_recovery_open,
+    store_durable_periodic_put,
+    store_durable_periodic_get,
+    store_durable_periodic_put_get,
+    store_durable_periodic_read_after_write,
+    store_durable_periodic_all,
+    store_durable_group_put,
+    store_durable_group_get,
+    store_durable_group_put_get,
+    store_durable_group_read_after_write,
+    store_durable_group_all,
+    store_durable_group_parallel_put,
+    store_durable_parallel_put,
+    store_durable_parallel_get,
+    store_durable_parallel_read_after_write,
+    store_durable_all,
+    store_durable_parallel_all,
     all
 };
 
@@ -43,7 +64,32 @@ enum class ParallelDistribution { uniform, worker_affine, owner_bound, single_wo
 [[nodiscard]] inline auto is_parallel_benchmark(const BenchmarkKind kind) noexcept -> bool {
     return kind == BenchmarkKind::store_parallel_put || kind == BenchmarkKind::store_parallel_get ||
            kind == BenchmarkKind::store_parallel_read_after_write ||
-           kind == BenchmarkKind::store_parallel_all;
+           kind == BenchmarkKind::store_parallel_all || kind == BenchmarkKind::store_durable_parallel_put ||
+           kind == BenchmarkKind::store_durable_parallel_get ||
+           kind == BenchmarkKind::store_durable_parallel_read_after_write ||
+           kind == BenchmarkKind::store_durable_parallel_all ||
+           kind == BenchmarkKind::store_durable_group_parallel_put;
+}
+
+[[nodiscard]] inline auto is_durable_benchmark(const BenchmarkKind kind) noexcept -> bool {
+    return kind == BenchmarkKind::store_durable_put || kind == BenchmarkKind::store_durable_get ||
+           kind == BenchmarkKind::store_durable_put_get ||
+           kind == BenchmarkKind::store_durable_read_after_write ||
+           kind == BenchmarkKind::store_durable_recovery_open ||
+           kind == BenchmarkKind::store_durable_periodic_put ||
+           kind == BenchmarkKind::store_durable_periodic_get ||
+           kind == BenchmarkKind::store_durable_periodic_put_get ||
+           kind == BenchmarkKind::store_durable_periodic_read_after_write ||
+           kind == BenchmarkKind::store_durable_periodic_all ||
+           kind == BenchmarkKind::store_durable_group_put || kind == BenchmarkKind::store_durable_group_get ||
+           kind == BenchmarkKind::store_durable_group_put_get ||
+           kind == BenchmarkKind::store_durable_group_read_after_write ||
+           kind == BenchmarkKind::store_durable_group_all ||
+           kind == BenchmarkKind::store_durable_group_parallel_put ||
+           kind == BenchmarkKind::store_durable_parallel_put ||
+           kind == BenchmarkKind::store_durable_parallel_get ||
+           kind == BenchmarkKind::store_durable_parallel_read_after_write ||
+           kind == BenchmarkKind::store_durable_all || kind == BenchmarkKind::store_durable_parallel_all;
 }
 
 [[nodiscard]] inline auto distribution_name(const ParallelDistribution distribution) noexcept
@@ -91,6 +137,8 @@ struct Config {
     std::size_t threads{1};
     ParallelDistribution distribution{ParallelDistribution::uniform};
     bool random_access{false};
+    bool durable_periodic{false};
+    bool durable_group{false};
 };
 
 struct RunSettings {
@@ -514,6 +562,69 @@ inline void print_result(std::ostream& out, const Result& result) {
     }
     if (value == "store-parallel-all") {
         return BenchmarkKind::store_parallel_all;
+    }
+    if (value == "store-durable-put") {
+        return BenchmarkKind::store_durable_put;
+    }
+    if (value == "store-durable-get") {
+        return BenchmarkKind::store_durable_get;
+    }
+    if (value == "store-durable-put-get") {
+        return BenchmarkKind::store_durable_put_get;
+    }
+    if (value == "store-durable-read-after-write") {
+        return BenchmarkKind::store_durable_read_after_write;
+    }
+    if (value == "store-durable-recovery-open") {
+        return BenchmarkKind::store_durable_recovery_open;
+    }
+    if (value == "store-durable-periodic-put") {
+        return BenchmarkKind::store_durable_periodic_put;
+    }
+    if (value == "store-durable-periodic-get") {
+        return BenchmarkKind::store_durable_periodic_get;
+    }
+    if (value == "store-durable-periodic-put-get") {
+        return BenchmarkKind::store_durable_periodic_put_get;
+    }
+    if (value == "store-durable-periodic-read-after-write") {
+        return BenchmarkKind::store_durable_periodic_read_after_write;
+    }
+    if (value == "store-durable-periodic-all") {
+        return BenchmarkKind::store_durable_periodic_all;
+    }
+    if (value == "store-durable-group-put") {
+        return BenchmarkKind::store_durable_group_put;
+    }
+    if (value == "store-durable-group-get") {
+        return BenchmarkKind::store_durable_group_get;
+    }
+    if (value == "store-durable-group-put-get") {
+        return BenchmarkKind::store_durable_group_put_get;
+    }
+    if (value == "store-durable-group-read-after-write") {
+        return BenchmarkKind::store_durable_group_read_after_write;
+    }
+    if (value == "store-durable-group-all") {
+        return BenchmarkKind::store_durable_group_all;
+    }
+    if (value == "store-durable-group-parallel-put") {
+        return BenchmarkKind::store_durable_group_parallel_put;
+    }
+    if (value == "store-durable-parallel-put") {
+        return BenchmarkKind::store_durable_parallel_put;
+    }
+    if (value == "store-durable-parallel-get") {
+        return BenchmarkKind::store_durable_parallel_get;
+    }
+    if (value == "store-durable-parallel-read-after-write") {
+        return BenchmarkKind::store_durable_parallel_read_after_write;
+    }
+    if (value == "store-durable-all") {
+        return BenchmarkKind::store_durable_all;
+    }
+    if (value == "store-durable-parallel-all") {
+        return BenchmarkKind::store_durable_parallel_all;
     }
     return BenchmarkKind::all;
 }

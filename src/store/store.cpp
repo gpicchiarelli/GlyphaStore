@@ -65,6 +65,14 @@ auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOp
     return DataDirectoryOpenMode::existing;
 }
 
+[[nodiscard]] auto validate_batch_config(const DurableGroupConfig& batch) -> Status {
+    if (batch.max_records == 0 || batch.max_bytes == 0 || batch.max_wait_ms == 0) {
+        return fail(ErrorCode::invalid_argument,
+                    "durable batching requires max_records, max_bytes, and max_wait_ms greater than zero");
+    }
+    return {};
+}
+
 } // namespace
 
 struct VolatileStoreRuntime {
@@ -88,7 +96,9 @@ Store::~Store() = default;
 
 auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
     if (config.storage_mode != StorageMode::volatile_memory &&
-        config.storage_mode != StorageMode::durable_sync) {
+        config.storage_mode != StorageMode::durable_sync &&
+        config.storage_mode != StorageMode::durable_periodic &&
+        config.storage_mode != StorageMode::durable_group) {
         return fail(ErrorCode::invalid_argument, "storage mode is unsupported");
     }
     if (config.durable_open_mode != DurableOpenMode::open_or_create &&
@@ -117,7 +127,22 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
         return std::unique_ptr<Store>(new Store(std::move(impl)));
     }
     if (!config.data_directory || config.data_directory->empty()) {
-        return fail(ErrorCode::invalid_argument, "durable_sync requires a data directory");
+        return fail(ErrorCode::invalid_argument, "durable storage requires a data directory");
+    }
+    if (config.storage_mode == StorageMode::durable_periodic &&
+        config.durable_periodic.sync_interval_ms == 0) {
+        return fail(ErrorCode::invalid_argument,
+                    "durable_periodic requires sync_interval_ms greater than zero");
+    }
+    if (config.storage_mode == StorageMode::durable_group) {
+        if (auto valid = validate_batch_config(config.durable_group); !valid) {
+            return unexpected(valid.error());
+        }
+    }
+    if (config.storage_mode == StorageMode::durable_periodic && config.durable_periodic.batch) {
+        if (auto valid = validate_batch_config(*config.durable_periodic.batch); !valid) {
+            return unexpected(valid.error());
+        }
     }
     auto directory =
         DataDirectory::open_and_lock(*config.data_directory, data_directory_mode(config.durable_open_mode));
@@ -129,7 +154,19 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> {
         !prepared) {
         return unexpected(prepared.error());
     }
-    auto runtime = DurableRuntimeCatalog::open_locked(std::move(*directory), config.recovery_now_ns);
+    DurableRuntimeOptions runtime_options{};
+    if (config.storage_mode == StorageMode::durable_periodic) {
+        runtime_options.commit_sync = SegmentCommitSync::deferred;
+        runtime_options.sync_interval_ms = config.durable_periodic.sync_interval_ms;
+        runtime_options.batch = config.durable_periodic.batch;
+    } else if (config.storage_mode == StorageMode::durable_group) {
+        runtime_options.commit_sync = SegmentCommitSync::immediate;
+        runtime_options.batch = config.durable_group;
+        runtime_options.strict_ack = true;
+        runtime_options.sync_interval_ms = config.durable_group.max_wait_ms;
+    }
+    auto runtime =
+        DurableRuntimeCatalog::open_locked(std::move(*directory), config.recovery_now_ns, runtime_options);
     if (!runtime) {
         return unexpected(runtime.error());
     }
@@ -201,6 +238,13 @@ auto Store::erase(const std::span<const std::byte> key) -> Status {
         return durable_status(impl_->durable_runtime->erase(key));
     }
     return erase(as_string_view(key));
+}
+
+auto Store::flush() -> Status {
+    if (impl_->durable_runtime) {
+        return impl_->durable_runtime->flush();
+    }
+    return {};
 }
 
 auto Store::verify_index() const -> Status {

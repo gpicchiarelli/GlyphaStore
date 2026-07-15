@@ -43,6 +43,8 @@ class Store final {
     [[nodiscard]] auto erase(std::string_view key) -> Status;
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 
+    [[nodiscard]] auto flush() -> Status;
+
     [[nodiscard]] auto verify_index() const -> Status;
 
   private:

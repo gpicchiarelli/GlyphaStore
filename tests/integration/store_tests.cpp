@@ -6,12 +6,14 @@
 #include "test.hpp"
 
 #include <array>
+#include <atomic>
 #include <fcntl.h>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -387,4 +389,147 @@ GLYPHA_TEST("store rejects invalid public worker configuration") {
         {.worker_config = {.explicit_count = glyphastore::kMaximumWorkerCount + 1U}});
     GLYPHA_REQUIRE(!too_many_workers.has_value());
     GLYPHA_REQUIRE(too_many_workers.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("durable_periodic rejects zero sync interval") {
+    StoreTemporaryDirectory temporary;
+    const auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                                  .data_directory = temporary.store_path(),
+                                                  .durable_periodic = {.sync_interval_ms = 0}});
+    GLYPHA_REQUIRE(!opened.has_value());
+    GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("durable_periodic read after write is visible before flush") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                            .data_directory = path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .durable_periodic = {.sync_interval_ms = 60'000}});
+    GLYPHA_REQUIRE(opened.has_value());
+    GLYPHA_REQUIRE((*opened)->put("visible", bytes("now")).has_value());
+    const auto value = (*opened)->get("visible");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(value_string(*value) == "now");
+}
+
+GLYPHA_TEST("durable_periodic flush makes writes restart durable") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                                .data_directory = path,
+                                                .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                                .durable_periodic = {.sync_interval_ms = 60'000}});
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("flushed", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*opened)->flush().has_value());
+    }
+    auto reopened =
+        glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto value = (*reopened)->get("flushed");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(value_string(*value) == "value");
+}
+
+GLYPHA_TEST("durable_periodic shutdown flush makes background writes restart durable") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                                .data_directory = path,
+                                                .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                                .durable_periodic = {.sync_interval_ms = 60'000}});
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("shutdown", bytes("value")).has_value());
+    }
+    auto reopened =
+        glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_periodic,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto value = (*reopened)->get("shutdown");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(value_string(*value) == "value");
+}
+
+GLYPHA_TEST("durable_group rejects invalid batch configuration") {
+    StoreTemporaryDirectory temporary;
+    const auto opened = glyphastore::Store::open({.storage_mode = glyphastore::StorageMode::durable_group,
+                                                  .data_directory = temporary.store_path(),
+                                                  .durable_group = {.max_records = 0}});
+    GLYPHA_REQUIRE(!opened.has_value());
+    GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    constexpr std::uint32_t kBatchSize = 32;
+    {
+        auto opened = glyphastore::Store::open(
+            {.worker_config = {.explicit_count = 1},
+             .storage_mode = glyphastore::StorageMode::durable_group,
+             .data_directory = path,
+             .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+             .durable_group = {.max_records = kBatchSize, .max_bytes = 65536, .max_wait_ms = 60'000}});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        std::atomic<bool> failed{false};
+        std::vector<std::thread> workers;
+        workers.reserve(kBatchSize);
+        for (std::uint32_t index = 0; index < kBatchSize; ++index) {
+            workers.emplace_back([&, index]() {
+                const std::string key = "key-" + std::to_string(index);
+                if (!store.put(key, bytes("value-" + std::to_string(index))).has_value()) {
+                    failed.store(true);
+                }
+            });
+        }
+        for (auto& worker : workers) {
+            worker.join();
+        }
+        GLYPHA_REQUIRE(!failed.load());
+        GLYPHA_REQUIRE(store.flush().has_value());
+    }
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_group,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    for (std::uint32_t index = 0; index < kBatchSize; ++index) {
+        const std::string key = "key-" + std::to_string(index);
+        const auto value = (*reopened)->get(key);
+        GLYPHA_REQUIRE(value.has_value());
+        GLYPHA_REQUIRE(value_string(*value) == "value-" + std::to_string(index));
+    }
+}
+
+GLYPHA_TEST("durable_group single put flushes within max_wait_ms") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened = glyphastore::Store::open(
+            {.worker_config = {.explicit_count = 1},
+             .storage_mode = glyphastore::StorageMode::durable_group,
+             .data_directory = path,
+             .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+             .durable_group = {.max_records = 32, .max_bytes = 65536, .max_wait_ms = 50}});
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("solo", bytes("value")).has_value());
+    }
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_group,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto value = (*reopened)->get("solo");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(value_string(*value) == "value");
 }

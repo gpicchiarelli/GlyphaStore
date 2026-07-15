@@ -111,6 +111,37 @@ On Linux, FreeBSD, and OpenBSD, use the `unix-debug` and `unix-release` presets.
 
 ### Embedded durable Store
 
+Deployment-oriented experiments should prefer `durable_periodic` unless strict acknowledgement is
+required. `durable_group` preserves strict acknowledgement while sharing the two ordered durability
+barriers across concurrent writers; `durable_sync` applies those barriers to every mutation.
+
+```cpp
+glyphastore::StoreConfig config{
+    .worker_config = {.explicit_count = 4},
+    .storage_mode = glyphastore::StorageMode::durable_periodic,
+    .data_directory = "/private/path/to/store",
+    .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,
+    .durable_periodic = {.sync_interval_ms = 1000}, // 4096 records / 4 MiB / 1000 ms by default
+};
+auto store = glyphastore::Store::open(config);
+store->flush(); // optional manual durability barrier before shutdown
+```
+
+Strict durability with group commit (batched fsync, zero loss on ack):
+
+```cpp
+glyphastore::StoreConfig config{
+    .worker_config = {.explicit_count = 4},
+    .storage_mode = glyphastore::StorageMode::durable_group,
+    .data_directory = "/private/path/to/store",
+    .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,
+    .durable_group = {.max_records = 32, .max_bytes = 65536, .max_wait_ms = 10},
+};
+auto store = glyphastore::Store::open(config);
+```
+
+Per-record strict durability:
+
 ```cpp
 glyphastore::StoreConfig config{
     .worker_config = {.explicit_count = 4},
@@ -155,7 +186,19 @@ valid records and retaining the highest sequence for each full key. See the
 Fuzzers use Clang/libFuzzer and are disabled in normal builds. Benchmarks are bootstrap
 microbenchmarks, not comparative product claims. Parallel Store benchmarks support `uniform`
 (independent clients crossing Worker boundaries), `worker-affine` (one client thread per Worker),
-`single-worker` (maximum contention), and `zipf` (skewed ownership) distributions.
+`single-worker` (maximum contention), and `zipf` (skewed ownership) distributions. Durable-sync
+filters (`store-durable-*`) use temporary data directories, write-through persistence, and the same
+CLI knobs as volatile Store benchmarks.
+
+```bash
+./scripts/dev.sh benchmark-durable --ops 20000 --repeats 3
+./scripts/dev.sh benchmark --filter store-durable-periodic-read-after-write --ops 50000
+./scripts/dev.sh benchmark --filter store-durable-read-after-write --ops 50000
+./scripts/dev.sh benchmark --filter store-durable-parallel-all --workers 4 --threads 4 \
+    --distribution worker-affine
+./scripts/dev.sh benchmark --filter store-durable-group-parallel-put --ops 4096 \
+    --workers 1 --threads 32 --distribution single-worker
+```
 
 The [benchmark workflow](https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/benchmarks.yml)
 runs a fixed Release suite on pushes to `main`, every Monday, and on manual dispatch. Every run

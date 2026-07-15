@@ -64,6 +64,12 @@ case "${1:-help}" in
         "$cmake" --build --preset macos-pgo-use --target glyphastore_benchmarks
         "$root/build/macos-pgo-use/glyphastore_benchmarks" "${@:2}"
         ;;
+    benchmark-durable)
+        require_tools
+        "$cmake" --preset macos-release
+        "$cmake" --build --preset macos-release --target glyphastore_benchmarks
+        "$root/build/macos-release/glyphastore_benchmarks" --filter store-durable-all "${@:2}"
+        ;;
     pgo-generate)
         require_tools
         "$cmake" --preset macos-pgo-generate
@@ -71,6 +77,8 @@ case "${1:-help}" in
         ;;
     pgo-train)
         require_tools
+        "$cmake" --preset macos-pgo-generate
+        "$cmake" --build --preset macos-pgo-generate --target glyphastore_benchmarks glyphastore_pgo_durable
         PGO_PRESET=macos-pgo-generate "$root/scripts/pgo-train.sh"
         ;;
     pgo-use)
@@ -108,6 +116,7 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "PGO: pgo-generate builds instrumented benchmarks; pgo-train runs volatile + durable workloads; pgo-use rebuilds optimized benchmarks."
         ;;
 esac

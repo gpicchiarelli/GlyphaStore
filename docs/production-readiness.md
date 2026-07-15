@@ -21,10 +21,10 @@ implementation or design document alone is not sufficient.
 - [ ] API and ABI compatibility policies define what may change in patch, minor, and major releases.
   Target policy: [public C++ API](architecture/public-api-contract.md); release evidence pending.
 - [ ] Disk and wire formats have independent versions, golden fixtures, and compatibility matrices.
-  Manifest, Segment header, commit slot, and Record have exact v1 layouts and golden fixtures. The
-  [development compatibility matrix](architecture/format-compatibility.md) is explicit; wire golden
-  fixtures and cross-release artifact evidence remain pending. Target disk contract: [durability and
-  recovery](architecture/durability-recovery.md).
+  Manifest, Segment header, commit slot, and Record have exact v1 layouts and golden fixtures emitted
+  independently of the production decoders. Decode-only compatibility tests and durable artifact
+  round-trip evidence exist; wire golden fixtures and cross-release artifact evidence remain pending.
+  Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
 
 ### Durability and recovery
@@ -42,7 +42,9 @@ implementation or design document alone is not sufficient.
   mutation. Recovered Indexes now feed a bounded per-Worker runtime whose disk reads revalidate
   CRC/key/reference metadata and remain fail-closed after corruption. Existing stores support
   ordered durable puts/tombstones, exact-intent rotation completion, and crash-recoverable public
-  Store creation. Exhaustive process-kill and native-platform coverage remain pending.
+  Store creation. The `glyphastore_crash_persistence` harness SIGKILL-tests bootstrap, put, and
+  rotation boundaries on Linux CI; native-platform exhaustive matrices and disk-full coverage remain
+  pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
   Segment unit recovery rejects committed corruption and ignores uncommitted tails; system-level
   disk-full, missing-catalog-file, and process-kill matrices remain pending.
@@ -53,11 +55,24 @@ implementation or design document alone is not sufficient.
 - [ ] Unit, integration, property, concurrency, crash, recovery, and compatibility suites are distinct.
   Durable recovery now has a separate integration suite for catalog, lifecycle, routing, visibility,
   namespace policy, bounded runtime reads, sticky corruption failure, missing-file, conflict, and
-  overflow behavior; crash and released-artifact suites remain pending.
+  overflow behavior. Crash (`glyphastore_crash_persistence`), decode-only compatibility, and durable
+  artifact suites are separate from integration recovery tests; released-artifact suites remain
+  pending.
 - [ ] Fault injection covers allocation and relevant filesystem, clock, socket, and thread failures.
 - [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
+  Benchmark CI now fails when matched median ops/s regresses more than 10% versus the previous
+  baseline; weekly PGO smoke training includes durable open/put/reopen workloads. Local
+  `store-durable-*` filters measure strict write-through persistence; `store-durable-periodic-*`
+  filters measure the production deferred-flush path; `store-durable-group-*` filters measure
+  strict batched group commit. On Apple Silicon (macos-release, 20k ops, key=16, value=64)
+  the corrected two-barrier strict durable put path measures ~122 ops/s, while
+  `store-durable-periodic-read-after-write` measures ~239k ops/s with the 4096-record/4 MiB/1000 ms
+  default batch. Strict `durable_group` remains performance-incomplete on the same Apple Silicon
+  system: 32 concurrent writers measured only ~136 put/s, so no group-throughput target is currently
+  claimed. Hot-cache durable get remains around 1.9M ops/s. These local measurements are
+  diagnostic baselines, not release claims; controlled-hardware CI evidence remains pending.
 
 ### Operations and security
 

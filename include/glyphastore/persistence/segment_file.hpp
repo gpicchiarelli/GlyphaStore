@@ -18,6 +18,7 @@ struct RecordView;
 enum class SegmentFileCreationOutcome { durable, not_published, indeterminate };
 enum class SegmentCommitOutcome { committed, not_committed, indeterminate };
 enum class SegmentFileOpenMode { read_only, read_write };
+enum class SegmentCommitSync { immediate, deferred };
 using CommittedRecordVisitor = Status (*)(void* context, const RecordRef& reference,
                                           const RecordView& record);
 using RecordVisitor = Status (*)(void* context, const RecordView& record);
@@ -46,8 +47,19 @@ class DurableSegmentFile final {
     DurableSegmentFile(DurableSegmentFile&&) noexcept = default;
     auto operator=(DurableSegmentFile&&) noexcept -> DurableSegmentFile& = default;
 
-    [[nodiscard]] auto append(std::span<const std::byte> encoded_record) -> SegmentCommitResult;
+    [[nodiscard]] auto append(std::span<const std::byte> encoded_record,
+                              SegmentCommitSync sync = SegmentCommitSync::immediate) -> SegmentCommitResult;
+    [[nodiscard]] auto append_record(std::span<const std::byte> encoded_record) -> SegmentCommitResult;
+    [[nodiscard]] auto flush_pending_commit(SegmentCommitSync sync) -> SegmentCommitResult;
+    [[nodiscard]] auto has_pending_commit() const noexcept -> bool;
+    [[nodiscard]] auto pending_record_count() const noexcept -> std::uint64_t;
+    [[nodiscard]] auto pending_bytes() const noexcept -> std::uint64_t;
     [[nodiscard]] auto seal() -> SegmentCommitResult;
+    [[nodiscard]] auto sync_file() -> SegmentCommitResult;
+    [[nodiscard]] auto is_dirty() const noexcept -> bool;
+    [[nodiscard]] auto persisted_commit() const noexcept -> const SelectedSegmentCommit& {
+        return persisted_;
+    }
     [[nodiscard]] auto visit_committed_records(void* context, CommittedRecordVisitor visitor) const -> Status;
     [[nodiscard]] auto scan_committed() const -> Result<std::vector<RecordRef>>;
     [[nodiscard]] auto read_record(const RecordRef& reference) const -> Result<std::vector<std::byte>>;
@@ -69,11 +81,15 @@ class DurableSegmentFile final {
     DurableSegmentFile(FileDescriptor file, SegmentHeaderIdentity identity, SelectedSegmentCommit selected,
                        FilesystemHooks hooks, std::shared_ptr<std::atomic_bool> directory_health,
                        bool writable) noexcept
-        : file_(std::move(file)), identity_(identity), selected_(selected), hooks_(hooks),
-          directory_health_(std::move(directory_health)), writable_(writable) {}
+        : file_(std::move(file)), identity_(identity), selected_(selected), persisted_(selected),
+          hooks_(hooks), directory_health_(std::move(directory_health)), writable_(writable) {}
 
     [[nodiscard]] auto before(FilesystemOperation operation) const -> Status;
-    [[nodiscard]] auto publish_commit(const SegmentCommit& commit) -> SegmentCommitResult;
+    void rollback_pending_metadata() noexcept;
+    void after(FilesystemOperation operation) const noexcept;
+    [[nodiscard]] auto publish_commit(const SegmentCommit& commit,
+                                      SegmentCommitSync sync = SegmentCommitSync::immediate)
+        -> SegmentCommitResult;
     [[nodiscard]] auto read_record_into(const RecordRef& reference, std::vector<std::byte>& bytes,
                                         RecordView& record) const -> Status;
     void poison() noexcept;
@@ -81,9 +97,13 @@ class DurableSegmentFile final {
     FileDescriptor file_;
     SegmentHeaderIdentity identity_;
     SelectedSegmentCommit selected_;
+    SelectedSegmentCommit persisted_;
     FilesystemHooks hooks_{};
     std::shared_ptr<std::atomic_bool> directory_health_;
     bool writable_{};
+    bool dirty_{false};
+    std::uint64_t pending_record_count_{0};
+    std::uint64_t pending_bytes_{0};
 };
 
 struct SegmentFileCreationResult {

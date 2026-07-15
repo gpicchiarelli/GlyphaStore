@@ -1,0 +1,4 @@
+github_sha=7f5468104f91ac0d5cab53e32f459fc2ce22a594
+kernel=Darwin 25.5.0 arm64
+cpu=Apple M4
+cpu_count=10

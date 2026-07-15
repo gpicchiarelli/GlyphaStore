@@ -73,6 +73,22 @@ jobs:
               | tee "$RESULTS_DIR/parallel-${distribution}.txt"
           done
 
+      - name: Run durable Store benchmarks
+        run: |
+          set -o pipefail
+          ./build/unix-release/glyphastore_benchmarks \
+            --filter store-durable-put --ops 256 --workers 1 --warmup 1 --repeats 3 \
+            | tee "$RESULTS_DIR/durable-sync.txt"
+          ./build/unix-release/glyphastore_benchmarks \
+            --filter store-durable-periodic-read-after-write \
+            --ops 20000 --workers 1 --warmup 1 --repeats 5 \
+            | tee "$RESULTS_DIR/durable-periodic.txt"
+          ./build/unix-release/glyphastore_benchmarks \
+            --filter store-durable-group-parallel-put \
+            --ops 1024 --workers 1 --threads 32 --distribution single-worker \
+            --warmup 1 --repeats 3 \
+            | tee "$RESULTS_DIR/durable-group.txt"
+
       - name: Run TCP scalability matrix
         run: |
           set -o pipefail
@@ -134,6 +150,7 @@ jobs:
           python scripts/benchmark_report.py "$RESULTS_DIR"/*.txt \
             --json "$RESULTS_DIR/results.json" \
             --markdown "$RESULTS_DIR/summary.md" \
+            --fail-regression-threshold 10 \
             "${baseline[@]}"
           cat "$RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
 

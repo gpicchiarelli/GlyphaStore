@@ -88,14 +88,26 @@ struct Options {
             continue;
         }
         if (arg == "--help" || arg == "-h") {
-            std::cout << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu]\n"
-                      << "       [--filter all|index-all|index|index-insert|index-replace|index-find-hit|\n"
-                      << "                index-find-miss|index-erase|store-put|store-get|store-put-get|\n"
-                      << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
-                      << "                store-parallel-read-after-write|store-parallel-all]\n"
-                      << "       [--ops N] [--key-size N] [--value-size N] [--workers N] [--threads N]\n"
-                      << "       [--distribution uniform|worker-affine|owner-bound|single-worker|zipf]\n"
-                      << "       [--warmup N] [--repeats N]\n";
+            std::cout
+                << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu]\n"
+                << "       [--filter all|index-all|index|index-insert|index-replace|index-find-hit|\n"
+                << "                index-find-miss|index-erase|store-put|store-get|store-put-get|\n"
+                << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
+                << "                store-parallel-read-after-write|store-parallel-all|\n"
+                << "                store-durable-put|store-durable-get|store-durable-put-get|\n"
+                << "                store-durable-read-after-write|store-durable-recovery-open|\n"
+                << "                store-durable-periodic-put|store-durable-periodic-get|\n"
+                << "                store-durable-periodic-put-get|\n"
+                << "                store-durable-periodic-read-after-write|store-durable-periodic-all|\n"
+                << "                store-durable-group-put|store-durable-group-get|\n"
+                << "                store-durable-group-put-get|\n"
+                << "                store-durable-group-read-after-write|store-durable-group-all|\n"
+                << "                store-durable-parallel-put|store-durable-parallel-get|\n"
+                << "                store-durable-parallel-read-after-write|store-durable-all|\n"
+                << "                store-durable-parallel-all]\n"
+                << "       [--ops N] [--key-size N] [--value-size N] [--workers N] [--threads N]\n"
+                << "       [--distribution uniform|worker-affine|owner-bound|single-worker|zipf]\n"
+                << "       [--warmup N] [--repeats N]\n";
             std::exit(0);
         }
         std::cerr << "unknown argument: " << arg << '\n';

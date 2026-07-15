@@ -1,0 +1,47 @@
+#pragma once
+
+#include "glyphastore/core/error.hpp"
+
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <cstdint>
+#include <functional>
+#include <mutex>
+#include <stop_token>
+#include <thread>
+
+namespace glyphastore {
+
+class DurableFlushCoordinator final {
+  public:
+    using FlushCallback = std::function<Status()>;
+
+    DurableFlushCoordinator(std::uint32_t sync_interval_ms, std::uint32_t batch_max_wait_ms,
+                            bool periodic_sync_enabled, bool batch_timer_enabled,
+                            FlushCallback flush_callback);
+    ~DurableFlushCoordinator();
+
+    DurableFlushCoordinator(const DurableFlushCoordinator&) = delete;
+    auto operator=(const DurableFlushCoordinator&) -> DurableFlushCoordinator& = delete;
+
+    void request_flush();
+    void notify_batch_activity();
+    [[nodiscard]] auto flush_all_blocking() -> Status;
+    void stop();
+
+  private:
+    void run(std::stop_token stop_token);
+
+    std::uint32_t sync_interval_ms_;
+    std::uint32_t batch_max_wait_ms_;
+    bool periodic_sync_enabled_;
+    bool batch_timer_enabled_;
+    FlushCallback flush_callback_;
+    std::mutex mutex_;
+    std::condition_variable wake_;
+    std::atomic_bool flush_requested_{false};
+    std::jthread worker_;
+};
+
+} // namespace glyphastore
