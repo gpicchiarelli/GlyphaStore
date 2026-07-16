@@ -43,6 +43,11 @@ class Store final {
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 
     [[nodiscard]] auto flush() -> Status;
+    // Idempotently prevents new operations, waits for calls already in
+    // progress, flushes durable state, stops background executors, and releases
+    // Store resources. Destruction performs the same shutdown as a
+    // non-observable fallback.
+    [[nodiscard]] auto close() -> Status;
 
     [[nodiscard]] auto verify_index() const -> Status;
 

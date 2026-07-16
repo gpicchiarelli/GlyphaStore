@@ -1204,3 +1204,45 @@ GLYPHA_TEST("durable group flush failure wakes every batch waiter fail-closed") 
     GLYPHA_REQUIRE(outcomes.load() == 2);
     GLYPHA_REQUIRE(!(*runtime)->healthy());
 }
+
+GLYPHA_TEST("durable runtime close returns a sticky final flush failure") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    OneShotFilesystemFailure failure{.target = glyphastore::FilesystemOperation::sync_record};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &failure, .before = &OneShotFilesystemFailure::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 0,
+        {.commit_sync = glyphastore::SegmentCommitSync::deferred, .sync_interval_ms = 60'000});
+    GLYPHA_REQUIRE(runtime.has_value());
+    const std::string key{"close-failure"};
+    const std::string value{"value"};
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed());
+
+    const auto first = (*runtime)->close();
+    GLYPHA_REQUIRE(!first.has_value());
+    GLYPHA_REQUIRE(first.error().code == glyphastore::ErrorCode::io_error);
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(!(*runtime)->healthy());
+    const auto repeated = (*runtime)->close();
+    GLYPHA_REQUIRE(!repeated.has_value());
+    GLYPHA_REQUIRE(repeated.error().code == glyphastore::ErrorCode::io_error);
+    const auto blocked = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+    GLYPHA_REQUIRE(blocked.outcome == glyphastore::DurableMutationOutcome::indeterminate);
+}

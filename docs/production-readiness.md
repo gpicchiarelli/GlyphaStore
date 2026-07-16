@@ -30,7 +30,9 @@ implementation or design document alone is not sufficient.
   per-instance backward clamping. Public allocation/unexpected exceptions and background flush
   callback exceptions are translated to stable categories. A dedicated allocator-interposition
   executable now fails every allocation observed in durable mutation, rotation, read, and group
-  paths; explicit close semantics remain pending.
+  paths. Public `Store::close()` now prevents new admission, drains in-flight calls, makes final
+  flush failure observable, and releases executors and the directory lock; cancellation/deadline
+  semantics remain pending.
 
 ### Durability and recovery
 

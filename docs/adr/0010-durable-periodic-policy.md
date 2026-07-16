@@ -62,10 +62,11 @@ struct DurablePeriodicConfig {
 
 ## Shutdown and manual flush
 
-`Store::flush()` synchronizes all dirty Segment files before returning. The Store destructor
-attempts the same flush before releasing the data-directory lock. Flush failure is fail-closed: the
-Store must not continue serving if it cannot make previously accepted periodic writes durable on
-orderly shutdown.
+`Store::flush()` synchronizes all dirty Segment files before returning. `Store::close()` performs
+the final flush, returns its sticky result, stops background execution, and releases the
+data-directory lock. The destructor invokes close as a non-observable fallback. Flush failure is
+fail-closed: the Store must not continue serving if it cannot make previously accepted periodic
+writes durable on orderly shutdown.
 
 ## Recovery
 

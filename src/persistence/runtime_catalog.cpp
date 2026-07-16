@@ -298,20 +298,10 @@ DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRec
 }
 
 DurableRuntimeCatalog::~DurableRuntimeCatalog() {
-    if (dedicated_commit_executor_ && flusher_) {
-        if (healthy() && !flush()) {
-            healthy_.store(false, std::memory_order_release);
-        }
-        flusher_->stop();
-        return;
-    }
-    if (flusher_) {
-        flusher_->stop();
-    }
-    if (healthy() && (options_.batch || options_.commit_sync == SegmentCommitSync::deferred)) {
-        if (auto flushed = flush(); !flushed) {
-            healthy_.store(false, std::memory_order_release);
-        }
+    try {
+        static_cast<void>(close());
+    } catch (...) {
+        healthy_.store(false, std::memory_order_release);
     }
 }
 
@@ -525,6 +515,50 @@ auto DurableRuntimeCatalog::flush() -> Status {
         }
     }
     return flush_dirty_segments();
+}
+
+void DurableRuntimeCatalog::request_close_flush() {
+    if (flusher_) {
+        flusher_->request_flush_all();
+    }
+}
+
+auto DurableRuntimeCatalog::close() -> Status {
+    const std::lock_guard close_lock{close_mutex_};
+    const auto cached_status = [&]() -> Status {
+        if (!close_error_) {
+            return {};
+        }
+        try {
+            return unexpected(*close_error_);
+        } catch (const std::bad_alloc&) {
+            return unexpected(Error{ErrorCode::resource_exhausted, {}});
+        } catch (...) {
+            return unexpected(Error{ErrorCode::internal_error, {}});
+        }
+    };
+    if (closed_.exchange(true, std::memory_order_acq_rel)) {
+        return cached_status();
+    }
+
+    Status result;
+    try {
+        if (flusher_) {
+            result = flusher_->flush_all_blocking();
+            flusher_->stop();
+        } else if (!healthy_.load(std::memory_order_acquire) || !directory_.healthy()) {
+            result = unexpected(Error{ErrorCode::unavailable, {}});
+        }
+    } catch (const std::bad_alloc&) {
+        result = unexpected(Error{ErrorCode::resource_exhausted, {}});
+    } catch (...) {
+        result = unexpected(Error{ErrorCode::internal_error, {}});
+    }
+    if (!result) {
+        healthy_.store(false, std::memory_order_release);
+        close_error_.emplace(std::move(result.error()));
+    }
+    return cached_status();
 }
 
 auto DurableRuntimeCatalog::fail_closed(Error error) -> Unexpected {
@@ -1089,7 +1123,8 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
 }
 
 auto DurableRuntimeCatalog::healthy() const noexcept -> bool {
-    return healthy_.load(std::memory_order_acquire) && directory_.healthy();
+    return !closed_.load(std::memory_order_acquire) && healthy_.load(std::memory_order_acquire) &&
+           directory_.healthy();
 }
 
 void DurableRuntimeCatalog::mark_fail_closed() noexcept {

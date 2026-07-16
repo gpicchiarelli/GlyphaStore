@@ -129,7 +129,11 @@ glyphastore::StoreConfig config{
     .durable_periodic = {.sync_interval_ms = 1000}, // 4096 records / 4 MiB / 1000 ms by default
 };
 auto store = glyphastore::Store::open(config);
-store->flush(); // optional manual durability barrier before shutdown
+if (!store) {
+    // handle store.error()
+}
+// use **store
+auto closed = (*store)->close(); // observe the final durability barrier
 ```
 
 Strict durability with group commit (batched fsync, zero loss on ack):

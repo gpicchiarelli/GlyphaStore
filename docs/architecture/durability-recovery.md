@@ -140,8 +140,9 @@ successful response does not imply restart durability until step 6 completes. An
 mutation may or may not survive a crash, but Record-before-slot ordering ensures that a surviving
 valid slot never authorizes an unsynchronized Record extent.
 
-`Store::flush()` and orderly shutdown must synchronize all dirty Segment files before releasing the
-data-directory lock. Flush failure is fail-closed.
+`Store::flush()` and `Store::close()` synchronize all dirty Segment files before releasing the
+data-directory lock. Close returns the sticky final-flush result; destruction uses the same path but
+cannot expose its status. Flush failure is fail-closed.
 
 ### Durable-group mutation ordering
 

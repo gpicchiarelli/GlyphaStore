@@ -88,6 +88,8 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
+    void request_close_flush();
+    [[nodiscard]] auto close() -> Status;
     void mark_fail_closed() noexcept;
 
   private:
@@ -122,6 +124,9 @@ class DurableRuntimeCatalog final {
     std::unique_ptr<DurableFlushCoordinator> flusher_;
     bool dedicated_commit_executor_{};
     std::atomic_bool healthy_{true};
+    std::atomic_bool closed_{false};
+    std::mutex close_mutex_;
+    std::optional<Error> close_error_;
     mutable std::shared_mutex catalog_mutex_;
 };
 

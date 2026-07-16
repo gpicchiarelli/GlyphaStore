@@ -30,6 +30,17 @@ void DurableFlushCoordinator::request_flush() {
     wake_.notify_one();
 }
 
+void DurableFlushCoordinator::request_flush_all() {
+    {
+        std::lock_guard lock{mutex_};
+        if (stopped_) {
+            return;
+        }
+        flush_all_requested_ = true;
+    }
+    wake_.notify_one();
+}
+
 void DurableFlushCoordinator::request_flush_at(const std::chrono::steady_clock::time_point deadline) {
     {
         std::lock_guard lock{mutex_};
@@ -74,13 +85,14 @@ auto DurableFlushCoordinator::flush_all_blocking() -> Status {
         }
         return fail(ErrorCode::unavailable, "durable flush coordinator stopped before completion");
     }
-    if (last_flush_all_error_) {
-        return unexpected(*last_flush_all_error_);
+    if (background_error_) {
+        return unexpected(*background_error_);
     }
     return {};
 }
 
 void DurableFlushCoordinator::stop() {
+    const std::lock_guard stop_lock{stop_mutex_};
     if (worker_.joinable()) {
         {
             std::lock_guard lock{mutex_};
@@ -152,10 +164,10 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
             flushed = unexpected(Error{ErrorCode::internal_error, {}});
         }
         if (!flushed) {
+            auto error = std::move(flushed.error());
             std::lock_guard lock{mutex_};
-            background_error_ = flushed.error();
+            background_error_.emplace(std::move(error));
             if (force_all) {
-                last_flush_all_error_ = flushed.error();
                 completed_generation_ = flush_all_generation;
             }
             stopped_ = true;
@@ -164,7 +176,6 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
         }
         if (force_all) {
             std::lock_guard lock{mutex_};
-            last_flush_all_error_.reset();
             completed_generation_ = flush_all_generation;
             completed_.notify_all();
         }

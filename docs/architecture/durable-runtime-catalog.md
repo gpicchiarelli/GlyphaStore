@@ -58,6 +58,22 @@ admission until that batch completes. The first Record schedules an absolute bat
 explicit `flush()` is dispatched to and completed by the same coordinator thread. A multi-Worker
 Store retains independent Worker-local batches and commit domains.
 
+## Observable shutdown
+
+`Store::close()` first changes the public admission state from open to closing. Calls that already
+acquired admission finish; later reads, mutations, verification, and flush calls return
+`unavailable`. Before waiting, close posts a non-blocking force-all request so a strict-group
+producer cannot deadlock waiting for a long batch deadline. Once all active-call counters reach
+zero, the runtime performs one final force-all flush on the coordinator, stops and joins the
+executor, and releases the runtime and anchored data-directory lock. Admission accounting is
+cache-line-isolated per Worker, plus one control shard, so independent Workers do not contend on a
+single lifecycle counter during normal operation.
+
+Concurrent close callers observe the same cached result. A final flush or background callback
+failure is sticky and makes the runtime fail closed. Destruction invokes close and discards its
+status; applications that must distinguish clean shutdown from possible durability failure call
+`close()` explicitly.
+
 ## Crash-safe rotation
 
 Rotation first seals the old manifest-active Segment. That durable lifecycle change is its intent

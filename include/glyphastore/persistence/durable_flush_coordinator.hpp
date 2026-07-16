@@ -13,6 +13,10 @@
 
 namespace glyphastore {
 
+namespace detail {
+class DurableFlushCoordinatorAccess;
+}
+
 class DurableFlushCoordinator final {
   public:
     using FlushCallback = std::function<Status(bool force_all)>;
@@ -26,6 +30,7 @@ class DurableFlushCoordinator final {
     auto operator=(const DurableFlushCoordinator&) -> DurableFlushCoordinator& = delete;
 
     void request_flush();
+    void request_flush_all();
     void request_flush_at(std::chrono::steady_clock::time_point deadline);
     void notify_batch_activity();
     [[nodiscard]] auto flush_all_blocking() -> Status;
@@ -40,6 +45,7 @@ class DurableFlushCoordinator final {
     bool batch_timer_enabled_;
     FlushCallback flush_callback_;
     std::mutex flush_all_call_mutex_;
+    std::mutex stop_mutex_;
     std::mutex mutex_;
     std::condition_variable wake_;
     std::condition_variable completed_;
@@ -50,9 +56,10 @@ class DurableFlushCoordinator final {
     std::optional<std::chrono::steady_clock::time_point> requested_deadline_;
     std::uint64_t flush_all_generation_{};
     std::uint64_t completed_generation_{};
-    std::optional<Error> last_flush_all_error_;
     std::optional<Error> background_error_;
     std::jthread worker_;
+
+    friend class detail::DurableFlushCoordinatorAccess;
 };
 
 } // namespace glyphastore

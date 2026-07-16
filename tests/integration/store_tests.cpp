@@ -7,10 +7,14 @@
 
 #include <array>
 #include <atomic>
+#include <barrier>
+#include <chrono>
+#include <condition_variable>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -545,6 +549,152 @@ GLYPHA_TEST("durable_periodic shutdown flush makes background writes restart dur
     const auto value = (*reopened)->get("shutdown");
     GLYPHA_REQUIRE(value.has_value());
     GLYPHA_REQUIRE(value_string(*value) == "value");
+}
+
+GLYPHA_TEST("Store close is idempotent and rejects operations after releasing volatile resources") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("before-close", bytes("value")).has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+    GLYPHA_REQUIRE(store.worker_count() == 1);
+
+    const auto get = store.get("before-close");
+    GLYPHA_REQUIRE(!get.has_value());
+    GLYPHA_REQUIRE(get.error().code == glyphastore::ErrorCode::unavailable);
+    const auto put = store.put("after-close", bytes("value"));
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::unavailable);
+    const auto erase = store.erase("before-close");
+    GLYPHA_REQUIRE(!erase.has_value());
+    GLYPHA_REQUIRE(erase.error().code == glyphastore::ErrorCode::unavailable);
+    const auto flush = store.flush();
+    GLYPHA_REQUIRE(!flush.has_value());
+    GLYPHA_REQUIRE(flush.error().code == glyphastore::ErrorCode::unavailable);
+    const auto verified = store.verify_index();
+    GLYPHA_REQUIRE(!verified.has_value());
+    GLYPHA_REQUIRE(verified.error().code == glyphastore::ErrorCode::unavailable);
+}
+
+GLYPHA_TEST("durable periodic close flushes and releases the directory lock before destruction") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .storage_mode = glyphastore::StorageMode::durable_periodic,
+                                            .data_directory = path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .durable_periodic = {.sync_interval_ms = 60'000}});
+    GLYPHA_REQUIRE(opened.has_value());
+    GLYPHA_REQUIRE((*opened)->put("explicit-close", bytes("value")).has_value());
+    GLYPHA_REQUIRE((*opened)->close().has_value());
+
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto value = (*reopened)->get("explicit-close");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(value_string(*value) == "value");
+}
+
+GLYPHA_TEST("Store close forces a partial strict group and releases its producer") {
+    StoreTemporaryDirectory temporary;
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 60'000}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    std::mutex mutex;
+    std::condition_variable changed;
+    bool producer_started{};
+    bool producer_completed{};
+    glyphastore::Status producer_result;
+    std::thread producer{[&] {
+        {
+            const std::lock_guard lock{mutex};
+            producer_started = true;
+        }
+        changed.notify_all();
+        auto result = store.put("partial-close", bytes("value"));
+        {
+            const std::lock_guard lock{mutex};
+            producer_result = std::move(result);
+            producer_completed = true;
+        }
+        changed.notify_all();
+    }};
+    {
+        std::unique_lock lock{mutex};
+        GLYPHA_REQUIRE(changed.wait_for(lock, std::chrono::seconds{2}, [&] { return producer_started; }));
+        GLYPHA_REQUIRE(
+            !changed.wait_for(lock, std::chrono::milliseconds{25}, [&] { return producer_completed; }));
+    }
+
+    const auto started = std::chrono::steady_clock::now();
+    const auto closed = store.close();
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    producer.join();
+    GLYPHA_REQUIRE(closed.has_value());
+    GLYPHA_REQUIRE(producer_result.has_value());
+    GLYPHA_REQUIRE(elapsed < std::chrono::seconds{2});
+}
+
+GLYPHA_TEST("concurrent Store flush and close calls complete without deadlock") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .storage_mode = glyphastore::StorageMode::durable_periodic,
+                                            .data_directory = path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .durable_periodic = {.sync_interval_ms = 60'000}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("flush-close-race", bytes("value")).has_value());
+
+    constexpr std::size_t kCloserCount = 4;
+    constexpr std::size_t kFlusherCount = 4;
+    std::barrier start{static_cast<std::ptrdiff_t>(kCloserCount + kFlusherCount + 1)};
+    std::array<glyphastore::Status, kCloserCount> close_results;
+    std::array<glyphastore::Status, kFlusherCount> flush_results;
+    std::vector<std::thread> threads;
+    threads.reserve(kCloserCount + kFlusherCount);
+    for (std::size_t index = 0; index < kCloserCount; ++index) {
+        threads.emplace_back([&, index] {
+            start.arrive_and_wait();
+            close_results[index] = store.close();
+        });
+    }
+    for (std::size_t index = 0; index < kFlusherCount; ++index) {
+        threads.emplace_back([&, index] {
+            start.arrive_and_wait();
+            flush_results[index] = store.flush();
+        });
+    }
+    start.arrive_and_wait();
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    for (const auto& result : close_results) {
+        GLYPHA_REQUIRE(result.has_value());
+    }
+    for (const auto& result : flush_results) {
+        GLYPHA_REQUIRE(result.has_value() || result.error().code == glyphastore::ErrorCode::unavailable);
+    }
+
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->get("flush-close-race").has_value());
 }
 
 GLYPHA_TEST("durable_group rejects invalid batch configuration") {

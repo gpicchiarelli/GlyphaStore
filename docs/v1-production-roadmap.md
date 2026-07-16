@@ -141,9 +141,11 @@ an empty new active Segment continue to recover.
 
 ### P0-05 — Make background flush failure and shutdown observable
 
-**Status:** in progress. Coordinator callback exceptions are translated to sticky
-`resource_exhausted`/`internal_error` failures, stop the coordinator, fail-close the durable runtime,
-and release queued batch waiters. An explicit public `close()` result is still missing.
+**Status:** implemented in the current tree. Coordinator callback exceptions are translated to
+sticky `resource_exhausted`/`internal_error` failures, stop the coordinator, fail-close the durable
+runtime, and release queued batch waiters. Public `Store::close()` atomically stops admission,
+forces pending strict groups, waits for already-admitted calls, performs the final flush, stops the
+executor, releases Store resources and the directory lock, and returns a sticky idempotent status.
 
 **Root cause:** `DurableFlushCoordinator::run` invoked its callback without an exception barrier,
 and destruction suppressed final flush errors.
@@ -154,6 +156,14 @@ status; document the destructor as a non-throwing fallback, not the only durabil
 
 **Acceptance:** injected callback exceptions, I/O errors, stop races, maximum generation, and
 concurrent `flush()`/close tests cannot deadlock or acknowledge unflushed state.
+
+**Evidence:** tests cover repeated and concurrent close, concurrent flush/close, partial strict
+groups with a 60-second normal deadline, immediate reopen while the closed Store object remains
+alive, sticky final-sync failure, background callback exceptions, coordinator stop races, and
+exhausted flush generations. The destructor invokes the same path but intentionally discards its
+status as a non-throwing fallback. Admission counters are cache-line-isolated by Worker; an A/B
+Release benchmark against the pre-change commit used two interleaved, order-reversed runs of nine
+samples each; aggregate worker-affine parallel get and put medians remained within 3% on arm64 macOS.
 
 ### P0-06 — Add storage and recovery resource budgets
 
@@ -208,11 +218,11 @@ write amplification remain within configured limits; no format change is introdu
   overloading `invalid_argument`, `unavailable`, and `io_error`.
 - State the `Result::value()` precondition or provide non-throwing accessors. Keep diagnostic text
   explicitly non-stable and expose structured fields where automation needs them.
-- Add explicit Store `close()`, cancellation/deadline semantics, immutable diagnostic snapshots,
-  build/version information, and recovery statistics. Do not advertise `PinnedValue` until its
-  reader accounting and reclamation design is implemented and tested.
-- Define concurrent close, flush, read, mutation, and diagnostics linearization. Add model/property
-  tests for these histories and for multi-Worker group completion fairness.
+- Add cancellation/deadline semantics, immutable diagnostic snapshots, build/version information,
+  and recovery statistics. Do not advertise `PinnedValue` until its reader accounting and
+  reclamation design is implemented and tested.
+- Extend the implemented concurrent close/flush/read/mutation linearization with model/property
+  histories, diagnostic lifecycle rules, and multi-Worker group completion fairness.
 
 ### Recovery scalability and read-path bounds
 

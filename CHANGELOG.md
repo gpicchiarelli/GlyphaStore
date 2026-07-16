@@ -5,6 +5,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Add idempotent public `Store::close()` with atomic admission quiescing, in-flight operation
+  draining, forced partial group closure, observable sticky final-flush errors, concurrent
+  flush/close safety, cache-line-isolated per-Worker accounting, executor shutdown, and immediate
+  resource/data-directory lock release.
 - Make ordinary Store reads and durable recovery share a checked Unix-epoch clock, add thread-safe
   `StoreClock` injection, clamp backward movement per Store instance, and remove public per-read
   timestamp overrides that silently disabled TTL expiration by default.
