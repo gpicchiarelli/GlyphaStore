@@ -277,6 +277,7 @@ struct WriteBoundaryObserver {
         case glyphastore::FilesystemOperation::write_compaction_intent:
         case glyphastore::FilesystemOperation::rename_compaction_intent:
         case glyphastore::FilesystemOperation::remove_compaction_intent:
+        case glyphastore::FilesystemOperation::remove_compaction_segment:
             return true;
         case glyphastore::FilesystemOperation::sync_parent_directory:
         case glyphastore::FilesystemOperation::sync_manifest:

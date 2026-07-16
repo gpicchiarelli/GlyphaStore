@@ -44,7 +44,8 @@ struct DurableRecoveryState {
 // reopen its backing Segment. Recovery itself keeps at most one Segment file
 // descriptor and one Worker's temporary latest-key map live at a time.
 [[nodiscard]] auto recover_durable_state(DataDirectory& directory, std::uint64_t now_ns = 0,
-                                         const DurableResourceLimits& limits = {})
+                                         const DurableResourceLimits& limits = {},
+                                         const DurableCompactionIntent* compaction_intent = nullptr)
     -> Result<DurableRecoveryState>;
 
 } // namespace glyphastore

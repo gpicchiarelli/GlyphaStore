@@ -1,5 +1,6 @@
 #include "glyphastore/persistence/filesystem.hpp"
 
+#include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
 
 #include <algorithm>
@@ -115,6 +116,11 @@ auto compaction_publication_failure(CompactionIntentPublicationOutcome outcome, 
 
 auto compaction_removal_failure(CompactionIntentRemovalOutcome outcome, Error error)
     -> CompactionIntentRemovalResult {
+    return {.outcome = outcome, .error = std::move(error)};
+}
+
+auto compaction_retirement_failure(CompactionSegmentRetirementOutcome outcome, Error error)
+    -> CompactionSegmentRetirementResult {
     return {.outcome = outcome, .error = std::move(error)};
 }
 
@@ -820,6 +826,12 @@ auto DataDirectory::remove_compaction_intent() -> CompactionIntentRemovalResult 
             CompactionIntentRemovalOutcome::indeterminate,
             Error{ErrorCode::io_error, "cannot remove compaction intent through a poisoned directory"});
     }
+    if (::unlinkat(directory_.get(), kCompactionTemporaryFilename, 0) != 0 && errno != ENOENT) {
+        health_->store(false, std::memory_order_release);
+        return compaction_removal_failure(
+            CompactionIntentRemovalOutcome::indeterminate,
+            persistence_system_error("unlinkat(compaction temporary during completion)").error);
+    }
     if (auto allowed = before(FilesystemOperation::remove_compaction_intent); !allowed) {
         return compaction_removal_failure(CompactionIntentRemovalOutcome::not_removed, allowed.error());
     }
@@ -844,6 +856,55 @@ auto DataDirectory::remove_compaction_intent() -> CompactionIntentRemovalResult 
     }
     after(FilesystemOperation::sync_directory);
     return {.outcome = CompactionIntentRemovalOutcome::durable, .error = std::nullopt};
+}
+
+auto DataDirectory::retire_compaction_segments(const StoreId& store_id,
+                                               const std::span<const ManifestSegmentEntry> segments)
+    -> CompactionSegmentRetirementResult {
+    if (!healthy()) {
+        return compaction_retirement_failure(
+            CompactionSegmentRetirementOutcome::indeterminate,
+            Error{ErrorCode::io_error, "cannot retire Segments through a poisoned directory"});
+    }
+    bool removed_any{};
+    for (const auto& entry : segments) {
+        const auto name = segment_filename({.store_id = store_id,
+                                            .segment_id = entry.segment_id,
+                                            .generation = entry.generation,
+                                            .owner_worker = entry.owner_worker});
+        if (auto allowed = before(FilesystemOperation::remove_compaction_segment); !allowed) {
+            if (removed_any) {
+                health_->store(false, std::memory_order_release);
+            }
+            return compaction_retirement_failure(removed_any
+                                                     ? CompactionSegmentRetirementOutcome::indeterminate
+                                                     : CompactionSegmentRetirementOutcome::not_removed,
+                                                 allowed.error());
+        }
+        if (::unlinkat(directory_.get(), name.c_str(), 0) != 0) {
+            if (errno == ENOENT) {
+                continue;
+            }
+            health_->store(false, std::memory_order_release);
+            return compaction_retirement_failure(
+                CompactionSegmentRetirementOutcome::indeterminate,
+                persistence_system_error("unlinkat(compaction Segment)").error);
+        }
+        removed_any = true;
+        after(FilesystemOperation::remove_compaction_segment);
+    }
+    if (auto allowed = before(FilesystemOperation::sync_directory); !allowed) {
+        health_->store(false, std::memory_order_release);
+        return compaction_retirement_failure(CompactionSegmentRetirementOutcome::indeterminate,
+                                             allowed.error());
+    }
+    if (auto synced = sync_directory(); !synced) {
+        health_->store(false, std::memory_order_release);
+        return compaction_retirement_failure(CompactionSegmentRetirementOutcome::indeterminate,
+                                             synced.error());
+    }
+    after(FilesystemOperation::sync_directory);
+    return {.outcome = CompactionSegmentRetirementOutcome::durable, .error = std::nullopt};
 }
 
 auto DataDirectory::pristine_for_bootstrap() const -> Result<bool> {

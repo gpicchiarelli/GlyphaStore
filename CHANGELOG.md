@@ -2,9 +2,10 @@
 
 - Started P0-08 with a deterministic whole-Worker durable compaction planner, generation-safe v1
   manifest replacement, physical temporary/peak/amplification gates, a checksummed dual-manifest
-  intent codec, descriptor-relative crash-classified intent publication/removal, and a specified
-  crash-safe retirement protocol. Runtime compaction remains unavailable until Record copying,
-  source retirement, recovery completion, and their kill matrix are implemented.
+  intent codec, descriptor-relative crash-classified intent publication/removal, and restart
+  resolution against exactly the old or next authority with validated, idempotent Segment
+  retirement. Runtime compaction remains unavailable until Record copying, online publication,
+  scheduling, and their complete kill matrix are implemented.
 
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.

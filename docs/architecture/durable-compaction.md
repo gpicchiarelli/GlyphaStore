@@ -2,9 +2,10 @@
 
 This document defines the v1 compaction invariants. The current tree implements the deterministic
 planner, its resource gates, a checksummed intent codec embedding both exact manifest authorities,
-and the descriptor-relative intent publication/removal primitives. Record copying, manifest
-installation, source-file retirement, online scheduling, and their complete crash matrix remain
-implementation work; durable compaction is therefore not yet available through `Store`.
+descriptor-relative intent publication/removal primitives, and restart recovery of an interrupted
+transaction. Record copying, online manifest installation, scheduling, and the complete crash
+matrix remain implementation work; durable compaction is therefore not yet available through
+`Store`.
 
 ## Why the complete sealed history is one unit
 
@@ -76,6 +77,12 @@ file, enforce the configured manifest-derived byte bound before allocating, read
 extent, and decode it. Intent removal distinguishes a fault before `unlinkat` (`not_removed`) from an
 unlink attempt or subsequent directory-sync failure (`indeterminate`).
 
+On restart, the runtime decodes and validates the intent before ordinary recovery, accepts only an
+authoritative manifest exactly equal to its old or next manifest, and performs a complete recovery
+scan of that authority before deleting anything. Namespace recovery admits only the canonical
+intent and the exact non-authoritative Segment identities implied by the validated transition;
+unrelated, malformed, linked, or missing authoritative entries still fail closed.
+
 Recovery with an intent has only two valid authorities:
 
 - if the old manifest is authoritative, all old sources must still exist; exact replacements named
@@ -84,6 +91,13 @@ Recovery with an intent has only two valid authorities:
   sources are retirement material and may be removed before the intent;
 - any other manifest generation, identity, missing authoritative file, or unrelated namespace entry
   fails closed without adoption.
+
+Retirement opens every still-present obsolete name against its expected immutable identity before
+unlinking. Missing obsolete names are accepted so recovery can resume after a partial cleanup. A
+failure before the first unlink is `not_removed`; any failure after removal begins, including the
+mandatory directory sync, is `indeterminate` and poisons that directory instance. A fresh reopen
+repeats the same authoritative recovery, finishes the idempotent retirement batch, removes the
+intent, and performs a final ordinary namespace audit.
 
 No old source is unlinked before the new manifest and its directory entry are durable. `unlinkat`
 is descriptor-relative. An already open file remains usable until its last descriptor closes on the

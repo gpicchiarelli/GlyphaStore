@@ -240,9 +240,12 @@ rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplificatio
 A checksummed intent codec embeds and validates both complete manifest authorities and their exact
 canonical transition. Descriptor-relative intent publication and removal now implement private
 temporary creation, exact write, file sync, rename, `unlinkat`, bounded read, and mandatory directory
-sync with explicit pre-operation/indeterminate outcomes. This prevents a per-Segment tombstone drop
-from resurrecting older values, but Record copy, manifest installation, source unlink recovery,
-scheduling, and the complete crash matrix remain open.
+sync with explicit pre-operation/indeterminate outcomes. Runtime reopen now resolves an interrupted
+intent against exactly the old or next authority, fully recovers that catalog before deletion,
+validates obsolete identities, performs idempotent rollback/source retirement, synchronizes the
+directory, removes the intent, and re-audits the namespace. This prevents a per-Segment tombstone
+drop from resurrecting older values, but Record copy, online manifest installation, scheduling, and
+the complete crash matrix remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -264,6 +267,10 @@ CRC corruption, header/payload disagreement, unknown versions, reserved bytes, a
 catalog transitions.
 Filesystem tests cross intent write, sync, rename, post-rename directory sync, pre-unlink rejection,
 post-unlink directory sync, duplicate intent, bounded read, reopen, and namespace classification.
+Integration recovery tests cover old-authority rollback, next-authority roll-forward, rejection of
+an unrelated manifest or Segment, failure before retirement, partial source unlink, indeterminate
+retirement sync, both intent-removal boundaries, and successful idempotent completion on the next
+reopen.
 
 ## P1 — complete the product contract
 

@@ -143,7 +143,8 @@ auto validate_lifecycle(const ManifestSegmentEntry& entry, const SegmentCommit& 
 } // namespace
 
 auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
-                           const DurableResourceLimits& limits) -> Result<DurableRecoveryState> {
+                           const DurableResourceLimits& limits,
+                           const DurableCompactionIntent* compaction_intent) -> Result<DurableRecoveryState> {
     if (auto valid = validate_durable_resource_limits(limits); !valid) {
         return unexpected(valid.error());
     }
@@ -174,7 +175,11 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
     if (!namespace_audit) {
         return unexpected(namespace_audit.error());
     }
-    if (auto safe = validate_namespace_for_recovery(*namespace_audit); !safe) {
+    const auto safe =
+        compaction_intent != nullptr
+            ? validate_namespace_for_compaction_recovery(*namespace_audit, *manifest, *compaction_intent)
+            : validate_namespace_for_recovery(*namespace_audit);
+    if (!safe) {
         return unexpected(safe.error());
     }
 

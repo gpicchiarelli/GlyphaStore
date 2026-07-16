@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/swiss_table.hpp"
+#include "glyphastore/persistence/compaction.hpp"
 #include "glyphastore/persistence/durable_flush_coordinator.hpp"
 #include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
@@ -238,6 +239,81 @@ auto complete_interrupted_rotation(DataDirectory& directory, const DurableResour
             published.error.value_or(Error{ErrorCode::io_error, "rotation manifest publication failed"}));
     }
     return {};
+}
+
+auto resolve_interrupted_compaction(DataDirectory& directory, const std::uint64_t recovery_now_ns,
+                                    const DurableResourceLimits& limits)
+    -> Result<std::optional<DurableRecoveryState>> {
+    auto intent = directory.read_compaction_intent(limits.max_manifest_bytes);
+    if (!intent) {
+        if (intent.error().code == ErrorCode::not_found) {
+            return std::optional<DurableRecoveryState>{};
+        }
+        return unexpected(intent.error());
+    }
+    auto authority = directory.read_manifest(limits.max_manifest_bytes);
+    if (!authority) {
+        return unexpected(authority.error());
+    }
+    const bool old_authority = *authority == intent->old_manifest;
+    const bool next_authority = *authority == intent->next_manifest;
+    if (!old_authority && !next_authority) {
+        return fail(ErrorCode::corrupted_data, "compaction intent matches neither authoritative manifest");
+    }
+
+    auto recovered = recover_durable_state(directory, recovery_now_ns, limits, &*intent);
+    if (!recovered) {
+        return unexpected(recovered.error());
+    }
+    const auto replacement_count = validate_durable_compaction_transition(
+        intent->old_manifest, intent->next_manifest, intent->worker_id);
+    if (!replacement_count) {
+        return unexpected(replacement_count.error());
+    }
+    std::vector<ManifestSegmentEntry> sources;
+    std::vector<ManifestSegmentEntry> replacements;
+    for (const auto& entry : intent->old_manifest.segments) {
+        if (entry.owner_worker != intent->worker_id || entry.role != ManifestSegmentRole::sealed) {
+            continue;
+        }
+        sources.push_back(entry);
+        if (replacements.size() < *replacement_count) {
+            auto replacement = entry;
+            ++replacement.generation.value;
+            replacements.push_back(replacement);
+        }
+    }
+    const auto& obsolete = old_authority ? replacements : sources;
+    const auto& obsolete_manifest = old_authority ? intent->next_manifest : intent->old_manifest;
+    for (const auto& entry : obsolete) {
+        const SegmentHeaderIdentity identity{.store_id = obsolete_manifest.store_id,
+                                             .segment_id = entry.segment_id,
+                                             .generation = entry.generation,
+                                             .owner_worker = entry.owner_worker};
+        auto file = DurableSegmentFile::open(directory, identity, SegmentFileOpenMode::read_only);
+        if (!file && file.error().code != ErrorCode::not_found) {
+            return unexpected(file.error());
+        }
+    }
+    const auto retired = directory.retire_compaction_segments(obsolete_manifest.store_id, obsolete);
+    if (!retired.durable()) {
+        return unexpected(
+            retired.error.value_or(Error{ErrorCode::io_error, "compaction Segment retirement failed"}));
+    }
+    const auto removed = directory.remove_compaction_intent();
+    if (!removed.durable()) {
+        return unexpected(
+            removed.error.value_or(Error{ErrorCode::io_error, "compaction intent removal failed"}));
+    }
+    auto final_audit = audit_data_directory(directory, recovered->manifest);
+    if (!final_audit) {
+        return unexpected(final_audit.error());
+    }
+    if (auto safe = validate_namespace_for_recovery(*final_audit); !safe) {
+        return unexpected(safe.error());
+    }
+    recovered->namespace_audit = std::move(*final_audit);
+    return std::optional<DurableRecoveryState>{std::move(*recovered)};
 }
 
 } // namespace
@@ -492,12 +568,20 @@ auto DurableRuntimeCatalog::open_locked(DataDirectory directory, const std::uint
     if (auto valid = validate_durable_resource_limits(options.limits); !valid) {
         return unexpected(valid.error());
     }
-    if (auto completed = complete_interrupted_rotation(directory, options.limits); !completed) {
-        return unexpected(completed.error());
+    auto compaction = resolve_interrupted_compaction(directory, recovery_now_ns, options.limits);
+    if (!compaction) {
+        return unexpected(compaction.error());
     }
-    auto recovered = recover_durable_state(directory, recovery_now_ns, options.limits);
+    std::optional<DurableRecoveryState> recovered = std::move(*compaction);
     if (!recovered) {
-        return unexpected(recovered.error());
+        if (auto completed = complete_interrupted_rotation(directory, options.limits); !completed) {
+            return unexpected(completed.error());
+        }
+        auto ordinary = recover_durable_state(directory, recovery_now_ns, options.limits);
+        if (!ordinary) {
+            return unexpected(ordinary.error());
+        }
+        recovered.emplace(std::move(*ordinary));
     }
     if (recovered->segments.size() != recovered->manifest.segments.size() ||
         recovered->workers.size() != recovered->manifest.worker_count) {

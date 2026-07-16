@@ -163,6 +163,7 @@ if(BUILD_TESTING)
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
         tests/unit/format_compatibility_tests.cpp
+        tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/persistence_recovery_tests.cpp

@@ -94,6 +94,7 @@ enum class FilesystemOperation {
     sync_compaction_intent,
     rename_compaction_intent,
     remove_compaction_intent,
+    remove_compaction_segment,
 };
 
 struct FilesystemHooks {
@@ -151,6 +152,8 @@ struct FilesystemHooks {
         return "rename_compaction_intent";
     case FilesystemOperation::remove_compaction_intent:
         return "remove_compaction_intent";
+    case FilesystemOperation::remove_compaction_segment:
+        return "remove_compaction_segment";
     }
     return "unknown";
 }
@@ -178,7 +181,8 @@ struct FilesystemHooks {
                                  FilesystemOperation::write_compaction_intent,
                                  FilesystemOperation::sync_compaction_intent,
                                  FilesystemOperation::rename_compaction_intent,
-                                 FilesystemOperation::remove_compaction_intent}) {
+                                 FilesystemOperation::remove_compaction_intent,
+                                 FilesystemOperation::remove_compaction_segment}) {
         if (name == filesystem_operation_name(operation)) {
             return operation;
         }
@@ -236,6 +240,17 @@ struct CompactionIntentRemovalResult {
     }
 };
 
+enum class CompactionSegmentRetirementOutcome { durable, not_removed, indeterminate };
+
+struct CompactionSegmentRetirementResult {
+    CompactionSegmentRetirementOutcome outcome{CompactionSegmentRetirementOutcome::not_removed};
+    std::optional<Error> error;
+
+    [[nodiscard]] auto durable() const noexcept -> bool {
+        return outcome == CompactionSegmentRetirementOutcome::durable;
+    }
+};
+
 class DurableSegmentFile;
 
 class DataDirectory final {
@@ -266,6 +281,9 @@ class DataDirectory final {
     [[nodiscard]] auto read_compaction_intent(std::size_t max_manifest_bytes = kMaximumManifestBytes) const
         -> Result<DurableCompactionIntent>;
     [[nodiscard]] auto remove_compaction_intent() -> CompactionIntentRemovalResult;
+    [[nodiscard]] auto retire_compaction_segments(const StoreId& store_id,
+                                                  std::span<const ManifestSegmentEntry> segments)
+        -> CompactionSegmentRetirementResult;
     [[nodiscard]] auto pristine_for_bootstrap() const -> Result<bool>;
     [[nodiscard]] auto available_space_bytes() const -> Result<std::uint64_t>;
     // Returns an independently positioned descriptor for descriptor-relative

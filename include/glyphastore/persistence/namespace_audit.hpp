@@ -59,5 +59,9 @@ struct NamespaceAuditReport {
 [[nodiscard]] auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
     -> Result<NamespaceAuditReport>;
 [[nodiscard]] auto validate_namespace_for_recovery(const NamespaceAuditReport& report) -> Status;
+[[nodiscard]] auto validate_namespace_for_compaction_recovery(const NamespaceAuditReport& report,
+                                                              const Manifest& authority,
+                                                              const DurableCompactionIntent& intent)
+    -> Status;
 
 } // namespace glyphastore

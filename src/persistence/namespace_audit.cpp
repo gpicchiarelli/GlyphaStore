@@ -333,4 +333,52 @@ auto validate_namespace_for_recovery(const NamespaceAuditReport& report) -> Stat
                     first->name + "'");
 }
 
+auto validate_namespace_for_compaction_recovery(const NamespaceAuditReport& report, const Manifest& authority,
+                                                const DurableCompactionIntent& intent) -> Status {
+    const bool old_authority = authority == intent.old_manifest;
+    const bool next_authority = authority == intent.next_manifest;
+    if (!old_authority && !next_authority) {
+        return fail(ErrorCode::corrupted_data,
+                    "compaction intent matches neither authoritative manifest generation");
+    }
+
+    std::vector<std::string> allowed_unlisted;
+    const auto& obsolete = old_authority ? intent.next_manifest.segments : intent.old_manifest.segments;
+    const auto& listed = old_authority ? intent.old_manifest.segments : intent.next_manifest.segments;
+    for (const auto& entry : obsolete) {
+        const auto same_identity = std::ranges::find(listed, entry);
+        if (same_identity == listed.end()) {
+            allowed_unlisted.push_back(
+                canonical_segment_name(old_authority ? intent.next_manifest : intent.old_manifest, entry));
+        }
+    }
+    std::ranges::sort(allowed_unlisted);
+
+    bool saw_intent{};
+    for (const auto& issue : report.issues) {
+        if (issue.kind == NamespaceIssueKind::stale_manifest_temporary ||
+            issue.kind == NamespaceIssueKind::stale_segment_temporary ||
+            issue.kind == NamespaceIssueKind::stale_compaction_temporary) {
+            continue;
+        }
+        if (issue.kind == NamespaceIssueKind::compaction_intent && issue.name == kCompactionIntentFilename &&
+            !saw_intent) {
+            saw_intent = true;
+            continue;
+        }
+        if (issue.kind == NamespaceIssueKind::unlisted_segment &&
+            std::ranges::binary_search(allowed_unlisted, issue.name)) {
+            continue;
+        }
+        return fail(ErrorCode::corrupted_data, "compaction recovery namespace has blocking " +
+                                                   std::string{namespace_issue_name(issue.kind)} + " '" +
+                                                   issue.name + "'");
+    }
+    if (!saw_intent) {
+        return fail(ErrorCode::corrupted_data,
+                    "compaction recovery namespace is missing its canonical intent");
+    }
+    return {};
+}
+
 } // namespace glyphastore
