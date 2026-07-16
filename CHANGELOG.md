@@ -4,8 +4,11 @@
   manifest replacement, physical temporary/peak/amplification gates, a checksummed dual-manifest
   intent codec, descriptor-relative crash-classified intent publication/removal, and restart
   resolution against exactly the old or next authority with validated, idempotent Segment
-  retirement. Runtime compaction remains unavailable until Record copying, online publication,
-  scheduling, and their complete kill matrix are implemented.
+  retirement. Add an exact Record-boundary layout and a durable builder that prebuilds the new
+  Index, preserves visible v1 Record bytes and sequences, reclaims expired/superseded/tombstoned
+  history, validates sealed replacements, and classifies post-intent failures for rollback. Runtime
+  compaction remains unavailable until online publication, scheduling, and their complete kill
+  matrix are implemented.
 
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.

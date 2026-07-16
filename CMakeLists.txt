@@ -41,6 +41,7 @@ add_library(glyphastore_core
     src/index/swiss_table.cpp
     src/persistence/bootstrap.cpp
     src/persistence/compaction.cpp
+    src/persistence/compaction_builder.cpp
     src/persistence/compaction_intent.cpp
     src/persistence/filesystem.cpp
     src/persistence/manifest.cpp
@@ -163,6 +164,7 @@ if(BUILD_TESTING)
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
         tests/unit/format_compatibility_tests.cpp
+        tests/integration/compaction_builder_tests.cpp
         tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp

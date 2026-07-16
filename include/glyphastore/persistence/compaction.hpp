@@ -23,6 +23,32 @@ struct DurableCompactionPlan {
     std::uint64_t reclaimed_bytes{};
 };
 
+struct DurableCompactionPlacement {
+    std::size_t segment_index{};
+    RecordOffset offset{};
+};
+
+// Exact, allocation-free next-fit layout for sequence-ordered v1 Records.
+// Aggregate byte division is only a lower bound because a Record cannot span
+// two Segment payloads.
+class DurableCompactionLayout final {
+  public:
+    [[nodiscard]] auto add_record(std::uint32_t encoded_size) -> Result<DurableCompactionPlacement>;
+    [[nodiscard]] auto segment_count() const noexcept -> std::size_t {
+        return segment_count_;
+    }
+    [[nodiscard]] auto encoded_bytes() const noexcept -> std::uint64_t {
+        return encoded_bytes_;
+    }
+
+  private:
+    std::size_t segment_count_{};
+    std::uint64_t encoded_bytes_{};
+    std::uint32_t current_payload_bytes_{};
+};
+
+// Aggregate-byte lower bound. Use DurableCompactionLayout when Record sizes
+// are known and an exact replacement count is required.
 [[nodiscard]] auto durable_compaction_output_segments(std::uint64_t live_encoded_bytes)
     -> Result<std::size_t>;
 

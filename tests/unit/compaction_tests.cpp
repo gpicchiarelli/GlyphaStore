@@ -65,6 +65,19 @@ GLYPHA_TEST("durable compaction output sizing accounts for reserved Segment head
     GLYPHA_REQUIRE(*glyphastore::durable_compaction_output_segments(kPayload + 1) == 2);
 }
 
+GLYPHA_TEST("durable compaction exact layout accounts for Record boundary fragmentation") {
+    constexpr auto kRecords = std::size_t{127};
+    glyphastore::DurableCompactionLayout layout;
+    for (std::size_t index = 0; index < kRecords; ++index) {
+        const auto placement = layout.add_record(glyphastore::kMaxNormalRecordSize);
+        GLYPHA_REQUIRE(placement.has_value());
+    }
+    const auto aggregate = static_cast<std::uint64_t>(kRecords) * glyphastore::kMaxNormalRecordSize;
+    GLYPHA_REQUIRE(*glyphastore::durable_compaction_output_segments(aggregate) == 2);
+    GLYPHA_REQUIRE(layout.segment_count() == 3);
+    GLYPHA_REQUIRE(layout.encoded_bytes() == aggregate);
+}
+
 GLYPHA_TEST("durable compaction replaces a complete Worker sealed set in one manifest") {
     const auto current = compaction_manifest();
     const auto plan = glyphastore::plan_durable_worker_compaction(current, glyphastore::WorkerId{0}, 1,
@@ -148,6 +161,21 @@ GLYPHA_TEST("durable compaction enforces temporary peak and amplification budget
 
     limits = compaction_limits();
     limits.max_store_bytes = 7ULL * glyphastore::kSegmentSizeBytes;
+    limits.max_temporary_compaction_bytes = limits.max_store_bytes;
+    result = glyphastore::plan_durable_worker_compaction(current, glyphastore::WorkerId{0}, 1, limits);
+    GLYPHA_REQUIRE(!result.has_value());
+    GLYPHA_REQUIRE(result.error().code == glyphastore::ErrorCode::storage_exhausted);
+
+    limits = compaction_limits();
+    const auto current_manifest_bytes = glyphastore::encoded_manifest_size(current);
+    GLYPHA_REQUIRE(current_manifest_bytes.has_value());
+    const auto one_output =
+        glyphastore::plan_durable_worker_compaction(current, glyphastore::WorkerId{0}, 1, limits);
+    GLYPHA_REQUIRE(one_output.has_value());
+    const auto next_manifest_bytes = glyphastore::encoded_manifest_size(one_output->next_manifest);
+    GLYPHA_REQUIRE(next_manifest_bytes.has_value());
+    limits.max_store_bytes = current.segments.size() * glyphastore::kSegmentSizeBytes +
+                             glyphastore::kSegmentSizeBytes + *current_manifest_bytes + *next_manifest_bytes;
     limits.max_temporary_compaction_bytes = limits.max_store_bytes;
     result = glyphastore::plan_durable_worker_compaction(current, glyphastore::WorkerId{0}, 1, limits);
     GLYPHA_REQUIRE(!result.has_value());

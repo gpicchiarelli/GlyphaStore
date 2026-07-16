@@ -3,9 +3,10 @@
 This document defines the v1 compaction invariants. The current tree implements the deterministic
 planner, its resource gates, a checksummed intent codec embedding both exact manifest authorities,
 descriptor-relative intent publication/removal primitives, and restart recovery of an interrupted
-transaction. Record copying, online manifest installation, scheduling, and the complete crash
-matrix remain implementation work; durable compaction is therefore not yet available through
-`Store`.
+transaction. The durable builder now prepares the replacement Index, installs the intent, copies
+and revalidates exact visible Records, and supports zero-output retirement. Online manifest/state
+installation, scheduling, and the complete crash matrix remain implementation work; durable
+compaction is therefore not yet available through `Store`.
 
 ## Why the complete sealed history is one unit
 
@@ -39,6 +40,11 @@ The planner rejects:
 
 Physical write amplification is conservatively bounded as preallocated output Segment bytes divided
 by Segment bytes reclaimed. Empty output is valid when the complete sealed history is obsolete.
+Output sizing uses the exact sequence-ordered Record extents. Dividing aggregate live bytes by
+Segment payload is only a lower bound because Records cannot span Segment boundaries; the builder
+uses an allocation-free next-fit layout that also determines every future `RecordRef` before intent
+publication. Peak Store accounting includes the output Segments, both external manifest files, and
+both manifest payloads embedded in the intent.
 
 ## Publication and retirement protocol
 
@@ -62,6 +68,16 @@ lock target Worker and freeze its Index
 The intent is protocol metadata, not a second data format. It must bind the Store ID, Worker,
 previous and next manifest generations, and exact source/replacement identities with a checksum.
 It is durable before any unlisted replacement name can appear.
+
+Before publishing that intent, the builder verifies the manifest is still authoritative, validates
+every frozen Index reference against its catalog identity and routed source Record, drops expired
+source puts at the supplied Store time, and constructs the complete replacement Index. Source
+entries are ordered by their preserved sequence; one reusable Record buffer avoids per-read
+allocation. After publication, encoded v1 Record bytes are copied exactly, batched into the planned
+Segment boundaries, sealed, reopened, checksum-compared to their sources, and checked against exact
+record-count, extent, and sequence metadata. Thus success requires no Index allocation after the
+future manifest commit. A post-intent failure is explicitly `recovery_required` and restart rolls
+the partial outputs back under the old authority.
 
 The implemented intent codec stores the complete old and next v1 manifests under a fixed header
 containing Store ID, Worker, both generations, exact payload lengths, format version, reserved-zero

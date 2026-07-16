@@ -244,8 +244,11 @@ sync with explicit pre-operation/indeterminate outcomes. Runtime reopen now reso
 intent against exactly the old or next authority, fully recovers that catalog before deletion,
 validates obsolete identities, performs idempotent rollback/source retirement, synchronizes the
 directory, removes the intent, and re-audits the namespace. This prevents a per-Segment tombstone
-drop from resurrecting older values, but Record copy, online manifest installation, scheduling, and
-the complete crash matrix remain open.
+drop from resurrecting older values. A durable builder now freezes against an exact manifest/Index
+snapshot, verifies routed source Records, drops expired puts, computes exact non-spanning Segment
+layout, prebuilds the replacement Index, publishes the intent, copies original v1 bytes with a
+reused buffer, seals and reopens every output, and validates checksums and commit metadata. Online
+manifest/runtime installation, scheduling, and the complete crash matrix remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -271,6 +274,10 @@ Integration recovery tests cover old-authority rollback, next-authority roll-for
 an unrelated manifest or Segment, failure before retirement, partial source unlink, indeterminate
 retirement sync, both intent-removal boundaries, and successful idempotent completion on the next
 reopen.
+Builder tests cover exact sequence and value preservation, superseded/tombstoned Record omission,
+TTL reclamation, active-reference preservation, zero-output retirement, non-spanning layout
+fragmentation, intent-aware peak-space accounting, and rollback after an injected post-intent copy
+failure.
 
 ## P1 — complete the product contract
 

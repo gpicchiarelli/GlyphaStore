@@ -66,6 +66,10 @@ class DurableSegmentFile final {
     // The RecordView is valid only for the synchronous visitor invocation.
     [[nodiscard]] auto visit_record(const RecordRef& reference, void* context, RecordVisitor visitor) const
         -> Status;
+    // Reuses caller-owned storage across verified reads. The scratch bytes and
+    // RecordView remain valid only for the synchronous visitor invocation.
+    [[nodiscard]] auto visit_record(const RecordRef& reference, std::vector<std::byte>& scratch,
+                                    void* context, RecordVisitor visitor) const -> Status;
 
     [[nodiscard]] auto identity() const noexcept -> const SegmentHeaderIdentity& {
         return identity_;
