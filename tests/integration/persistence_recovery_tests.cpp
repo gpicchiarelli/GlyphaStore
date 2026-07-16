@@ -115,14 +115,14 @@ void create_private_file(const std::filesystem::path& path) {
 
 struct OneShotFilesystemFailure {
     glyphastore::FilesystemOperation target;
+    glyphastore::ErrorCode code{glyphastore::ErrorCode::io_error};
     bool fired{};
 
     static auto before(void* opaque, glyphastore::FilesystemOperation operation) -> glyphastore::Status {
         auto& state = *static_cast<OneShotFilesystemFailure*>(opaque);
         if (!state.fired && operation == state.target) {
             state.fired = true;
-            return glyphastore::fail(glyphastore::ErrorCode::io_error,
-                                     "injected durable runtime filesystem failure");
+            return glyphastore::fail(state.code, "injected durable runtime filesystem failure");
         }
         return {};
     }
@@ -183,6 +183,26 @@ struct RecordWriteObserver {
             observer.written.notify_all();
         }
         return {};
+    }
+};
+
+struct RotationBudgetObserver {
+    bool force_segment_full{true};
+    std::uint64_t available_bytes{};
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& observer = *static_cast<RotationBudgetObserver*>(opaque);
+        if (operation == glyphastore::FilesystemOperation::write_record && observer.force_segment_full) {
+            observer.force_segment_full = false;
+            return glyphastore::fail(glyphastore::ErrorCode::segment_full,
+                                     "injected full Segment before rotation");
+        }
+        return {};
+    }
+
+    static auto available(void* opaque) -> glyphastore::Result<std::uint64_t> {
+        return static_cast<RotationBudgetObserver*>(opaque)->available_bytes;
     }
 };
 
@@ -831,6 +851,51 @@ GLYPHA_TEST("durable runtime commits different Worker mutations concurrently") {
     GLYPHA_REQUIRE((*runtime)->next_sequence(1)->value == 9);
 }
 
+GLYPHA_TEST("rotation space preflight fails before sealing the active Segment") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    RotationBudgetObserver observer{};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(), {.context = &observer,
+                           .before = &RotationBudgetObserver::before,
+                           .available_space_bytes = &RotationBudgetObserver::available});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.reserved_free_bytes = 0;
+    auto runtime =
+        glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, {.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+    const std::string key{"rotation-budget"};
+    const std::string value{"value"};
+    const auto rejected = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+    GLYPHA_REQUIRE(!rejected.committed());
+    GLYPHA_REQUIRE(rejected.error.has_value());
+    GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::storage_exhausted);
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 1);
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.front().role == glyphastore::ManifestSegmentRole::active);
+    runtime->reset();
+
+    auto inspection = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(inspection.has_value());
+    auto segment = glyphastore::DurableSegmentFile::open(*inspection, segment_identity(store_id, active),
+                                                         glyphastore::SegmentFileOpenMode::read_only);
+    GLYPHA_REQUIRE(segment.has_value());
+    GLYPHA_REQUIRE(segment->selected_commit().commit.state == glyphastore::PersistedSegmentState::active);
+}
+
 GLYPHA_TEST("durable runtime rotates a full active Segment before committing the Record") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();
@@ -1153,6 +1218,76 @@ GLYPHA_TEST("durable runtime reports an indeterminate slot sync and recovery res
     } else {
         GLYPHA_REQUIRE(resolved.has_value());
         GLYPHA_REQUIRE(owned_text(*resolved) == "value");
+    }
+}
+
+GLYPHA_TEST("durable mutation fault matrix preserves pre and post commit recovery oracles") {
+    static constexpr std::array boundaries{
+        glyphastore::FilesystemOperation::write_record,
+        glyphastore::FilesystemOperation::sync_record,
+        glyphastore::FilesystemOperation::write_commit_slot,
+        glyphastore::FilesystemOperation::sync_commit_slot,
+    };
+    static constexpr std::array failures{
+        glyphastore::ErrorCode::io_error,
+        glyphastore::ErrorCode::storage_exhausted,
+        glyphastore::ErrorCode::read_only_filesystem,
+    };
+
+    for (const auto boundary : boundaries) {
+        for (const auto failure_code : failures) {
+            RecoveryTemporaryDirectory temporary;
+            const auto store_id = recovery_store_id();
+            const glyphastore::ManifestSegmentEntry active{
+                .segment_id = glyphastore::SegmentId{1},
+                .generation = glyphastore::GenerationId{1},
+                .owner_worker = glyphastore::WorkerId{0},
+                .role = glyphastore::ManifestSegmentRole::active,
+            };
+            {
+                auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+                GLYPHA_REQUIRE(directory.has_value());
+                static_cast<void>(create_segment(*directory, store_id, active));
+                GLYPHA_REQUIRE(
+                    directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+            }
+
+            OneShotFilesystemFailure failure{.target = boundary, .code = failure_code};
+            {
+                auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(
+                    temporary.path(), 0,
+                    glyphastore::FilesystemHooks{.context = &failure,
+                                                 .before = &OneShotFilesystemFailure::before});
+                GLYPHA_REQUIRE(runtime.has_value());
+                const std::string key{"fault-matrix"};
+                const std::string value{"value"};
+                const auto result =
+                    (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+                GLYPHA_REQUIRE(!result.committed());
+                GLYPHA_REQUIRE(result.error.has_value());
+                GLYPHA_REQUIRE(result.error->code == failure_code);
+                GLYPHA_REQUIRE(result.outcome ==
+                               (boundary == glyphastore::FilesystemOperation::sync_commit_slot
+                                    ? glyphastore::DurableMutationOutcome::indeterminate
+                                    : glyphastore::DurableMutationOutcome::not_committed));
+            }
+            GLYPHA_REQUIRE(failure.fired);
+
+            auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+            GLYPHA_REQUIRE(recovered.has_value());
+            const auto visible = (*recovered)->get("fault-matrix");
+            if (boundary == glyphastore::FilesystemOperation::sync_commit_slot) {
+                GLYPHA_REQUIRE(visible.has_value() ||
+                               visible.error().code == glyphastore::ErrorCode::not_found);
+                if (visible) {
+                    GLYPHA_REQUIRE(owned_text(*visible) == "value");
+                }
+            } else {
+                GLYPHA_REQUIRE(!visible.has_value());
+                GLYPHA_REQUIRE(visible.error().code == glyphastore::ErrorCode::not_found);
+            }
+            GLYPHA_REQUIRE((*recovered)->verify_index().has_value());
+        }
     }
 }
 

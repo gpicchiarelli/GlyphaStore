@@ -68,6 +68,25 @@ Unknown files are reported and quarantined or rejected according to an explicit 
 they are never silently added to the Store. A manifest-listed file that is absent, duplicated, or
 inconsistent is corruption and prevents read-write open.
 
+## Resource preflight
+
+Durable resource policy is supplied at open and is deliberately absent from v1 metadata. Reopen
+first limits manifest bytes before allocating its decode buffer, then checks Segment count, steady
+logical Store bytes, descriptor policy and `RLIMIT_NOFILE`, recovery memory, and Worker-partitioned
+live-key capacity. A smaller policy fails read-only with a stable resource category.
+
+Creation computes its peak as all initial 64 MiB Segments plus the simultaneously present bootstrap
+intent and manifest. Rotation computes the replacement Segment plus current and replacement
+manifest generations. It samples space available to the unprivileged process and preserves
+`reserved_free_bytes`; failure occurs before intent publication or active-Segment sealing. This
+sample cannot reserve against unrelated processes, so native full-file preallocation remains
+mandatory and its `ENOSPC`/quota result is authoritative.
+
+Recovery scans one Worker at a time and charges a conservative estimate for catalog arrays, Worker
+state, temporary latest-key nodes, duplicated key bytes, and the resulting Index. It returns
+`resource_exhausted` before exceeding the configured estimate. This is a safety ceiling rather than
+an allocator-exact telemetry value.
+
 ## Segment header and commit slots
 
 Every Segment remains exactly 64 MiB. Its first 4 KiB contain an explicitly little-endian header
@@ -262,9 +281,11 @@ The persistent implementation is incomplete until CI exercises:
 - golden fixtures for manifest, Segment header, commit slots, and Records (manifest, Segment header,
   both commit slots, and Record now have canonical v1 fixtures);
 - restart tests across every mutation and rotation transition;
-- process-kill and injected short-write, rename, disk-full, and allocation failures (an isolated
+- process-kill and injected short-read/write, `EINTR`, writeback `EIO`, rename, disk/quota/read-only,
+  and allocation failures (an isolated
   executable now fails every allocation observed in durable mutation/read/group/rotation paths;
-  filesystem seams cover write, file-sync, slot-sync, and directory-sync boundaries);
+  instance-local filesystem seams cover fragmented positional I/O plus write, file-sync, slot-sync,
+  rename, and directory-sync boundaries);
 - active-tail tolerance and committed-region corruption rejection (covered at Segment-file unit
   level and by restart/process-kill coverage; power-loss/filesystem certification remains pending);
 - manifest rollback and explicit orphan quarantine/identity reservation;

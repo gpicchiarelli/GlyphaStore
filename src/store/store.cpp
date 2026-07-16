@@ -4,6 +4,7 @@
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/persistence/bootstrap.hpp"
+#include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/store/value.hpp"
@@ -369,7 +370,8 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     const auto topology = detect_worker_topology();
     const auto count = WorkerCountPolicy::choose(topology, config.worker_config);
     if (config.storage_mode == StorageMode::volatile_memory) {
-        if (config.data_directory || config.durable_open_mode != DurableOpenMode::open_or_create) {
+        if (config.data_directory || config.durable_open_mode != DurableOpenMode::open_or_create ||
+            config.durable_limits != DurableResourceLimits{}) {
             return fail(ErrorCode::invalid_argument,
                         "volatile storage cannot use durable-only configuration");
         }
@@ -380,6 +382,9 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     }
     if (!config.data_directory || config.data_directory->empty()) {
         return fail(ErrorCode::invalid_argument, "durable storage requires a data directory");
+    }
+    if (auto valid = validate_durable_resource_limits(config.durable_limits); !valid) {
+        return unexpected(valid.error());
     }
     if (config.storage_mode == StorageMode::durable_periodic &&
         config.durable_periodic.sync_interval_ms == 0) {
@@ -402,11 +407,12 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         return unexpected(directory.error());
     }
     if (auto prepared = prepare_durable_store(*directory, config.durable_open_mode, count,
-                                              config.worker_config.explicit_count);
+                                              config.worker_config.explicit_count, config.durable_limits);
         !prepared) {
         return unexpected(prepared.error());
     }
     DurableRuntimeOptions runtime_options{};
+    runtime_options.limits = config.durable_limits;
     if (config.storage_mode == StorageMode::durable_periodic) {
         runtime_options.commit_sync = SegmentCommitSync::deferred;
         runtime_options.sync_interval_ms = config.durable_periodic.sync_interval_ms;

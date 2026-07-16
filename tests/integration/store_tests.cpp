@@ -288,6 +288,101 @@ GLYPHA_TEST("durable Store requires an explicit data directory") {
     GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
 }
 
+GLYPHA_TEST("Store validates durable-only resource policy before initialization") {
+    auto volatile_limits = glyphastore::DurableResourceLimits{};
+    volatile_limits.max_live_keys = 1;
+    const auto volatile_store = glyphastore::Store::open({.durable_limits = volatile_limits});
+    GLYPHA_REQUIRE(!volatile_store.has_value());
+    GLYPHA_REQUIRE(volatile_store.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    StoreTemporaryDirectory temporary;
+    auto invalid_limits = glyphastore::DurableResourceLimits{};
+    invalid_limits.max_write_amplification = 0;
+    const auto invalid = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_limits = invalid_limits,
+    });
+    GLYPHA_REQUIRE(!invalid.has_value());
+    GLYPHA_REQUIRE(invalid.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("default durable budget rejects 256 Worker reservation before bootstrap") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    const auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = glyphastore::kMaximumWorkerCount},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+    });
+    GLYPHA_REQUIRE(!opened.has_value());
+    GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::storage_exhausted);
+    GLYPHA_REQUIRE(!std::filesystem::exists(path / glyphastore::kBootstrapIntentFilename));
+    GLYPHA_REQUIRE(!std::filesystem::exists(path / glyphastore::kManifestFilename));
+}
+
+GLYPHA_TEST("durable live-key budget is reusable after erase") {
+    StoreTemporaryDirectory temporary;
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_live_keys = 1;
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .durable_limits = limits,
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    GLYPHA_REQUIRE((*opened)->put("first", bytes("value")).has_value());
+    const auto exhausted = (*opened)->put("second", bytes("value"));
+    GLYPHA_REQUIRE(!exhausted.has_value());
+    GLYPHA_REQUIRE(exhausted.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE((*opened)->erase("first").has_value());
+    GLYPHA_REQUIRE((*opened)->put("second", bytes("value")).has_value());
+}
+
+GLYPHA_TEST("durable recovery memory and live-key budgets fail before service") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto created = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = path,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        });
+        GLYPHA_REQUIRE(created.has_value());
+        GLYPHA_REQUIRE((*created)->put("recovery-budget", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*created)->put("recovery-budget-2", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*created)->close().has_value());
+    }
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_recovery_memory_bytes = 1;
+    const auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .durable_limits = limits,
+    });
+    GLYPHA_REQUIRE(!reopened.has_value());
+    GLYPHA_REQUIRE(reopened.error().code == glyphastore::ErrorCode::resource_exhausted);
+
+    limits = {};
+    limits.max_live_keys = 1;
+    const auto too_many_keys = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .durable_limits = limits,
+    });
+    GLYPHA_REQUIRE(!too_many_keys.has_value());
+    GLYPHA_REQUIRE(too_many_keys.error().code == glyphastore::ErrorCode::resource_exhausted);
+}
+
 GLYPHA_TEST("durable Store recovery and reads share the injected clock") {
     StoreTemporaryDirectory temporary;
     const auto path = temporary.store_path();

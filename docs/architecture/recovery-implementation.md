@@ -54,6 +54,11 @@ time:
 - the scan buffer is bounded by the fixed 64 MiB Segment size;
 - final per-Worker Indexes accumulate because they are the required recovery result.
 
+Open applies `max_recovery_memory_bytes` before allocating catalog grouping arrays and before each
+new latest-key entry. The estimator charges fixed catalog/Worker components plus conservative map,
+key-copy, and final-Index storage. `max_live_keys` is divided into deterministic Worker partitions;
+a recovered partition over its share rejects open before runtime service.
+
 Expected rebuild time is `O(committed bytes + Records + visible-key hashing)`. Peak temporary memory
 is `O(one committed Segment + distinct keys for the largest Worker partition + catalog grouping)`;
 the returned Index and selected-commit catalog are additional required state. Recovery is currently

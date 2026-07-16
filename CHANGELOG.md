@@ -1,10 +1,23 @@
 # Changelog
 
+- Started P0-08 with a deterministic whole-Worker durable compaction planner, generation-safe v1
+  manifest replacement, physical temporary/peak/amplification gates, a checksummed dual-manifest
+  intent codec, descriptor-relative crash-classified intent publication/removal, and a specified
+  crash-safe retirement protocol. Runtime compaction remains unavailable until Record copying,
+  source retirement, recovery completion, and their kill matrix are implemented.
+
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.
 
 ## [Unreleased]
 
+- Add per-directory deterministic file-I/O fault injection for short positional transfers,
+  `EINTR`, writeback `EIO`, disk/quota exhaustion, and read-only filesystems; extend pre/post
+  publication and mutation recovery-oracle matrices without global test state.
+- Add validated durable resource limits for Store bytes, reserved free space, Segment and manifest
+  counts/bytes, open descriptors, recovery memory, live keys, temporary compaction space, and write
+  amplification; preflight bootstrap and rotation before publication/sealing and expose stable
+  storage, file-size, and descriptor exhaustion errors.
 - Add idempotent public `Store::close()` with atomic admission quiescing, in-flight operation
   draining, forced partial group closure, observable sticky final-flush errors, concurrent
   flush/close safety, cache-line-isolated per-Worker accounting, executor shutdown, and immediate

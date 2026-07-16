@@ -31,7 +31,9 @@ implementation or design document alone is not sufficient.
   callback exceptions are translated to stable categories. A dedicated allocator-interposition
   executable now fails every allocation observed in durable mutation, rotation, read, and group
   paths. Public `Store::close()` now prevents new admission, drains in-flight calls, makes final
-  flush failure observable, and releases executors and the directory lock; cancellation/deadline
+  flush failure observable, and releases executors and the directory lock. Embedded durable config
+  now validates storage, free-space, Segment/manifest, descriptor, recovery-memory, live-key,
+  temporary-compaction, and write-amplification limits; daemon precedence and cancellation/deadline
   semantics remain pending.
 
 ### Durability and recovery
@@ -56,7 +58,9 @@ implementation or design document alone is not sufficient.
   pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
   Segment unit recovery rejects committed corruption and ignores uncommitted tails; missing catalog
-  files and process termination are covered. System-level disk-full/quota/writeback-error and
+  files and process termination are covered. Deterministic per-directory seams now exercise short
+  reads/writes, `EINTR`, delayed-sync `EIO`, `ENOSPC`/`EDQUOT`, `EROFS`, and every embedded mutation
+  commit boundary with a recovery oracle. System-level disk-full/quota/writeback-error and
   power-loss matrices remain pending.
 - [ ] Backup, restore, verification, and version migration are tested with released artifacts.
 
@@ -72,7 +76,8 @@ implementation or design document alone is not sufficient.
   Allocation sites in durable put/update/erase/read/group/rotation paths are enumerated
   deterministically per native STL build, including pre-write recovery invariants, post-write
   fail-close behavior, allocation-free steady-state publication, and background waiter release.
-  Exhaustive socket, thread-creation, and platform clock failures remain pending.
+  Filesystem publication and mutation boundaries now have deterministic pre/post failure matrices;
+  exhaustive socket, thread-creation, platform clock, and hardware power-cut failures remain pending.
 - [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
@@ -102,6 +107,8 @@ implementation or design document alone is not sufficient.
 ### Operations and security
 
 - [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
+  Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests;
+  daemon CLI/file/environment precedence and deployment profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
 - [ ] Authentication, authorization, transport security, rate limits, and audit requirements are specified.

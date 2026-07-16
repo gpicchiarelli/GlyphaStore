@@ -1,6 +1,7 @@
 #include "glyphastore/persistence/recovery.hpp"
 
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 
 #include <limits>
@@ -21,6 +22,42 @@ struct LatestRecord {
 
 using LatestMap = std::unordered_map<std::string, LatestRecord>;
 
+class RecoveryMemoryBudget final {
+  public:
+    explicit RecoveryMemoryBudget(const std::uint64_t maximum) : maximum_(maximum) {}
+
+    [[nodiscard]] auto ensure_peak(const std::uint64_t additional) const -> Status {
+        if (additional > maximum_ - retained_) {
+            return fail(ErrorCode::resource_exhausted,
+                        "durable recovery exceeds the configured memory budget");
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto retain(const std::uint64_t additional) -> Status {
+        if (auto available = ensure_peak(additional); !available) {
+            return available;
+        }
+        retained_ += additional;
+        return {};
+    }
+
+    [[nodiscard]] auto retain_repeated(const std::uint64_t unit, const std::size_t count) -> Status {
+        if (unit != 0 && count > std::numeric_limits<std::uint64_t>::max() / unit) {
+            return fail(ErrorCode::arithmetic_overflow, "durable recovery memory estimate overflow");
+        }
+        return retain(unit * static_cast<std::uint64_t>(count));
+    }
+
+  private:
+    std::uint64_t maximum_{};
+    std::uint64_t retained_{};
+};
+
+inline constexpr std::uint64_t kRecoveryBytesPerSegment = 256;
+inline constexpr std::uint64_t kRecoveryBytesPerWorker = 1024;
+inline constexpr std::uint64_t kRecoveryBytesPerKey = 256;
+
 struct WorkerScanContext {
     WorkerId worker_id;
     std::size_t worker_count{};
@@ -29,6 +66,7 @@ struct WorkerScanContext {
     SequenceNumber maximum_sequence{};
     LatestMap* latest{};
     RebuildStats* stats{};
+    RecoveryMemoryBudget* memory_budget{};
 };
 
 auto segment_error(const ManifestSegmentEntry& entry, Error error) -> Unexpected {
@@ -57,6 +95,14 @@ auto visit_recovery_record(void* opaque, const RecordRef& reference, const Recor
         context.maximum_sequence = record.sequence;
     }
 
+    const auto key_bytes = static_cast<std::uint64_t>(record.key.size());
+    if (key_bytes > (std::numeric_limits<std::uint64_t>::max() - kRecoveryBytesPerKey) / 2U) {
+        return fail(ErrorCode::arithmetic_overflow, "durable recovery key memory estimate overflow");
+    }
+    const auto entry_bytes = kRecoveryBytesPerKey + key_bytes * 2U;
+    if (auto memory = context.memory_budget->ensure_peak(entry_bytes); !memory) {
+        return memory;
+    }
     std::string key{record.key_string()};
     const auto current = context.latest->find(key);
     if (current != context.latest->end() &&
@@ -69,6 +115,9 @@ auto visit_recovery_record(void* opaque, const RecordRef& reference, const Recor
                            .deleted = record.opcode == Opcode::erase,
                            .expired = record.expired(context.now_ns)};
     if (current == context.latest->end()) {
+        if (auto memory = context.memory_budget->retain(entry_bytes); !memory) {
+            return memory;
+        }
         context.latest->emplace(std::move(key), candidate);
     } else if (current->second.reference.sequence.value < record.sequence.value) {
         current->second = candidate;
@@ -93,11 +142,33 @@ auto validate_lifecycle(const ManifestSegmentEntry& entry, const SegmentCommit& 
 
 } // namespace
 
-auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns)
-    -> Result<DurableRecoveryState> {
-    auto manifest = directory.read_manifest();
+auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
+                           const DurableResourceLimits& limits) -> Result<DurableRecoveryState> {
+    if (auto valid = validate_durable_resource_limits(limits); !valid) {
+        return unexpected(valid.error());
+    }
+    auto manifest = directory.read_manifest(limits.max_manifest_bytes);
     if (!manifest) {
         return unexpected(manifest.error());
+    }
+    if (auto resources = validate_durable_manifest_resources(*manifest, limits); !resources) {
+        return unexpected(resources.error());
+    }
+    RecoveryMemoryBudget memory_budget{limits.max_recovery_memory_bytes};
+    const auto manifest_memory = durable_manifest_bytes(manifest->segments.size());
+    if (!manifest_memory) {
+        return unexpected(manifest_memory.error());
+    }
+    if (auto memory = memory_budget.retain(*manifest_memory); !memory) {
+        return unexpected(memory.error());
+    }
+    if (auto memory = memory_budget.retain_repeated(kRecoveryBytesPerSegment, manifest->segments.size());
+        !memory) {
+        return unexpected(memory.error());
+    }
+    if (auto memory = memory_budget.retain_repeated(kRecoveryBytesPerWorker, manifest->worker_count);
+        !memory) {
+        return unexpected(memory.error());
     }
     auto namespace_audit = audit_data_directory(directory, *manifest);
     if (!namespace_audit) {
@@ -135,6 +206,7 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns)
             .now_ns = now_ns,
             .latest = &latest,
             .stats = &recovery_stats.rebuild,
+            .memory_budget = &memory_budget,
         };
         SegmentId active_segment{};
         bool active_requires_rotation{};
@@ -185,6 +257,20 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns)
         if (context.maximum_sequence.value == std::numeric_limits<std::uint64_t>::max()) {
             return fail(ErrorCode::arithmetic_overflow,
                         "Worker sequence space is exhausted during durable recovery");
+        }
+
+        const auto live_key_limit =
+            durable_worker_live_key_limit(worker_index, manifest->worker_count, limits.max_live_keys);
+        std::size_t visible_keys{};
+        for (const auto& [key, record] : latest) {
+            static_cast<void>(key);
+            if (!record.deleted && !record.expired) {
+                ++visible_keys;
+            }
+        }
+        if (visible_keys > live_key_limit) {
+            return fail(ErrorCode::resource_exhausted,
+                        "durable recovery exceeds a Worker live-key budget partition");
         }
 
         Index index;

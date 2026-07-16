@@ -1,6 +1,6 @@
 # Persistence v1 production roadmap
 
-This document is the repository-wide engineering audit and execution plan as of 2026-07-15. It
+This document is the repository-wide engineering audit and execution plan as of 2026-07-16. It
 covers the public API, volatile and durable runtimes, persistent files, recovery, the TCP daemon,
 tests, build and release automation, operations, security, and performance.
 
@@ -28,7 +28,8 @@ It is not production ready yet. The most important gaps are behavioral rather th
 - recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
   Worker; released-artifact and native-platform evidence remains to be accumulated;
 - durable Segments and manifest entries have no crash-safe compaction and retirement lifecycle;
-- disk, memory, descriptor, recovery, and write-amplification budgets are not configurable;
+- embedded durable operation now has explicit disk, descriptor, recovery, live-key, temporary-space,
+  and write-amplification policy; daemon configuration and compaction-time enforcement remain;
 - process-kill coverage is useful but is not evidence for sudden power loss, every supported
   filesystem, disk-full behavior, or remote/user-space filesystems;
 - the offline inspection and rebuild commands are placeholders, while backup, restore, metrics,
@@ -167,9 +168,13 @@ samples each; aggregate worker-affine parallel get and put medians remained with
 
 ### P0-06 — Add storage and recovery resource budgets
 
-**Current evidence:** one 64 MiB active Segment is created per Worker (up to 16 GiB at 256 Workers),
-and no maximum exists for disk bytes, Segment count, manifest size, recovery memory, or temporary
-compaction space.
+**Status:** implemented for the embedded v1 Store. `DurableResourceLimits` bounds peak Store bytes,
+available-space reserve, Segment count, manifest bytes, Store descriptors, estimated recovery
+memory, live keys, temporary compaction space, and write amplification. These are runtime policy and
+do not change the v1 disk format.
+
+**Root cause:** one 64 MiB active Segment was created per Worker (up to 16 GiB at 256 Workers), while
+catalog growth, recovery keys, descriptors, and rotation had only format or address-space ceilings.
 
 **Required change:** introduce validated limits for usable disk reservation, total Store bytes,
 Segment count, manifest bytes, open descriptors, recovery memory, live-key count, temporary
@@ -180,12 +185,28 @@ published. Map `ENOSPC`, `EDQUOT`, `EFBIG`, `EMFILE`, and memory exhaustion to s
 opening 256 Workers cannot reserve space without an explicit sufficient budget; recovery reports
 resource exhaustion rather than terminating.
 
+**Evidence:** bootstrap accounts for the simultaneous intent, manifest, and active Segments before
+publishing the intent. Rotation accounts for the replacement Segment and both manifest generations
+before sealing the old active Segment. Reopen bounds manifest allocation before decode, validates
+steady Store bytes and descriptor/RLIMIT requirements, and applies a conservative key-aware recovery
+memory estimator. Live-key capacity is divided into deterministic Worker-owned partitions whose sum
+is the public limit, avoiding global mutation-path contention. Tests cover all invalid fields,
+configured byte/count/descriptor boundaries, injected available space, a 256-Worker rejection with
+no bootstrap intent, reusable live-key capacity, constrained recovery, and rotation rejection while
+the persisted active Segment remains unsealed. Native `ENOSPC`/`EDQUOT`, `EFBIG`, and
+`EMFILE`/`ENFILE` map to `storage_exhausted`, `file_too_large`, and `descriptor_exhausted`.
+Two order-reversed Release runs of nine samples for 4,096 one-Worker periodic durable puts measured
+baseline medians of 42.52/45.75k put/s and limited-build medians of 44.01/45.28k put/s, showing no
+regression from Worker-local live-key admission.
+
 ### P0-07 — Complete the failure matrix beyond process termination
 
-**Current evidence:** v1 process-kill tests cover bootstrap, put, periodic/group put, and rotation
-checkpoints. They do not simulate controller caches, torn sectors, sudden power loss, quota, or all
-filesystem implementations. The crash harness previously used shared temporary names; each run is
-now isolated by process and start-time suffix.
+**Status:** deterministic in-process coverage is implemented; hardware/filesystem certification is
+still open. v1 process-kill tests cover bootstrap, put, periodic/group put, and rotation checkpoints,
+and each run is isolated by process and start-time suffix. Instance-local raw I/O seams now force
+short `pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS` without global
+test state. Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows
+cannot be established by an in-process seam and remain release blockers.
 
 **Required change:** add deterministic short-write/read, `EINTR`, delayed writeback `EIO`, `ENOSPC`,
 `EDQUOT`, `EROFS`, missing file, corrupt directory entry, rename, file-sync, and directory-sync
@@ -195,10 +216,33 @@ faults. Add VM/block-device power-cut tests and a documented filesystem/mount ma
 run concurrently; supported filesystem rows pass repeated power-cut recovery; unsupported remote
 or user-space filesystems are rejected or prominently documented.
 
+**Evidence:** exact-I/O tests prove retry after `EINTR`, completion after repeated short transfers,
+and stable native error categories. Manifest, bootstrap intent, and Segment creation matrices verify
+every pre-rename boundary leaves the old authority or a pristine namespace; directory-sync failure
+after rename is indeterminate and fail-closed. Durable mutation tests cross write, Record sync,
+commit-slot write, and commit-slot sync with `io_error`, `storage_exhausted`, and
+`read_only_filesystem`, then reopen and verify the absent/optional commit oracle and rebuilt Index.
+Existing namespace recovery cases also reject missing catalog files, malformed names, symlinks, hard
+links, and unlisted entries without adopting or repairing them.
+The SIGKILL bootstrap matrix now begins at data-directory creation and parent-directory sync.
+Periodic and group crash matrices also completed concurrently with isolated namespaces and markers.
+The filesystem contract now prominently marks NFS, SMB, FUSE, overlay, and other remote/user-space
+storage unsupported and records explicit APFS/Linux/BSD certification rows. VM/block-device
+power-cut automation and pinned native mount rows remain before this P0 item can be complete.
+
 ### P0-08 — Implement crash-safe durable compaction in v1
 
-**Current evidence:** the in-memory vacuum builder exists, but durable sealed Segments and manifest
-entries accumulate indefinitely and there is no retirement/deletion protocol.
+**Status:** in progress. The in-memory vacuum builder exists, but durable sealed Segments and
+manifest entries still accumulate indefinitely and there is not yet an online retirement path. A
+new deterministic v1 planner now treats one Worker's complete sealed history as the atomic unit,
+reuses the earliest source IDs with incremented generations, preserves the active Segment, and
+rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
+A checksummed intent codec embeds and validates both complete manifest authorities and their exact
+canonical transition. Descriptor-relative intent publication and removal now implement private
+temporary creation, exact write, file sync, rename, `unlinkat`, bounded read, and mandatory directory
+sync with explicit pre-operation/indeterminate outcomes. This prevents a per-Segment tombstone drop
+from resurrecting older values, but Record copy, manifest installation, source unlink recovery,
+scheduling, and the complete crash matrix remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -208,6 +252,18 @@ recovery of recognizable compaction temporaries, and an online scheduling policy
 **Acceptance:** kills at every copy, validation, manifest, rename, unlink, and directory-sync
 boundary recover exactly one valid catalog; readers never observe deleted backing files; space and
 write amplification remain within configured limits; no format change is introduced.
+
+**Implemented evidence:** planner tests cover header-aware output sizing, complete sealed-set
+replacement, zero-output retirement, stable Segment-ID ordering, incremented generations, unchanged
+routing/active identity, encodable next manifests, generation exhaustion, no-gain rejection, and
+temporary-space, peak-Store, and physical write-amplification limits. The protocol and reader
+ownership rules are specified in
+[crash-safe durable compaction](architecture/durable-compaction.md).
+Intent codec tests additionally cover exact dual-manifest round trips, truncation, trailing bytes,
+CRC corruption, header/payload disagreement, unknown versions, reserved bytes, and noncanonical
+catalog transitions.
+Filesystem tests cross intent write, sync, rename, post-rename directory sync, pre-unlink rejection,
+post-unlink directory sync, duplicate intent, bounded read, reopen, and namespace classification.
 
 ## P1 — complete the product contract
 
@@ -226,9 +282,9 @@ write amplification remain within configured limits; no format change is introdu
 
 ### Recovery scalability and read-path bounds
 
-- Enforce a recovery memory budget. The current full-key `unordered_map` and per-Segment read buffer
-  can exhaust memory on large stores; consider sorted spill runs or a checkpointed derived index
-  only after crash and compatibility proofs.
+- Replace the implemented conservative recovery-memory estimator with allocator-accounted arenas or
+  bounded sorted spill runs if measurements show unacceptable rejection or scale. A checkpointed
+  derived index remains gated on crash and compatibility proofs.
 - Parallelize recovery by Worker only behind descriptor, memory, and I/O-token limits. Compare
   sequential and bounded parallel scans on SSD, HDD, and constrained containers.
 - Replace temporary allocating string lookups with transparent `string_view` hashing/equality.

@@ -87,12 +87,30 @@ and returns a sticky idempotent status. Concurrent close callers receive the sam
 destructor performs close as a non-throwing fallback but cannot expose its result. Owned values
 remain valid after close and destruction.
 
+## Durable resource policy
+
+`StoreConfig::durable_limits` is immutable runtime policy, not persistent metadata. It bounds total
+and peak Store bytes, free-space reserve, Segment count, manifest bytes, Store-owned descriptors,
+recovery memory, live keys, temporary compaction bytes, and write amplification. The same v1 Store
+may therefore be opened under different policy, but a policy smaller than its existing catalog or
+recovery state rejects open without editing the Store.
+
+The live-key limit is partitioned deterministically across persisted Workers and the partition sizes
+sum exactly to the configured total. This preserves Worker-local admission and avoids a shared
+counter on the mutation path. A new key returns `resource_exhausted` when its owner partition is
+full; replacement remains permitted, and a committed erase returns its capacity.
+
+Bootstrap and rotation check configured peak namespace bytes and currently available filesystem
+space before publishing an intent or sealing an active Segment. The free-space sample is advisory in
+the presence of other writers and thin provisioning; fixed-size native Segment preallocation remains
+the authoritative allocation boundary.
+
 ## Errors and mutation outcomes
 
 Public errors have stable categories and may carry diagnostic text that is not intended for
 machine parsing. At minimum the API distinguishes invalid input, not found/expired, resource
-limit, incompatible format, corruption, I/O failure, unavailable/overloaded, and internal
-fail-closed state.
+limit, storage/quota exhaustion, file-size limit, descriptor exhaustion, read-only filesystem,
+incompatible format, corruption, I/O failure, unavailable/overloaded, and internal fail-closed state.
 
 - Invalid input and not-found failures do not mutate state.
 - A durable-sync failure before the durable commit point must not reappear after recovery.

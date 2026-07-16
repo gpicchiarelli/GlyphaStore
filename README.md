@@ -120,6 +120,11 @@ retains the full durable flush.
 All durable modes use the same persistent v1 Manifest, Segment, commit-slot, and Record formats.
 There is no alternate persistent format or automatic format migration path.
 
+> [!WARNING]
+> Durable mode is not certified on any filesystem yet. Use it only on local development storage;
+> NFS, SMB, FUSE, overlay and other remote or user-space filesystems are unsupported. Process-kill
+> and deterministic syscall-fault tests do not replace repeated block-device power-cut evidence.
+
 ```cpp
 glyphastore::StoreConfig config{
     .worker_config = {.explicit_count = 4},
@@ -127,6 +132,14 @@ glyphastore::StoreConfig config{
     .data_directory = "/private/path/to/store",
     .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,
     .durable_periodic = {.sync_interval_ms = 1000}, // 4096 records / 4 MiB / 1000 ms by default
+    .durable_limits = {
+        .max_store_bytes = 65ULL * 1024 * 1024 * 1024,
+        .reserved_free_bytes = 2ULL * 1024 * 1024 * 1024,
+        .max_segment_count = 1024,
+        .max_recovery_memory_bytes = 2ULL * 1024 * 1024 * 1024,
+        .max_live_keys = 5'000'000,
+        .max_temporary_compaction_bytes = 8ULL * 1024 * 1024 * 1024,
+    },
 };
 auto store = glyphastore::Store::open(config);
 if (!store) {
@@ -164,6 +177,12 @@ auto store = glyphastore::Store::open(config);
 `create_new` refuses an existing leaf, `open_existing` never initializes one, and
 `open_or_create` initializes only a missing or otherwise pristine directory. Reopening uses the
 persisted Worker count; an explicit conflicting count is rejected.
+
+Resource limits are runtime policy and are not written into persistence v1. Defaults cap the Store
+at 8 GiB/127 Segments, preserve 256 MiB of filesystem space, allow a 1 MiB manifest and 512 Store
+descriptors, and bound recovery to 1 GiB and 10 million live keys. Creation, reopen, and rotation
+fail before their first persistent transition when the configured policy cannot cover the required
+peak. Deployments should set explicit values from their storage, process, and recovery envelope.
 
 ## Architecture
 
@@ -264,6 +283,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Recovery implementation](docs/architecture/recovery-implementation.md) | Manifest validation, partitioned Index rebuild, and sequence restoration |
 | [Namespace audit](docs/architecture/namespace-policy.md) | Descriptor-relative enumeration, orphan/temporary policy, and fail-closed limits |
 | [Durable runtime catalog](docs/architecture/durable-runtime-catalog.md) | Bounded file handles, verified reads, and sticky fail-closed state |
+| [Crash-safe durable compaction](docs/architecture/durable-compaction.md) | Whole-Worker sealed-history replacement and retirement protocol |
 | [Public API contract](docs/architecture/public-api-contract.md) | Supported surface, read ownership, errors, and compatibility |
 | [Index model](docs/architecture/index-model.md) | Exact-key lookup and SwissTable-oriented design |
 | [Worker model](docs/architecture/worker-model.md) | Ownership, routing, topology, and concurrency |

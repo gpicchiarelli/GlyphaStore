@@ -3,6 +3,7 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/swiss_table.hpp"
 #include "glyphastore/persistence/durable_flush_coordinator.hpp"
+#include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 
@@ -96,11 +97,15 @@ using HotRecordMap =
     return {.bytes = entry.value_bytes, .sequence = entry.sequence.value, .expire_at_ns = entry.expire_at_ns};
 }
 
-auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_active) -> Result<Manifest> {
+auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_active,
+                       const DurableResourceLimits& limits) -> Result<Manifest> {
     if (current.manifest_generation == std::numeric_limits<std::uint64_t>::max() ||
         current.next_segment_id.value == std::numeric_limits<std::uint64_t>::max() ||
         current.segments.size() == kMaximumManifestSegmentCount) {
         return fail(ErrorCode::arithmetic_overflow, "durable rotation catalog space is exhausted");
+    }
+    if (auto resources = validate_durable_rotation_resources(current.segments.size(), limits); !resources) {
+        return unexpected(resources.error());
     }
     Manifest next = current;
     auto found = std::lower_bound(next.segments.begin(), next.segments.end(), old_active.segment_id,
@@ -121,10 +126,13 @@ auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_
     return next;
 }
 
-auto complete_interrupted_rotation(DataDirectory& directory) -> Status {
-    auto manifest = directory.read_manifest();
+auto complete_interrupted_rotation(DataDirectory& directory, const DurableResourceLimits& limits) -> Status {
+    auto manifest = directory.read_manifest(limits.max_manifest_bytes);
     if (!manifest) {
         return unexpected(manifest.error());
+    }
+    if (auto resources = validate_durable_manifest_resources(*manifest, limits); !resources) {
+        return resources;
     }
     auto audit = audit_data_directory(directory, *manifest);
     if (!audit) {
@@ -181,9 +189,24 @@ auto complete_interrupted_rotation(DataDirectory& directory) -> Status {
         .generation = manifest->next_segment_generation,
         .owner_worker = sealed_active->owner_worker,
     };
-    auto next = rotation_manifest(*manifest, *sealed_active);
+    auto next = rotation_manifest(*manifest, *sealed_active, limits);
     if (!next) {
         return unexpected(next.error());
+    }
+    const auto next_manifest_bytes = durable_manifest_bytes(next->segments.size());
+    if (!next_manifest_bytes) {
+        return unexpected(next_manifest_bytes.error());
+    }
+    auto additional = *next_manifest_bytes;
+    if (!prepared_orphan) {
+        if (additional > std::numeric_limits<std::uint64_t>::max() - kSegmentSizeBytes) {
+            return fail(ErrorCode::arithmetic_overflow,
+                        "interrupted rotation free-space requirement overflow");
+        }
+        additional += kSegmentSizeBytes;
+    }
+    if (auto available = require_durable_available_space(directory, additional, limits); !available) {
+        return available;
     }
     std::optional<DurableSegmentFile> replacement;
     if (prepared_orphan) {
@@ -209,7 +232,7 @@ auto complete_interrupted_rotation(DataDirectory& directory) -> Status {
         replacement.emplace(std::move(*created.file));
     }
 
-    const auto published = directory.publish_manifest(*next);
+    const auto published = directory.publish_manifest(*next, limits.max_manifest_bytes);
     if (!published.durable()) {
         return unexpected(
             published.error.value_or(Error{ErrorCode::io_error, "rotation manifest publication failed"}));
@@ -466,10 +489,13 @@ auto DurableRuntimeCatalog::open_existing(const std::filesystem::path& path,
 auto DurableRuntimeCatalog::open_locked(DataDirectory directory, const std::uint64_t recovery_now_ns,
                                         const DurableRuntimeOptions options)
     -> Result<std::unique_ptr<DurableRuntimeCatalog>> {
-    if (auto completed = complete_interrupted_rotation(directory); !completed) {
+    if (auto valid = validate_durable_resource_limits(options.limits); !valid) {
+        return unexpected(valid.error());
+    }
+    if (auto completed = complete_interrupted_rotation(directory, options.limits); !completed) {
         return unexpected(completed.error());
     }
-    auto recovered = recover_durable_state(directory, recovery_now_ns);
+    auto recovered = recover_durable_state(directory, recovery_now_ns, options.limits);
     if (!recovered) {
         return unexpected(recovered.error());
     }
@@ -699,9 +725,23 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     }
     const auto old_index = static_cast<std::size_t>(old_position - manifest_.segments.begin());
     const auto old_entry = *old_position;
-    auto next_manifest = rotation_manifest(manifest_, old_entry);
+    auto next_manifest = rotation_manifest(manifest_, old_entry, options_.limits);
     if (!next_manifest) {
         return mutation_failure(DurableMutationOutcome::not_committed, next_manifest.error());
+    }
+    const auto next_manifest_bytes = durable_manifest_bytes(next_manifest->segments.size());
+    if (!next_manifest_bytes) {
+        return mutation_failure(DurableMutationOutcome::not_committed, next_manifest_bytes.error());
+    }
+    if (*next_manifest_bytes > std::numeric_limits<std::uint64_t>::max() - kSegmentSizeBytes) {
+        return mutation_failure(
+            DurableMutationOutcome::not_committed,
+            Error{ErrorCode::arithmetic_overflow, "rotation free-space requirement overflow"});
+    }
+    if (auto available = require_durable_available_space(directory_, kSegmentSizeBytes + *next_manifest_bytes,
+                                                         options_.limits);
+        !available) {
+        return mutation_failure(DurableMutationOutcome::not_committed, available.error());
     }
     segments_.reserve(segments_.size() + 1U);
 
@@ -759,7 +799,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
             created.error.value_or(Error{ErrorCode::io_error, "replacement Segment creation failed"}));
     }
     const auto replacement_selected = created.file->selected_commit();
-    const auto published = directory_.publish_manifest(*next_manifest);
+    const auto published = directory_.publish_manifest(*next_manifest, options_.limits.max_manifest_bytes);
     if (!published.durable()) {
         healthy_.store(false, std::memory_order_release);
         return mutation_failure(
@@ -827,6 +867,17 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         std::size_t prospective_group_insertions = worker.pending_group_insertions;
         std::size_t prospective_group_heap_key_bytes = worker.pending_group_heap_key_bytes;
         if (opcode == Opcode::put) {
+            if (!key_present) {
+                const auto live_key_limit = durable_worker_live_key_limit(worker_index, workers_.size(),
+                                                                          options_.limits.max_live_keys);
+                const auto current_size = worker.index.stats().size;
+                if (current_size >= live_key_limit ||
+                    prospective_group_insertions >= live_key_limit - current_size) {
+                    return mutation_failure(
+                        DurableMutationOutcome::not_committed,
+                        Error{ErrorCode::resource_exhausted, "durable Worker live-key budget is exhausted"});
+                }
+            }
             if (auto prepared = worker.index.prepare_insert(hashed); !prepared) {
                 return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }

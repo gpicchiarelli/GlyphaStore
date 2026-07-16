@@ -40,11 +40,14 @@ add_library(glyphastore_core
     src/index/key_arena.cpp
     src/index/swiss_table.cpp
     src/persistence/bootstrap.cpp
+    src/persistence/compaction.cpp
+    src/persistence/compaction_intent.cpp
     src/persistence/filesystem.cpp
     src/persistence/manifest.cpp
     src/persistence/namespace_audit.cpp
     src/persistence/durable_flush_coordinator.cpp
     src/persistence/recovery.cpp
+    src/persistence/resource_limits.cpp
     src/persistence/runtime_catalog.cpp
     src/persistence/segment_file.cpp
     src/segment/crc32c.cpp
@@ -139,6 +142,8 @@ include(CTest)
 if(BUILD_TESTING)
     add_executable(glyphastore_tests
         tests/test_main.cpp
+        tests/unit/compaction_intent_tests.cpp
+        tests/unit/compaction_tests.cpp
         tests/unit/index_tests.cpp
         tests/unit/manifest_tests.cpp
         tests/unit/namespace_audit_tests.cpp
@@ -149,6 +154,7 @@ if(BUILD_TESTING)
         tests/unit/connection_handoff_tests.cpp
         tests/unit/durable_flush_coordinator_tests.cpp
         tests/unit/record_tests.cpp
+        tests/unit/resource_limits_tests.cpp
         tests/unit/server_protocol_tests.cpp
         tests/unit/segment_tests.cpp
         tests/unit/segment_header_tests.cpp

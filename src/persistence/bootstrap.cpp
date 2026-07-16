@@ -1,11 +1,14 @@
 #include "glyphastore/persistence/bootstrap.hpp"
 
+#include "glyphastore/core/types.hpp"
+#include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <vector>
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/random.h>
 #else
@@ -81,29 +84,33 @@ auto require_worker_count(const Manifest& manifest, const std::optional<std::siz
 }
 
 auto complete_bootstrap(DataDirectory& directory, const Manifest& intent,
-                        const std::optional<std::size_t> required_worker_count) -> Status {
+                        const std::optional<std::size_t> required_worker_count,
+                        const DurableResourceLimits& limits) -> Status {
     if (auto valid = validate_initial_manifest(intent); !valid) {
         return valid;
     }
     if (auto compatible = require_worker_count(intent, required_worker_count); !compatible) {
         return compatible;
     }
-    auto published = directory.read_manifest();
+    if (auto resources = validate_durable_bootstrap_resources(intent.worker_count, limits); !resources) {
+        return resources;
+    }
+    auto published = directory.read_manifest(limits.max_manifest_bytes);
+    bool publish_required{};
     if (published) {
         if (*published != intent) {
             return fail(ErrorCode::corrupted_data, "published manifest disagrees with bootstrap intent");
         }
     } else if (published.error().code == ErrorCode::not_found) {
-        const auto result = directory.publish_manifest(intent);
-        if (!result.durable()) {
-            return unexpected(
-                result.error.value_or(Error{ErrorCode::io_error, "initial manifest publication failed"}));
-        }
+        publish_required = true;
     } else {
         return unexpected(published.error());
     }
 
-    for (const auto& entry : intent.segments) {
+    std::vector<bool> missing_segments(intent.segments.size());
+    std::size_t missing_count{};
+    for (std::size_t index = 0; index < intent.segments.size(); ++index) {
+        const auto& entry = intent.segments[index];
         const SegmentHeaderIdentity identity{.store_id = intent.store_id,
                                              .segment_id = entry.segment_id,
                                              .generation = entry.generation,
@@ -121,6 +128,45 @@ auto complete_bootstrap(DataDirectory& directory, const Manifest& intent,
         if (existing.error().code != ErrorCode::not_found) {
             return unexpected(existing.error());
         }
+        missing_segments[index] = true;
+        ++missing_count;
+    }
+
+    const auto manifest_bytes = durable_manifest_bytes(intent.segments.size());
+    if (!manifest_bytes) {
+        return unexpected(manifest_bytes.error());
+    }
+    if (missing_count > std::numeric_limits<std::uint64_t>::max() / kSegmentSizeBytes) {
+        return fail(ErrorCode::arithmetic_overflow, "bootstrap remaining byte requirement overflow");
+    }
+    auto additional = static_cast<std::uint64_t>(missing_count) * kSegmentSizeBytes;
+    if (publish_required) {
+        if (*manifest_bytes > std::numeric_limits<std::uint64_t>::max() - additional) {
+            return fail(ErrorCode::arithmetic_overflow, "bootstrap remaining byte requirement overflow");
+        }
+        additional += *manifest_bytes;
+    }
+    if (auto available = require_durable_available_space(directory, additional, limits); !available) {
+        return available;
+    }
+
+    if (publish_required) {
+        const auto result = directory.publish_manifest(intent, limits.max_manifest_bytes);
+        if (!result.durable()) {
+            return unexpected(
+                result.error.value_or(Error{ErrorCode::io_error, "initial manifest publication failed"}));
+        }
+    }
+
+    for (std::size_t index = 0; index < intent.segments.size(); ++index) {
+        if (!missing_segments[index]) {
+            continue;
+        }
+        const auto& entry = intent.segments[index];
+        const SegmentHeaderIdentity identity{.store_id = intent.store_id,
+                                             .segment_id = entry.segment_id,
+                                             .generation = entry.generation,
+                                             .owner_worker = entry.owner_worker};
         auto created = DurableSegmentFile::create(directory, identity);
         if (!created.durable()) {
             return unexpected(
@@ -134,17 +180,24 @@ auto complete_bootstrap(DataDirectory& directory, const Manifest& intent,
 
 auto prepare_durable_store(DataDirectory& directory, const DurableOpenMode mode,
                            const std::size_t creation_worker_count,
-                           const std::optional<std::size_t> required_worker_count) -> Status {
-    auto intent = directory.read_bootstrap_intent();
+                           const std::optional<std::size_t> required_worker_count,
+                           const DurableResourceLimits& limits) -> Status {
+    if (auto valid = validate_durable_resource_limits(limits); !valid) {
+        return valid;
+    }
+    auto intent = directory.read_bootstrap_intent(limits.max_manifest_bytes);
     if (intent) {
-        return complete_bootstrap(directory, *intent, required_worker_count);
+        return complete_bootstrap(directory, *intent, required_worker_count, limits);
     }
     if (intent.error().code != ErrorCode::not_found) {
         return unexpected(intent.error());
     }
 
-    auto manifest = directory.read_manifest();
+    auto manifest = directory.read_manifest(limits.max_manifest_bytes);
     if (manifest) {
+        if (auto resources = validate_durable_manifest_resources(*manifest, limits); !resources) {
+            return resources;
+        }
         return require_worker_count(*manifest, required_worker_count);
     }
     if (manifest.error().code != ErrorCode::not_found) {
@@ -164,10 +217,29 @@ auto prepare_durable_store(DataDirectory& directory, const DurableOpenMode mode,
     if (!created) {
         return unexpected(created.error());
     }
-    if (auto published = directory.publish_bootstrap_intent(*created); !published) {
+    if (auto resources = validate_durable_bootstrap_resources(creation_worker_count, limits); !resources) {
+        return resources;
+    }
+    const auto manifest_bytes = durable_manifest_bytes(creation_worker_count);
+    if (!manifest_bytes) {
+        return unexpected(manifest_bytes.error());
+    }
+    if (creation_worker_count > std::numeric_limits<std::uint64_t>::max() / kSegmentSizeBytes) {
+        return fail(ErrorCode::arithmetic_overflow, "bootstrap byte requirement overflow");
+    }
+    auto required = static_cast<std::uint64_t>(creation_worker_count) * kSegmentSizeBytes;
+    if (*manifest_bytes > (std::numeric_limits<std::uint64_t>::max() - required) / 2U) {
+        return fail(ErrorCode::arithmetic_overflow, "bootstrap byte requirement overflow");
+    }
+    required += *manifest_bytes * 2U;
+    if (auto available = require_durable_available_space(directory, required, limits); !available) {
+        return available;
+    }
+    if (auto published = directory.publish_bootstrap_intent(*created, limits.max_manifest_bytes);
+        !published) {
         return published;
     }
-    return complete_bootstrap(directory, *created, required_worker_count);
+    return complete_bootstrap(directory, *created, required_worker_count, limits);
 }
 
 } // namespace glyphastore

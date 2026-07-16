@@ -404,10 +404,11 @@ enum class RecoveryExpectation { absent, optional, present };
 
 [[nodiscard]] auto scenario_boundaries(const std::string_view scenario) -> std::vector<std::string_view> {
     if (scenario == "bootstrap") {
-        return {"write_bootstrap",      "sync_bootstrap",    "rename_bootstrap",  "sync_directory",
-                "write_manifest",       "sync_manifest",     "rename_manifest",   "preallocate_segment",
-                "write_segment_header", "sync_segment_file", "rename_segment",    "remove_bootstrap",
-                "write_record",         "sync_record",       "write_commit_slot", "sync_commit_slot"};
+        return {"create_data_directory", "sync_parent_directory", "write_bootstrap",      "sync_bootstrap",
+                "rename_bootstrap",      "sync_directory",        "write_manifest",       "sync_manifest",
+                "rename_manifest",       "preallocate_segment",   "write_segment_header", "sync_segment_file",
+                "rename_segment",        "remove_bootstrap",      "write_record",         "sync_record",
+                "write_commit_slot",     "sync_commit_slot"};
     }
     if (scenario == "put") {
         return {"write_record", "sync_record", "write_commit_slot", "sync_commit_slot"};

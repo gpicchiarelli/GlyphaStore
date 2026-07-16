@@ -31,6 +31,10 @@ namespace {
     case ErrorCode::record_too_large:
         return ResponseStatus::invalid_request;
     case ErrorCode::resource_exhausted:
+    case ErrorCode::storage_exhausted:
+    case ErrorCode::file_too_large:
+    case ErrorCode::descriptor_exhausted:
+    case ErrorCode::read_only_filesystem:
     case ErrorCode::unavailable:
         return ResponseStatus::overloaded;
     default:

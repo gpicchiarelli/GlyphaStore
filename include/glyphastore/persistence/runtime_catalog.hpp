@@ -37,6 +37,7 @@ struct DurableRuntimeOptions {
     std::uint32_t sync_interval_ms{1000};
     std::optional<DurableGroupConfig> batch{};
     bool strict_ack{false};
+    DurableResourceLimits limits{};
 };
 
 struct DurableMutationResult {

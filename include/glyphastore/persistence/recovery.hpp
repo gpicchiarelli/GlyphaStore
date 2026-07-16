@@ -5,6 +5,7 @@
 #include "glyphastore/persistence/manifest.hpp"
 #include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/segment/segment_header.hpp"
+#include "glyphastore/store/config.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -42,7 +43,8 @@ struct DurableRecoveryState {
 // DataDirectory must remain alive while any recovered RecordRef is used to
 // reopen its backing Segment. Recovery itself keeps at most one Segment file
 // descriptor and one Worker's temporary latest-key map live at a time.
-[[nodiscard]] auto recover_durable_state(DataDirectory& directory, std::uint64_t now_ns = 0)
+[[nodiscard]] auto recover_durable_state(DataDirectory& directory, std::uint64_t now_ns = 0,
+                                         const DurableResourceLimits& limits = {})
     -> Result<DurableRecoveryState>;
 
 } // namespace glyphastore

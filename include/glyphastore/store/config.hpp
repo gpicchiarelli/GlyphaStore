@@ -19,6 +19,28 @@ class StoreClock {
 
 inline constexpr std::size_t kMaximumWorkerCount = 256;
 inline constexpr std::size_t kDefaultMinimumMemoryPerWorker = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaximumDurableStoreBytes = 8ULL * 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultReservedFreeBytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::size_t kDefaultMaximumDurableSegments = 127;
+inline constexpr std::size_t kDefaultMaximumManifestBytes = 1024ULL * 1024ULL;
+inline constexpr std::size_t kDefaultMaximumDurableOpenFiles = 512;
+inline constexpr std::uint64_t kDefaultMaximumRecoveryMemoryBytes = 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::size_t kDefaultMaximumLiveKeys = 10'000'000;
+inline constexpr std::uint64_t kDefaultMaximumTemporaryCompactionBytes = 1024ULL * 1024ULL * 1024ULL;
+
+struct DurableResourceLimits {
+    std::uint64_t max_store_bytes{kDefaultMaximumDurableStoreBytes};
+    std::uint64_t reserved_free_bytes{kDefaultReservedFreeBytes};
+    std::size_t max_segment_count{kDefaultMaximumDurableSegments};
+    std::size_t max_manifest_bytes{kDefaultMaximumManifestBytes};
+    std::size_t max_open_files{kDefaultMaximumDurableOpenFiles};
+    std::uint64_t max_recovery_memory_bytes{kDefaultMaximumRecoveryMemoryBytes};
+    std::size_t max_live_keys{kDefaultMaximumLiveKeys};
+    std::uint64_t max_temporary_compaction_bytes{kDefaultMaximumTemporaryCompactionBytes};
+    std::uint32_t max_write_amplification{4};
+
+    auto operator==(const DurableResourceLimits&) const -> bool = default;
+};
 
 struct DurableGroupConfig {
     std::uint32_t max_records{32};
@@ -59,6 +81,7 @@ struct StoreConfig {
     DurableOpenMode durable_open_mode{DurableOpenMode::open_or_create};
     DurablePeriodicConfig durable_periodic{};
     DurableGroupConfig durable_group{};
+    DurableResourceLimits durable_limits{};
     // Deprecated compatibility field. Nonzero values are rejected; inject a
     // StoreClock instead so reads and recovery observe one time source.
     std::uint64_t recovery_now_ns{};

@@ -37,6 +37,12 @@ expiration do not poison the runtime; corruption or I/O disagreement makes later
 The steady-state Segment-descriptor bound is the Worker count. Catalog lookup is binary search over
 the strictly ordered manifest, avoiding a second potentially million-entry map.
 
+Configured descriptor policy must cover the Worker cache plus directory, lock, enumeration, and
+transient publication descriptors and must fit the process `RLIMIT_NOFILE`. New-key admission uses a
+deterministic Worker share of the global live-key budget. Rotation validates Segment, manifest,
+peak-byte, and currently available-space budgets before sealing the old active Segment; a budget
+failure is therefore `not_committed` and leaves the existing rotation state unchanged.
+
 ## Durable mutation order
 
 Put performs these transitions while holding its Worker lock:

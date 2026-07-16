@@ -20,6 +20,8 @@ inline constexpr std::size_t kMaximumNamespaceIssueCount =
 enum class NamespaceIssueKind {
     stale_manifest_temporary,
     stale_segment_temporary,
+    stale_compaction_temporary,
+    compaction_intent,
     unlisted_segment,
     malformed_engine_name,
     unknown_entry,

@@ -263,6 +263,7 @@ struct WriteBoundaryObserver {
     [[nodiscard]] static auto
     starts_persistent_change(const glyphastore::FilesystemOperation operation) noexcept -> bool {
         switch (operation) {
+        case glyphastore::FilesystemOperation::create_data_directory:
         case glyphastore::FilesystemOperation::write_manifest:
         case glyphastore::FilesystemOperation::rename_manifest:
         case glyphastore::FilesystemOperation::preallocate_segment:
@@ -273,13 +274,18 @@ struct WriteBoundaryObserver {
         case glyphastore::FilesystemOperation::write_bootstrap:
         case glyphastore::FilesystemOperation::rename_bootstrap:
         case glyphastore::FilesystemOperation::remove_bootstrap:
+        case glyphastore::FilesystemOperation::write_compaction_intent:
+        case glyphastore::FilesystemOperation::rename_compaction_intent:
+        case glyphastore::FilesystemOperation::remove_compaction_intent:
             return true;
+        case glyphastore::FilesystemOperation::sync_parent_directory:
         case glyphastore::FilesystemOperation::sync_manifest:
         case glyphastore::FilesystemOperation::sync_directory:
         case glyphastore::FilesystemOperation::sync_segment_file:
         case glyphastore::FilesystemOperation::sync_record:
         case glyphastore::FilesystemOperation::sync_commit_slot:
         case glyphastore::FilesystemOperation::sync_bootstrap:
+        case glyphastore::FilesystemOperation::sync_compaction_intent:
             return false;
         }
         return false;

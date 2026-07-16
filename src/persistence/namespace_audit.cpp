@@ -75,7 +75,8 @@ auto status_at(const int directory, const std::string& name) -> Result<struct st
 
 auto blocking_for_recovery(const NamespaceIssueKind kind) noexcept -> bool {
     return kind != NamespaceIssueKind::stale_manifest_temporary &&
-           kind != NamespaceIssueKind::stale_segment_temporary;
+           kind != NamespaceIssueKind::stale_segment_temporary &&
+           kind != NamespaceIssueKind::stale_compaction_temporary;
 }
 
 auto issue_less(const NamespaceIssue& left, const NamespaceIssue& right) noexcept -> bool {
@@ -132,6 +133,10 @@ auto namespace_issue_name(const NamespaceIssueKind kind) noexcept -> std::string
         return "stale manifest temporary";
     case NamespaceIssueKind::stale_segment_temporary:
         return "stale Segment temporary";
+    case NamespaceIssueKind::stale_compaction_temporary:
+        return "stale compaction temporary";
+    case NamespaceIssueKind::compaction_intent:
+        return "compaction intent requiring recovery";
     case NamespaceIssueKind::unlisted_segment:
         return "unlisted Segment";
     case NamespaceIssueKind::malformed_engine_name:
@@ -177,7 +182,7 @@ auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
     std::vector<bool> catalog_seen(manifest.segments.size(), false);
     bool manifest_seen{};
     bool lock_seen{};
-    const auto entry_limit = manifest.segments.size() + kNamespaceAnomalyBudget + 2U;
+    const auto entry_limit = manifest.segments.size() + kNamespaceAnomalyBudget + 4U;
 
     for (;;) {
         errno = 0;
@@ -198,7 +203,8 @@ auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
                         "data-directory namespace exceeds the manifest-relative entry limit");
         }
 
-        if (name == kManifestFilename || name == kStoreLockFilename || name == kManifestTemporaryFilename) {
+        if (name == kManifestFilename || name == kStoreLockFilename || name == kManifestTemporaryFilename ||
+            name == kCompactionIntentFilename || name == kCompactionTemporaryFilename) {
             const auto status = status_at(directory_descriptor, name);
             if (!status) {
                 return unexpected(status.error());
@@ -214,10 +220,13 @@ auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
                     !added) {
                     return unexpected(added.error());
                 }
-            } else if (name == kManifestTemporaryFilename) {
-                if (auto added = append_issue(
-                        report, {.kind = NamespaceIssueKind::stale_manifest_temporary, .name = name});
-                    !added) {
+            } else if (name == kManifestTemporaryFilename || name == kCompactionTemporaryFilename ||
+                       name == kCompactionIntentFilename) {
+                const auto kind =
+                    name == kManifestTemporaryFilename     ? NamespaceIssueKind::stale_manifest_temporary
+                    : name == kCompactionTemporaryFilename ? NamespaceIssueKind::stale_compaction_temporary
+                                                           : NamespaceIssueKind::compaction_intent;
+                if (auto added = append_issue(report, {.kind = kind, .name = name}); !added) {
                     return unexpected(added.error());
                 }
             }

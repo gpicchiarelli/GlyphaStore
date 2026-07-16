@@ -204,6 +204,47 @@ GLYPHA_TEST("preallocation failure publishes no Segment and keeps directory heal
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / temporary_name));
 }
 
+GLYPHA_TEST("Segment creation fault matrix distinguishes pre and post rename failures") {
+    static constexpr std::array prepublication_boundaries{
+        glyphastore::FilesystemOperation::preallocate_segment,
+        glyphastore::FilesystemOperation::write_segment_header,
+        glyphastore::FilesystemOperation::sync_segment_file,
+        glyphastore::FilesystemOperation::rename_segment,
+    };
+    for (const auto boundary : prepublication_boundaries) {
+        SegmentTemporaryDirectory temporary;
+        SegmentInjectedFailure failure{.operation = boundary, .enabled = true};
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), {.context = &failure, .before = &fail_segment_operation});
+        GLYPHA_REQUIRE(directory.has_value());
+        const auto identity = segment_identity();
+        const auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+        GLYPHA_REQUIRE(created.outcome == glyphastore::SegmentFileCreationOutcome::not_published);
+        GLYPHA_REQUIRE(created.error.has_value());
+        GLYPHA_REQUIRE(directory->healthy());
+        GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::segment_filename(identity)));
+        GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
+                                                ('.' + glyphastore::segment_filename(identity) + ".tmp")));
+    }
+
+    SegmentTemporaryDirectory temporary;
+    SegmentInjectedFailure failure{.operation = glyphastore::FilesystemOperation::sync_directory,
+                                   .enabled = true};
+    const auto identity = segment_identity();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), {.context = &failure, .before = &fail_segment_operation});
+        GLYPHA_REQUIRE(directory.has_value());
+        const auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+        GLYPHA_REQUIRE(created.outcome == glyphastore::SegmentFileCreationOutcome::indeterminate);
+        GLYPHA_REQUIRE(created.error.has_value());
+        GLYPHA_REQUIRE(!directory->healthy());
+    }
+    auto reopened = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(glyphastore::DurableSegmentFile::open(*reopened, identity).has_value());
+}
+
 GLYPHA_TEST("fault boundaries distinguish uncommitted Record tails from indeterminate slots") {
     SegmentTemporaryDirectory temporary;
     SegmentInjectedFailure failure{};

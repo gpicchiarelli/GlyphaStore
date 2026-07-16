@@ -131,6 +131,25 @@ GLYPHA_TEST("namespace audit is repeatable and tolerates only canonical crash te
     GLYPHA_REQUIRE(glyphastore::validate_namespace_for_recovery(*first).has_value());
 }
 
+GLYPHA_TEST("namespace audit distinguishes compaction temporary from durable recovery intent") {
+    NamespaceTemporaryDirectory temporary;
+    auto [directory, manifest] = prepare_catalog(temporary);
+    create_private_file(temporary.path() / glyphastore::kCompactionTemporaryFilename);
+    auto report = glyphastore::audit_data_directory(directory, manifest);
+    GLYPHA_REQUIRE(report.has_value());
+    GLYPHA_REQUIRE(report->issues.size() == 1);
+    GLYPHA_REQUIRE(report->issues[0].kind == glyphastore::NamespaceIssueKind::stale_compaction_temporary);
+    GLYPHA_REQUIRE(report->recovery_safe());
+
+    create_private_file(temporary.path() / glyphastore::kCompactionIntentFilename);
+    report = glyphastore::audit_data_directory(directory, manifest);
+    GLYPHA_REQUIRE(report.has_value());
+    GLYPHA_REQUIRE(report->issues.size() == 2);
+    GLYPHA_REQUIRE(!report->recovery_safe());
+    GLYPHA_REQUIRE(report->issues[0].kind == glyphastore::NamespaceIssueKind::compaction_intent);
+    GLYPHA_REQUIRE(report->issues[1].kind == glyphastore::NamespaceIssueKind::stale_compaction_temporary);
+}
+
 GLYPHA_TEST("namespace audit deterministically rejects unlisted malformed and unknown entries") {
     NamespaceTemporaryDirectory temporary;
     auto [directory, manifest] = prepare_catalog(temporary);
@@ -201,7 +220,7 @@ GLYPHA_TEST("namespace audit reports missing catalog files and bounds hostile en
         GLYPHA_REQUIRE(directory.has_value());
         const auto manifest = namespace_manifest();
         GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
-        for (std::size_t index = 0; index < glyphastore::kNamespaceAnomalyBudget + 2U; ++index) {
+        for (std::size_t index = 0; index < glyphastore::kNamespaceAnomalyBudget + 4U; ++index) {
             create_private_file(temporary.path() / ("unknown-" + std::to_string(index)));
         }
         const auto report = glyphastore::audit_data_directory(*directory, manifest);

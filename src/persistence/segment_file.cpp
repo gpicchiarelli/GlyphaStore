@@ -76,7 +76,7 @@ auto preallocate_segment(const FileDescriptor& file) -> Status {
         }
     }
     if (store.fst_bytesalloc < static_cast<off_t>(size)) {
-        return fail(ErrorCode::io_error, "F_PREALLOCATE did not reserve the complete Segment");
+        return fail(ErrorCode::storage_exhausted, "F_PREALLOCATE did not reserve the complete Segment");
     }
 #elif defined(__OpenBSD__)
     // OpenBSD has no documented allocation-reservation syscall. Eagerly writing
@@ -177,9 +177,11 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
         return creation_failure(SegmentFileCreationOutcome::not_published, removed.error());
     }
 
-    FileDescriptor temporary{interrupted_open_at(
-        directory.directory_.get(), temporary_name.c_str(),
-        O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, S_IRUSR | S_IWUSR)};
+    FileDescriptor temporary{
+        interrupted_open_at(directory.directory_.get(), temporary_name.c_str(),
+                            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+                            S_IRUSR | S_IWUSR),
+        directory.hooks_.file_io};
     if (!temporary.valid()) {
         return creation_failure(SegmentFileCreationOutcome::not_published,
                                 persistence_system_error("openat(Segment temporary)").error);
@@ -253,7 +255,8 @@ auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdent
     const auto name = segment_filename(expected_identity);
     const auto access = mode == SegmentFileOpenMode::read_only ? O_RDONLY : O_RDWR;
     FileDescriptor file{interrupted_open_at(directory.directory_.get(), name.c_str(),
-                                            access | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+                                            access | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK),
+                        directory.hooks_.file_io};
     if (!file.valid()) {
         if (errno == ENOENT) {
             return fail(ErrorCode::not_found, "Segment does not exist");

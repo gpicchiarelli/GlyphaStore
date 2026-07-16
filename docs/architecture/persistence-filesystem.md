@@ -71,6 +71,13 @@ Segment offsets. `close` is intentionally not retried because several supported 
 have released the descriptor after an interrupted close; durability errors are collected by the
 explicit synchronization call before RAII destruction.
 
+Each test `DataDirectory` may carry instance-local raw file-I/O callbacks with the same result and
+`errno` contract as `pread`, `pwrite`, and synchronization syscalls. Production leaves them null and
+takes the direct native call. The deterministic suite forces repeated short transfers, a first-call
+`EINTR`, delayed synchronization `EIO`, `ENOSPC`, `EDQUOT`, and `EROFS`. Hooks move with their file
+descriptor and contain no process-global state, so independent fault matrices can execute safely in
+parallel.
+
 ## Locking
 
 The process lock uses non-blocking exclusive `flock` and is held by an open descriptor for the
@@ -80,10 +87,21 @@ semantics explicitly in their [`flock(2)`](https://man.openbsd.org/flock.2) and
 [`flock(2)`](https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man2/flock.2.html)
 manuals.
 
-Network and user-space filesystems are not yet certified. Linux specifically notes that a failed NFS
+Network and user-space filesystems are unsupported. Linux specifically notes that a failed NFS
 rename may already have happened after RPC replay. The implementation therefore treats every actual
 `renameat` failure conservatively as indeterminate rather than claiming that the old name won.
-Durable Store enablement requires an explicit filesystem support policy and platform CI.
+Do not deploy durable mode on NFS, SMB, FUSE, overlay, or another remote/user-space filesystem.
+
+| Platform/filesystem | Deterministic faults and process kill | Real power cut | Durable status |
+|---|---|---|---|
+| macOS/APFS | exercised locally and in hosted CI, whose exact storage stack is not pinned | pending | experimental, not certified |
+| Linux/ext4, XFS, btrfs | hosted Linux CI exists but does not pin and certify each filesystem/mount row | pending | experimental, not certified |
+| FreeBSD/UFS, ZFS | native runner pending | pending | architectural target only |
+| OpenBSD/FFS | native runner pending | pending | architectural target only |
+| NFS, SMB, FUSE, overlay, other network/user-space storage | deliberately outside the local-filesystem contract | not accepted | unsupported |
+
+Certification requires a pinned OS, filesystem and mount configuration, repeated device/VM power
+cuts at every checkpoint, post-boot filesystem health inspection, and v1 recovery verification.
 
 ## Manifest publication state machine
 
@@ -114,10 +132,11 @@ The exclusive lock serializes the read-before-publish generation check. Equal or
 generations fail before the temporary is touched. A malformed existing authoritative manifest also
 fails closed instead of being overwritten as an implicit repair.
 
-The test-only fault seam injects failures before write, file sync, rename, and directory sync. Tests
-prove that pre-rename failure preserves the old decoded manifest, while post-rename failure poisons
-the current instance and requires reopening. Process-kill, disk-full, real I/O error, filesystem, and
-power-loss matrices remain mandatory before durable mode is enabled.
+The test-only seams inject failures before write, file sync, rename, and directory sync and inside
+positional I/O/synchronization retry loops. Tests prove that every manifest/bootstrap/Segment
+pre-rename failure preserves the prior authority or a pristine namespace, while post-rename failure
+poisons the current instance and requires reopening. Real block-device disk-full, controller-cache,
+torn-sector, filesystem, and power-loss matrices remain mandatory before durable certification.
 
 The same primitives now back exact-size preallocated Segment creation and alternate-slot mutation.
 Platform allocation choices, Segment-specific outcome boundaries, scan complexity, and tests are
