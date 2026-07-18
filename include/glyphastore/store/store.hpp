@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string_view>
 
@@ -15,6 +16,16 @@ namespace glyphastore {
 namespace detail {
 class StoreAccess;
 }
+
+struct CompactionResult {
+    bool compacted{};
+    std::optional<std::size_t> worker_index;
+    std::uint64_t source_records_verified{};
+    std::uint64_t source_bytes_verified{};
+    std::uint64_t records_copied{};
+    std::uint64_t bytes_copied{};
+    std::uint64_t expired_records_dropped{};
+};
 
 class Store final {
   public:
@@ -43,6 +54,10 @@ class Store final {
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 
     [[nodiscard]] auto flush() -> Status;
+    // Runs at most one durable whole-Worker compaction transaction. Calls do
+    // not queue behind an existing compaction; an empty successful result
+    // means no Worker currently offers a physical Segment gain.
+    [[nodiscard]] auto compact() -> Result<CompactionResult>;
     // Idempotently prevents new operations, waits for calls already in
     // progress, flushes durable state, stops background executors, and releases
     // Store resources. Destruction performs the same shutdown as a

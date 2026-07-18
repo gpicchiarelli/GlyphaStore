@@ -27,7 +27,8 @@ It is not production ready yet. The most important gaps are behavioral rather th
   enumeration are implemented; native-platform evidence remains a release gate;
 - recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
   Worker; released-artifact and native-platform evidence remains to be accumulated;
-- durable Segments and manifest entries have no crash-safe compaction and retirement lifecycle;
+- durable compaction has an internal crash-safe publication and retirement transaction, but no
+  Store-level scheduling or complete kill/fault matrix yet;
 - embedded durable operation now has explicit disk, descriptor, recovery, live-key, temporary-space,
   and write-amplification policy; daemon configuration and compaction-time enforcement remain;
 - process-kill coverage is useful but is not evidence for sudden power loss, every supported
@@ -232,9 +233,9 @@ power-cut automation and pinned native mount rows remain before this P0 item can
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 
-**Status:** in progress. The in-memory vacuum builder exists, but durable sealed Segments and
-manifest entries still accumulate indefinitely and there is not yet an online retirement path. A
-new deterministic v1 planner now treats one Worker's complete sealed history as the atomic unit,
+**Status:** in progress. Durable compaction is now exposed as explicit cooperative Store maintenance;
+automatic operational policy and the complete online crash matrix remain open. A deterministic v1
+planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
 A checksummed intent codec embeds and validates both complete manifest authorities and their exact
@@ -247,8 +248,15 @@ directory, removes the intent, and re-audits the namespace. This prevents a per-
 drop from resurrecting older values. A durable builder now freezes against an exact manifest/Index
 snapshot, verifies routed source Records, drops expired puts, computes exact non-spanning Segment
 layout, prebuilds the replacement Index, publishes the intent, copies original v1 bytes with a
-reused buffer, seals and reopens every output, and validates checksums and commit metadata. Online
-manifest/runtime installation, scheduling, and the complete crash matrix remain open.
+reused buffer, seals and reopens every output, and validates checksums and commit metadata. The
+internal durable runtime now freezes the target Worker, installs the prepared manifest, commit
+catalog, and Index atomically, retires sources, removes the intent, and fails closed on any state
+that requires restart recovery. A manifest-publication serializer prevents rotation or another
+compaction from creating a third authority, while immutable-identity descriptor caches let other
+Workers continue across catalog entry removal. Public `Store::compact()` now uses a non-queuing
+Store-wide maintenance gate, selects Workers round-robin, skips exact no-gain layouts, executes at
+most one transaction per call, and reports copy statistics. Automatic policy and the complete crash
+matrix remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -277,7 +285,12 @@ reopen.
 Builder tests cover exact sequence and value preservation, superseded/tombstoned Record omission,
 TTL reclamation, active-reference preservation, zero-output retirement, non-spanning layout
 fragmentation, intent-aware peak-space accounting, and rollback after an injected post-intent copy
-failure.
+failure. Runtime integration tests cover atomic in-memory installation and source retirement,
+restart visibility, fail-closed rollback after an online post-intent failure, and preservation of
+another Worker's cached descriptor when catalog positions shift.
+Public integration tests additionally cover no-op maintenance without sealed history, rejection on
+volatile and closed Stores, restart visibility, one-Worker-per-call round-robin progress, and
+post-compaction no-gain detection.
 
 ## P1 — complete the product contract
 

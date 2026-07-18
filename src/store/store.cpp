@@ -55,6 +55,27 @@ auto durable_status(DurableMutationResult result) -> Status {
     return unexpected(std::move(error));
 }
 
+auto public_compaction_result(const std::size_t worker_index, DurableCompactionResult result)
+    -> Result<CompactionResult> {
+    if (!result.compacted()) {
+        auto error =
+            result.error ? std::move(*result.error) : Error{ErrorCode::io_error, "durable compaction failed"};
+        if (result.outcome == DurableCompactionOutcome::recovery_required) {
+            error.code = ErrorCode::unavailable;
+        }
+        return unexpected(std::move(error));
+    }
+    return CompactionResult{
+        .compacted = true,
+        .worker_index = worker_index,
+        .source_records_verified = result.stats.source_index_records_verified,
+        .source_bytes_verified = result.stats.source_bytes_verified,
+        .records_copied = result.stats.records_copied,
+        .bytes_copied = result.stats.bytes_copied,
+        .expired_records_dropped = result.stats.expired_records_dropped,
+    };
+}
+
 [[nodiscard]] auto resource_exhausted() -> Unexpected {
     return unexpected(Error{ErrorCode::resource_exhausted, {}});
 }
@@ -328,6 +349,8 @@ struct Store::Impl {
     std::unique_ptr<DurableRuntimeCatalog> durable_runtime;
     std::shared_ptr<const StoreClock> clock;
     std::atomic<std::uint64_t> latest_now_ns{};
+    std::mutex compaction_mutex;
+    std::size_t next_compaction_worker{};
     std::atomic<LifecycleState> lifecycle{LifecycleState::open};
     mutable std::mutex lifecycle_mutex;
     std::condition_variable lifecycle_changed;
@@ -576,6 +599,45 @@ auto Store::flush() -> Status try {
         return impl_->durable_runtime->flush();
     }
     return {};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    impl_->mark_durable_fail_closed();
+    return internal_failure();
+}
+
+auto Store::compact() -> Result<CompactionResult> try {
+    Impl::OperationGuard operation{*impl_, impl_->control_shard()};
+    if (!operation) {
+        return closed_store();
+    }
+    if (!impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "compaction requires durable storage");
+    }
+    std::unique_lock maintenance_lock{impl_->compaction_mutex, std::try_to_lock};
+    if (!maintenance_lock.owns_lock()) {
+        return fail(ErrorCode::sequence_conflict, "another Store compaction is already running");
+    }
+    std::optional<std::size_t> first_candidate;
+    for (;;) {
+        auto candidate = impl_->durable_runtime->next_compaction_worker(impl_->next_compaction_worker);
+        if (!candidate) {
+            return unexpected(candidate.error());
+        }
+        if (!*candidate || (first_candidate && **candidate == *first_candidate)) {
+            return CompactionResult{};
+        }
+        const auto worker_index = **candidate;
+        if (!first_candidate) {
+            first_candidate = worker_index;
+        }
+        impl_->next_compaction_worker = (worker_index + 1U) % impl_->worker_count_value;
+        auto result = impl_->durable_runtime->compact_worker(worker_index, impl_->now_ns());
+        if (result.outcome == DurableCompactionOutcome::not_beneficial) {
+            continue;
+        }
+        return public_compaction_result(worker_index, std::move(result));
+    }
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {

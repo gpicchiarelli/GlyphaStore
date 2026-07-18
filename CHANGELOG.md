@@ -7,8 +7,13 @@
   retirement. Add an exact Record-boundary layout and a durable builder that prebuilds the new
   Index, preserves visible v1 Record bytes and sequences, reclaims expired/superseded/tombstoned
   history, validates sealed replacements, and classifies post-intent failures for rollback. Runtime
-  compaction remains unavailable until online publication, scheduling, and their complete kill
-  matrix are implemented.
+  installation now atomically publishes the prepared manifest, commit catalog, and Worker Index,
+  retires old sources, serializes competing manifest authorities, keeps other-Worker descriptor
+  caches stable by immutable identity, and fails closed when restart recovery is required. Public
+  `Store::compact()` maintenance now selects Workers round-robin without a background thread or
+  queued concurrent requests, skips exact no-gain layouts, executes at most one transaction per
+  call, and returns copy statistics. Automatic policy and the complete online kill matrix remain
+  open.
 
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.

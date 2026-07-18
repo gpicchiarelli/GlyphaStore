@@ -338,7 +338,6 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     SequenceNumber next_sequence;
     SegmentId active_segment;
     std::mutex mutex;
-    std::optional<std::size_t> cached_catalog_index;
     std::optional<DurableSegmentFile> cached_file;
     bool cached_writable{};
     std::vector<std::byte> encode_scratch;
@@ -465,9 +464,19 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
         worker.batch_closed.notify_all();
         return unexpected(flushed.error.value_or(Error{ErrorCode::io_error, "batch flush failed"}));
     }
-    if (worker.cached_catalog_index) {
-        segments_[*worker.cached_catalog_index].selected = worker.cached_file->selected_commit();
+    const auto& identity = worker.cached_file->identity();
+    const auto position =
+        std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), identity.segment_id,
+                         [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                             return entry.segment_id.value < id.value;
+                         });
+    if (position == manifest_.segments.end() || position->segment_id != identity.segment_id ||
+        position->generation != identity.generation || position->owner_worker != identity.owner_worker) {
+        return fail(ErrorCode::corrupted_data,
+                    "batched Segment cache identity is absent from the runtime catalog");
     }
+    const auto catalog_index = static_cast<std::size_t>(position - manifest_.segments.begin());
+    segments_[catalog_index].selected = worker.cached_file->selected_commit();
     const auto publication_failed = [&](Error error) -> Status {
         healthy_.store(false, std::memory_order_release);
         for (auto* pending : worker.pending_group_mutations) {
@@ -729,15 +738,14 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
         worker.hot_records.erase(cached);
     }
 
-    if (!worker.cached_catalog_index || *worker.cached_catalog_index != catalog_index) {
+    const SegmentHeaderIdentity identity{
+        .store_id = manifest_.store_id,
+        .segment_id = found->segment_id,
+        .generation = found->generation,
+        .owner_worker = found->owner_worker,
+    };
+    if (!worker.cached_file || worker.cached_file->identity() != identity) {
         worker.cached_file.reset();
-        worker.cached_catalog_index.reset();
-        const SegmentHeaderIdentity identity{
-            .store_id = manifest_.store_id,
-            .segment_id = found->segment_id,
-            .generation = found->generation,
-            .owner_worker = found->owner_worker,
-        };
         auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_only);
         if (!opened) {
             auto error = opened.error();
@@ -755,7 +763,6 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
             });
         }
         worker.cached_file.emplace(std::move(*opened));
-        worker.cached_catalog_index = catalog_index;
         worker.cached_writable = false;
     }
 
@@ -795,6 +802,7 @@ auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult
 }
 
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutationResult {
+    const std::lock_guard publication_lock{manifest_publication_mutex_};
     const std::unique_lock catalog_lock{catalog_mutex_};
     const auto old_position =
         std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), worker.active_segment,
@@ -829,16 +837,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     }
     segments_.reserve(segments_.size() + 1U);
 
-    if (!worker.cached_catalog_index || *worker.cached_catalog_index != old_index || !worker.cached_file ||
-        !worker.cached_writable) {
-        worker.cached_file.reset();
-        worker.cached_catalog_index.reset();
-        worker.cached_writable = false;
-        const SegmentHeaderIdentity identity{.store_id = manifest_.store_id,
+    const SegmentHeaderIdentity old_identity{.store_id = manifest_.store_id,
                                              .segment_id = old_entry.segment_id,
                                              .generation = old_entry.generation,
                                              .owner_worker = old_entry.owner_worker};
-        auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_write);
+    if (!worker.cached_file || worker.cached_file->identity() != old_identity || !worker.cached_writable) {
+        worker.cached_file.reset();
+        worker.cached_writable = false;
+        auto opened = DurableSegmentFile::open(directory_, old_identity, SegmentFileOpenMode::read_write);
         if (!opened || opened->selected_commit() != segments_[old_index].selected) {
             auto error = opened ? Error{ErrorCode::corrupted_data, "active Segment changed after recovery"}
                                 : opened.error();
@@ -846,7 +852,6 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
             return mutation_failure(DurableMutationOutcome::indeterminate, std::move(error));
         }
         worker.cached_file.emplace(std::move(*opened));
-        worker.cached_catalog_index = old_index;
         worker.cached_writable = true;
     }
 
@@ -898,7 +903,6 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     segments_.push_back({.selected = replacement_selected});
     worker.active_segment = replacement_segment_id;
     worker.cached_file.emplace(std::move(*created.file));
-    worker.cached_catalog_index = segments_.size() - 1U;
     worker.cached_writable = true;
     std::erase_if(worker.hot_records, [&](const auto& entry) {
         return entry.second.reference.segment_id == old_entry.segment_id;
@@ -1053,15 +1057,14 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     Error{ErrorCode::corrupted_data, "runtime active Segment is absent from the manifest"});
             }
             const auto catalog_index = static_cast<std::size_t>(position - manifest_.segments.begin());
-            if (!worker.cached_catalog_index || *worker.cached_catalog_index != catalog_index ||
-                !worker.cached_file || !worker.cached_writable) {
+            const SegmentHeaderIdentity identity{.store_id = manifest_.store_id,
+                                                 .segment_id = position->segment_id,
+                                                 .generation = position->generation,
+                                                 .owner_worker = position->owner_worker};
+            if (!worker.cached_file || worker.cached_file->identity() != identity ||
+                !worker.cached_writable) {
                 worker.cached_file.reset();
-                worker.cached_catalog_index.reset();
                 worker.cached_writable = false;
-                const SegmentHeaderIdentity identity{.store_id = manifest_.store_id,
-                                                     .segment_id = position->segment_id,
-                                                     .generation = position->generation,
-                                                     .owner_worker = position->owner_worker};
                 auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_write);
                 if (!opened || opened->selected_commit() != segments_[catalog_index].selected) {
                     auto error =
@@ -1071,7 +1074,6 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     return mutation_failure(DurableMutationOutcome::indeterminate, std::move(error));
                 }
                 worker.cached_file.emplace(std::move(*opened));
-                worker.cached_catalog_index = catalog_index;
                 worker.cached_writable = true;
             }
 
@@ -1275,7 +1277,8 @@ auto DurableRuntimeCatalog::manifest() const -> Manifest {
     return manifest_;
 }
 
-auto DurableRuntimeCatalog::namespace_audit() const noexcept -> const NamespaceAuditReport& {
+auto DurableRuntimeCatalog::namespace_audit() const -> NamespaceAuditReport {
+    const std::shared_lock lock{catalog_mutex_};
     return namespace_audit_;
 }
 
@@ -1297,6 +1300,195 @@ auto DurableRuntimeCatalog::active_segment(const std::size_t worker_index) const
     }
     const std::lock_guard lock{workers_[worker_index]->mutex};
     return workers_[worker_index]->active_segment;
+}
+
+auto DurableRuntimeCatalog::next_compaction_worker(const std::size_t start_worker) const
+    -> Result<std::optional<std::size_t>> {
+    if (start_worker >= workers_.size()) {
+        return fail(ErrorCode::invalid_argument, "compaction cursor is outside the durable runtime");
+    }
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    const std::shared_lock catalog_lock{catalog_mutex_};
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+
+    std::optional<std::size_t> candidate;
+    auto best_distance = workers_.size();
+    for (const auto& entry : manifest_.segments) {
+        if (entry.role != ManifestSegmentRole::sealed) {
+            continue;
+        }
+        const auto owner = static_cast<std::size_t>(entry.owner_worker.value);
+        if (owner >= workers_.size()) {
+            return fail(ErrorCode::corrupted_data, "sealed Segment owner is outside the durable runtime");
+        }
+        const auto distance =
+            owner >= start_worker ? owner - start_worker : workers_.size() - start_worker + owner;
+        if (distance < best_distance) {
+            candidate = owner;
+            best_distance = distance;
+            if (distance == 0) {
+                break;
+            }
+        }
+    }
+    return candidate;
+}
+
+auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const std::uint64_t now_ns)
+    -> DurableCompactionResult {
+    bool recovery_required{};
+    DurableCompactionCopyStats stats{};
+    const auto notify_fail_closed = [&] {
+        healthy_.store(false, std::memory_order_release);
+        for (const auto& worker : workers_) {
+            worker->batch_closed.notify_all();
+        }
+    };
+    const auto failure = [&](Error error) {
+        if (recovery_required) {
+            notify_fail_closed();
+        }
+        return DurableCompactionResult{
+            .outcome = recovery_required ? DurableCompactionOutcome::recovery_required
+                                         : DurableCompactionOutcome::not_compacted,
+            .stats = stats,
+            .error = std::move(error),
+        };
+    };
+
+    try {
+        if (worker_index >= workers_.size()) {
+            return failure(Error{ErrorCode::invalid_argument, "Worker index is outside the durable runtime"});
+        }
+        if (!healthy()) {
+            return failure(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        }
+
+        auto& worker = *workers_[worker_index];
+        std::unique_lock worker_lock{worker.mutex};
+        if (dedicated_commit_executor_) {
+            worker.batch_closed.wait(worker_lock, [&] { return !worker.batch_closing || !healthy(); });
+        }
+        if (!healthy()) {
+            return failure(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        }
+        {
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (auto flushed = flush_worker_batch(worker, SegmentCommitSync::immediate); !flushed) {
+                return failure(flushed.error());
+            }
+        }
+        if (worker.cached_file && worker.cached_writable && worker.cached_file->is_dirty()) {
+            const auto synced = worker.cached_file->sync_file();
+            if (!synced.committed()) {
+                return failure(synced.error.value_or(
+                    Error{ErrorCode::io_error, "target Worker flush before compaction failed"}));
+            }
+        }
+
+        const std::lock_guard publication_lock{manifest_publication_mutex_};
+        std::shared_lock catalog_snapshot_lock{catalog_mutex_};
+        Manifest snapshot = manifest_;
+        worker.cached_file.reset();
+        worker.cached_writable = false;
+
+        auto built = build_durable_worker_compaction(directory_, snapshot, worker.worker_id, worker.index,
+                                                     now_ns, options_.limits);
+        if (!built.succeeded()) {
+            if (built.outcome == DurableCompactionBuildOutcome::not_beneficial) {
+                return {.outcome = DurableCompactionOutcome::not_beneficial,
+                        .stats = stats,
+                        .error = std::move(built.error)};
+            }
+            recovery_required = built.outcome == DurableCompactionBuildOutcome::recovery_required;
+            return failure(built.error.value_or(
+                Error{ErrorCode::io_error, "durable compaction replacement build failed"}));
+        }
+        recovery_required = true;
+        auto prepared = std::move(*built.prepared);
+        stats = prepared.stats;
+        auto sources = std::move(prepared.plan.sources);
+        std::vector<RecoveredSegmentState> next_segments;
+        next_segments.reserve(prepared.plan.next_manifest.segments.size());
+        catalog_snapshot_lock.unlock();
+
+        {
+            const std::unique_lock catalog_lock{catalog_mutex_};
+            if (manifest_ != snapshot || segments_.size() != snapshot.segments.size() ||
+                prepared.replacement_commits.size() != prepared.plan.replacements.size()) {
+                return failure(
+                    Error{ErrorCode::sequence_conflict, "runtime catalog changed during durable compaction"});
+            }
+            std::size_t replacement_index{};
+            for (const auto& entry : prepared.plan.next_manifest.segments) {
+                if (replacement_index < prepared.plan.replacements.size() &&
+                    entry == prepared.plan.replacements[replacement_index]) {
+                    next_segments.push_back({.selected = prepared.replacement_commits[replacement_index]});
+                    ++replacement_index;
+                    continue;
+                }
+                const auto found =
+                    std::lower_bound(snapshot.segments.begin(), snapshot.segments.end(), entry.segment_id,
+                                     [](const ManifestSegmentEntry& candidate, const SegmentId id) {
+                                         return candidate.segment_id.value < id.value;
+                                     });
+                if (found == snapshot.segments.end() || *found != entry) {
+                    return failure(Error{ErrorCode::corrupted_data,
+                                         "compaction retained entry is absent from the old catalog"});
+                }
+                const auto old_index = static_cast<std::size_t>(found - snapshot.segments.begin());
+                next_segments.push_back(segments_[old_index]);
+            }
+            if (replacement_index != prepared.plan.replacements.size() ||
+                next_segments.size() != prepared.plan.next_manifest.segments.size()) {
+                return failure(
+                    Error{ErrorCode::internal_error, "compaction runtime catalog preparation is incomplete"});
+            }
+
+            const auto published =
+                directory_.publish_manifest(prepared.plan.next_manifest, options_.limits.max_manifest_bytes);
+            if (!published.durable()) {
+                return failure(published.error.value_or(
+                    Error{ErrorCode::io_error, "compaction manifest publication failed"}));
+            }
+            manifest_ = std::move(prepared.plan.next_manifest);
+            segments_ = std::move(next_segments);
+            worker.index = std::move(prepared.index);
+            worker.hot_records.clear();
+        }
+
+        const auto retired = directory_.retire_compaction_segments(snapshot.store_id, sources);
+        if (!retired.durable()) {
+            return failure(
+                retired.error.value_or(Error{ErrorCode::io_error, "compaction source retirement failed"}));
+        }
+        const auto removed = directory_.remove_compaction_intent();
+        if (!removed.durable()) {
+            return failure(
+                removed.error.value_or(Error{ErrorCode::io_error, "compaction intent removal failed"}));
+        }
+        auto audit = audit_data_directory(directory_, manifest_);
+        if (!audit) {
+            return failure(audit.error());
+        }
+        if (auto safe = validate_namespace_for_recovery(*audit); !safe) {
+            return failure(safe.error());
+        }
+        {
+            const std::unique_lock catalog_lock{catalog_mutex_};
+            namespace_audit_ = std::move(*audit);
+        }
+        recovery_required = false;
+        return {.outcome = DurableCompactionOutcome::compacted, .stats = stats, .error = std::nullopt};
+    } catch (const std::bad_alloc&) {
+        return failure(Error{ErrorCode::resource_exhausted, {}});
+    } catch (...) {
+        return failure(Error{ErrorCode::internal_error, {}});
+    }
 }
 
 auto DurableRuntimeCatalog::verify_index() -> Status {

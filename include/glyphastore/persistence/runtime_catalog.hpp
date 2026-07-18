@@ -3,6 +3,7 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
+#include "glyphastore/persistence/compaction_builder.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/manifest.hpp"
 #include "glyphastore/persistence/namespace_audit.hpp"
@@ -31,6 +32,7 @@ namespace glyphastore {
 class DurableFlushCoordinator;
 
 enum class DurableMutationOutcome { committed, not_committed, indeterminate };
+enum class DurableCompactionOutcome { compacted, not_compacted, not_beneficial, recovery_required };
 
 struct DurableRuntimeOptions {
     SegmentCommitSync commit_sync{SegmentCommitSync::immediate};
@@ -47,6 +49,16 @@ struct DurableMutationResult {
 
     [[nodiscard]] auto committed() const noexcept -> bool {
         return outcome == DurableMutationOutcome::committed;
+    }
+};
+
+struct DurableCompactionResult {
+    DurableCompactionOutcome outcome{DurableCompactionOutcome::not_compacted};
+    DurableCompactionCopyStats stats{};
+    std::optional<Error> error;
+
+    [[nodiscard]] auto compacted() const noexcept -> bool {
+        return outcome == DurableCompactionOutcome::compacted;
     }
 };
 
@@ -83,10 +95,14 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto worker_count() const noexcept -> std::size_t;
     [[nodiscard]] auto manifest() const -> Manifest;
-    [[nodiscard]] auto namespace_audit() const noexcept -> const NamespaceAuditReport&;
+    [[nodiscard]] auto namespace_audit() const -> NamespaceAuditReport;
     [[nodiscard]] auto recovery_stats() const noexcept -> const DurableRecoveryStats&;
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
+    [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const
+        -> Result<std::optional<std::size_t>>;
+    [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns)
+        -> DurableCompactionResult;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
     void request_close_flush();
@@ -128,6 +144,7 @@ class DurableRuntimeCatalog final {
     std::atomic_bool closed_{false};
     std::mutex close_mutex_;
     std::optional<Error> close_error_;
+    std::mutex manifest_publication_mutex_;
     mutable std::shared_mutex catalog_mutex_;
 };
 

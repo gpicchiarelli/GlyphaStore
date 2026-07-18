@@ -3,11 +3,13 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
 #include <cstdlib>
 #include <filesystem>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -60,6 +62,17 @@ struct CopyWriteFailure {
 
 auto bytes(const std::string_view value) -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
+}
+
+auto key_for_worker(const std::size_t worker, const std::size_t worker_count, const std::string_view prefix)
+    -> std::string {
+    for (std::size_t suffix = 0; suffix < 10'000; ++suffix) {
+        auto candidate = std::string{prefix} + std::to_string(suffix);
+        if (glyphastore::route_worker(candidate, worker_count) == worker) {
+            return candidate;
+        }
+    }
+    throw std::runtime_error("failed to construct a routed compaction test key");
 }
 
 auto build_manifest() -> glyphastore::Manifest {
@@ -305,4 +318,269 @@ GLYPHA_TEST("durable compaction builder failure after intent is rolled back on r
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
                                             glyphastore::segment_filename(identity(manifest, replacement))));
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+}
+
+GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomically") {
+    CompactionBuildDirectory temporary;
+    const auto old = build_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto result = (*runtime)->compact_worker(0, 100);
+    GLYPHA_REQUIRE(result.compacted());
+    GLYPHA_REQUIRE(result.stats.source_index_records_verified == 2);
+    GLYPHA_REQUIRE(result.stats.records_copied == 2);
+    GLYPHA_REQUIRE(result.stats.expired_records_dropped == 0);
+    const auto next = (*runtime)->manifest();
+    GLYPHA_REQUIRE(next.manifest_generation == old.manifest_generation + 1U);
+    GLYPHA_REQUIRE(next.segments.size() == 2);
+    GLYPHA_REQUIRE(next.segments[0].segment_id == glyphastore::SegmentId{1});
+    GLYPHA_REQUIRE(next.segments[0].generation == glyphastore::GenerationId{2});
+    GLYPHA_REQUIRE(next.segments[1] == old.segments[2]);
+    GLYPHA_REQUIRE((*runtime)->namespace_audit().recovery_safe());
+    GLYPHA_REQUIRE((*runtime)->verify_index().has_value());
+    GLYPHA_REQUIRE(text(*(*runtime)->get("live-a", 100)) == "alpha");
+    GLYPHA_REQUIRE(text(*(*runtime)->get("replacement", 100)) == "new");
+    GLYPHA_REQUIRE(text(*(*runtime)->get("active", 100)) == "current");
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
+                                            glyphastore::segment_filename(identity(old, old.segments[0]))));
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
+                                            glyphastore::segment_filename(identity(old, old.segments[1]))));
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == next);
+    GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
+    GLYPHA_REQUIRE((*reopened)->get("live-a", 100)->sequence == 2);
+    GLYPHA_REQUIRE((*reopened)->get("replacement", 100)->sequence == 4);
+    GLYPHA_REQUIRE((*reopened)->get("active", 100)->sequence == 7);
+}
+
+GLYPHA_TEST("durable runtime fails closed when online compaction requires recovery") {
+    CompactionBuildDirectory temporary;
+    const auto old = build_manifest();
+    CopyWriteFailure failure;
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+    {
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(
+            temporary.path(), 100, {.context = &failure, .before = &CopyWriteFailure::before});
+        GLYPHA_REQUIRE(runtime.has_value());
+        failure.enabled = true;
+        const auto result = (*runtime)->compact_worker(0, 100);
+        GLYPHA_REQUIRE(!result.compacted());
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::recovery_required);
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(failure.fired);
+        GLYPHA_REQUIRE(!(*runtime)->healthy());
+        GLYPHA_REQUIRE(!(*runtime)->get("active", 100).has_value());
+    }
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == old);
+    GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
+    GLYPHA_REQUIRE((*reopened)->get("live-a", 100).has_value());
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+}
+
+GLYPHA_TEST("online compaction preserves another Worker's cached Segment after catalog compaction") {
+    CompactionBuildDirectory temporary;
+    const glyphastore::Manifest manifest{
+        .store_id = {std::byte{0x51}, std::byte{0x52}, std::byte{0x53}},
+        .manifest_generation = 9,
+        .worker_count = 2,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{5},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+    const auto first_key = key_for_worker(0, 2, "compact-first-");
+    const auto second_key = key_for_worker(0, 2, "compact-second-");
+    const auto active_key = key_for_worker(0, 2, "compact-active-");
+    const auto other_key = key_for_worker(1, 2, "cached-other-");
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        const std::vector<TestRecord> first{{.sequence = 1, .key = first_key, .value = "first"}};
+        const std::vector<TestRecord> second{{.sequence = 2, .key = second_key, .value = "second"}};
+        const std::vector<TestRecord> active{{.sequence = 3, .key = active_key, .value = "active"}};
+        const std::vector<TestRecord> other{{.sequence = 1, .key = other_key, .value = "other"}};
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[0], first));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[1], second));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[2], active));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[3], other));
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE(text(*(*runtime)->get(other_key, 100)) == "other");
+    const auto compacted = (*runtime)->compact_worker(0, 100);
+    GLYPHA_REQUIRE(compacted.compacted());
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 3);
+    GLYPHA_REQUIRE(text(*(*runtime)->get(other_key, 100)) == "other");
+    GLYPHA_REQUIRE(text(*(*runtime)->get(first_key, 100)) == "first");
+    GLYPHA_REQUIRE(text(*(*runtime)->get(second_key, 100)) == "second");
+    GLYPHA_REQUIRE((*runtime)->verify_index().has_value());
+    const auto skipped = (*runtime)->compact_worker(1, 100);
+    GLYPHA_REQUIRE(!skipped.compacted());
+    GLYPHA_REQUIRE(skipped.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+    GLYPHA_REQUIRE(skipped.error.has_value());
+    GLYPHA_REQUIRE(skipped.error->code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE(text(*(*runtime)->get(other_key, 100)) == "other");
+}
+
+GLYPHA_TEST("public Store compacts one scheduled Worker and preserves restart visibility") {
+    CompactionBuildDirectory temporary;
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    auto store = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(store.has_value());
+    const auto compacted = (*store)->compact();
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(compacted->compacted);
+    GLYPHA_REQUIRE(compacted->worker_index == 0);
+    GLYPHA_REQUIRE(compacted->source_records_verified == 2);
+    GLYPHA_REQUIRE(compacted->records_copied == 2);
+    GLYPHA_REQUIRE(compacted->expired_records_dropped == 0);
+    GLYPHA_REQUIRE(text(*(*store)->get("live-a")) == "alpha");
+    GLYPHA_REQUIRE(text(*(*store)->get("replacement")) == "new");
+    GLYPHA_REQUIRE((*store)->verify_index().has_value());
+    GLYPHA_REQUIRE((*store)->close().has_value());
+
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(text(*(*reopened)->get("live-a")) == "alpha");
+    GLYPHA_REQUIRE(text(*(*reopened)->get("replacement")) == "new");
+}
+
+GLYPHA_TEST("public Store compaction scheduler advances one Worker per call") {
+    CompactionBuildDirectory temporary;
+    const glyphastore::Manifest manifest{
+        .store_id = {std::byte{0x61}, std::byte{0x62}, std::byte{0x63}},
+        .manifest_generation = 12,
+        .worker_count = 2,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{7},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{5},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{6},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+    const auto worker_zero_first = key_for_worker(0, 2, "schedule-zero-first-");
+    const auto worker_zero_second = key_for_worker(0, 2, "schedule-zero-second-");
+    const auto worker_one_first = key_for_worker(1, 2, "schedule-one-first-");
+    const auto worker_one_second = key_for_worker(1, 2, "schedule-one-second-");
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        const std::vector<TestRecord> zero_first{
+            {.sequence = 1, .key = worker_zero_first, .value = "zero-first"}};
+        const std::vector<TestRecord> zero_second{
+            {.sequence = 2, .key = worker_zero_second, .value = "zero-second"}};
+        const std::vector<TestRecord> one_first{
+            {.sequence = 1, .key = worker_one_first, .value = "one-first"}};
+        const std::vector<TestRecord> one_second{
+            {.sequence = 2, .key = worker_one_second, .value = "one-second"}};
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[0], zero_first));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[1], zero_second));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[2], {}));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[3], one_first));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[4], one_second));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[5], {}));
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+    }
+
+    auto store = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 2},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(store.has_value());
+    const auto first = (*store)->compact();
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(first->compacted);
+    GLYPHA_REQUIRE(first->worker_index == 0);
+    const auto second = (*store)->compact();
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(second->compacted);
+    GLYPHA_REQUIRE(second->worker_index == 1);
+    const auto no_gain = (*store)->compact();
+    GLYPHA_REQUIRE(no_gain.has_value());
+    GLYPHA_REQUIRE(!no_gain->compacted);
+    GLYPHA_REQUIRE(!no_gain->worker_index.has_value());
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_first)) == "zero-first");
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_second)) == "zero-second");
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_one_first)) == "one-first");
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_one_second)) == "one-second");
+    GLYPHA_REQUIRE((*store)->verify_index().has_value());
 }

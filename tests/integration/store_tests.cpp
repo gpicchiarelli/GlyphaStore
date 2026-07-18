@@ -667,9 +667,33 @@ GLYPHA_TEST("Store close is idempotent and rejects operations after releasing vo
     const auto flush = store.flush();
     GLYPHA_REQUIRE(!flush.has_value());
     GLYPHA_REQUIRE(flush.error().code == glyphastore::ErrorCode::unavailable);
+    const auto compacted = store.compact();
+    GLYPHA_REQUIRE(!compacted.has_value());
+    GLYPHA_REQUIRE(compacted.error().code == glyphastore::ErrorCode::unavailable);
     const auto verified = store.verify_index();
     GLYPHA_REQUIRE(!verified.has_value());
     GLYPHA_REQUIRE(verified.error().code == glyphastore::ErrorCode::unavailable);
+}
+
+GLYPHA_TEST("Store compaction is explicit durable maintenance and no-ops without sealed history") {
+    auto volatile_store = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(volatile_store.has_value());
+    const auto unsupported = (*volatile_store)->compact();
+    GLYPHA_REQUIRE(!unsupported.has_value());
+    GLYPHA_REQUIRE(unsupported.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    StoreTemporaryDirectory temporary;
+    auto durable_store = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+    });
+    GLYPHA_REQUIRE(durable_store.has_value());
+    const auto no_work = (*durable_store)->compact();
+    GLYPHA_REQUIRE(no_work.has_value());
+    GLYPHA_REQUIRE(!no_work->compacted);
+    GLYPHA_REQUIRE(!no_work->worker_index.has_value());
 }
 
 GLYPHA_TEST("durable periodic close flushes and releases the directory lock before destruction") {

@@ -125,6 +125,14 @@ fail-closed state as required by the commit status. Deterministic allocator-inte
 enumerate the actual allocation sites emitted by each native STL build instead of assuming a fixed
 implementation-specific allocation count.
 
+## Explicit maintenance
+
+`Store::compact()` is supported only by durable Stores and performs no background scheduling. A
+successful result reports either one completed whole-Worker transaction and its copy statistics, or
+no current physical gain. Selection is round-robin across Workers. Concurrent compaction calls are
+not queued, mutations never invoke compaction implicitly, and Store shutdown waits only for the one
+maintenance transaction already admitted.
+
 ## Compatibility policy
 
 Before `1.0`, minor releases may make source-breaking changes announced in the changelog and

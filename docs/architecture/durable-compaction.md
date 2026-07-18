@@ -4,9 +4,11 @@ This document defines the v1 compaction invariants. The current tree implements 
 planner, its resource gates, a checksummed intent codec embedding both exact manifest authorities,
 descriptor-relative intent publication/removal primitives, and restart recovery of an interrupted
 transaction. The durable builder now prepares the replacement Index, installs the intent, copies
-and revalidates exact visible Records, and supports zero-output retirement. Online manifest/state
-installation, scheduling, and the complete crash matrix remain implementation work; durable
-compaction is therefore not yet available through `Store`.
+and revalidates exact visible Records, and supports zero-output retirement. The internal durable
+runtime now installs the prepared manifest, commit catalog, and Worker Index atomically, retires the
+old sources, and fails closed whenever restart must complete recovery. Store-level exposure,
+scheduling, and the complete crash matrix remain implementation work; durable compaction is
+therefore not yet available through `Store`.
 
 ## Why the complete sealed history is one unit
 
@@ -122,14 +124,21 @@ owning reads, and other Workers cannot reference its routed Segments. The direct
 after the retirement batch so restart observes either names still awaiting cleanup or their durable
 removal.
 
-## Scheduling policy
+## Cooperative scheduling policy
 
-Compaction must not run in a mutation or acknowledgement critical path. The initial online policy
-will permit at most one compaction transaction per Store, select one Worker at a time, and require a
-strict physical-space gain under the configured temporary-space and amplification limits. Copy and
-validation may hold the target Worker lock while other Workers continue; the short manifest switch
-uses the catalog-exclusive lock. Shutdown must either finish the current transaction or stop before
-publishing its intent.
+Compaction must not run in a mutation or acknowledgement critical path. The implemented internal
+`compact_worker` transaction freezes only its target Worker. Other Workers continue reads and
+ordinary mutations during copy and validation. A Store-wide publication mutex serializes rotation
+and compaction authorities until intent removal; the short manifest and in-memory catalog switch
+uses the catalog-exclusive lock. Cached Segment descriptors are keyed by immutable file identity,
+not a manifest vector position, so removal of source entries cannot stale another Worker's cache.
+
+The public `Store::compact()` scheduler is explicit and creates no background thread. It examines
+eligible Workers in round-robin order, skips exact layouts that would reclaim no physical Segment,
+and completes at most one transaction per call under the configured temporary-space and
+amplification limits. A Store-local try-lock rejects a concurrent maintenance request instead of
+queuing it. This bounds shutdown: `close()` either sees no compaction or waits only for the one
+already admitted transaction to finish.
 
 ## Required evidence
 

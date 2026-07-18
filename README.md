@@ -146,8 +146,17 @@ if (!store) {
     // handle store.error()
 }
 // use **store
+auto compacted = (*store)->compact(); // explicit: at most one Worker transaction
+if (compacted && compacted->compacted) {
+    // inspect compacted->worker_index and copy statistics
+}
 auto closed = (*store)->close(); // observe the final durability barrier
 ```
+
+Compaction is cooperative maintenance: GlyphaStore does not create a compaction thread. Each
+`compact()` call examines Workers in round-robin order, skips exact no-gain rewrites, and executes at
+most one crash-safe whole-Worker transaction. Concurrent calls are not queued. An empty successful
+result means no Worker currently offers a physical Segment gain.
 
 Strict durability with group commit (batched fsync, zero loss on ack):
 

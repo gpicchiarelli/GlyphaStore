@@ -262,6 +262,12 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         open_source.reset();
         open_source_index.reset();
 
+        if (layout.segment_count() >= sources.size()) {
+            return build_failure(
+                DurableCompactionBuildOutcome::not_beneficial,
+                Error{ErrorCode::not_found, "durable compaction would not reclaim a physical Segment"});
+        }
+
         auto plan = plan_durable_worker_compaction(current, worker_id, layout.segment_count(), limits);
         if (!plan) {
             return failure(plan.error());

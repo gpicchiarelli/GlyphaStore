@@ -27,6 +27,10 @@ failures leave files untouched and release the lock.
 Each Worker owns one mutex and at most one cached Segment descriptor. Reads and ordinary mutations
 hold a shared catalog lock; different Workers therefore proceed concurrently. Rotation alone takes
 the exclusive catalog lock because it appends the globally ordered manifest and commit-state vectors.
+Online compaction freezes one target Worker while its replacements are copied, then takes the same
+exclusive lock for the prepared manifest/commit-state/Index switch. Rotation and compaction
+publication share one serializer so no third manifest authority can appear before an installed
+compaction intent is removed.
 
 A read-only cache miss reopens with no-follow and private-file checks, validates the complete identity
 and exact recovered commit snapshot, and then verifies the Record extent, CRC32C, sequence, key hash,
@@ -35,7 +39,9 @@ expiration do not poison the runtime; corruption or I/O disagreement makes later
 `unavailable`.
 
 The steady-state Segment-descriptor bound is the Worker count. Catalog lookup is binary search over
-the strictly ordered manifest, avoiding a second potentially million-entry map.
+the strictly ordered manifest, avoiding a second potentially million-entry map. A cached descriptor
+is matched by immutable Store/Segment/generation/owner identity rather than its vector index, which
+remains correct when another Worker's compaction removes catalog entries.
 
 Configured descriptor policy must cover the Worker cache plus directory, lock, enumeration, and
 transient publication descriptors and must fit the process `RLIMIT_NOFILE`. New-key admission uses a
@@ -105,5 +111,5 @@ Record write boundary through coherent runtime publication.
 Still required before durability can be certified:
 
 - native-platform process-kill and power-loss evidence at every mutation and rotation boundary;
-- retirement/vacuum manifest publication;
+- Store-level compaction scheduling and the complete online compaction kill/fault matrix;
 - disk-full and native Linux/FreeBSD/OpenBSD evidence.

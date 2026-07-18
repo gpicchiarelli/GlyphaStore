@@ -12,7 +12,7 @@
 
 namespace glyphastore {
 
-enum class DurableCompactionBuildOutcome { prepared, not_started, recovery_required };
+enum class DurableCompactionBuildOutcome { prepared, not_started, not_beneficial, recovery_required };
 
 struct DurableCompactionCopyStats {
     std::uint64_t source_index_records_verified{};
@@ -45,6 +45,8 @@ struct DurableCompactionBuildResult {
 
 // The caller must freeze the target Worker for the complete call. Before the
 // durable intent, failures are not_started and publish no replacement name.
+// not_beneficial is a successful policy decision made before the intent when
+// the exact output layout would reclaim no physical Segment.
 // Once intent publication may have occurred, failures are recovery_required;
 // the runtime must fail closed and let restart resolve the old authority.
 [[nodiscard]] auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& current,
