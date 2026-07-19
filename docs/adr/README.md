@@ -44,6 +44,8 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0016](0016-bounded-cold-read-executor.md) | Bounded async durable cold reads outside Reactors | accepted | amends 0012; preserves 0013 ordering |
 | [0017](0017-bounded-durable-hot-cache.md) | Bounded durable hot cache with pinned active fallback | accepted | preserves 0008; builds on 0016 |
 | [0018](0018-bounded-durable-mutation-lanes.md) | Bounded Worker-affine durable mutation lanes | accepted | preserves 0008, 0011, 0012 |
+| [0019](0019-client-error-retry-timeout.md) | Official client error/retry/timeout contract | accepted | detailed by client semantics v1; depends on 0013 |
 
-The public error taxonomy still requires an ADR before it becomes a post-1.0 compatibility
-commitment.
+Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
+[ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).
+Embedded Store `ErrorCode` values remain a separate surface.

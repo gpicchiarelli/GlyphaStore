@@ -358,6 +358,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Documentation map](docs/README.md) | Normative hierarchy and complete technical-document index |
 | [Architecture specification](docs/spec/architecture.md) | Current volatile, durable, and TCP runtime architecture |
 | [Wire protocol v2](docs/spec/wire-protocol-v2.md) | Complete client framing, routing, session, and error contract |
+| [Client semantics v1](docs/spec/client-semantics-v1.md) | Portable errors, retries, deadlines, late responses |
 | [C++ TCP client API](docs/reference/cpp-client-api.md) | Reference client, mutation outcomes, and cross-language SDK plan |
 | [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |

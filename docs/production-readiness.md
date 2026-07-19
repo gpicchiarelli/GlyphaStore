@@ -26,15 +26,17 @@ implementation or design document alone is not sufficient.
   round-trip evidence exist; wire golden fixtures and cross-release artifact evidence remain pending.
   Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
-  Ordinary reads and recovery now share a Store-owned clock with deterministic injection and
+  Official TCP **client** error categories, mutation outcomes, automatic retries, and monotonic
+  request deadlines are normative in [client semantics v1](spec/client-semantics-v1.md)
+  ([ADR 0019](adr/0019-client-error-retry-timeout.md)). Ordinary reads and recovery now share a Store-owned clock with deterministic injection and
   per-instance backward clamping. Public allocation/unexpected exceptions and background flush
   callback exceptions are translated to stable categories. A dedicated allocator-interposition
   executable now fails every allocation observed in durable mutation, rotation, read, and group
   paths. Public `Store::close()` now prevents new admission, drains in-flight calls, makes final
   flush failure observable, and releases executors and the directory lock. Embedded durable config
   now validates storage, free-space, Segment/manifest, descriptor, recovery-memory, live-key,
-  temporary-compaction, and write-amplification limits; daemon precedence and cancellation/deadline
-  semantics remain pending.
+  temporary-compaction, and write-amplification limits; daemon precedence and server-side
+  cancellation/deadline semantics beyond the client contract remain pending.
 
 ### Durability and recovery
 

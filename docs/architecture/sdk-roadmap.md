@@ -41,21 +41,15 @@ copies in the same script and in CI.
 Still desirable later: 8 Workers, explicit limit/error matrices, and released-artifact cross-version
 compat.
 
-### 2. Normative wire and client semantics
+### 2. Normative wire and client semantics — **client errors/retry/timeouts done**
 
-Document and freeze (beyond descriptive coverage):
+Official TCP client behavior is frozen in [client semantics v1](../spec/client-semantics-v1.md)
+([ADR 0019](../adr/0019-client-error-retry-timeout.md)): portable categories, wire→outcome tables,
+automatic retry limits, monotonic deadlines, and late-response/connection-reset rules.
 
-- endianness and exact header sizes;
-- per-opcode field validity;
-- key/value limits;
-- precise meaning of every status;
-- behavior on unknown frames;
-- version compatibility;
-- timeout and cancellation semantics;
-- what happens when a response arrives after the client deadline.
-
-Error behavior, limits, time, and concurrency are still incomplete as normative specs in
-[production readiness](../production-readiness.md).
+Still open on the wire/server side (see [production readiness](../production-readiness.md)): fuller
+normative treatment of daemon cancellation after admission, configuration precedence, and some
+limit/concurrency guarantees beyond the client contract.
 
 ### 3. Optional mutation idempotency key (post-alpha candidate)
 
@@ -141,7 +135,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 1. Shared wire golden vectors (C++ / Python / Perl). **(CI verify + vendored cmp)**
 2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4)**
 3. Perl monotonic clock + thread/fork contract docs. **(done)**
-4. Normative errors, retry, and timeout specification.
+4. Normative errors, retry, and timeout specification. **([client semantics v1](../spec/client-semantics-v1.md), [ADR 0019](../adr/0019-client-error-retry-timeout.md))**
 5. Multi-Worker `batch` API on every official client.
 6. Go client.
 7. Authentication and TLS.

@@ -102,7 +102,10 @@ silently duplicating mutations and discarding outcomes already proven by the ser
 ## Mutation outcomes
 
 `PUT` and `ERASE` return `MutationResult`, not `Result<void>`, because TCP disconnect alone cannot
-prove whether a server-side mutation linearized.
+prove whether a server-side mutation linearized. The normative tables for outcomes, portable error
+categories, automatic retries, and deadlines are in
+[client semantics v1](../spec/client-semantics-v1.md) ([ADR 0019](../adr/0019-client-error-retry-timeout.md)).
+The summary below matches that specification.
 
 | Outcome | Meaning | Safe default action |
 |---|---|---|
@@ -113,7 +116,8 @@ prove whether a server-side mutation linearized.
 Protocol v2 has no idempotency token. The client automatically retries `GET` and `PING` once after
 a transport failure because they are read-only. It retries a mutation only when zero bytes of its
 request were sent. Reconnection repeats `INIT` and `BIND_WORKER` and accepts only the original
-Worker count and routing epoch.
+Worker count and routing epoch. Request deadlines use a monotonic clock; expiry resets the Worker
+connection so a late frame cannot satisfy a later call.
 
 ## Failure and lifecycle behavior
 

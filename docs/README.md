@@ -42,6 +42,7 @@ format, acknowledgement point, ownership rule, or compatibility guarantee.
 | [Concurrency and memory model](spec/concurrency-memory-model.md) | Threads, locks, atomics, linearization, shutdown |
 | [Index v1](spec/index-v1.md) | Exact-key Index algorithm and storage invariants |
 | [Native wire protocol v2](spec/wire-protocol-v2.md) | Client/server framing and session semantics |
+| [Client semantics v1](spec/client-semantics-v1.md) | Portable errors, retry, timeouts, late responses |
 | [Persistence v1](spec/persistence-v1.md) | Complete durable namespace, binary formats, checksums, authority |
 | [Benchmark standard](spec/benchmark-standard.md) | Workload and result semantics |
 | [Public C++ API](reference/cpp-api.md) | Supported API contracts and error behavior |

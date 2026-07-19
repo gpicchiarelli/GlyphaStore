@@ -11,7 +11,7 @@ The protocol runs over a reliable TCP byte stream. Every integer is unsigned and
 
 The maximum protocol frame size is 2 MiB, including the header. The server's connection input and output buffering may impose an additional configured limit (4 MiB by default). A client must handle partial reads and writes.
 
-There is currently no TLS, authentication, compression, multiplexed stream identifier, or protocol-level timeout. Deployments requiring confidentiality or access control must provide an external trusted boundary.
+There is currently no TLS, authentication, compression, multiplexed stream identifier, or protocol-level timeout. Deployments requiring confidentiality or access control must provide an external trusted boundary. Official clients impose local connect/request deadlines and classify failures as specified in [client semantics v1](client-semantics-v1.md).
 
 ## 2. Request frame
 
@@ -169,4 +169,4 @@ Worker from making progress.
 4. Send `BIND_WORKER` for a valid Worker.
 5. Send framed requests and read framed responses in order.
 6. On `WRONG_OWNER`, use a connection bound to `owner_worker`.
-7. On disconnect after a mutation, apply application-specific retry/idempotency policy; protocol v2 has no deduplication token.
+7. On disconnect after a mutation, apply application-specific retry/idempotency policy; protocol v2 has no deduplication token. Official clients classify outcomes and automatic retries per [client semantics v1](client-semantics-v1.md).

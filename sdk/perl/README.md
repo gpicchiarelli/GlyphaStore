@@ -3,7 +3,8 @@
 Native synchronous Perl client for GlyphaStore wire protocol v2. It uses only core modules, keeps
 one bound TCP connection per Worker, supports arbitrary byte strings, retries safe reads (including
 transient `unavailable` reconnects while routing metadata is stable), and preserves indeterminate
-mutation outcomes.
+mutation outcomes. Portable error/retry/deadline rules:
+[client semantics v1](../../docs/spec/client-semantics-v1.md).
 
 License: BSD-3-Clause. Requires Perl ≥ 5.32.
 

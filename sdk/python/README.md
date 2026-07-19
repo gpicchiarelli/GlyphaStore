@@ -6,6 +6,8 @@ disconnect, and never reports an uncertain mutation as rejected.
 
 The package ships both a thread-safe synchronous `Client` and an `asyncio` `AsyncClient` that share
 the same codec, configuration, and outcome model. Runtime dependency: none (Python ≥ 3.11 stdlib).
+Portable error/retry/deadline rules:
+[client semantics v1](../../docs/spec/client-semantics-v1.md).
 
 License: BSD-3-Clause.
 
