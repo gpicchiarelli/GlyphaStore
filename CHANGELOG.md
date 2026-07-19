@@ -20,6 +20,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Move durable cold GET file I/O and CRC off Worker-affine network Reactors through a bounded shared
+  executor. Prepared jobs own the exact `RecordRef` and immutable generation pin, completions return
+  through bounded Reactor queues with `(slot, generation)` rejection and relinearization, saturation
+  returns `overloaded`, per-connection pipeline order is preserved, and shutdown cancels queued work
+  before draining in-flight reads. Add deterministic TCP coverage for blocked same-Worker progress,
+  saturation, close/slot reuse, stale completion, and shutdown drain.
 - Make volatile long-key erase reclaim geometrically instead of recopying the live key arena at
   every fixed 64 KiB of churn. Add strict-group record-target adaptation bounded by explicit
   `min_records`/`max_records`, contracting on deadline occupancy and growing with admitted producer

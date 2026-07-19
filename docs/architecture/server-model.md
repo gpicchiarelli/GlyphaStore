@@ -28,6 +28,19 @@ only when that owner is the bound Worker. A mismatched key receives `wrong_owner
 Worker and routing epoch; it is never forwarded through another executor. Server executors use a
 private owner-checked Store path and do not acquire the public Store API's per-Worker mutex.
 
+Volatile GETs and durable hot-cache hits remain on the owner Reactor. A durable cold miss is split:
+the Reactor briefly resolves and owns the exact `RecordRef` plus immutable generation pin, then
+submits that prepared read to a process-wide bounded disk-read executor. File reads, CRC validation,
+and value materialization happen there without a Worker or catalog lock. Completion returns through
+a bounded queue owned by the original Reactor, where the runtime revalidates the index reference and
+generation pin before the response is published. A concurrent replacement causes a bounded retry
+against a newly prepared pin; a closed or reused connection is rejected by `(slot, generation)`.
+
+Only one cold read may be outstanding per connection. The Reactor stops executing later frames from
+that connection until completion, so protocol-v2 responses remain strictly in request order without
+a reorder buffer. It may continue draining socket bytes into the configured input watermark so FIN,
+RST, and overflow remain observable. Other connections on the same Reactor continue normally.
+
 ## Protocol
 
 The normative, client-implementable contract is [Wire Protocol v2](../spec/wire-protocol-v2.md).
@@ -86,14 +99,16 @@ cannot target a new connection that reused the same descriptor or slot.
 ## Backpressure
 
 Input and output buffering is bounded per connection. The one-time connection handoff queue for
-each executor is bounded as well. A full handoff queue closes the connection being rebound.
+each executor, the shared disk-read request queue, and every Reactor completion queue are bounded as
+well. A full handoff queue closes the connection being rebound. A cold-read admission failure
+returns `overloaded` and does not enqueue work.
 Exceeding an input/output byte watermark closes the offending connection. Queue capacity is rounded
 up to a power of two at startup; overload never becomes unbounded memory growth.
 
 ## Current scope
 
-The daemon is still volatile and is not a durable network database. Executor threads are not yet
-guaranteed to run on performance cores. Optional executor affinity is strict over the
+The daemon supports the Store's volatile and durable modes. Executor threads are not yet guaranteed
+to run on performance cores. Optional executor affinity is strict over the
 process-allowed CPU set on Linux. macOS exposes only Mach affinity tags, so its mode is advisory
 rather than a hard performance-core pin. The executable validates `INIT`, one-time connection
 rebinding, wrong-owner rejection, TCP lifecycle, native readiness, partial frames, pipelining,
@@ -108,7 +123,7 @@ report current RSS after each sample, its change from the post-setup baseline, a
 Because the benchmark server and loopback clients run in one process, RSS describes the complete
 benchmark process rather than an isolated daemon.
 
-When durable-sync storage is integrated, a successful mutation response may be encoded only after
-the Store crosses the durable commit point and publishes coherent in-memory state. A disconnect
+For durable-sync storage, a successful mutation response is encoded only after the Store crosses
+the durable commit point and publishes coherent in-memory state. A disconnect
 between commit and response delivery is an indeterminate client outcome as defined by the
 [durability and recovery contract](durability-recovery.md).

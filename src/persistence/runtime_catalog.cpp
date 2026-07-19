@@ -814,86 +814,107 @@ auto DurableRuntimeCatalog::get(const std::span<const std::byte> key, const std:
 }
 
 auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns) -> Result<OwnedValue> {
+    auto prepared = prepare_get(key, now_ns);
+    if (!prepared) {
+        return unexpected(prepared.error());
+    }
+    if (prepared->value) {
+        return std::move(*prepared->value);
+    }
+    if (!prepared->cold) {
+        return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
+    }
+    return complete_get(std::move(*prepared->cold));
+}
+
+auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_t now_ns)
+    -> Result<PreparedRead> {
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
-    const auto key_bytes =
-        std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()};
     const auto worker_index = route_worker(key.hash, workers_.size());
     auto& worker = *workers_[worker_index];
-
-    struct PinnedRead final {
-        RecordRef reference;
-        std::shared_ptr<const RuntimeSegmentGeneration> generation;
-    };
-
-    for (;;) {
-        std::optional<PinnedRead> read;
-        {
-            const std::lock_guard worker_lock{worker.mutex};
-            const std::shared_lock catalog_lock{catalog_mutex_};
-            if (!healthy()) {
-                return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
-            }
-
-            const auto reference = worker.index.find(key);
-            if (!reference) {
-                return fail(ErrorCode::not_found, "key is not present");
-            }
-            const auto found =
-                std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
-                                 [](const ManifestSegmentEntry& entry, const SegmentId id) {
-                                     return entry.segment_id.value < id.value;
-                                 });
-            if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
-                return fail_closed(Error{ErrorCode::corrupted_data,
-                                         "durable Index references a Segment absent from the catalog"});
-            }
-            const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
-            if (found->generation != reference->generation || found->owner_worker != worker.worker_id ||
-                catalog_index >= generation_pins_.size()) {
-                return fail_closed(
-                    Error{ErrorCode::corrupted_data,
-                          "durable Index reference disagrees with catalog identity or ownership"});
-            }
-
-            if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
-                if (hot_record_matches(cached->second, *reference)) {
-                    if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
-                        cached->second.expire_at_ns <= now_ns) {
-                        return fail(ErrorCode::not_found, "key has expired");
-                    }
-                    return Result<OwnedValue>{owned_value_from_hot(cached->second)};
-                }
-                worker.hot_records.erase(cached);
-            }
-
-            const auto& pin = generation_pins_[catalog_index];
-            if (!pin || pin->identity.segment_id != reference->segment_id ||
-                pin->identity.generation != reference->generation ||
-                pin->identity.owner_worker != worker.worker_id) {
-                return fail_closed(Error{ErrorCode::corrupted_data,
-                                         "durable Segment generation pin disagrees with the Index"});
-            }
-            read.emplace(PinnedRead{.reference = *reference, .generation = pin});
+    RecordRef cold_reference;
+    std::shared_ptr<const RuntimeSegmentGeneration> cold_pin;
+    {
+        const std::lock_guard worker_lock{worker.mutex};
+        const std::shared_lock catalog_lock{catalog_mutex_};
+        if (!healthy()) {
+            return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
         }
 
-        ReadContext context{.expected_key = key_bytes, .expected_hash = key.hash, .now_ns = now_ns};
-        auto visited = read->generation->file.visit_record(read->reference, &context, &copy_verified_value);
+        const auto reference = worker.index.find(key);
+        if (!reference) {
+            return fail(ErrorCode::not_found, "key is not present");
+        }
+        const auto found =
+            std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
+                             [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                                 return entry.segment_id.value < id.value;
+                             });
+        if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
+            return fail_closed(Error{ErrorCode::corrupted_data,
+                                     "durable Index references a Segment absent from the catalog"});
+        }
+        const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+        if (found->generation != reference->generation || found->owner_worker != worker.worker_id ||
+            catalog_index >= generation_pins_.size()) {
+            return fail_closed(Error{ErrorCode::corrupted_data,
+                                     "durable Index reference disagrees with catalog identity or ownership"});
+        }
 
-        // Linearization point for a cold GET: while holding the Worker and
-        // catalog locks, the key must still designate both the same RecordRef
-        // and the same immutable generation pin. I/O and CRC validation happen
-        // before this point and never hold either lock.
+        if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
+            if (hot_record_matches(cached->second, *reference)) {
+                if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
+                    cached->second.expire_at_ns <= now_ns) {
+                    return fail(ErrorCode::not_found, "key has expired");
+                }
+                return PreparedRead{.value = owned_value_from_hot(cached->second)};
+            }
+            worker.hot_records.erase(cached);
+        }
+
+        const auto& pin = generation_pins_[catalog_index];
+        if (!pin || pin->identity.segment_id != reference->segment_id ||
+            pin->identity.generation != reference->generation ||
+            pin->identity.owner_worker != worker.worker_id) {
+            return fail_closed(
+                Error{ErrorCode::corrupted_data, "durable Segment generation pin disagrees with the Index"});
+        }
+        cold_reference = *reference;
+        cold_pin = pin;
+    }
+    return PreparedRead{.cold = PinnedRead{std::string{key.key}, key.hash, now_ns, worker_index,
+                                           cold_reference, std::move(cold_pin)}};
+}
+
+auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool* cancelled)
+    -> Result<OwnedValue> {
+    constexpr std::size_t kMaximumRelinearizationAttempts = 8;
+    for (std::size_t attempt = 0; attempt < kMaximumRelinearizationAttempts; ++attempt) {
+        if (cancelled != nullptr && cancelled->load(std::memory_order_acquire)) {
+            return fail(ErrorCode::unavailable, "durable cold read was cancelled");
+        }
+        const auto key_bytes = std::span<const std::byte>{
+            reinterpret_cast<const std::byte*>(read.key_.data()), read.key_.size()};
+        ReadContext context{
+            .expected_key = key_bytes, .expected_hash = read.key_hash_, .now_ns = read.now_ns_};
+        auto visited = read.generation_->file.visit_record(read.reference_, &context, &copy_verified_value);
+
+        // Linearization point for a cold GET: the Worker index must still
+        // designate both the exact RecordRef and immutable generation pin
+        // captured by prepare_get(). No file I/O or CRC work holds either lock.
         bool still_current{};
+        auto& worker = *workers_[read.worker_index_];
         {
             const std::lock_guard worker_lock{worker.mutex};
             const std::shared_lock catalog_lock{catalog_mutex_};
             if (!healthy()) {
                 return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
             }
+            const HashedKey key{.key = read.key_, .hash = read.key_hash_};
             const auto current = worker.index.find(key);
-            if (current && *current == read->reference) {
+            if (current && *current == read.reference_) {
                 const auto found = std::lower_bound(
                     manifest_.segments.begin(), manifest_.segments.end(), current->segment_id,
                     [](const ManifestSegmentEntry& entry, const SegmentId id) {
@@ -902,11 +923,27 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
                 if (found != manifest_.segments.end() && found->segment_id == current->segment_id) {
                     const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
                     still_current = catalog_index < generation_pins_.size() &&
-                                    generation_pins_[catalog_index] == read->generation;
+                                    generation_pins_[catalog_index] == read.generation_;
                 }
             }
         }
         if (!still_current) {
+            if (attempt + 1U == kMaximumRelinearizationAttempts) {
+                return fail(ErrorCode::sequence_conflict,
+                            "durable cold read exceeded its relinearization retry budget");
+            }
+            const HashedKey key{.key = read.key_, .hash = read.key_hash_};
+            auto prepared = prepare_get(key, read.now_ns_);
+            if (!prepared) {
+                return unexpected(prepared.error());
+            }
+            if (prepared->value) {
+                return std::move(*prepared->value);
+            }
+            if (!prepared->cold) {
+                return fail(ErrorCode::internal_error, "durable GET retry produced no result");
+            }
+            read = std::move(*prepared->cold);
             continue;
         }
         if (!visited) {
@@ -915,8 +952,9 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
             }
             return fail_closed(visited.error());
         }
-        return Result<OwnedValue>{std::move(context.value)};
+        return std::move(context.value);
     }
+    return fail(ErrorCode::internal_error, "durable cold read retry loop escaped its bound");
 }
 
 auto DurableRuntimeCatalog::put(const std::span<const std::byte> key, const std::span<const std::byte> value,

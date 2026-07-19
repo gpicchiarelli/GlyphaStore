@@ -146,6 +146,12 @@ Failure to enqueue a one-time connection handoff, input/output buffer exhaustion
 
 Input, output, and handoff queues are bounded. A client that does not read responses can eventually be disconnected. A client that sends faster than the bound executor can process may stop receiving read readiness or be disconnected at a configured hard bound. Unlimited buffering is never promised.
 
+At most one durable cold `GET` is admitted per connection. Later frames on that connection remain
+buffered and are not executed until the read completes, preserving the response order defined in
+section 8. Disk-read executor or completion-capacity saturation returns `OVERLOADED` for the `GET`;
+it never creates an unbounded queue. This does not prevent other connections bound to the same
+Worker from making progress.
+
 ## 12. Compatibility rules
 
 - Version 2 accepts only the exact version value `2`.

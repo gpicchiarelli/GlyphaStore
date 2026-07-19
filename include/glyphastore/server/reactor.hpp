@@ -3,12 +3,14 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
+#include "glyphastore/server/disk_read_executor.hpp"
 #include "glyphastore/server/poller.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/socket.hpp"
 #include "glyphastore/server/wakeup.hpp"
 #include "glyphastore/store/store.hpp"
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -31,13 +33,17 @@ struct ReactorConfig {
     std::size_t connection_handoff_capacity{4096};
     bool reuse_port{true};
     bool executor_affinity{};
+    // Zero selects min(worker_count, 4). Request and per-Reactor completion
+    // rings are fixed-capacity and reject excess cold reads as overloaded.
+    std::size_t disk_read_thread_count{};
+    std::size_t disk_read_queue_capacity{256};
 };
 
 class Reactor final {
   public:
     [[nodiscard]] static auto create(const ReactorConfig& config, std::size_t executor_id,
-                                     TcpListener listener, Store& store, ConnectionHandoffMesh& mesh)
-        -> Result<std::unique_ptr<Reactor>>;
+                                     TcpListener listener, Store& store, ConnectionHandoffMesh& mesh,
+                                     DiskReadExecutor& disk_reads) -> Result<std::unique_ptr<Reactor>>;
 
     Reactor(const Reactor&) = delete;
     auto operator=(const Reactor&) -> Reactor& = delete;
@@ -52,7 +58,7 @@ class Reactor final {
         return executor_id_;
     }
     [[nodiscard]] auto active_connections() const noexcept -> std::size_t {
-        return active_connections_;
+        return active_connections_.load(std::memory_order_relaxed);
     }
     [[nodiscard]] auto adopted_connections() const noexcept -> std::size_t {
         return adopted_connections_;
@@ -70,10 +76,12 @@ class Reactor final {
         bool initialized{};
         bool peer_read_closed{};
         bool write_armed{};
+        bool read_in_flight{};
+        std::shared_ptr<std::atomic_bool> read_cancellation;
     };
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener listener, Poller poller, Wakeup wakeup,
-            Store& store, ConnectionHandoffMesh& mesh);
+            Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads);
 
     [[nodiscard]] auto accept_ready() -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
@@ -88,6 +96,8 @@ class Reactor final {
                                      std::uint64_t key_hash, std::uint64_t& cached_now_ns) -> Status;
     [[nodiscard]] auto process_messages() -> Status;
     [[nodiscard]] auto process_handoffs() -> Status;
+    [[nodiscard]] auto process_disk_read_completions() -> Status;
+    [[nodiscard]] auto update_connection_interest(ConnectionToken token) -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;
     void close_connection(ConnectionToken token) noexcept;
@@ -103,11 +113,14 @@ class Reactor final {
     Wakeup wakeup_;
     Store& store_;
     ConnectionHandoffMesh& mesh_;
+    DiskReadExecutor& disk_reads_;
+    BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
     std::vector<IoEvent> events_;
-    std::size_t active_connections_{};
+    std::atomic<std::size_t> active_connections_{};
     std::size_t adopted_connections_{};
+    std::size_t disk_reads_outstanding_{};
 };
 
 } // namespace glyphastore::server

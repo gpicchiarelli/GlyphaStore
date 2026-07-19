@@ -92,6 +92,7 @@ endif()
 
 add_library(glyphastore_server_core
     src/server/connection_handoff.cpp
+    src/server/disk_read_executor.cpp
     src/server/protocol.cpp
     src/server/reactor.cpp
     src/server/server.cpp

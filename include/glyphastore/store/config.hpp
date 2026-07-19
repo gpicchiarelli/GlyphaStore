@@ -1,5 +1,7 @@
 #pragma once
 
+#include "glyphastore/persistence/filesystem.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -87,6 +89,9 @@ struct StoreConfig {
     // StoreClock instead so reads and recovery observe one time source.
     std::uint64_t recovery_now_ns{};
     std::shared_ptr<const StoreClock> clock{};
+    // Deterministic filesystem seam used by crash, fault-injection, and
+    // Reactor cold-I/O tests. Production configurations leave this empty.
+    FilesystemHooks filesystem_hooks{};
 };
 
 } // namespace glyphastore

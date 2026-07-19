@@ -1,9 +1,10 @@
 # ADR 0012: Worker-affine Reactor execution
 
-- Status: accepted
+- Status: amended by ADR 0016
 - Date: 2026-07-19
 - Owners: networking and storage maintainers
 - Related: ADR 0005, ADR 0006, ADR 0013
+- Amended by: ADR 0016 for durable cold reads
 
 ## Context
 

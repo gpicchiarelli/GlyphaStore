@@ -373,6 +373,20 @@ struct Store::Impl {
     std::optional<Error> close_error;
 };
 
+struct detail::PreparedColdRead::State final {
+    explicit State(DurableRuntimeCatalog::PinnedRead prepared) : prepared(std::move(prepared)) {}
+    DurableRuntimeCatalog::PinnedRead prepared;
+};
+
+detail::PreparedColdRead::PreparedColdRead(std::unique_ptr<State> state) noexcept
+    : state_(std::move(state)) {}
+
+detail::PreparedColdRead::PreparedColdRead(PreparedColdRead&&) noexcept = default;
+
+auto detail::PreparedColdRead::operator=(PreparedColdRead&&) noexcept -> PreparedColdRead& = default;
+
+detail::PreparedColdRead::~PreparedColdRead() = default;
+
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() {
     try {
@@ -440,8 +454,8 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
             return unexpected(valid.error());
         }
     }
-    auto directory =
-        DataDirectory::open_and_lock(*config.data_directory, data_directory_mode(config.durable_open_mode));
+    auto directory = DataDirectory::open_and_lock(
+        *config.data_directory, data_directory_mode(config.durable_open_mode), config.filesystem_hooks);
     if (!directory) {
         return unexpected(directory.error());
     }
@@ -756,6 +770,59 @@ auto detail::StoreAccess::get_owned(Store& store, const std::size_t worker_index
         return unexpected(record.error());
     }
     return copy_value(*record);
+}
+
+auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t worker_index,
+                                            const HashedKey& key, const std::uint64_t now_ns)
+    -> Result<PreparedGet> try {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "exclusive get targets the wrong Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (store.impl_->durable_runtime) {
+        auto prepared = store.impl_->durable_runtime->prepare_get(key, now_ns);
+        if (!prepared) {
+            return unexpected(prepared.error());
+        }
+        if (prepared->value) {
+            return PreparedGet{.value = std::move(prepared->value)};
+        }
+        if (!prepared->cold) {
+            return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
+        }
+        auto state = std::make_unique<PreparedColdRead::State>(std::move(*prepared->cold));
+        return PreparedGet{.cold = PreparedColdRead{std::move(state)}};
+    }
+    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
+    if (!record) {
+        return unexpected(record.error());
+    }
+    return PreparedGet{.value = copy_value(*record)};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    return internal_failure();
+}
+
+auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t worker_index,
+                                             PreparedColdRead read, const std::atomic_bool* cancelled)
+    -> Result<OwnedValue> {
+    if (worker_index >= store.worker_count()) {
+        return fail(ErrorCode::invalid_argument, "cold get targets an invalid Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (!store.impl_->durable_runtime || !read.state_ ||
+        read.state_->prepared.worker_index_ != worker_index) {
+        return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
+    }
+    return store.impl_->durable_runtime->complete_get(std::move(read.state_->prepared), cancelled);
 }
 
 auto detail::StoreAccess::put(Store& store, const std::size_t worker_index, const HashedKey& key,

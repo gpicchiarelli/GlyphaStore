@@ -36,6 +36,7 @@ namespace {
     case ErrorCode::descriptor_exhausted:
     case ErrorCode::read_only_filesystem:
     case ErrorCode::unavailable:
+    case ErrorCode::sequence_conflict:
         return ResponseStatus::overloaded;
     default:
         return ResponseStatus::internal_error;
@@ -58,9 +59,10 @@ namespace {
 } // namespace
 
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener listener, Poller poller,
-                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh)
+                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(listener)),
       poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store), mesh_(mesh),
+      disk_reads_(disk_reads), disk_read_completions_(config_.disk_read_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     free_slots_.reserve(config_.maximum_connections);
     for (std::size_t slot = config_.maximum_connections; slot > 0; --slot) {
@@ -69,7 +71,8 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 }
 
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id, TcpListener listener,
-                     Store& store, ConnectionHandoffMesh& mesh) -> Result<std::unique_ptr<Reactor>> {
+                     Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads)
+    -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
     }
@@ -81,8 +84,9 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     if (!wakeup) {
         return unexpected(wakeup.error());
     }
-    auto reactor = std::unique_ptr<Reactor>(new Reactor(config, executor_id, std::move(listener),
-                                                        std::move(*poller), std::move(*wakeup), store, mesh));
+    auto reactor =
+        std::unique_ptr<Reactor>(new Reactor(config, executor_id, std::move(listener), std::move(*poller),
+                                             std::move(*wakeup), store, mesh, disk_reads));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
@@ -115,6 +119,9 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
         return;
     }
     static_cast<void>(poller_.remove(current->socket.descriptor()));
+    if (current->read_cancellation) {
+        current->read_cancellation->store(true, std::memory_order_release);
+    }
     current->socket.reset();
     current->input.clear();
     current->input_offset = 0;
@@ -124,6 +131,8 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
+    current->read_in_flight = false;
+    current->read_cancellation.reset();
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -167,6 +176,8 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.initialized = handoff.initialized;
     current.peer_read_closed = handoff.peer_read_closed;
     current.write_armed = !current.output.empty();
+    current.read_in_flight = false;
+    current.read_cancellation.reset();
     const ConnectionToken token{.slot = slot, .generation = current.generation};
     auto interest = IoInterest::none;
     if (!current.peer_read_closed) {
@@ -232,7 +243,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
-    while (current->input_offset < current->input.size()) {
+    while (!current->read_in_flight && current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         auto decoded = decode_request(available);
@@ -278,6 +289,9 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             }
         }
         current->input_offset += decoded->consumed;
+        if (current->read_in_flight) {
+            break;
+        }
     }
     if (current->input_offset == current->input.size()) {
         current->input.clear();
@@ -341,6 +355,8 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
+    current->read_in_flight = false;
+    current->read_cancellation.reset();
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -395,12 +411,50 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (cached_now_ns == 0) {
             cached_now_ns = current_time_ns();
         }
-        auto record = detail::StoreAccess::get_owned(store_, executor_id_, key, cached_now_ns);
-        if (record) {
-            owned_response = std::move(*record);
+        auto record = detail::StoreAccess::prepare_get_owned(store_, executor_id_, key, cached_now_ns);
+        if (!record) {
+            response.status = response_status(record.error());
+        } else if (record->value) {
+            owned_response = std::move(*record->value);
             response.value = owned_response.bytes;
         } else {
-            response.status = response_status(record.error());
+            auto* current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
+            if (disk_reads_outstanding_ >= config_.disk_read_queue_capacity) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            const auto value_budget = config_.maximum_output_bytes - kResponseHeaderBytes;
+            if (!record->cold) {
+                response.status = ResponseStatus::internal_error;
+                break;
+            }
+            std::shared_ptr<std::atomic_bool> cancellation;
+            try {
+                cancellation = std::make_shared<std::atomic_bool>(false);
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            DiskReadTask task{.connection = token,
+                              .request_id = request.request_id,
+                              .worker_index = executor_id_,
+                              .read = std::move(*record->cold),
+                              .cancelled = cancellation,
+                              .maximum_value_bytes = value_budget,
+                              .completions = &disk_read_completions_,
+                              .wakeup = &wakeup_};
+            ++disk_reads_outstanding_;
+            if (!disk_reads_.try_submit(std::move(task))) {
+                --disk_reads_outstanding_;
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            current->read_in_flight = true;
+            current->read_cancellation = std::move(cancellation);
+            return update_connection_interest(token);
         }
         break;
     }
@@ -429,7 +483,75 @@ auto Reactor::process_messages() -> Status {
     if (auto drained = wakeup_.drain(); !drained) {
         return drained;
     }
+    if (auto completed = process_disk_read_completions(); !completed) {
+        return completed;
+    }
     return process_handoffs();
+}
+
+auto Reactor::process_disk_read_completions() -> Status {
+    while (auto completion = disk_read_completions_.try_pop()) {
+        if (disk_reads_outstanding_ == 0) {
+            return fail(ErrorCode::corrupted_data, "disk-read completion accounting underflow");
+        }
+        --disk_reads_outstanding_;
+        auto* current = connection(completion->connection);
+        if (current == nullptr) {
+            continue;
+        }
+        if (!current->read_in_flight) {
+            return fail(ErrorCode::corrupted_data, "unexpected disk-read completion");
+        }
+        current->read_in_flight = false;
+        current->read_cancellation.reset();
+        OwnedValue owned;
+        ResponseView response{.status = ResponseStatus::ok,
+                              .request_id = completion->request_id,
+                              .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                              .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                              .routing_epoch = kRoutingEpoch};
+        if (completion->error) {
+            response.status = response_status(*completion->error);
+        } else if (completion->value) {
+            owned = std::move(*completion->value);
+            response.value = owned.bytes;
+        } else {
+            response.status = ResponseStatus::internal_error;
+        }
+        if (auto queued = queue_response(completion->connection, response); !queued) {
+            close_connection(completion->connection);
+            continue;
+        }
+        if (auto processed = process_frames(completion->connection); !processed) {
+            close_connection(completion->connection);
+            continue;
+        }
+        if (connection(completion->connection) != nullptr) {
+            if (auto flushed = write_ready(completion->connection); !flushed) {
+                close_connection(completion->connection);
+            }
+        }
+    }
+    return {};
+}
+
+auto Reactor::update_connection_interest(const ConnectionToken token) -> Status {
+    auto* current = connection(token);
+    if (current == nullptr) {
+        return {};
+    }
+    auto interest = IoInterest::none;
+    if (!current->peer_read_closed) {
+        interest = interest | IoInterest::read;
+    }
+    if (current->output_offset < current->output.size()) {
+        interest = interest | IoInterest::write;
+    }
+    if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest); !modified) {
+        return modified;
+    }
+    current->write_armed = has_interest(interest, IoInterest::write);
+    return {};
 }
 
 auto Reactor::process_handoffs() -> Status {
@@ -478,7 +600,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
         }
         if (received == 0) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size()) {
+            if (current->output_offset == current->output.size() && !current->read_in_flight) {
                 close_connection(token);
                 return {};
             }
@@ -527,9 +649,12 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     }
     current->output.clear();
     current->output_offset = 0;
-    if (current->peer_read_closed) {
+    if (current->peer_read_closed && !current->read_in_flight) {
         close_connection(token);
         return {};
+    }
+    if (current->read_in_flight) {
+        return update_connection_interest(token);
     }
     if (!current->write_armed) {
         return {};
@@ -583,14 +708,10 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         }
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size()) {
+            if (current->output_offset == current->output.size() && !current->read_in_flight) {
                 close_connection(token);
-            } else if (auto modified =
-                           poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::write);
-                       !modified) {
+            } else if (auto modified = update_connection_interest(token); !modified) {
                 close_connection(token);
-            } else {
-                current->write_armed = true;
             }
         }
     }

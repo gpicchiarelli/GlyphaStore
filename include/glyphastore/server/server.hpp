@@ -39,6 +39,7 @@ class Server final {
         return reactors_.size();
     }
     [[nodiscard]] auto adopted_connections_per_executor() const -> std::vector<std::size_t>;
+    [[nodiscard]] auto active_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
@@ -50,6 +51,7 @@ class Server final {
 
     ReactorConfig config_;
     std::unique_ptr<Store> store_;
+    std::unique_ptr<DiskReadExecutor> disk_reads_;
     ConnectionHandoffMesh mesh_;
     std::vector<std::unique_ptr<Reactor>> reactors_;
     std::vector<std::thread> threads_;

@@ -24,12 +24,17 @@
 #include <optional>
 #include <shared_mutex>
 #include <span>
+#include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace glyphastore {
 
 class DurableFlushCoordinator;
+namespace detail {
+class StoreAccess;
+}
 
 enum class DurableMutationOutcome { committed, not_committed, indeterminate };
 enum class DurableCompactionOutcome { compacted, not_compacted, not_beneficial, recovery_required };
@@ -67,7 +72,40 @@ struct DurableCompactionResult {
 // Worker-owned; immutable generation pins keep cold-read handles alive across
 // catalog publication and Segment retirement.
 class DurableRuntimeCatalog final {
+    struct PendingGroupMutation;
+    struct RuntimeWorker;
+    struct RuntimeSegmentGeneration;
+
   public:
+    class PinnedRead final {
+      public:
+        PinnedRead(PinnedRead&&) noexcept = default;
+        auto operator=(PinnedRead&&) noexcept -> PinnedRead& = default;
+        PinnedRead(const PinnedRead&) = delete;
+        auto operator=(const PinnedRead&) -> PinnedRead& = delete;
+
+      private:
+        PinnedRead(std::string key, std::uint64_t key_hash, std::uint64_t now_ns, std::size_t worker_index,
+                   RecordRef reference, std::shared_ptr<const RuntimeSegmentGeneration> generation)
+            : key_(std::move(key)), key_hash_(key_hash), now_ns_(now_ns), worker_index_(worker_index),
+              reference_(reference), generation_(std::move(generation)) {}
+
+        std::string key_;
+        std::uint64_t key_hash_{};
+        std::uint64_t now_ns_{};
+        std::size_t worker_index_{};
+        RecordRef reference_;
+        std::shared_ptr<const RuntimeSegmentGeneration> generation_;
+
+        friend class DurableRuntimeCatalog;
+        friend class detail::StoreAccess;
+    };
+
+    struct PreparedRead final {
+        std::optional<OwnedValue> value;
+        std::optional<PinnedRead> cold;
+    };
+
     [[nodiscard]] static auto open_existing(const std::filesystem::path& path,
                                             std::uint64_t recovery_now_ns = 0, FilesystemHooks hooks = {})
         -> Result<std::unique_ptr<DurableRuntimeCatalog>>;
@@ -111,10 +149,6 @@ class DurableRuntimeCatalog final {
     void mark_fail_closed() noexcept;
 
   private:
-    struct PendingGroupMutation;
-    struct RuntimeWorker;
-    struct RuntimeSegmentGeneration;
-
     DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
                           DurableRuntimeOptions options);
     [[nodiscard]] auto initialize_generation_pins() -> Status;
@@ -131,6 +165,9 @@ class DurableRuntimeCatalog final {
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
                               std::uint32_t flags) -> DurableMutationResult;
     [[nodiscard]] auto rotate_active(RuntimeWorker& worker) -> DurableMutationResult;
+    [[nodiscard]] auto prepare_get(const HashedKey& key, std::uint64_t now_ns) -> Result<PreparedRead>;
+    [[nodiscard]] auto complete_get(PinnedRead read, const std::atomic_bool* cancelled = nullptr)
+        -> Result<OwnedValue>;
 
     // Declared first so cached Segment handles are destroyed before the lock
     // and anchored directory descriptor.
@@ -154,6 +191,8 @@ class DurableRuntimeCatalog final {
     bool compaction_publication_active_{};
     std::mutex manifest_publication_mutex_;
     mutable std::shared_mutex catalog_mutex_;
+
+    friend class detail::StoreAccess;
 };
 
 } // namespace glyphastore

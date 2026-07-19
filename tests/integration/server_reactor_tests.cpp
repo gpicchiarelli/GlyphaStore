@@ -1,4 +1,5 @@
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "test.hpp"
@@ -8,9 +9,11 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <netinet/in.h>
 #include <span>
 #include <string_view>
@@ -149,6 +152,66 @@ class ServerTemporaryDirectory final {
     std::filesystem::path root_;
 };
 
+class BlockingColdRead final {
+  public:
+    void arm() {
+        const std::lock_guard lock{mutex_};
+        armed_ = true;
+    }
+
+    [[nodiscard]] auto wait_until_blocked() -> bool {
+        std::unique_lock lock{mutex_};
+        return condition_.wait_for(lock, std::chrono::seconds{2}, [this] { return blocked_; });
+    }
+
+    void release() {
+        {
+            const std::lock_guard lock{mutex_};
+            released_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    [[nodiscard]] auto wait_until_finished() -> bool {
+        std::unique_lock lock{mutex_};
+        return condition_.wait_for(lock, std::chrono::seconds{2}, [this] { return finished_; });
+    }
+
+    static auto read_some_at(void* opaque, const int descriptor, const std::span<std::byte> output,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& state = *static_cast<BlockingColdRead*>(opaque);
+        bool claimed_here{};
+        if (offset >= glyphastore::kSegmentHeaderReservedBytes) {
+            std::unique_lock lock{state.mutex_};
+            if (state.armed_ && !state.claimed_) {
+                state.claimed_ = true;
+                claimed_here = true;
+                state.blocked_ = true;
+                state.condition_.notify_all();
+                state.condition_.wait(lock, [&state] { return state.released_; });
+            }
+        }
+        const auto result = ::pread(descriptor, output.data(), output.size(), static_cast<off_t>(offset));
+        if (claimed_here) {
+            {
+                const std::lock_guard lock{state.mutex_};
+                state.finished_ = true;
+            }
+            state.condition_.notify_all();
+        }
+        return result;
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool armed_{};
+    bool claimed_{};
+    bool blocked_{};
+    bool released_{};
+    bool finished_{};
+};
+
 } // namespace
 
 GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol buffers") {
@@ -160,6 +223,11 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
                         .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .maximum_output_bytes = glyphastore::server::kResponseHeaderBytes - 1U})
+                        .has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::Server::create({.port = 0, .disk_read_queue_capacity = 0}).has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create(
+                        {.port = 0, .disk_read_thread_count = glyphastore::kMaximumWorkerCount + 1U})
                         .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .worker_count = 2},
                                                         {.worker_config = {.explicit_count = 1}})
@@ -225,6 +293,261 @@ GLYPHA_TEST("server StoreConfig persists acknowledged wire writes across restart
     static_cast<void>(::close(socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies bounded admission") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto seed = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                              .storage_mode = glyphastore::StorageMode::durable_sync,
+                                              .data_directory = path,
+                                              .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(seed.has_value());
+        GLYPHA_REQUIRE((*seed)->put("cold-a", bytes("value-a")).has_value());
+        GLYPHA_REQUIRE((*seed)->put("cold-b", bytes("value-b")).has_value());
+        GLYPHA_REQUIRE((*seed)->close().has_value());
+    }
+
+    BlockingColdRead blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .disk_read_thread_count = 1, .disk_read_queue_capacity = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+         .filesystem_hooks = {
+             .file_io = {.context = &blocker, .read_some_at = &BlockingColdRead::read_some_at}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto blocked_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(blocked_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(blocked_socket, 0, 1));
+    blocker.arm();
+    const auto cold_a = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 40,
+        .key = bytes("cold-a"),
+    });
+    const auto ordered_put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 43,
+        .key = bytes("ordered-after-cold"),
+        .value = bytes("ordered-value"),
+    });
+    GLYPHA_REQUIRE(cold_a.has_value());
+    GLYPHA_REQUIRE(ordered_put.has_value());
+    std::vector<std::byte> blocked_pipeline;
+    blocked_pipeline.insert(blocked_pipeline.end(), cold_a->begin(), cold_a->end());
+    blocked_pipeline.insert(blocked_pipeline.end(), ordered_put->begin(), ordered_put->end());
+    GLYPHA_REQUIRE(send_all(blocked_socket, blocked_pipeline));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    // The only disk-read admission is occupied, but the owner-affine Reactor
+    // must still accept, initialize, mutate, and respond on another socket.
+    const auto responsive_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(responsive_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(responsive_socket, 0, 1));
+    const auto ordered_not_yet_visible = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 44,
+        .key = bytes("ordered-after-cold"),
+    });
+    GLYPHA_REQUIRE(ordered_not_yet_visible.has_value());
+    GLYPHA_REQUIRE(send_all(responsive_socket, *ordered_not_yet_visible));
+    const auto not_yet_visible_frame = receive_response(responsive_socket);
+    const auto not_yet_visible = glyphastore::server::decode_response(not_yet_visible_frame);
+    GLYPHA_REQUIRE(not_yet_visible.has_value());
+    GLYPHA_REQUIRE(not_yet_visible->frame.status == glyphastore::server::ResponseStatus::not_found);
+    const auto saturated_get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 41,
+        .key = bytes("cold-b"),
+    });
+    const auto same_worker_put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 42,
+        .key = bytes("reactor-remains-live"),
+        .value = bytes("stored"),
+    });
+    GLYPHA_REQUIRE(saturated_get.has_value());
+    GLYPHA_REQUIRE(same_worker_put.has_value());
+    std::vector<std::byte> pipeline;
+    pipeline.insert(pipeline.end(), saturated_get->begin(), saturated_get->end());
+    pipeline.insert(pipeline.end(), same_worker_put->begin(), same_worker_put->end());
+    GLYPHA_REQUIRE(send_all(responsive_socket, pipeline));
+
+    const auto overload_frame = receive_response(responsive_socket);
+    const auto put_frame = receive_response(responsive_socket);
+    const auto overload = glyphastore::server::decode_response(overload_frame);
+    const auto put = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(overload.has_value());
+    GLYPHA_REQUIRE(overload->frame.request_id == 41);
+    GLYPHA_REQUIRE(overload->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(put->frame.request_id == 42);
+    GLYPHA_REQUIRE(put->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    blocker.release();
+    const auto cold_frame = receive_response(blocked_socket);
+    const auto cold = glyphastore::server::decode_response(cold_frame);
+    GLYPHA_REQUIRE(cold.has_value());
+    GLYPHA_REQUIRE(cold->frame.request_id == 40);
+    GLYPHA_REQUIRE(cold->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(cold->frame.value) == "value-a");
+    const auto ordered_put_frame = receive_response(blocked_socket);
+    const auto ordered_put_response = glyphastore::server::decode_response(ordered_put_frame);
+    GLYPHA_REQUIRE(ordered_put_response.has_value());
+    GLYPHA_REQUIRE(ordered_put_response->frame.request_id == 43);
+    GLYPHA_REQUIRE(ordered_put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(blocked_socket));
+    static_cast<void>(::close(responsive_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("late cold-read completion cannot target a reused connection slot") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto seed = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                              .storage_mode = glyphastore::StorageMode::durable_sync,
+                                              .data_directory = path,
+                                              .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(seed.has_value());
+        GLYPHA_REQUIRE((*seed)->put("stale-read", bytes("old-value")).has_value());
+        GLYPHA_REQUIRE((*seed)->close().has_value());
+    }
+
+    BlockingColdRead blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .disk_read_thread_count = 1, .disk_read_queue_capacity = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+         .filesystem_hooks = {
+             .file_io = {.context = &blocker, .read_some_at = &BlockingColdRead::read_some_at}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto old_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(old_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(old_socket, 0, 1));
+    blocker.arm();
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 50,
+        .key = bytes("stale-read"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(old_socket, *get));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    linger reset_on_close{.l_onoff = 1, .l_linger = 0};
+    GLYPHA_REQUIRE(::setsockopt(old_socket, SOL_SOCKET, SO_LINGER, &reset_on_close, sizeof(reset_on_close)) ==
+                   0);
+    static_cast<void>(::close(old_socket));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (server.active_connections_per_executor()[0] != 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    const auto old_connection_closed = server.active_connections_per_executor()[0] == 0;
+    if (!old_connection_closed) {
+        blocker.release();
+    }
+    GLYPHA_REQUIRE(old_connection_closed);
+
+    // maximum_connections=1 forces the next connection to reuse the same slot
+    // with a new generation while the old pinned read is still in flight.
+    const auto reused_socket = connect_to(server.port());
+    if (reused_socket < 0) {
+        blocker.release();
+    }
+    GLYPHA_REQUIRE(reused_socket >= 0);
+    const auto reused_initialized = initialize_and_bind(reused_socket, 0, 1);
+    if (!reused_initialized) {
+        blocker.release();
+    }
+    GLYPHA_REQUIRE(reused_initialized);
+    blocker.release();
+    GLYPHA_REQUIRE(blocker.wait_until_finished());
+
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 51,
+        .value = bytes("new-generation"),
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(send_all(reused_socket, *ping));
+    const auto frame = receive_response(reused_socket);
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 51);
+    GLYPHA_REQUIRE(text(response->frame.value) == "new-generation");
+
+    static_cast<void>(::close(reused_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server shutdown drains an in-flight pinned cold read before Store close") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto seed = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                              .storage_mode = glyphastore::StorageMode::durable_sync,
+                                              .data_directory = path,
+                                              .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(seed.has_value());
+        GLYPHA_REQUIRE((*seed)->put("shutdown-read", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*seed)->close().has_value());
+    }
+
+    BlockingColdRead blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .disk_read_thread_count = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+         .filesystem_hooks = {
+             .file_io = {.context = &blocker, .read_some_at = &BlockingColdRead::read_some_at}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    blocker.arm();
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 60,
+        .key = bytes("shutdown-read"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *get));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    std::atomic_bool join_finished{};
+    bool join_succeeded{};
+    server.request_stop();
+    std::thread joiner{[&] {
+        join_succeeded = server.join().has_value();
+        join_finished.store(true, std::memory_order_release);
+    }};
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    while (!join_finished.load(std::memory_order_acquire) &&
+           std::chrono::steady_clock::now() < drain_deadline) {
+        std::this_thread::yield();
+    }
+    const auto waited_for_read = !join_finished.load(std::memory_order_acquire);
+    blocker.release();
+    joiner.join();
+    GLYPHA_REQUIRE(waited_for_read);
+    GLYPHA_REQUIRE(join_succeeded);
+    static_cast<void>(::close(socket));
 }
 
 GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {

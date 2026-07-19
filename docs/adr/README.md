@@ -41,6 +41,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0013](0013-native-wire-protocol-v2.md) | Explicit native binary protocol v2 | accepted | exposes 0006 and 0012 |
 | [0014](0014-crc32c.md) | CRC32C Castagnoli parameters and role | accepted | persistent-format dependency |
 | [0015](0015-whole-worker-compaction.md) | Whole-Worker sealed-history durable compaction | accepted | preserves 0003/0004/0008 |
+| [0016](0016-bounded-cold-read-executor.md) | Bounded async durable cold reads outside Reactors | accepted | amends 0012; preserves 0013 ordering |
 
 The public error taxonomy still requires an ADR before it becomes a post-1.0 compatibility
 commitment.
