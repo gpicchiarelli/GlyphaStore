@@ -6,11 +6,11 @@ import socket
 import threading
 from dataclasses import dataclass
 from enum import Enum
+from collections.abc import Sequence
 from typing import Final
 
 from .protocol import (
     MAX_FRAME_BYTES,
-    NO_WORKER,
     RESPONSE_HEADER_BYTES,
     Opcode,
     Response,
@@ -67,6 +67,37 @@ class MutationResult:
         return self.outcome is MutationOutcome.COMMITTED
 
 
+class PipelineOpcode(Enum):
+    GET = Opcode.GET
+    PUT = Opcode.PUT
+    ERASE = Opcode.ERASE
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineRequest:
+    opcode: PipelineOpcode
+    key: bytes | bytearray | memoryview
+    value: bytes | bytearray | memoryview = b""
+    expire_at_ns: int = 0
+
+
+class PipelineOutcome(Enum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineResponse:
+    outcome: PipelineOutcome
+    value: bytes = b""
+    error: GlyphaError | None = None
+
+    @property
+    def succeeded(self) -> bool:
+        return self.outcome is PipelineOutcome.SUCCEEDED
+
+
 @dataclass(frozen=True, slots=True)
 class ClientConfig:
     host: str = "127.0.0.1"
@@ -74,6 +105,8 @@ class ClientConfig:
     connect_timeout: float = 3.0
     request_timeout: float = 5.0
     maximum_frame_bytes: int = MAX_FRAME_BYTES
+    maximum_pipeline_requests: int = 256
+    maximum_pipeline_bytes: int = 1024 * 1024
 
 
 class _SendFailure(Exception):
@@ -88,9 +121,13 @@ class _Connection:
         self.worker = worker
         self.lock = threading.Lock()
         self.socket: socket.socket | None = None
+        self.input = bytearray()
+        self.input_offset = 0
 
     def reset(self) -> None:
         current, self.socket = self.socket, None
+        self.input.clear()
+        self.input_offset = 0
         if current is not None:
             try:
                 current.shutdown(socket.SHUT_RDWR)
@@ -140,6 +177,8 @@ class Client:
             or config.connect_timeout <= 0
             or config.request_timeout <= 0
             or not RESPONSE_HEADER_BYTES <= config.maximum_frame_bytes <= MAX_FRAME_BYTES
+            or config.maximum_pipeline_requests <= 0
+            or config.maximum_pipeline_bytes < 40
         ):
             raise InvalidArgument("client configuration is outside protocol limits")
 
@@ -176,6 +215,111 @@ class Client:
 
     def erase(self, key: bytes | bytearray | memoryview) -> MutationResult:
         return self._mutate(Opcode.ERASE, bytes(key), b"", 0)
+
+    def execute_pipeline(
+        self, requests: Sequence[PipelineRequest]
+    ) -> list[PipelineResponse]:
+        """Execute one ordered, non-atomic pipeline on a single Worker connection."""
+        if not requests:
+            return []
+        if not self.healthy:
+            raise Unavailable("client is closed or routing metadata changed")
+        if len(requests) > self._config.maximum_pipeline_requests:
+            raise InvalidArgument("pipeline exceeds the configured request limit")
+
+        normalized: list[tuple[PipelineOpcode, bytes, bytes, int]] = []
+        frames: list[bytes] = []
+        metadata: list[tuple[int, int]] = []
+        output_size = 0
+        worker: int | None = None
+        for request in requests:
+            if not isinstance(request.opcode, PipelineOpcode):
+                raise InvalidArgument("pipeline request contains an invalid opcode")
+            key, value = bytes(request.key), bytes(request.value)
+            request_worker = self.worker_for(key)
+            if worker is None:
+                worker = request_worker
+            elif request_worker != worker:
+                raise InvalidArgument("every pipeline key must route to the same Worker")
+            if request.opcode in (PipelineOpcode.GET, PipelineOpcode.ERASE) and (
+                value or request.expire_at_ns != 0
+            ):
+                raise InvalidArgument("GET and ERASE pipeline requests cannot carry PUT fields")
+            request_id = self._next_request_id()
+            try:
+                frame = encode_request(
+                    request.opcode.value,
+                    request_id,
+                    key=key,
+                    value=value,
+                    expire_at_ns=request.expire_at_ns,
+                )
+            except ValueError as error:
+                raise InvalidArgument(str(error)) from error
+            if len(frame) > self._config.maximum_frame_bytes:
+                raise InvalidArgument("pipeline request exceeds the configured frame limit")
+            if len(frame) > self._config.maximum_pipeline_bytes - output_size:
+                raise InvalidArgument("pipeline exceeds the configured aggregate byte limit")
+            normalized.append((request.opcode, key, value, request.expire_at_ns))
+            metadata.append((request_id, output_size))
+            frames.append(frame)
+            output_size += len(frame)
+
+        assert worker is not None
+        output = b"".join(frames)
+        responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
+        connection = self._connections[worker]
+        with connection.lock:
+            if not self.healthy:
+                raise Unavailable("client closed before pipeline admission")
+            self._ensure_connected(connection)
+
+            def mark_unresolved(first: int, error: GlyphaError, bytes_sent: int) -> None:
+                for index in range(first, len(normalized)):
+                    opcode = normalized[index][0]
+                    mutation_may_have_arrived = (
+                        opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                        and bytes_sent > metadata[index][1]
+                    )
+                    responses[index] = PipelineResponse(
+                        PipelineOutcome.INDETERMINATE
+                        if mutation_may_have_arrived
+                        else PipelineOutcome.FAILED,
+                        error=error,
+                    )
+
+            try:
+                self._send(connection, output)
+            except _SendFailure as error:
+                connection.reset()
+                mark_unresolved(0, error.error, error.bytes_sent)
+                return responses
+
+            for index, (opcode, _, _, _) in enumerate(normalized):
+                try:
+                    response = self._receive_response(connection)
+                    self._validate_response(response, metadata[index][0], worker)
+                except (TransportError, ProtocolError, Unavailable) as error:
+                    connection.reset()
+                    mark_unresolved(index, error, len(output))
+                    return responses
+                if response.status is Status.OK:
+                    responses[index] = PipelineResponse(
+                        PipelineOutcome.SUCCEEDED, value=response.value
+                    )
+                    continue
+                error = self._status_error(response.status)
+                responses[index] = PipelineResponse(
+                    PipelineOutcome.INDETERMINATE
+                    if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                    and response.status is Status.INTERNAL_ERROR
+                    else PipelineOutcome.FAILED,
+                    error=error,
+                )
+                if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
+                    with self._state_lock:
+                        self._healthy = False
+            return responses
 
     def close(self) -> None:
         with self._state_lock:
@@ -262,39 +406,55 @@ class Client:
     def _send(self, connection: _Connection, frame: bytes) -> None:
         assert connection.socket is not None
         sent = 0
+        view = memoryview(frame)
         try:
             while sent < len(frame):
-                count = connection.socket.send(frame[sent:])
+                count = connection.socket.send(view[sent:])
                 if count == 0:
                     raise OSError("socket closed during send")
                 sent += count
         except (OSError, TimeoutError) as error:
             raise _SendFailure(TransportError(f"request send failed: {error}"), sent) from error
 
-    def _receive_exact(self, connection: _Connection, size: int) -> bytes:
+    def _receive_response(self, connection: _Connection) -> Response:
         assert connection.socket is not None
-        output = bytearray()
-        try:
-            while len(output) < size:
-                chunk = connection.socket.recv(size - len(output))
+        while True:
+            available = len(connection.input) - connection.input_offset
+            if available >= 4:
+                frame_size = int.from_bytes(
+                    connection.input[connection.input_offset : connection.input_offset + 4],
+                    "little",
+                )
+                if not RESPONSE_HEADER_BYTES <= frame_size <= self._config.maximum_frame_bytes:
+                    raise ProtocolError("server response size is outside client limits")
+                if available >= frame_size:
+                    start = connection.input_offset
+                    encoded = memoryview(connection.input)[start : start + frame_size]
+                    try:
+                        response = decode_response(encoded, self._config.maximum_frame_bytes)
+                    except ValueError as error:
+                        raise ProtocolError(str(error)) from error
+                    finally:
+                        encoded.release()
+                    connection.input_offset += frame_size
+                    if connection.input_offset == len(connection.input):
+                        connection.input.clear()
+                        connection.input_offset = 0
+                    return response
+            if connection.input_offset:
+                del connection.input[: connection.input_offset]
+                connection.input_offset = 0
+            try:
+                chunk = connection.socket.recv(64 * 1024)
                 if not chunk:
                     raise OSError("server closed the connection")
-                output.extend(chunk)
-        except (OSError, TimeoutError) as error:
-            raise TransportError(f"response receive failed: {error}") from error
-        return bytes(output)
+                connection.input.extend(chunk)
+            except (OSError, TimeoutError) as error:
+                raise TransportError(f"response receive failed: {error}") from error
 
     def _exchange(self, connection: _Connection, frame: bytes) -> Response:
         self._send(connection, frame)
-        size_bytes = self._receive_exact(connection, 4)
-        frame_size = int.from_bytes(size_bytes, "little")
-        if not RESPONSE_HEADER_BYTES <= frame_size <= self._config.maximum_frame_bytes:
-            raise ProtocolError("server response size is outside client limits")
-        encoded = size_bytes + self._receive_exact(connection, frame_size - 4)
-        try:
-            return decode_response(encoded, self._config.maximum_frame_bytes)
-        except ValueError as error:
-            raise ProtocolError(str(error)) from error
+        return self._receive_response(connection)
 
     def _validate_response(self, response: Response, request_id: int, worker: int) -> None:
         if response.request_id != request_id:

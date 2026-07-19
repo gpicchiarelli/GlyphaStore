@@ -10,7 +10,16 @@ from pathlib import Path
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT / "src"))
 
-from glyphastore import Client, ClientConfig, MutationOutcome, NotFound  # noqa: E402
+from glyphastore import (  # noqa: E402
+    Client,
+    ClientConfig,
+    InvalidArgument,
+    MutationOutcome,
+    NotFound,
+    PipelineOpcode,
+    PipelineOutcome,
+    PipelineRequest,
+)
 from glyphastore.protocol import Opcode, Status  # noqa: E402
 
 REQUEST = struct.Struct("<IHBBQIIQII")
@@ -125,6 +134,53 @@ class ClientTests(unittest.TestCase):
             result = client.put(b"key", b"value")
             self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
             self.assertIsNotNone(result.error)
+        server.join()
+
+    def test_pipeline_preserves_order_and_owned_values(self) -> None:
+        server = FakeServer()
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            requests: list[PipelineRequest] = []
+            expected: list[bytes] = []
+            for index in range(64):
+                value = f"pipeline-{index}".encode()
+                expected.append(value)
+                requests.append(PipelineRequest(PipelineOpcode.PUT, b"key", value))
+                requests.append(PipelineRequest(PipelineOpcode.GET, b"key"))
+            responses = client.execute_pipeline(requests)
+            self.assertEqual(len(responses), len(requests))
+            for index, value in enumerate(expected):
+                self.assertTrue(responses[index * 2].succeeded)
+                self.assertTrue(responses[index * 2 + 1].succeeded)
+                self.assertEqual(responses[index * 2 + 1].value, value)
+        server.join()
+
+    def test_pipeline_disconnect_classifies_each_request(self) -> None:
+        server = FakeServer(disconnect_on_put=True)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            responses = client.execute_pipeline(
+                [
+                    PipelineRequest(PipelineOpcode.PUT, b"key", b"value"),
+                    PipelineRequest(PipelineOpcode.GET, b"key"),
+                    PipelineRequest(PipelineOpcode.ERASE, b"key"),
+                ]
+            )
+            self.assertEqual(responses[0].outcome, PipelineOutcome.INDETERMINATE)
+            self.assertEqual(responses[1].outcome, PipelineOutcome.FAILED)
+            self.assertEqual(responses[2].outcome, PipelineOutcome.INDETERMINATE)
+        server.join()
+
+    def test_pipeline_limits_fail_before_network_transmission(self) -> None:
+        server = FakeServer()
+        with Client.connect(
+            ClientConfig(port=server.port, maximum_pipeline_requests=1)
+        ) as client:
+            with self.assertRaises(InvalidArgument):
+                client.execute_pipeline(
+                    [
+                        PipelineRequest(PipelineOpcode.GET, b"key"),
+                        PipelineRequest(PipelineOpcode.GET, b"key"),
+                    ]
+                )
         server.join()
 
 

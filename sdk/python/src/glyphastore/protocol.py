@@ -85,7 +85,10 @@ def encode_request(
     ) + key + value
 
 
-def decode_response(frame: bytes, maximum_frame_bytes: int = MAX_FRAME_BYTES) -> Response:
+def decode_response(
+    frame: bytes | bytearray | memoryview,
+    maximum_frame_bytes: int = MAX_FRAME_BYTES,
+) -> Response:
     """Decode one complete response and reject noncanonical fields."""
     if len(frame) < RESPONSE_HEADER_BYTES:
         raise ValueError("response is shorter than its header")
@@ -118,7 +121,7 @@ def decode_response(frame: bytes, maximum_frame_bytes: int = MAX_FRAME_BYTES) ->
         owner_worker=owner_worker,
         worker_count=worker_count,
         routing_epoch=routing_epoch,
-        value=frame[RESPONSE_HEADER_BYTES:],
+        value=bytes(frame[RESPONSE_HEADER_BYTES:]),
     )
 
 
