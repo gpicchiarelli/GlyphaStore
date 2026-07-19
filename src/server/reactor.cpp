@@ -59,10 +59,13 @@ namespace {
 } // namespace
 
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener listener, Poller poller,
-                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads)
+                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+                 DurableMutationExecutor* durable_mutations)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(listener)),
       poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store), mesh_(mesh),
-      disk_reads_(disk_reads), disk_read_completions_(config_.disk_read_queue_capacity),
+      disk_reads_(disk_reads), durable_mutations_(durable_mutations),
+      disk_read_completions_(config_.disk_read_queue_capacity),
+      durable_mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     free_slots_.reserve(config_.maximum_connections);
     for (std::size_t slot = config_.maximum_connections; slot > 0; --slot) {
@@ -71,8 +74,8 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 }
 
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id, TcpListener listener,
-                     Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads)
-    -> Result<std::unique_ptr<Reactor>> {
+                     Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+                     DurableMutationExecutor* durable_mutations) -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
     }
@@ -86,7 +89,7 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     }
     auto reactor =
         std::unique_ptr<Reactor>(new Reactor(config, executor_id, std::move(listener), std::move(*poller),
-                                             std::move(*wakeup), store, mesh, disk_reads));
+                                             std::move(*wakeup), store, mesh, disk_reads, durable_mutations));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
@@ -131,7 +134,7 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
-    current->read_in_flight = false;
+    current->request_in_flight = false;
     current->read_cancellation.reset();
     ++current->generation;
     if (current->generation == 0) {
@@ -176,7 +179,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.initialized = handoff.initialized;
     current.peer_read_closed = handoff.peer_read_closed;
     current.write_armed = !current.output.empty();
-    current.read_in_flight = false;
+    current.request_in_flight = false;
     current.read_cancellation.reset();
     const ConnectionToken token{.slot = slot, .generation = current.generation};
     auto interest = IoInterest::none;
@@ -243,7 +246,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
-    while (!current->read_in_flight && current->input_offset < current->input.size()) {
+    while (!current->request_in_flight && current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         auto decoded = decode_request(available);
@@ -289,7 +292,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             }
         }
         current->input_offset += decoded->consumed;
-        if (current->read_in_flight) {
+        if (current->request_in_flight) {
             break;
         }
     }
@@ -355,7 +358,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
-    current->read_in_flight = false;
+    current->request_in_flight = false;
     current->read_cancellation.reset();
     ++current->generation;
     if (current->generation == 0) {
@@ -452,13 +455,65 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 response.status = ResponseStatus::overloaded;
                 break;
             }
-            current->read_in_flight = true;
+            current->request_in_flight = true;
             current->read_cancellation = std::move(cancellation);
             return update_connection_interest(token);
         }
         break;
     }
     case RequestOpcode::put:
+        if (detail::StoreAccess::is_durable(store_)) {
+            auto* current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
+            if (durable_mutations_ == nullptr ||
+                durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            if (request.key.size() > config_.durable_mutation_queue_bytes ||
+                request.value.size() > config_.durable_mutation_queue_bytes - request.key.size()) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            try {
+                DurableMutationTask task{
+                    .connection = token,
+                    .request_id = request.request_id,
+                    .worker_index = executor_id_,
+                    .kind = DurableMutationKind::put,
+                    .key = std::string{key_string},
+                    .key_hash = key_hash,
+                    .value = std::vector<std::byte>{request.value.begin(), request.value.end()},
+                    .expire_at_ns = request.expire_at_ns,
+                    .completions = &durable_mutation_completions_,
+                    .wakeup = &wakeup_,
+                };
+                task.admission_bytes =
+                    sizeof(DurableMutationTask) + task.key.capacity() + task.value.capacity();
+                if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
+                    durable_mutation_bytes_outstanding_ >
+                        config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                const auto admission_bytes = task.admission_bytes;
+                ++durable_mutations_outstanding_;
+                durable_mutation_bytes_outstanding_ += admission_bytes;
+                if (!durable_mutations_->try_submit(std::move(task))) {
+                    --durable_mutations_outstanding_;
+                    durable_mutation_bytes_outstanding_ -= admission_bytes;
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            current->request_in_flight = true;
+            return update_connection_interest(token);
+        }
         if (auto stored =
                 detail::StoreAccess::put(store_, executor_id_, key, request.value, request.expire_at_ns);
             !stored) {
@@ -466,6 +521,54 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         }
         break;
     case RequestOpcode::erase:
+        if (detail::StoreAccess::is_durable(store_)) {
+            auto* current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
+            if (durable_mutations_ == nullptr ||
+                durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            if (request.key.size() > config_.durable_mutation_queue_bytes) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            try {
+                DurableMutationTask task{
+                    .connection = token,
+                    .request_id = request.request_id,
+                    .worker_index = executor_id_,
+                    .kind = DurableMutationKind::erase,
+                    .key = std::string{key_string},
+                    .key_hash = key_hash,
+                    .completions = &durable_mutation_completions_,
+                    .wakeup = &wakeup_,
+                };
+                task.admission_bytes = sizeof(DurableMutationTask) + task.key.capacity();
+                if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
+                    durable_mutation_bytes_outstanding_ >
+                        config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                const auto admission_bytes = task.admission_bytes;
+                ++durable_mutations_outstanding_;
+                durable_mutation_bytes_outstanding_ += admission_bytes;
+                if (!durable_mutations_->try_submit(std::move(task))) {
+                    --durable_mutations_outstanding_;
+                    durable_mutation_bytes_outstanding_ -= admission_bytes;
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            current->request_in_flight = true;
+            return update_connection_interest(token);
+        }
         if (auto erased = detail::StoreAccess::erase(store_, executor_id_, key); !erased) {
             response.status = response_status(erased.error());
         }
@@ -486,6 +589,9 @@ auto Reactor::process_messages() -> Status {
     if (auto completed = process_disk_read_completions(); !completed) {
         return completed;
     }
+    if (auto completed = process_durable_mutation_completions(); !completed) {
+        return completed;
+    }
     return process_handoffs();
 }
 
@@ -499,10 +605,10 @@ auto Reactor::process_disk_read_completions() -> Status {
         if (current == nullptr) {
             continue;
         }
-        if (!current->read_in_flight) {
+        if (!current->request_in_flight) {
             return fail(ErrorCode::corrupted_data, "unexpected disk-read completion");
         }
-        current->read_in_flight = false;
+        current->request_in_flight = false;
         current->read_cancellation.reset();
         OwnedValue owned;
         ResponseView response{.status = ResponseStatus::ok,
@@ -517,6 +623,49 @@ auto Reactor::process_disk_read_completions() -> Status {
             response.value = owned.bytes;
         } else {
             response.status = ResponseStatus::internal_error;
+        }
+        if (auto queued = queue_response(completion->connection, response); !queued) {
+            close_connection(completion->connection);
+            continue;
+        }
+        if (auto processed = process_frames(completion->connection); !processed) {
+            close_connection(completion->connection);
+            continue;
+        }
+        if (connection(completion->connection) != nullptr) {
+            if (auto flushed = write_ready(completion->connection); !flushed) {
+                close_connection(completion->connection);
+            }
+        }
+    }
+    return {};
+}
+
+auto Reactor::process_durable_mutation_completions() -> Status {
+    while (auto completion = durable_mutation_completions_.try_pop()) {
+        if (durable_mutations_outstanding_ == 0) {
+            return fail(ErrorCode::corrupted_data, "durable-mutation completion accounting underflow");
+        }
+        --durable_mutations_outstanding_;
+        if (completion->admission_bytes > durable_mutation_bytes_outstanding_) {
+            return fail(ErrorCode::corrupted_data, "durable-mutation byte accounting underflow");
+        }
+        durable_mutation_bytes_outstanding_ -= completion->admission_bytes;
+        auto* current = connection(completion->connection);
+        if (current == nullptr) {
+            continue;
+        }
+        if (!current->request_in_flight || current->read_cancellation) {
+            return fail(ErrorCode::corrupted_data, "unexpected durable-mutation completion");
+        }
+        current->request_in_flight = false;
+        ResponseView response{.status = ResponseStatus::ok,
+                              .request_id = completion->request_id,
+                              .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                              .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                              .routing_epoch = kRoutingEpoch};
+        if (completion->error) {
+            response.status = response_status(*completion->error);
         }
         if (auto queued = queue_response(completion->connection, response); !queued) {
             close_connection(completion->connection);
@@ -600,7 +749,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
         }
         if (received == 0) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && !current->read_in_flight) {
+            if (current->output_offset == current->output.size() && !current->request_in_flight) {
                 close_connection(token);
                 return {};
             }
@@ -649,11 +798,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     }
     current->output.clear();
     current->output_offset = 0;
-    if (current->peer_read_closed && !current->read_in_flight) {
+    if (current->peer_read_closed && !current->request_in_flight) {
         close_connection(token);
         return {};
     }
-    if (current->read_in_flight) {
+    if (current->request_in_flight) {
         return update_connection_interest(token);
     }
     if (!current->write_armed) {
@@ -708,7 +857,7 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         }
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && !current->read_in_flight) {
+            if (current->output_offset == current->output.size() && !current->request_in_flight) {
                 close_connection(token);
             } else if (auto modified = update_connection_interest(token); !modified) {
                 close_connection(token);

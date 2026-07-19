@@ -4,6 +4,7 @@
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
 #include "glyphastore/server/disk_read_executor.hpp"
+#include "glyphastore/server/durable_mutation_executor.hpp"
 #include "glyphastore/server/poller.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/socket.hpp"
@@ -37,13 +38,18 @@ struct ReactorConfig {
     // rings are fixed-capacity and reject excess cold reads as overloaded.
     std::size_t disk_read_thread_count{};
     std::size_t disk_read_queue_capacity{256};
+    // Per-Worker durable mutation lane and completion-ring capacity. Volatile
+    // stores do not create mutation lanes and pay no asynchronous hop.
+    std::size_t durable_mutation_queue_capacity{256};
+    std::size_t durable_mutation_queue_bytes{16U * 1024U * 1024U};
 };
 
 class Reactor final {
   public:
     [[nodiscard]] static auto create(const ReactorConfig& config, std::size_t executor_id,
                                      TcpListener listener, Store& store, ConnectionHandoffMesh& mesh,
-                                     DiskReadExecutor& disk_reads) -> Result<std::unique_ptr<Reactor>>;
+                                     DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations)
+        -> Result<std::unique_ptr<Reactor>>;
 
     Reactor(const Reactor&) = delete;
     auto operator=(const Reactor&) -> Reactor& = delete;
@@ -76,12 +82,15 @@ class Reactor final {
         bool initialized{};
         bool peer_read_closed{};
         bool write_armed{};
-        bool read_in_flight{};
+        // At most one asynchronous Store request per connection preserves wire
+        // response order and prevents one pipelined client monopolizing a lane.
+        bool request_in_flight{};
         std::shared_ptr<std::atomic_bool> read_cancellation;
     };
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener listener, Poller poller, Wakeup wakeup,
-            Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads);
+            Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+            DurableMutationExecutor* durable_mutations);
 
     [[nodiscard]] auto accept_ready() -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
@@ -97,6 +106,7 @@ class Reactor final {
     [[nodiscard]] auto process_messages() -> Status;
     [[nodiscard]] auto process_handoffs() -> Status;
     [[nodiscard]] auto process_disk_read_completions() -> Status;
+    [[nodiscard]] auto process_durable_mutation_completions() -> Status;
     [[nodiscard]] auto update_connection_interest(ConnectionToken token) -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;
@@ -114,13 +124,17 @@ class Reactor final {
     Store& store_;
     ConnectionHandoffMesh& mesh_;
     DiskReadExecutor& disk_reads_;
+    DurableMutationExecutor* durable_mutations_{};
     BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
+    BoundedMpscQueue<DurableMutationCompletion> durable_mutation_completions_;
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
     std::vector<IoEvent> events_;
     std::atomic<std::size_t> active_connections_{};
     std::size_t adopted_connections_{};
     std::size_t disk_reads_outstanding_{};
+    std::size_t durable_mutations_outstanding_{};
+    std::size_t durable_mutation_bytes_outstanding_{};
 };
 
 } // namespace glyphastore::server

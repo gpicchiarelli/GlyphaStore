@@ -16,8 +16,10 @@ namespace {
     constexpr std::size_t maximum_queue_capacity = std::size_t{1} << 30U;
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
         config.connection_handoff_capacity == 0 || config.disk_read_queue_capacity == 0 ||
+        config.durable_mutation_queue_capacity == 0 || config.durable_mutation_queue_bytes == 0 ||
         config.connection_handoff_capacity > maximum_queue_capacity ||
         config.disk_read_queue_capacity > maximum_queue_capacity ||
+        config.durable_mutation_queue_capacity > maximum_queue_capacity ||
         config.disk_read_thread_count > kMaximumWorkerCount ||
         config.maximum_connections > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "server capacity configuration is outside supported limits");
@@ -57,6 +59,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         return fail(ErrorCode::invalid_argument, "Store worker count must match the server executor count");
     }
     store_config.worker_config.explicit_count = config.worker_count;
+    const bool durable = store_config.storage_mode != StorageMode::volatile_memory;
     auto store = Store::open(std::move(store_config));
     if (!store) {
         return unexpected(store.error());
@@ -71,6 +74,14 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         return unexpected(disk_reads.error());
     }
     server->disk_reads_ = std::move(*disk_reads);
+    if (durable) {
+        auto durable_mutations = DurableMutationExecutor::create(*server->store_, config.worker_count,
+                                                                 config.durable_mutation_queue_capacity);
+        if (!durable_mutations) {
+            return unexpected(durable_mutations.error());
+        }
+        server->durable_mutations_ = std::move(*durable_mutations);
+    }
 #if defined(__linux__)
     const bool kernel_distribution = config.reuse_port && server->store_->worker_count() > 1;
 #else
@@ -90,7 +101,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
             }
         }
         auto reactor = Reactor::create(config, executor, std::move(listener), *server->store_, server->mesh_,
-                                       *server->disk_reads_);
+                                       *server->disk_reads_, server->durable_mutations_.get());
         if (!reactor) {
             return unexpected(reactor.error());
         }
@@ -107,6 +118,12 @@ auto Server::start() -> Status {
     if (auto started = disk_reads_->start(); !started) {
         return started;
     }
+    if (durable_mutations_) {
+        if (auto started = durable_mutations_->start(); !started) {
+            disk_reads_->stop();
+            return started;
+        }
+    }
     try {
         for (std::size_t executor = 0; executor < reactors_.size(); ++executor) {
             threads_.emplace_back([this, executor] { run(executor); });
@@ -119,6 +136,9 @@ auto Server::start() -> Status {
             }
         }
         threads_.clear();
+        if (durable_mutations_) {
+            durable_mutations_->stop_and_drain();
+        }
         disk_reads_->stop();
         return fail(ErrorCode::io_error, std::string{"failed to start server executor: "} + exception.what());
     }
@@ -136,6 +156,9 @@ auto Server::join() -> Status {
         }
     }
     threads_.clear();
+    if (durable_mutations_) {
+        durable_mutations_->stop_and_drain();
+    }
     if (disk_reads_) {
         disk_reads_->stop();
     }

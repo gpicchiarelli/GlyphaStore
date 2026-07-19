@@ -138,6 +138,7 @@ endif()
 add_library(glyphastore_server_core
     src/server/connection_handoff.cpp
     src/server/disk_read_executor.cpp
+    src/server/durable_mutation_executor.cpp
     src/server/reactor.cpp
     src/server/server.cpp
     src/server/socket.cpp
@@ -331,11 +332,18 @@ if(BUILD_TESTING)
     set_tests_properties(glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
         PROPERTIES WILL_FAIL TRUE
     )
+    add_test(NAME glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
+        COMMAND glyphastored --durable-mutation-queue-capacity 0
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
+        PROPERTIES WILL_FAIL TRUE
+    )
     set_tests_properties(
         glyphastore_cli_daemon_help
         glyphastore_cli_daemon_version
         glyphastore_cli_daemon_rejects_missing_data_directory
         glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
+        glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
         glyphastore_cli_inspect_help
         glyphastore_cli_rebuild_help
         glyphastore_cli_rejects_invalid_workers

@@ -63,13 +63,15 @@ Every implementation block below must preserve these rules:
 
 ### P0-01 — Make the daemon capable of v1 durability
 
-**Status:** in progress. `Server::create` now accepts a complete `StoreConfig`, requires its Worker
-count to match the executor count, and closes the Store observably from `join()`. The daemon exposes
+**Status:** in progress. `Server::create` accepts a complete `StoreConfig`, requires its Worker count
+to match the executor count, and closes the Store observably from `join()`. The daemon exposes
 explicit `volatile`, `durable-sync`, `durable-periodic`, and `durable-group` selection plus durable
-data-directory and open-policy controls. A TCP integration test acknowledges a strict write, stops,
-reopens the same v1 catalog through a second Server, and reads the value. Batch/resource controls,
-real-daemon process-kill coverage, and the bounded asynchronous mutation/completion path remain open;
-durable I/O therefore still blocks its owning reactor today.
+data-directory and open-policy controls. Durable `PUT`/`ERASE` now leave the Reactor through bounded
+per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
+and drain-before-Store-close shutdown. Tests suspend real sync calls and prove Reactor responsiveness,
+independent queue admission, bounded overload, and recovery of a mutation admitted during shutdown.
+Batch/resource CLI controls, real-daemon process-kill coverage, drain deadlines, and complete
+operability metrics remain open.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

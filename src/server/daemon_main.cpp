@@ -34,6 +34,8 @@ enum OptionId : std::size_t {
     event_batch_size,
     maximum_input_bytes,
     maximum_output_bytes,
+    durable_mutation_queue_capacity,
+    durable_mutation_queue_bytes,
     reuse_port,
     no_reuse_port,
     executor_affinity,
@@ -73,6 +75,12 @@ constexpr std::array kOptionSpecs{
     glyphastore::cli::OptionSpec{maximum_output_bytes, "max-output-bytes", '\0',
                                  glyphastore::cli::OptionArity::required, "BYTES",
                                  "Limit buffered output per connection (default: 4MiB)"},
+    glyphastore::cli::OptionSpec{durable_mutation_queue_capacity, "durable-mutation-queue-capacity", '\0',
+                                 glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Bound admitted durable mutations per Worker (default: 256)"},
+    glyphastore::cli::OptionSpec{durable_mutation_queue_bytes, "durable-mutation-queue-bytes", '\0',
+                                 glyphastore::cli::OptionArity::required, "BYTES",
+                                 "Bound owned durable mutation bytes per Worker (default: 16MiB)"},
     glyphastore::cli::OptionSpec{reuse_port,
                                  "reuse-port",
                                  '\0',
@@ -250,6 +258,18 @@ struct Options {
     if (auto status = set_byte_size_option(*parsed, maximum_output_bytes, "--max-output-bytes",
                                            glyphastore::server::kResponseHeaderBytes, maximum_size,
                                            options.server.maximum_output_bytes);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status =
+            set_size_option(*parsed, durable_mutation_queue_capacity, "--durable-mutation-queue-capacity", 1,
+                            std::size_t{1} << 30U, options.server.durable_mutation_queue_capacity);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status =
+            set_byte_size_option(*parsed, durable_mutation_queue_bytes, "--durable-mutation-queue-bytes", 1,
+                                 maximum_size, options.server.durable_mutation_queue_bytes);
         !status) {
         return glyphastore::unexpected(status.error());
     }

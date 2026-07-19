@@ -858,6 +858,10 @@ auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, co
     return store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked(key);
 }
 
+auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
+    return store.impl_->durable_runtime != nullptr;
+}
+
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {
     if (!store.impl_->volatile_runtime) {
         std::terminate();

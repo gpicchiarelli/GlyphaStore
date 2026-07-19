@@ -43,6 +43,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0015](0015-whole-worker-compaction.md) | Whole-Worker sealed-history durable compaction | accepted | preserves 0003/0004/0008 |
 | [0016](0016-bounded-cold-read-executor.md) | Bounded async durable cold reads outside Reactors | accepted | amends 0012; preserves 0013 ordering |
 | [0017](0017-bounded-durable-hot-cache.md) | Bounded durable hot cache with pinned active fallback | accepted | preserves 0008; builds on 0016 |
+| [0018](0018-bounded-durable-mutation-lanes.md) | Bounded Worker-affine durable mutation lanes | accepted | preserves 0008, 0011, 0012 |
 
 The public error taxonomy still requires an ADR before it becomes a post-1.0 compatibility
 commitment.

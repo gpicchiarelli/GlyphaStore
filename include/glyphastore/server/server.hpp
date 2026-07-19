@@ -52,6 +52,7 @@ class Server final {
     ReactorConfig config_;
     std::unique_ptr<Store> store_;
     std::unique_ptr<DiskReadExecutor> disk_reads_;
+    std::unique_ptr<DurableMutationExecutor> durable_mutations_;
     ConnectionHandoffMesh mesh_;
     std::vector<std::unique_ptr<Reactor>> reactors_;
     std::vector<std::thread> threads_;

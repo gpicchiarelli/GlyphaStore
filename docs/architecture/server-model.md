@@ -41,6 +41,14 @@ that connection until completion, so protocol-v2 responses remain strictly in re
 a reorder buffer. It may continue draining socket bytes into the configured input watermark so FIN,
 RST, and overflow remain observable. Other connections on the same Reactor continue normally.
 
+Durable `PUT` and `ERASE` use one bounded FIFO lane per Worker. The Reactor copies only the request's
+key/value into an owning task; no `RecordRef`, Segment, file handle, or borrowed protocol span crosses
+this boundary. Successful enqueue is the daemon admission/order point, not the storage visibility
+point. The lane releases its queue mutex before entering Store, and the Store's persistence-v1 state
+machine retains the actual visibility and durable commit points. A completion returns only after the
+selected acknowledgement policy completes. One in-flight Store request per connection preserves
+wire order, while independent Worker lanes avoid a shared request lock or queue.
+
 ## Protocol
 
 The normative, client-implementable contract is [Wire Protocol v2](../spec/wire-protocol-v2.md).
@@ -99,8 +107,10 @@ cannot target a new connection that reused the same descriptor or slot.
 ## Backpressure
 
 Input and output buffering is bounded per connection. The one-time connection handoff queue for
-each executor, the shared disk-read request queue, and every Reactor completion queue are bounded as
-well. A full handoff queue closes the connection being rebound. A cold-read admission failure
+each executor, the shared disk-read request queue, every per-Worker durable mutation lane, and every
+Reactor completion queue are bounded as well. Durable mutation admission has both a request-count
+limit and an owned-byte limit, so maximum-size payloads cannot multiply up to the count limit. A full
+handoff queue closes the connection being rebound. A cold-read or durable-mutation admission failure
 returns `overloaded` and does not enqueue work.
 Exceeding an input/output byte watermark closes the offending connection. Queue capacity is rounded
 up to a power of two at startup; overload never becomes unbounded memory growth.
@@ -113,6 +123,10 @@ process-allowed CPU set on Linux. macOS exposes only Mach affinity tags, so its 
 rather than a hard performance-core pin. The executable validates `INIT`, one-time connection
 rebinding, wrong-owner rejection, TCP lifecycle, native readiness, partial frames, pipelining,
 large partial output, half-close, connection generations, and graceful stop.
+
+Graceful stop drains durable mutations already admitted before closing Store. Client disconnect does
+not cancel admitted storage work: a stale `(slot, generation)` completion is discarded, and the
+client must classify the mutation as indeterminate.
 
 `glyphastore_server_benchmarks` measures the real loopback TCP protocol using one owner-bound
 connection per client. Server startup, `INIT`, `BIND_WORKER`, connection establishment, request

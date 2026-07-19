@@ -12,6 +12,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <fcntl.h>
 #include <filesystem>
 #include <mutex>
 #include <netinet/in.h>
@@ -212,6 +213,68 @@ class BlockingColdRead final {
     bool finished_{};
 };
 
+class BlockingFileSync final {
+  public:
+    void arm() {
+        const std::lock_guard lock{mutex_};
+        armed_ = true;
+    }
+
+    [[nodiscard]] auto wait_until_blocked() -> bool {
+        std::unique_lock lock{mutex_};
+        return condition_.wait_for(lock, std::chrono::seconds{2}, [this] { return blocked_; });
+    }
+
+    void release() {
+        {
+            const std::lock_guard lock{mutex_};
+            released_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    static auto sync_file(void* opaque, const int descriptor, const glyphastore::FileSyncMode mode) -> int {
+        auto& state = *static_cast<BlockingFileSync*>(opaque);
+        {
+            std::unique_lock lock{state.mutex_};
+            if (state.armed_ && !state.claimed_) {
+                state.claimed_ = true;
+                state.blocked_ = true;
+                state.condition_.notify_all();
+                state.condition_.wait(lock, [&state] { return state.released_; });
+            }
+        }
+#if defined(__APPLE__)
+        if (mode == glyphastore::FileSyncMode::full) {
+            return ::fcntl(descriptor, F_FULLFSYNC);
+        }
+#endif
+        return ::fsync(descriptor);
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool armed_{};
+    bool claimed_{};
+    bool blocked_{};
+    bool released_{};
+};
+
+class SyncReleaseGuard final {
+  public:
+    explicit SyncReleaseGuard(BlockingFileSync& sync) noexcept : sync_(sync) {}
+    ~SyncReleaseGuard() {
+        sync_.release();
+    }
+
+    SyncReleaseGuard(const SyncReleaseGuard&) = delete;
+    auto operator=(const SyncReleaseGuard&) -> SyncReleaseGuard& = delete;
+
+  private:
+    BlockingFileSync& sync_;
+};
+
 } // namespace
 
 GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol buffers") {
@@ -226,6 +289,10 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
                         .has_value());
     GLYPHA_REQUIRE(
         !glyphastore::server::Server::create({.port = 0, .disk_read_queue_capacity = 0}).has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_capacity = 0}).has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_bytes = 0}).has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .disk_read_thread_count = glyphastore::kMaximumWorkerCount + 1U})
                         .has_value());
@@ -293,6 +360,172 @@ GLYPHA_TEST("server StoreConfig persists acknowledged wire writes across restart
     static_cast<void>(::close(socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded FIFO admission") {
+    ServerTemporaryDirectory temporary;
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .durable_mutation_queue_capacity = 2},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first_socket = connect_to(server.port());
+    const auto second_socket = connect_to(server.port());
+    const auto responsive_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(first_socket >= 0);
+    GLYPHA_REQUIRE(second_socket >= 0);
+    GLYPHA_REQUIRE(responsive_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(first_socket, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(second_socket, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(responsive_socket, 0, 1));
+
+    blocker.arm();
+    const auto first = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 70,
+        .key = bytes("async-first"),
+        .value = bytes("first"),
+    });
+    const auto ordered_get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 74,
+        .key = bytes("async-first"),
+    });
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(ordered_get.has_value());
+    std::vector<std::byte> first_pipeline;
+    first_pipeline.insert(first_pipeline.end(), first->begin(), first->end());
+    first_pipeline.insert(first_pipeline.end(), ordered_get->begin(), ordered_get->end());
+    GLYPHA_REQUIRE(send_all(first_socket, first_pipeline));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    // A second mutation must be admitted without waiting for the lane's slow
+    // I/O, proving that its queue mutex is not an equivalent storage lock.
+    const auto second = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 71,
+        .key = bytes("async-second"),
+        .value = bytes("second"),
+    });
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(send_all(second_socket, *second));
+
+    // The per-Worker admission budget is now exhausted. Rejection and the
+    // following non-storage request are both handled while fsync is suspended.
+    const auto rejected = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 72,
+        .key = bytes("async-rejected"),
+        .value = bytes("rejected"),
+    });
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 73,
+        .value = bytes("reactor-live"),
+    });
+    GLYPHA_REQUIRE(rejected.has_value());
+    GLYPHA_REQUIRE(ping.has_value());
+    std::vector<std::byte> pipeline;
+    pipeline.insert(pipeline.end(), rejected->begin(), rejected->end());
+    pipeline.insert(pipeline.end(), ping->begin(), ping->end());
+    GLYPHA_REQUIRE(send_all(responsive_socket, pipeline));
+    const auto rejected_frame = receive_response(responsive_socket);
+    const auto ping_frame = receive_response(responsive_socket);
+    const auto rejected_response = glyphastore::server::decode_response(rejected_frame);
+    const auto ping_response = glyphastore::server::decode_response(ping_frame);
+    GLYPHA_REQUIRE(rejected_response.has_value());
+    GLYPHA_REQUIRE(rejected_response->frame.request_id == 72);
+    GLYPHA_REQUIRE(rejected_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(ping_response.has_value());
+    GLYPHA_REQUIRE(ping_response->frame.request_id == 73);
+    GLYPHA_REQUIRE(text(ping_response->frame.value) == "reactor-live");
+
+    blocker.release();
+    const auto first_frame = receive_response(first_socket);
+    const auto ordered_get_frame = receive_response(first_socket);
+    const auto second_frame = receive_response(second_socket);
+    const auto first_response = glyphastore::server::decode_response(first_frame);
+    const auto ordered_get_response = glyphastore::server::decode_response(ordered_get_frame);
+    const auto second_response = glyphastore::server::decode_response(second_frame);
+    GLYPHA_REQUIRE(first_response.has_value());
+    GLYPHA_REQUIRE(ordered_get_response.has_value());
+    GLYPHA_REQUIRE(second_response.has_value());
+    GLYPHA_REQUIRE(first_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(ordered_get_response->frame.request_id == 74);
+    GLYPHA_REQUIRE(ordered_get_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(ordered_get_response->frame.value) == "first");
+    GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(first_socket));
+    static_cast<void>(::close(second_socket));
+    static_cast<void>(::close(responsive_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store close") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .durable_mutation_queue_capacity = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    blocker.arm();
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 80,
+        .key = bytes("drained-mutation"),
+        .value = bytes("survives"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    std::atomic_bool join_finished{};
+    bool join_succeeded{};
+    server.request_stop();
+    std::thread joiner{[&] {
+        join_succeeded = server.join().has_value();
+        join_finished.store(true, std::memory_order_release);
+    }};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    while (!join_finished.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    GLYPHA_REQUIRE(!join_finished.load(std::memory_order_acquire));
+    blocker.release();
+    joiner.join();
+    GLYPHA_REQUIRE(join_succeeded);
+    static_cast<void>(::close(socket));
+
+    auto recovered = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(recovered.has_value());
+    const auto value = (*recovered)->get("drained-mutation");
+    GLYPHA_REQUIRE(value.has_value());
+    GLYPHA_REQUIRE(text(value->bytes) == "survives");
+    GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
 GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies bounded admission") {
