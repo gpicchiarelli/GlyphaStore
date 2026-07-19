@@ -1,0 +1,153 @@
+Status: roadmap
+Applies to: native SDKs (C++, Python, Perl) and shared wire contract; Go is planned
+Owner: maintainer
+Last reviewed: 2026-07-19
+
+# SDK and client roadmap
+
+The official clients already share the correct nucleus: wire protocol v2, Worker routing, ordered
+pipelines, timeouts, controlled reconnect, and `committed` / `rejected` / `indeterminate` mutation
+outcomes. The remaining work is not “rebuild the SDKs.” It splits into **completing the shared
+contract** and **making GlyphaStore usable in production**.
+
+Related: [production readiness](../production-readiness.md),
+[v1 production roadmap](../v1-production-roadmap.md),
+[documentation roadmap](../documentation-roadmap.md),
+[C++ client API / cross-language contract](../reference/cpp-client-api.md),
+[where performance matters](where-performance-matters.md).
+
+## Verdict (2026-07-19)
+
+| Client | Assessment |
+| --- | --- |
+| C++ | Effectively complete for alpha |
+| Python | Effectively complete, including async |
+| Perl | Complete as a synchronous client; a few hardening details remain |
+| Go | Useful next language, but **not** more urgent than freezing the shared contract |
+
+Do not multiply languages before clients are demonstrably equivalent, release-compatible, and
+safe to operate. The server must still be treated as loopback / tightly controlled private network /
+sidecar / development only until authentication and TLS exist.
+
+## Immediate client priorities
+
+### 1. Cross-SDK interoperability suite (highest SDK gap) — **done for alpha matrix**
+
+`scripts/test-sdk-interop.sh` starts a volatile `glyphastored` and proves PUT→GET across
+C++ / Python / Perl (and same-SDK) for binary keys, empty values, per-SDK pipelines, and short
+TTL expiry on Workers 1 / 2 / 4. Wire golden fixtures are verified and compared to vendored SDK
+copies in the same script and in CI.
+
+Still desirable later: 8 Workers, explicit limit/error matrices, and released-artifact cross-version
+compat.
+
+### 2. Normative wire and client semantics
+
+Document and freeze (beyond descriptive coverage):
+
+- endianness and exact header sizes;
+- per-opcode field validity;
+- key/value limits;
+- precise meaning of every status;
+- behavior on unknown frames;
+- version compatibility;
+- timeout and cancellation semantics;
+- what happens when a response arrives after the client deadline.
+
+Error behavior, limits, time, and concurrency are still incomplete as normative specs in
+[production readiness](../production-readiness.md).
+
+### 3. Optional mutation idempotency key (post-alpha candidate)
+
+Outcomes are classified correctly, but applications cannot auto-heal `indeterminate` without their
+own policy. A stable `client_id + operation_id` retained briefly on the server would allow safe
+`PUT`/`ERASE` retries without double-apply. Not required for the first release; it turns
+indeterminate from “application problem” into “protocol-managed.”
+
+### 4. Multi-Worker batch API
+
+Pipelines remain single-Worker by design. Add a distinct non-atomic API (name TBD; e.g.
+`execute_batch`) that:
+
+1. groups requests by Worker;
+2. sends one pipeline per Worker;
+3. overlaps groups;
+4. restores caller order in the response vector.
+
+Perl already exposes `execute_worker_pipelines` for concurrent per-Worker batches; C++ and Python
+need the same surface, and all three need a single ordered multi-Worker batch helper for generic
+apps.
+
+### 5. Configurable connections per Worker (measure first)
+
+Today: one connection per Worker. Concurrent same-Worker traffic serializes. A future
+`connections_per_worker = 1|2|4|…` helps Zipf / hot Worker / slow reads / many threads—but only after
+benchmarks prove the connection is the bottleneck.
+
+### 6. Per-request deadlines
+
+Propagate the web budget into storage:
+
+```cpp
+get(key, RequestOptions{.timeout = 50ms});
+```
+
+```python
+await client.get(key, timeout=0.05)
+```
+
+```perl
+$client->get($key, timeout => 0.05)
+```
+
+### 7. Structured errors (uniform across SDKs)
+
+Expose consistently: category, wire status, request id, Worker, routing epoch, bytes sent,
+retryability, operation, mutation outcome. Perl is still lighter (`category` + `message`) than
+C++/Python and should catch up.
+
+### 8. Perl monotonic clock — **done**
+
+Deadlines use `clock_gettime(CLOCK_MONOTONIC)` via `Time::HiRes`, not civil `time`.
+
+### 9. Perl thread / fork contract — **documented**
+
+README and Client POD state: not shareable across ithreads; do not reuse pre-`fork` sockets; one
+client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
+
+### 10. Go client (after fixtures + cross-language tests)
+
+Strategic for microservices, Kubernetes, cloud, agents, and concurrent backends. Add **after**
+golden vectors and cross-SDK tests so a fourth codec does not freeze an unfinished contract.
+
+## Product blockers (not “more languages”)
+
+These gate “ready for real applications” more than additional SDKs:
+
+| Area | Still open |
+| --- | --- |
+| Security | Authn/authz, TLS, rate limits, audit, credential handling |
+| Observability | Structured logs, metrics, readiness, admin diagnostics, build info, connection/Worker stats |
+| Operations | Backup/restore/verify, drain, corruption, disk-full, upgrade/downgrade runbooks |
+| Release compatibility | ABI/API policy, wire compatibility, signed artifacts, checksums, SBOM, reproducible builds, deprecation/support lifetime |
+| Stress / fault | Exhaustive socket/thread fault injection, continuous fuzz, soak, reconnect/shutdown stress, memory stability, power-loss/filesystem matrices |
+
+Minimum useful ops metrics for a web app: `connections_active`, `requests_total`, `errors_total`,
+`overloaded_total`, latency, `queue_depth`, `bytes_in`/`bytes_out`, `worker_utilization`,
+`reconnects`, `indeterminate_mutations`.
+
+## Recommended order
+
+1. Shared wire golden vectors (C++ / Python / Perl). **(CI verify + vendored cmp)**
+2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4)**
+3. Perl monotonic clock + thread/fork contract docs. **(done)**
+4. Normative errors, retry, and timeout specification.
+5. Multi-Worker `batch` API on every official client.
+6. Go client.
+7. Authentication and TLS.
+8. Metrics, health, and diagnostics.
+9. Backup/restore and operational procedures.
+10. Cross-release compatibility and artifact signing.
+
+The leap now is not “many more languages.” It is that **every client is demonstrably equivalent,
+compatible across releases, and usable safely**.

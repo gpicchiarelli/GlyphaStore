@@ -7,7 +7,11 @@ use Errno qw(EAGAIN EWOULDBLOCK EINTR);
 use IO::Select;
 use IO::Socket::INET;
 use Socket qw(IPPROTO_TCP TCP_NODELAY);
-use Time::HiRes qw(time);
+use Time::HiRes qw(clock_gettime CLOCK_MONOTONIC);
+
+sub _now {
+    return clock_gettime(CLOCK_MONOTONIC);
+}
 
 use GlyphaStore::Error;
 use GlyphaStore::Protocol qw(
@@ -169,7 +173,7 @@ sub _open_socket {
 
 sub _remaining {
     my ($deadline) = @_;
-    my $remaining = $deadline - time;
+    my $remaining = $deadline - _now();
     _throw('transport', 'request deadline expired') if $remaining <= 0;
     return $remaining;
 }
@@ -200,7 +204,7 @@ sub _send {
     local $SIG{PIPE} = 'IGNORE';
     my $socket = $connection->{socket};
     my $selector = _selector($connection);
-    $deadline //= time + $self->{request_timeout};
+    $deadline //=  _now() + $self->{request_timeout};
     my $total = length($frame);
     my $sent = 0;
     while ($sent < $total) {
@@ -224,7 +228,7 @@ sub _receive_response {
     my ($self, $connection, $deadline, $selector) = @_;
     my $socket = $connection->{socket};
     $selector //= _selector($connection);
-    $deadline //= time + $self->{request_timeout};
+    $deadline //=  _now() + $self->{request_timeout};
     my $max_frame = $self->{maximum_frame_bytes};
     while (1) {
         my $input = $connection->{input};
@@ -269,7 +273,7 @@ sub _receive_response {
 
 sub _exchange {
     my ($self, $connection, $frame, $deadline) = @_;
-    $deadline //= time + $self->{request_timeout};
+    $deadline //=  _now() + $self->{request_timeout};
     $self->_send($connection, $frame, $deadline);
     return $self->_receive_response($connection, $deadline);
 }
@@ -375,7 +379,7 @@ sub _read {
             _throw('invalid_argument', _plain_message($@)) if !$frame;
             _throw('invalid_argument', 'request exceeds the configured frame limit')
                 if length($frame) > $self->{maximum_frame_bytes};
-            my $deadline = time + $self->{request_timeout};
+            my $deadline =  _now() + $self->{request_timeout};
             my $received = $self->_exchange($connection, $frame, $deadline);
             $self->_validate_response($received, $request_id, $worker);
             [$received, $request_id];
@@ -444,7 +448,7 @@ sub _mutate {
             error   => _error('invalid_argument', 'request exceeds the configured frame limit'),
             }
             if length($frame) > $self->{maximum_frame_bytes};
-        my $deadline = time + $self->{request_timeout};
+        my $deadline =  _now() + $self->{request_timeout};
         my $response = eval {
             my $received = $self->_exchange($connection, $frame, $deadline);
             $self->_validate_response($received, $request_id, $worker);
@@ -553,7 +557,7 @@ sub execute_pipeline {
     _throw('unavailable', 'client closed before pipeline admission') if !$self->{healthy};
     $self->_ensure_connected($connection);
 
-    my $deadline = time + $self->{request_timeout};
+    my $deadline =  _now() + $self->{request_timeout};
     my $sent = eval { $self->_send($connection, $output, $deadline) };
     if (!defined($sent)) {
         my $failure = $@;
@@ -684,7 +688,7 @@ sub execute_worker_pipelines {
 
     my @results = map { undef } 0 .. $worker_count - 1;
     my (@active, %by_fd);
-    my $deadline = time + $self->{request_timeout};
+    my $deadline =  _now() + $self->{request_timeout};
     local $SIG{PIPE} = 'IGNORE';
     my $write_set = IO::Select->new;
     my $read_set = IO::Select->new;
@@ -726,7 +730,7 @@ sub execute_worker_pipelines {
 
     my $deadline_error = _error('transport', 'request deadline expired');
     while (@active) {
-        my $remaining = $deadline - time;
+        my $remaining = $deadline - _now();
         if ($remaining <= 0) {
             _abort_active_worker_pipelines($self, \@active, \@results, $deadline_error);
             last;
@@ -919,8 +923,9 @@ return a hash reference with C<outcome> set to C<committed>, C<rejected>, or
 C<indeterminate>. Reads throw L<GlyphaStore::Error> objects with a C<category>
 and C<message>.
 
+Request deadlines use a monotonic clock (C<CLOCK_MONOTONIC> via L<Time::HiRes>).
 Perl ithreads are not a shared-client concurrency model; use one client per
-process or thread. For multi-Worker throughput in one process, prefer
+process or thread. Do not reuse sockets across C<fork>. For multi-Worker throughput in one process, prefer
 C<execute_worker_pipelines>.
 
 =head1 SUBROUTINES/METHODS

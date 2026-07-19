@@ -7,6 +7,12 @@ mutation outcomes.
 
 License: BSD-3-Clause. Requires Perl ≥ 5.32.
 
+### Thread and fork contract
+
+`GlyphaStore::Client` is **not** shareable across ithreads and has no internal mutexes. Do not use
+sockets created before `fork` in the child; open a new client per process (and per thread if you
+use threads). Prefer `execute_worker_pipelines` to overlap Workers inside one process.
+
 ```perl
 use GlyphaStore::Client;
 

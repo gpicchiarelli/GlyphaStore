@@ -362,6 +362,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
 | [Where performance matters](docs/architecture/where-performance-matters.md) | When fast KV helps real apps; engine vs SDK; not a Redis claim |
+| [SDK roadmap](docs/architecture/sdk-roadmap.md) | Cross-SDK fixtures/interop, batch API, Go, vs production blockers |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
 | [Durability and recovery](docs/architecture/durability-recovery.md) | Alpha commit point, manifest ordering, crash states, and recovery |
 | [Durable Segment files](docs/architecture/segment-filesystem.md) | Platform allocation, alternate commit slots, and bounded recovery scan |

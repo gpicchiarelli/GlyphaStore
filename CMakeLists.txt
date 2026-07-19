@@ -284,6 +284,16 @@ glyphastore_enable_ipo(glyphastore_inspect_segment)
 set_target_properties(glyphastore_inspect_segment PROPERTIES FOLDER "Tools")
 glyphastore_xcode_scheme(glyphastore_inspect_segment ARGUMENTS --help)
 
+add_executable(glyphastore_interop_client tools/interop_client.cpp)
+target_link_libraries(glyphastore_interop_client
+    PRIVATE GlyphaStore::client glyphastore_project_options
+)
+glyphastore_set_warnings(glyphastore_interop_client)
+glyphastore_enable_hardening(glyphastore_interop_client)
+glyphastore_enable_ipo(glyphastore_interop_client)
+set_target_properties(glyphastore_interop_client PROPERTIES FOLDER "Tools")
+glyphastore_xcode_scheme(glyphastore_interop_client ARGUMENTS --help)
+
 add_executable(glyphastore_rebuild_index tools/rebuild_index.cpp)
 target_link_libraries(glyphastore_rebuild_index
     PRIVATE GlyphaStore::core glyphastore_cli_support glyphastore_project_options

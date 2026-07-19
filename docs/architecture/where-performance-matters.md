@@ -80,5 +80,5 @@ The useful claim is:
 
 Performance is one reason to choose the engine. A complete platform also needs replication,
 reliable persistence, efficient snapshots, observability, authentication/ACL, and clustering. Those
-remain roadmap work; see [production readiness](../production-readiness.md) and the
-[v1 roadmap](../v1-production-roadmap.md).
+remain roadmap work; see [production readiness](../production-readiness.md), the
+[v1 roadmap](../v1-production-roadmap.md), and the [SDK roadmap](sdk-roadmap.md).

@@ -139,6 +139,10 @@ zero-byte final send failures are `rejected`, and a successful mutation response
 value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may differ
 by language, but observable request/response semantics must not.
 
+Prioritized remaining client work (fixtures, cross-SDK tests, batch API, Go, etc.) lives in
+[SDK roadmap](../architecture/sdk-roadmap.md). Product blockers such as TLS and metrics are listed
+there and in [production readiness](../production-readiness.md).
+
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|
 | C++ | Implemented reference client | synchronous, thread-safe, one connection per Worker |

@@ -58,7 +58,8 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - `durable-compaction.md` describes whole-Worker durable compaction;
 - `build-hardening.md` defines compiler, linker, and artifact verification;
 - `server-model.md` explains Reactor and connection ownership;
-- `where-performance-matters.md` frames when engine speed helps real apps (and when it does not).
+- `where-performance-matters.md` frames when engine speed helps real apps (and when it does not);
+- `sdk-roadmap.md` prioritizes shared SDK contract work versus more languages.
 
 ## Decisions, development, and operations
 

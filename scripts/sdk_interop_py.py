@@ -1,0 +1,84 @@
+#!/usr/bin/env python3
+"""Cross-SDK put/get helpers for the interoperability matrix."""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
+
+from glyphastore import (  # noqa: E402
+    Client,
+    ClientConfig,
+    PipelineOpcode,
+    PipelineRequest,
+)
+
+
+def parse_hex(text: str) -> bytes:
+    cleaned = "".join(text.split())
+    if not cleaned:
+        return b""
+    if len(cleaned) % 2:
+        raise ValueError("odd hex length")
+    return bytes.fromhex(cleaned)
+
+
+def to_hex(payload: bytes) -> str:
+    return payload.hex()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="GlyphaStore Python interop helper")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, required=True)
+    parser.add_argument("command", choices=("put", "get", "erase", "pipeline-put-get"))
+    parser.add_argument("--key-hex", default="")
+    parser.add_argument("--value-hex", default="")
+    parser.add_argument("--expire-at-ns", type=int, default=0)
+    args = parser.parse_args()
+
+    key = parse_hex(args.key_hex)
+    value = parse_hex(args.value_hex)
+    with Client.connect(ClientConfig(host=args.host, port=args.port)) as client:
+        if args.command == "put":
+            result = client.put(key, value, expire_at_ns=args.expire_at_ns)
+            if not result.committed:
+                print(f"put not committed: {result}", file=sys.stderr)
+                return 1
+            return 0
+        if args.command == "get":
+            got = client.get(key)
+            print(to_hex(got))
+            return 0
+        if args.command == "erase":
+            result = client.erase(key)
+            if not result.committed:
+                print(f"erase not committed: {result}", file=sys.stderr)
+                return 1
+            return 0
+        responses = client.execute_pipeline(
+            [
+                PipelineRequest(PipelineOpcode.PUT, key, value),
+                PipelineRequest(PipelineOpcode.GET, key),
+            ]
+        )
+        if len(responses) != 2 or not responses[0].succeeded or not responses[1].succeeded:
+            print("pipeline outcomes failed", file=sys.stderr)
+            return 1
+        if responses[1].value != value:
+            print("pipeline value mismatch", file=sys.stderr)
+            return 1
+        print(to_hex(responses[1].value))
+        return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except Exception as error:  # noqa: BLE001 — CLI boundary
+        print(f"error: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

@@ -84,11 +84,18 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-      - name: Install Perl::Critic (brutal)
+      - name: Install Perl::Critic and build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libperl-critic-perl perltidy
+          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof
           perl -MPerl::Critic -e 'print $Perl::Critic::VERSION, "\n"'
+      - name: Verify wire golden fixtures
+        run: |
+          python scripts/generate_wire_fixtures.py --verify tests/fixtures
+          for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
+            cmp -s "tests/fixtures/$fixture" "sdk/python/tests/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
+          done
       - name: Test Python client
         run: ./scripts/test-python-client.sh
       - name: Test Perl client
@@ -97,6 +104,18 @@ jobs:
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client
         run: ./scripts/package-perl-client.sh
+      - name: Build daemon and interop client
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake --preset unix-release
+          cmake --build --preset unix-release --target glyphastored glyphastore_interop_client
+      - name: Cross-SDK interoperability matrix
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+        run: ./scripts/test-sdk-interop.sh
 
   install-consumer:
     name: Release install / external consumer
