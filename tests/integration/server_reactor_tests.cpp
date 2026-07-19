@@ -500,12 +500,105 @@ GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded
     GLYPHA_REQUIRE(ordered_get_response->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(text(ordered_get_response->frame.value) == "first");
     GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto mutation_stats = server.durable_mutation_stats();
+    GLYPHA_REQUIRE(mutation_stats.size() == 1);
+    GLYPHA_REQUIRE(mutation_stats[0].producer_threads == 1);
+    GLYPHA_REQUIRE(mutation_stats[0].queue_depth == 0);
+    GLYPHA_REQUIRE(mutation_stats[0].queued_bytes == 0);
+    GLYPHA_REQUIRE(mutation_stats[0].maximum_queue_depth >= 1);
+    GLYPHA_REQUIRE(mutation_stats[0].maximum_queued_bytes > 0);
+    GLYPHA_REQUIRE(mutation_stats[0].admitted == 2);
+    GLYPHA_REQUIRE(mutation_stats[0].rejected == 1);
+    GLYPHA_REQUIRE(mutation_stats[0].expired_before_store == 0);
+    GLYPHA_REQUIRE(mutation_stats[0].completed == 2);
+    GLYPHA_REQUIRE(mutation_stats[0].maximum_service_ns > 0);
 
     static_cast<void>(::close(first_socket));
     static_cast<void>(::close(second_socket));
     static_cast<void>(::close(responsive_socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("durable mutation queue deadline rejects only before Store execution") {
+    ServerTemporaryDirectory temporary;
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 2,
+         .durable_mutation_queue_capacity = 2,
+         .durable_mutation_queue_wait_ms = 10},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto blocked_socket = connect_to(server.port());
+    const auto expiring_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(blocked_socket >= 0);
+    GLYPHA_REQUIRE(expiring_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(blocked_socket, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(expiring_socket, 0, 1));
+
+    blocker.arm();
+    const auto blocked = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 75,
+        .key = bytes("deadline-blocker"),
+        .value = bytes("committed"),
+    });
+    const auto expiring = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 76,
+        .key = bytes("deadline-expired"),
+        .value = bytes("must-not-commit"),
+    });
+    GLYPHA_REQUIRE(blocked.has_value());
+    GLYPHA_REQUIRE(expiring.has_value());
+    GLYPHA_REQUIRE(send_all(blocked_socket, *blocked));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    GLYPHA_REQUIRE(send_all(expiring_socket, *expiring));
+    const auto expiry_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{30};
+    while (std::chrono::steady_clock::now() < expiry_deadline) {
+        std::this_thread::yield();
+    }
+    blocker.release();
+
+    const auto blocked_frame = receive_response(blocked_socket);
+    const auto expired_frame = receive_response(expiring_socket);
+    const auto blocked_response = glyphastore::server::decode_response(blocked_frame);
+    const auto expired_response = glyphastore::server::decode_response(expired_frame);
+    GLYPHA_REQUIRE(blocked_response.has_value());
+    GLYPHA_REQUIRE(expired_response.has_value());
+    GLYPHA_REQUIRE(blocked_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(expired_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    const auto stats = server.durable_mutation_stats();
+    GLYPHA_REQUIRE(stats.size() == 1);
+    GLYPHA_REQUIRE(stats[0].admitted == 2);
+    GLYPHA_REQUIRE(stats[0].expired_before_store == 1);
+    GLYPHA_REQUIRE(stats[0].completed == 2);
+    GLYPHA_REQUIRE(stats[0].maximum_queue_wait_ns >= 10'000'000U);
+
+    static_cast<void>(::close(blocked_socket));
+    static_cast<void>(::close(expiring_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    auto recovered = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(recovered.has_value());
+    GLYPHA_REQUIRE((*recovered)->get("deadline-blocker").has_value());
+    const auto absent = (*recovered)->get("deadline-expired");
+    GLYPHA_REQUIRE(!absent.has_value());
+    GLYPHA_REQUIRE(absent.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
 GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store close") {

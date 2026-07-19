@@ -469,11 +469,15 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             }
             if (durable_mutations_ == nullptr ||
                 durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+                if (durable_mutations_) {
+                    durable_mutations_->note_rejected(executor_id_);
+                }
                 response.status = ResponseStatus::overloaded;
                 break;
             }
             if (request.key.size() > config_.durable_mutation_queue_bytes ||
                 request.value.size() > config_.durable_mutation_queue_bytes - request.key.size()) {
+                durable_mutations_->note_rejected(executor_id_);
                 response.status = ResponseStatus::overloaded;
                 break;
             }
@@ -495,6 +499,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
                     durable_mutation_bytes_outstanding_ >
                         config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                    durable_mutations_->note_rejected(executor_id_);
                     response.status = ResponseStatus::overloaded;
                     break;
                 }
@@ -508,6 +513,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                     break;
                 }
             } catch (const std::bad_alloc&) {
+                durable_mutations_->note_rejected(executor_id_);
                 response.status = ResponseStatus::overloaded;
                 break;
             }
@@ -528,10 +534,14 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             }
             if (durable_mutations_ == nullptr ||
                 durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+                if (durable_mutations_) {
+                    durable_mutations_->note_rejected(executor_id_);
+                }
                 response.status = ResponseStatus::overloaded;
                 break;
             }
             if (request.key.size() > config_.durable_mutation_queue_bytes) {
+                durable_mutations_->note_rejected(executor_id_);
                 response.status = ResponseStatus::overloaded;
                 break;
             }
@@ -550,6 +560,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
                     durable_mutation_bytes_outstanding_ >
                         config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                    durable_mutations_->note_rejected(executor_id_);
                     response.status = ResponseStatus::overloaded;
                     break;
                 }
@@ -563,6 +574,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                     break;
                 }
             } catch (const std::bad_alloc&) {
+                durable_mutations_->note_rejected(executor_id_);
                 response.status = ResponseStatus::overloaded;
                 break;
             }

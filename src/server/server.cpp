@@ -4,6 +4,7 @@
 #include "glyphastore/server/socket.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <string>
@@ -87,9 +88,9 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
     }
     server->disk_reads_ = std::move(*disk_reads);
     if (durable) {
-        auto durable_mutations = DurableMutationExecutor::create(*server->store_, config.worker_count,
-                                                                 config.durable_mutation_queue_capacity,
-                                                                 mutation_threads_per_worker);
+        auto durable_mutations = DurableMutationExecutor::create(
+            *server->store_, config.worker_count, config.durable_mutation_queue_capacity,
+            mutation_threads_per_worker, std::chrono::milliseconds{config.durable_mutation_queue_wait_ms});
         if (!durable_mutations) {
             return unexpected(durable_mutations.error());
         }
@@ -206,6 +207,10 @@ auto Server::active_connections_per_executor() const -> std::vector<std::size_t>
 
 auto Server::executor_affinity_results() const -> std::vector<ExecutorAffinityResult> {
     return affinity_results_;
+}
+
+auto Server::durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats> {
+    return durable_mutations_ ? durable_mutations_->stats() : std::vector<DurableMutationWorkerStats>{};
 }
 
 void Server::run(const std::size_t executor_id) noexcept {

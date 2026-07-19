@@ -29,6 +29,11 @@ fixed task object. Exhaustion returns `overloaded` before the request enters the
 exposes both limits as `--durable-mutation-queue-capacity` and
 `--durable-mutation-queue-bytes`.
 
+An optional server-side queue-wait deadline is evaluated by a producer only after dequeue and before
+calling Store. Expiry therefore has the exact `not_committed` meaning: no storage operation began.
+Once Store execution starts, timeout and disconnect never cancel the mutation. The default deadline
+is one second; `--durable-mutation-queue-wait-ms=0` disables it.
+
 The successful enqueue under the lane mutex is the daemon admission point and fixes FIFO dequeue
 order for that Worker. With multiple strict-group producers, cross-connection Store acquisition may
 reorder after dequeue; the durable runtime defines that linearization, while one-in-flight per
@@ -55,6 +60,9 @@ their Reactor rings even when Reactors no longer consume them.
   Worker lane.
 - Per-Worker mutation order and the existing persistence contract are preserved.
 - Memory amplification from queued payload copies has a configured, deterministic upper bound.
+- Per-Worker snapshots expose current/peak queue records and bytes, admitted/rejected/expired/completed
+  counts, and total/maximum queue-wait and Store-service nanoseconds. Snapshotting locks only one
+  lane queue at a time and never waits on its storage call.
 - Sync/periodic modes add one storage thread per Worker. Group mode adds a bounded producer set per
   Worker, with a hard process-wide thread limit; concurrency and NUMA placement require measured
   platform tuning before very high Worker counts are certified.

@@ -37,6 +37,7 @@ enum OptionId : std::size_t {
     durable_mutation_queue_capacity,
     durable_mutation_queue_bytes,
     durable_group_mutation_concurrency,
+    durable_mutation_queue_wait,
     reuse_port,
     no_reuse_port,
     executor_affinity,
@@ -85,6 +86,9 @@ constexpr std::array kOptionSpecs{
     glyphastore::cli::OptionSpec{durable_group_mutation_concurrency, "durable-group-concurrency", '\0',
                                  glyphastore::cli::OptionArity::required, "COUNT",
                                  "Run up to COUNT strict-group producers per Worker (default: 4)"},
+    glyphastore::cli::OptionSpec{durable_mutation_queue_wait, "durable-mutation-queue-wait-ms", '\0',
+                                 glyphastore::cli::OptionArity::required, "MILLISECONDS",
+                                 "Expire queued mutations after this wait; 0 disables (default: 1000)"},
     glyphastore::cli::OptionSpec{reuse_port,
                                  "reuse-port",
                                  '\0',
@@ -283,6 +287,14 @@ struct Options {
         !status) {
         return glyphastore::unexpected(status.error());
     }
+    std::size_t mutation_queue_wait_ms = options.server.durable_mutation_queue_wait_ms;
+    if (auto status =
+            set_size_option(*parsed, durable_mutation_queue_wait, "--durable-mutation-queue-wait-ms", 0,
+                            std::numeric_limits<std::uint32_t>::max(), mutation_queue_wait_ms);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    options.server.durable_mutation_queue_wait_ms = static_cast<std::uint32_t>(mutation_queue_wait_ms);
     if (parsed->has(reuse_port) && parsed->has(no_reuse_port)) {
         return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
                                  "--reuse-port and --no-reuse-port are mutually exclusive");

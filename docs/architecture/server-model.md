@@ -118,6 +118,12 @@ returns `overloaded` and does not enqueue work.
 Exceeding an input/output byte watermark closes the offending connection. Queue capacity is rounded
 up to a power of two at startup; overload never becomes unbounded memory growth.
 
+The durable lane queue also has a configurable wait deadline. A task that expires before Store entry
+returns `overloaded` and is known not committed; a task that has entered Store is never cancelled.
+Per-Worker snapshots report current/peak queue records and owned bytes, producer width,
+admitted/rejected/expired/completed counts, queue-wait time, and total Store service time. Metrics use
+only the lane's short queue mutex and cannot wait for its filesystem operation.
+
 ## Current scope
 
 The daemon supports the Store's volatile and durable modes. Executor threads are not yet guaranteed

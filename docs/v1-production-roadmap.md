@@ -68,10 +68,12 @@ to match the executor count, and closes the Store observably from `join()`. The 
 explicit `volatile`, `durable-sync`, `durable-periodic`, and `durable-group` selection plus durable
 data-directory and open-policy controls. Durable `PUT`/`ERASE` now leave the Reactor through bounded
 per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
-and drain-before-Store-close shutdown. Tests suspend real sync calls and prove Reactor responsiveness,
-independent queue admission, bounded overload, and recovery of a mutation admitted during shutdown.
-Batch/resource CLI controls, real-daemon process-kill coverage, drain deadlines, and complete
-operability metrics remain open.
+queue-wait expiry before Store entry, per-lane queue/service metrics, and drain-before-Store-close
+shutdown. Strict-group mode retains bounded concurrent producers so daemon batching does not collapse
+to occupancy one. Tests suspend real sync calls and prove Reactor responsiveness, independent queue
+admission, bounded overload, non-commit of expired queued work, multi-record group sync, and recovery
+of a mutation admitted during shutdown. Exact batch occupancy/sync histograms, remaining resource CLI
+controls, real-daemon process-kill coverage, and bounded shutdown deadlines remain open.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

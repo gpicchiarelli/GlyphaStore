@@ -41,6 +41,7 @@ class Server final {
     [[nodiscard]] auto adopted_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto active_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
+    [[nodiscard]] auto durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
     }

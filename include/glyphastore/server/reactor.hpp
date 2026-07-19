@@ -45,6 +45,9 @@ struct ReactorConfig {
     // Used only by durable-group. Multiple producers are required for a batch
     // to accumulate while earlier producers await strict acknowledgement.
     std::size_t durable_group_mutation_concurrency{4};
+    // Zero disables expiry. Once Store execution begins the mutation always
+    // runs to a classified completion and is never cancelled by this limit.
+    std::uint32_t durable_mutation_queue_wait_ms{1000};
 };
 
 class Reactor final {
