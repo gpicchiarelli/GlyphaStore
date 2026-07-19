@@ -62,7 +62,16 @@ auto mutation_failure(const DurableMutationOutcome outcome, Error error) -> Dura
 
 struct HotRecordEntry {
     RecordRef reference{};
-    std::vector<std::byte> value_bytes;
+    std::shared_ptr<const std::byte[]> value_bytes;
+    std::size_t value_size{};
+    SequenceNumber sequence{};
+    std::uint64_t expire_at_ns{};
+    std::uint64_t accounted_bytes{};
+};
+
+struct HotRecordSnapshot {
+    std::shared_ptr<const std::byte[]> value_bytes;
+    std::size_t value_size{};
     SequenceNumber sequence{};
     std::uint64_t expire_at_ns{};
 };
@@ -91,6 +100,106 @@ struct TransparentStringEqual {
 using HotRecordMap =
     std::unordered_map<std::string, HotRecordEntry, TransparentStringHash, TransparentStringEqual>;
 
+class PreparedHotRecord final {
+  public:
+    PreparedHotRecord() = default;
+    PreparedHotRecord(HotRecordMap::node_type node, std::uint64_t* staged_bytes,
+                      std::size_t* staged_entries, const std::uint64_t staged_charge) noexcept
+        : node_(std::move(node)), staged_bytes_(staged_bytes), staged_entries_(staged_entries),
+          staged_charge_(staged_charge) {}
+    ~PreparedHotRecord() {
+        release_stage();
+    }
+    PreparedHotRecord(PreparedHotRecord&& other) noexcept
+        : node_(std::move(other.node_)), staged_bytes_(std::exchange(other.staged_bytes_, nullptr)),
+          staged_entries_(std::exchange(other.staged_entries_, nullptr)),
+          staged_charge_(std::exchange(other.staged_charge_, 0)) {}
+    auto operator=(PreparedHotRecord&& other) noexcept -> PreparedHotRecord& {
+        if (this != &other) {
+            release_stage();
+            node_ = std::move(other.node_);
+            staged_bytes_ = std::exchange(other.staged_bytes_, nullptr);
+            staged_entries_ = std::exchange(other.staged_entries_, nullptr);
+            staged_charge_ = std::exchange(other.staged_charge_, 0);
+        }
+        return *this;
+    }
+    PreparedHotRecord(const PreparedHotRecord&) = delete;
+    auto operator=(const PreparedHotRecord&) -> PreparedHotRecord& = delete;
+
+    [[nodiscard]] auto empty() const noexcept -> bool {
+        return node_.empty();
+    }
+    [[nodiscard]] auto key() const -> const std::string& {
+        return node_.key();
+    }
+    [[nodiscard]] auto mapped() -> HotRecordEntry& {
+        return node_.mapped();
+    }
+    [[nodiscard]] auto release_node() -> HotRecordMap::node_type {
+        release_stage();
+        return std::move(node_);
+    }
+
+  private:
+    void release_stage() noexcept {
+        if (staged_bytes_ == nullptr || staged_entries_ == nullptr) {
+            return;
+        }
+        *staged_bytes_ -= staged_charge_;
+        --*staged_entries_;
+        staged_bytes_ = nullptr;
+        staged_entries_ = nullptr;
+        staged_charge_ = 0;
+    }
+
+    HotRecordMap::node_type node_;
+    std::uint64_t* staged_bytes_{};
+    std::size_t* staged_entries_{};
+    std::uint64_t staged_charge_{};
+};
+
+constexpr std::uint64_t kHotCacheBucketAccountingMultiplier = 2;
+constexpr std::size_t kHotCacheStagingBucketFloor = 16;
+
+[[nodiscard]] auto hot_cache_bucket_bytes(const std::size_t buckets) noexcept -> std::uint64_t {
+    constexpr auto bytes_per_bucket =
+        static_cast<std::uint64_t>(sizeof(void*)) * kHotCacheBucketAccountingMultiplier;
+    if (buckets > std::numeric_limits<std::uint64_t>::max() / bytes_per_bucket) {
+        return std::numeric_limits<std::uint64_t>::max();
+    }
+    return static_cast<std::uint64_t>(buckets) * bytes_per_bucket;
+}
+
+[[nodiscard]] auto hot_record_accounted_bytes(const std::size_t key_bytes,
+                                              const std::size_t value_bytes)
+    -> Result<std::uint64_t> {
+    constexpr auto fixed =
+        static_cast<std::uint64_t>(sizeof(HotRecordMap::value_type) + 4U * sizeof(void*));
+    if (key_bytes > std::numeric_limits<std::uint64_t>::max() - fixed) {
+        return fail(ErrorCode::arithmetic_overflow, "hot-cache key accounting overflow");
+    }
+    const auto with_key = fixed + static_cast<std::uint64_t>(key_bytes);
+    if (value_bytes > std::numeric_limits<std::uint64_t>::max() - with_key) {
+        return fail(ErrorCode::arithmetic_overflow, "hot-cache value accounting overflow");
+    }
+    return with_key + static_cast<std::uint64_t>(value_bytes);
+}
+
+[[nodiscard]] auto hot_cache_worker_budget(const std::size_t worker_index,
+                                           const std::size_t worker_count,
+                                           const DurableResourceLimits& limits) noexcept
+    -> std::uint64_t {
+    if (worker_count == 0) {
+        return 0;
+    }
+    const auto count = static_cast<std::uint64_t>(worker_count);
+    const auto base = limits.max_hot_cache_bytes / count;
+    const auto remainder = limits.max_hot_cache_bytes % count;
+    const auto partition = base + (static_cast<std::uint64_t>(worker_index) < remainder ? 1U : 0U);
+    return std::min(partition, limits.max_hot_cache_bytes_per_worker);
+}
+
 [[nodiscard]] auto prepare_hot_record_insertions(HotRecordMap& records, const std::size_t additional_records)
     -> Status {
     const auto raw_capacity =
@@ -113,8 +222,12 @@ using HotRecordMap =
     return entry.reference == reference;
 }
 
-[[nodiscard]] auto owned_value_from_hot(const HotRecordEntry& entry) -> OwnedValue {
-    return {.bytes = entry.value_bytes, .sequence = entry.sequence.value, .expire_at_ns = entry.expire_at_ns};
+[[nodiscard]] auto owned_value_from_hot(const HotRecordSnapshot& entry) -> OwnedValue {
+    std::vector<std::byte> value(entry.value_size);
+    if (entry.value_size != 0) {
+        std::copy_n(entry.value_bytes.get(), entry.value_size, value.begin());
+    }
+    return {.bytes = std::move(value), .sequence = entry.sequence.value, .expire_at_ns = entry.expire_at_ns};
 }
 
 auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_active,
@@ -370,7 +483,7 @@ auto rollback_prepared_compaction(DataDirectory& directory, const Manifest& old_
 
 struct DurableRuntimeCatalog::PendingGroupMutation {
     std::string key;
-    HotRecordMap::node_type hot_record;
+    PreparedHotRecord hot_record;
     RecordRef reference{};
     Opcode opcode{Opcode::put};
     std::uint64_t key_hash{};
@@ -403,6 +516,12 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::vector<std::byte> encode_scratch;
     HotRecordMap hot_records;
     HotRecordMap hot_record_staging;
+    std::uint64_t hot_record_resident_bytes{};
+    std::uint64_t hot_record_staged_bytes{};
+    std::size_t hot_record_staged_entries{};
+    std::uint64_t hot_record_hits{};
+    std::uint64_t hot_record_misses{};
+    std::uint64_t hot_record_admission_bypasses{};
     std::vector<PendingGroupMutation*> pending_group_mutations;
     std::size_t pending_group_insertions{};
     std::size_t pending_group_heap_key_bytes{};
@@ -413,7 +532,166 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::condition_variable batch_closed;
     bool compaction_commit_active{};
     std::condition_variable compaction_commit_finished;
+
+    [[nodiscard]] auto hot_cache_total_bytes() const noexcept -> std::uint64_t;
+    void erase_hot_record(std::string_view key) noexcept;
+    [[nodiscard]] auto prepare_hot_record(std::size_t worker_index, std::size_t worker_count,
+                                          const DurableResourceLimits& limits, std::string_view key,
+                                          std::span<const std::byte> value, std::uint64_t expire_at_ns,
+                                          std::uint64_t publication_staging_bytes)
+        -> Result<PreparedHotRecord>;
+    [[nodiscard]] auto publish_hot_record(PreparedHotRecord& prepared, const RecordRef& reference,
+                                          SequenceNumber sequence) -> Status;
 };
+
+[[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::hot_cache_total_bytes() const noexcept
+    -> std::uint64_t {
+    const auto buckets = hot_cache_bucket_bytes(hot_records.bucket_count());
+    const auto staging_buckets = hot_cache_bucket_bytes(hot_record_staging.bucket_count());
+    const auto first = hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() -
+                                                       hot_record_staged_bytes
+                           ? std::numeric_limits<std::uint64_t>::max()
+                           : hot_record_resident_bytes + hot_record_staged_bytes;
+    const auto second = first > std::numeric_limits<std::uint64_t>::max() - buckets
+                            ? std::numeric_limits<std::uint64_t>::max()
+                            : first + buckets;
+    return second > std::numeric_limits<std::uint64_t>::max() - staging_buckets
+               ? std::numeric_limits<std::uint64_t>::max()
+               : second + staging_buckets;
+}
+
+void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_view key) noexcept {
+    const auto existing = hot_records.find(key);
+    if (existing == hot_records.end()) {
+        return;
+    }
+    hot_record_resident_bytes -= existing->second.accounted_bytes;
+    hot_records.erase(existing);
+}
+
+[[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::prepare_hot_record(
+    const std::size_t worker_index, const std::size_t worker_count,
+    const DurableResourceLimits& limits, const std::string_view key,
+    const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
+    const std::uint64_t publication_staging_bytes)
+    -> Result<PreparedHotRecord> {
+    auto charge = hot_record_accounted_bytes(key.size(), value.size());
+    if (!charge) {
+        return unexpected(charge.error());
+    }
+    if (publication_staging_bytes > std::numeric_limits<std::uint64_t>::max() - *charge) {
+        return fail(ErrorCode::arithmetic_overflow, "hot-cache publication staging overflow");
+    }
+    const auto staged_charge = *charge + publication_staging_bytes;
+    const auto budget = hot_cache_worker_budget(worker_index, worker_count, limits);
+    if (hot_records.size() > std::numeric_limits<std::size_t>::max() - hot_record_staged_entries) {
+        return fail(ErrorCode::arithmetic_overflow, "hot-cache entry accounting overflow");
+    }
+    const auto projected_entries = hot_records.size() + hot_record_staged_entries;
+    const bool entry_exhausted = limits.max_hot_cache_entries_per_worker == 0 ||
+                                 projected_entries >= limits.max_hot_cache_entries_per_worker;
+    const bool staging_exhausted = limits.max_hot_cache_staging_bytes_per_worker == 0 ||
+                                   hot_record_staged_bytes >
+                                       limits.max_hot_cache_staging_bytes_per_worker ||
+                                   staged_charge > limits.max_hot_cache_staging_bytes_per_worker -
+                                                       hot_record_staged_bytes;
+    if (budget == 0 || entry_exhausted || staging_exhausted) {
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
+
+    if (hot_record_staged_entries == std::numeric_limits<std::size_t>::max() ||
+        projected_entries == std::numeric_limits<std::size_t>::max()) {
+        return fail(ErrorCode::arithmetic_overflow, "hot-cache staged entry accounting overflow");
+    }
+    const auto additional = hot_record_staged_entries + 1U;
+    const auto projected_bucket_count =
+        projected_entries + 1U > std::numeric_limits<std::size_t>::max() / 2U
+            ? std::numeric_limits<std::size_t>::max()
+            : std::max(hot_records.bucket_count(), (projected_entries + 1U) * 2U);
+    const auto projected_staging_buckets =
+        std::max(hot_record_staging.bucket_count(), kHotCacheStagingBucketFloor);
+    const auto projected_buckets = hot_cache_bucket_bytes(projected_bucket_count);
+    const auto projected_staging = hot_cache_bucket_bytes(projected_staging_buckets);
+    const auto fixed = hot_record_resident_bytes >
+                               std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
+                           ? std::numeric_limits<std::uint64_t>::max()
+                           : hot_record_resident_bytes + hot_record_staged_bytes;
+    const auto available = fixed >= budget ? 0 : budget - fixed;
+    if (projected_buckets > available || projected_staging > available - projected_buckets ||
+        staged_charge > available - projected_buckets - projected_staging) {
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
+
+    const auto resident_bucket_count = hot_records.bucket_count();
+    const auto staging_bucket_count = hot_record_staging.bucket_count();
+    if (auto prepared = prepare_hot_record_insertions(hot_records, additional); !prepared) {
+        return unexpected(prepared.error());
+    }
+    const auto after_reserve = hot_cache_total_bytes();
+    if (after_reserve >= budget || staged_charge > budget - after_reserve) {
+        if (hot_records.bucket_count() != resident_bucket_count) {
+            hot_records.rehash(resident_bucket_count);
+        }
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
+
+    std::shared_ptr<const std::byte[]> immutable_value;
+    if (!value.empty()) {
+        auto mutable_value = std::make_shared<std::byte[]>(value.size());
+        std::copy(value.begin(), value.end(), mutable_value.get());
+        immutable_value = std::move(mutable_value);
+    }
+    const auto staged = hot_record_staging.emplace(
+        std::string{key}, HotRecordEntry{.value_bytes = std::move(immutable_value),
+                                        .value_size = value.size(),
+                                        .expire_at_ns = expire_at_ns,
+                                        .accounted_bytes = *charge});
+    if (!staged.second) {
+        return fail(ErrorCode::corrupted_data, "hot Record staging map was not empty");
+    }
+    auto node = hot_record_staging.extract(staged.first);
+    const auto after_staging = hot_cache_total_bytes();
+    if (after_staging >= budget || staged_charge > budget - after_staging) {
+        if (hot_record_staging.bucket_count() != staging_bucket_count) {
+            hot_record_staging.rehash(staging_bucket_count);
+        }
+        if (hot_records.bucket_count() != resident_bucket_count) {
+            hot_records.rehash(resident_bucket_count);
+        }
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
+    hot_record_staged_bytes += staged_charge;
+    ++hot_record_staged_entries;
+    return PreparedHotRecord{std::move(node), &hot_record_staged_bytes,
+                             &hot_record_staged_entries, staged_charge};
+}
+
+[[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::publish_hot_record(
+    PreparedHotRecord& prepared, const RecordRef& reference, const SequenceNumber sequence) -> Status {
+    if (prepared.empty()) {
+        return {};
+    }
+    prepared.mapped().reference = reference;
+    prepared.mapped().sequence = sequence;
+    const auto charge = prepared.mapped().accounted_bytes;
+    const auto existing = hot_records.find(prepared.key());
+    if (existing != hot_records.end()) {
+        hot_record_resident_bytes -= existing->second.accounted_bytes;
+        existing->second = std::move(prepared.mapped());
+        static_cast<void>(prepared.release_node());
+    } else {
+        auto inserted = hot_records.insert(prepared.release_node());
+        if (!inserted.inserted) {
+            return fail(ErrorCode::corrupted_data, "prepared hot Record publication conflicted");
+        }
+    }
+    hot_record_resident_bytes += charge;
+    return {};
+}
 
 DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
                                              DurableRuntimeOptions options)
@@ -582,27 +860,15 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
                 return publication_failed(published.error());
             }
             if (mutation->hot_record.empty()) {
-                return publication_failed(
-                    Error{ErrorCode::corrupted_data, "prepared hot Record publication is absent"});
-            }
-            mutation->hot_record.mapped().reference = mutation->reference;
-            mutation->hot_record.mapped().sequence = mutation->reference.sequence;
-            const auto existing = worker.hot_records.find(mutation->hot_record.key());
-            if (existing != worker.hot_records.end()) {
-                existing->second = std::move(mutation->hot_record.mapped());
-            } else {
-                const auto inserted = worker.hot_records.insert(std::move(mutation->hot_record));
-                if (!inserted.inserted) {
-                    return publication_failed(
-                        Error{ErrorCode::corrupted_data, "prepared hot Record publication conflicted"});
-                }
+                worker.erase_hot_record(mutation->key);
+            } else if (auto hot_published = worker.publish_hot_record(
+                           mutation->hot_record, mutation->reference, mutation->reference.sequence);
+                       !hot_published) {
+                return publication_failed(hot_published.error());
             }
         } else {
             static_cast<void>(worker.index.erase_no_compact(hashed));
-            if (const auto existing = worker.hot_records.find(mutation->key);
-                existing != worker.hot_records.end()) {
-                worker.hot_records.erase(existing);
-            }
+            worker.erase_hot_record(mutation->key);
         }
         mutation->completed = true;
     }
@@ -836,6 +1102,7 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
     auto& worker = *workers_[worker_index];
     RecordRef cold_reference;
     std::shared_ptr<const RuntimeSegmentGeneration> cold_pin;
+    std::optional<HotRecordSnapshot> hot;
     {
         const std::lock_guard worker_lock{worker.mutex};
         const std::shared_lock catalog_lock{catalog_mutex_};
@@ -865,24 +1132,35 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
 
         if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
             if (hot_record_matches(cached->second, *reference)) {
+                ++worker.hot_record_hits;
                 if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
                     cached->second.expire_at_ns <= now_ns) {
                     return fail(ErrorCode::not_found, "key has expired");
                 }
-                return PreparedRead{.value = owned_value_from_hot(cached->second)};
+                hot.emplace(HotRecordSnapshot{.value_bytes = cached->second.value_bytes,
+                                              .value_size = cached->second.value_size,
+                                              .sequence = cached->second.sequence,
+                                              .expire_at_ns = cached->second.expire_at_ns});
+            } else {
+                worker.erase_hot_record(key.key);
             }
-            worker.hot_records.erase(cached);
         }
 
-        const auto& pin = generation_pins_[catalog_index];
-        if (!pin || pin->identity.segment_id != reference->segment_id ||
-            pin->identity.generation != reference->generation ||
-            pin->identity.owner_worker != worker.worker_id) {
-            return fail_closed(
-                Error{ErrorCode::corrupted_data, "durable Segment generation pin disagrees with the Index"});
+        if (!hot) {
+            ++worker.hot_record_misses;
+            const auto& pin = generation_pins_[catalog_index];
+            if (!pin || pin->identity.segment_id != reference->segment_id ||
+                pin->identity.generation != reference->generation ||
+                pin->identity.owner_worker != worker.worker_id) {
+                return fail_closed(Error{ErrorCode::corrupted_data,
+                                         "durable Segment generation pin disagrees with the Index"});
+            }
+            cold_reference = *reference;
+            cold_pin = pin;
         }
-        cold_reference = *reference;
-        cold_pin = pin;
+    }
+    if (hot) {
+        return PreparedRead{.value = owned_value_from_hot(*hot)};
     }
     return PreparedRead{.cold = PinnedRead{std::string{key.key}, key.hash, now_ns, worker_index,
                                            cold_reference, std::move(cold_pin)}};
@@ -899,7 +1177,8 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
             reinterpret_cast<const std::byte*>(read.key_.data()), read.key_.size()};
         ReadContext context{
             .expected_key = key_bytes, .expected_hash = read.key_hash_, .now_ns = read.now_ns_};
-        auto visited = read.generation_->file.visit_record(read.reference_, &context, &copy_verified_value);
+        auto visited =
+            read.generation_->file.visit_runtime_record(read.reference_, &context, &copy_verified_value);
 
         // Linearization point for a cold GET: the Worker index must still
         // designate both the exact RecordRef and immutable generation pin
@@ -1115,9 +1394,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     worker.active_segment = replacement_segment_id;
     worker.cached_file.emplace(std::move(*created.file));
     worker.cached_writable = true;
-    std::erase_if(worker.hot_records, [&](const auto& entry) {
-        return entry.second.reference.segment_id == old_entry.segment_id;
-    });
+    for (auto current = worker.hot_records.begin(); current != worker.hot_records.end();) {
+        if (current->second.reference.segment_id == old_entry.segment_id) {
+            worker.hot_record_resident_bytes -= current->second.accounted_bytes;
+            current = worker.hot_records.erase(current);
+        } else {
+            ++current;
+        }
+    }
     return {.outcome = DurableMutationOutcome::committed, .sequence = std::nullopt, .error = std::nullopt};
 }
 
@@ -1239,27 +1523,24 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             return mutation_failure(DurableMutationOutcome::not_committed, encoded.error());
         }
         PendingGroupMutation group_mutation;
-        HotRecordMap::node_type prepared_hot_record;
+        PreparedHotRecord prepared_hot_record;
         if (opcode == Opcode::put) {
-            const auto additional_hot_records =
-                strict_batch ? (worker.pending_group_mutations.empty()
-                                    ? static_cast<std::size_t>(options_.batch->max_records)
-                                    : 0U)
-                             : (key_present ? 0U : 1U);
-            if (auto prepared = prepare_hot_record_insertions(worker.hot_records, additional_hot_records);
-                !prepared) {
+            constexpr auto group_publication_fixed_bytes =
+                static_cast<std::uint64_t>(sizeof(PendingGroupMutation) + sizeof(PendingGroupMutation*));
+            const auto publication_staging_bytes =
+                strict_batch
+                    ? (key.size() > std::numeric_limits<std::uint64_t>::max() -
+                                            group_publication_fixed_bytes
+                           ? std::numeric_limits<std::uint64_t>::max()
+                           : group_publication_fixed_bytes + static_cast<std::uint64_t>(key.size()))
+                    : 0U;
+            auto prepared = worker.prepare_hot_record(worker_index, workers_.size(), options_.limits,
+                                                      hashed.key, value, expire_at_ns,
+                                                      publication_staging_bytes);
+            if (!prepared) {
                 return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }
-            const auto staged = worker.hot_record_staging.emplace(
-                std::string{hashed.key},
-                HotRecordEntry{.value_bytes = std::vector<std::byte>{value.begin(), value.end()},
-                               .expire_at_ns = expire_at_ns});
-            if (!staged.second) {
-                return mutation_failure(
-                    DurableMutationOutcome::not_committed,
-                    Error{ErrorCode::corrupted_data, "hot Record staging map was not empty"});
-            }
-            prepared_hot_record = worker.hot_record_staging.extract(staged.first);
+            prepared_hot_record = std::move(*prepared);
         }
         if (strict_batch) {
             group_mutation.key.assign(hashed.key);
@@ -1444,27 +1725,19 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .sequence = committed_sequence,
                             .error = published.error()};
                 }
-                prepared_hot_record.mapped().reference = reference;
-                prepared_hot_record.mapped().sequence = committed_sequence;
-                const auto existing = worker.hot_records.find(prepared_hot_record.key());
-                if (existing != worker.hot_records.end()) {
-                    existing->second = std::move(prepared_hot_record.mapped());
-                } else {
-                    const auto inserted = worker.hot_records.insert(std::move(prepared_hot_record));
-                    if (!inserted.inserted) {
-                        healthy_.store(false, std::memory_order_release);
-                        return {.outcome = DurableMutationOutcome::committed,
-                                .sequence = committed_sequence,
-                                .error = Error{ErrorCode::corrupted_data,
-                                               "prepared hot Record publication conflicted"}};
-                    }
+                if (prepared_hot_record.empty()) {
+                    worker.erase_hot_record(hashed.key);
+                } else if (auto hot_published =
+                               worker.publish_hot_record(prepared_hot_record, reference, committed_sequence);
+                           !hot_published) {
+                    healthy_.store(false, std::memory_order_release);
+                    return {.outcome = DurableMutationOutcome::committed,
+                            .sequence = committed_sequence,
+                            .error = hot_published.error()};
                 }
             } else {
                 static_cast<void>(worker.index.erase_no_compact(hashed));
-                if (const auto existing = worker.hot_records.find(hashed.key);
-                    existing != worker.hot_records.end()) {
-                    worker.hot_records.erase(existing);
-                }
+                worker.erase_hot_record(hashed.key);
             }
             return {.outcome = DurableMutationOutcome::committed,
                     .sequence = committed_sequence,
@@ -1511,6 +1784,37 @@ auto DurableRuntimeCatalog::namespace_audit() const -> NamespaceAuditReport {
 
 auto DurableRuntimeCatalog::recovery_stats() const noexcept -> const DurableRecoveryStats& {
     return recovery_stats_;
+}
+
+auto DurableRuntimeCatalog::hot_cache_stats() const -> std::vector<DurableHotCacheWorkerStats> {
+    std::vector<DurableHotCacheWorkerStats> result;
+    result.reserve(workers_.size());
+    for (std::size_t index = 0; index < workers_.size(); ++index) {
+        auto& worker = *workers_[index];
+        const std::lock_guard lock{worker.mutex};
+        const auto bucket_bytes = hot_cache_bucket_bytes(worker.hot_records.bucket_count());
+        const auto staging_bucket_bytes = hot_cache_bucket_bytes(worker.hot_record_staging.bucket_count());
+        const auto all_bucket_bytes =
+            bucket_bytes > std::numeric_limits<std::uint64_t>::max() - staging_bucket_bytes
+                ? std::numeric_limits<std::uint64_t>::max()
+                : bucket_bytes + staging_bucket_bytes;
+        result.push_back({
+            .worker_id = worker.worker_id,
+            .resident_entries = worker.hot_records.size(),
+            .resident_bytes = worker.hot_record_resident_bytes,
+            .staged_entries = worker.hot_record_staged_entries,
+            .staged_bytes = worker.hot_record_staged_bytes,
+            .bucket_bytes = all_bucket_bytes,
+            .total_accounted_bytes = worker.hot_cache_total_bytes(),
+            .byte_budget = hot_cache_worker_budget(index, workers_.size(), options_.limits),
+            .staging_byte_budget = options_.limits.max_hot_cache_staging_bytes_per_worker,
+            .entry_budget = options_.limits.max_hot_cache_entries_per_worker,
+            .hits = worker.hot_record_hits,
+            .misses = worker.hot_record_misses,
+            .admission_bypasses = worker.hot_record_admission_bypasses,
+        });
+    }
+    return result;
 }
 
 auto DurableRuntimeCatalog::next_sequence(const std::size_t worker_index) const -> Result<SequenceNumber> {

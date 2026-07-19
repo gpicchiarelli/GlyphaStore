@@ -67,6 +67,22 @@ struct DurableCompactionResult {
     }
 };
 
+struct DurableHotCacheWorkerStats {
+    WorkerId worker_id{};
+    std::size_t resident_entries{};
+    std::uint64_t resident_bytes{};
+    std::size_t staged_entries{};
+    std::uint64_t staged_bytes{};
+    std::uint64_t bucket_bytes{};
+    std::uint64_t total_accounted_bytes{};
+    std::uint64_t byte_budget{};
+    std::uint64_t staging_byte_budget{};
+    std::size_t entry_budget{};
+    std::uint64_t hits{};
+    std::uint64_t misses{};
+    std::uint64_t admission_bypasses{};
+};
+
 // Internal materialization of one recovered durable Store. It keeps the
 // directory lock for its complete lifetime. Mutable Segment handles remain
 // Worker-owned; immutable generation pins keep cold-read handles alive across
@@ -136,6 +152,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto manifest() const -> Manifest;
     [[nodiscard]] auto namespace_audit() const -> NamespaceAuditReport;
     [[nodiscard]] auto recovery_stats() const noexcept -> const DurableRecoveryStats&;
+    [[nodiscard]] auto hot_cache_stats() const -> std::vector<DurableHotCacheWorkerStats>;
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const

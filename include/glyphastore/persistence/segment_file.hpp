@@ -70,6 +70,12 @@ class DurableSegmentFile final {
     // RecordView remain valid only for the synchronous visitor invocation.
     [[nodiscard]] auto visit_record(const RecordRef& reference, std::vector<std::byte>& scratch,
                                     void* context, RecordVisitor visitor) const -> Status;
+    // Runtime-only path for a RecordRef already obtained from the authoritative
+    // Worker Index together with an exact generation pin. Unlike visit_record,
+    // this permits a reference committed after this read-only handle's opening
+    // boundary; the caller must revalidate Index and pin identity after I/O.
+    [[nodiscard]] auto visit_runtime_record(const RecordRef& reference, void* context,
+                                            RecordVisitor visitor) const -> Status;
 
     [[nodiscard]] auto identity() const noexcept -> const SegmentHeaderIdentity& {
         return identity_;
@@ -96,6 +102,9 @@ class DurableSegmentFile final {
         -> SegmentCommitResult;
     [[nodiscard]] auto read_record_into(const RecordRef& reference, std::vector<std::byte>& bytes,
                                         RecordView& record) const -> Status;
+    [[nodiscard]] auto read_record_into_extent(const RecordRef& reference, std::uint64_t readable_end,
+                                               std::vector<std::byte>& bytes, RecordView& record) const
+        -> Status;
     void poison() noexcept;
 
     FileDescriptor file_;

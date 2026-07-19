@@ -97,6 +97,10 @@ recovery memory, live keys, temporary compaction bytes, and write amplification.
 may therefore be opened under different policy, but a policy smaller than its existing catalog or
 recovery state rejects open without editing the Store.
 
+The policy also bounds the derived durable hot cache globally and per Worker, with separate entry
+and pre-publication staging limits. These limits may be zero: cache admission then falls back to
+generation-pinned verified reads without changing durable data or mutation success.
+
 The live-key limit is partitioned deterministically across persisted Workers and the partition sizes
 sum exactly to the configured total. This preserves Worker-local admission and avoids a shared
 counter on the mutation path. A new key returns `resource_exhausted` when its owner partition is

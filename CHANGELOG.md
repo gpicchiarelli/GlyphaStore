@@ -20,6 +20,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Bound the durable active-Record hot cache with deterministic global/per-Worker byte partitions,
+  entry and staging limits, conservative observable accounting, and cold fallback on exhaustion.
+  Hot GET now snapshots shared immutable value ownership and copies outside the Worker mutex; active
+  misses use an exact generation pin plus post-I/O Index/pin revalidation. Add coverage for value
+  sizes through near 1 MiB, zero/minimum budgets, overwrite, erase, TTL, rotation, and strict group
+  publication.
 - Move durable cold GET file I/O and CRC off Worker-affine network Reactors through a bounded shared
   executor. Prepared jobs own the exact `RecordRef` and immutable generation pin, completions return
   through bounded Reactor queues with `(slot, generation)` rejection and relinearization, saturation

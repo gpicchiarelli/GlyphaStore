@@ -910,13 +910,21 @@ template <typename SetupFn, typename BodyFn>
             return {std::move(context), std::move(store)};
         },
         [&](std::pair<std::unique_ptr<DurableContext>, std::unique_ptr<Store>>& context,
-            const std::size_t thread) -> std::size_t {
+            const std::size_t thread, std::vector<double>& latency_ns) -> std::size_t {
             if (context.second == nullptr) {
                 return 0;
             }
             std::size_t hits = 0;
             for (const auto index_in_order : material.thread_order[thread]) {
-                hits += context.second->get(material.material.keys[index_in_order]).has_value() ? 1U : 0U;
+                const auto started = settings.latency ? std::chrono::steady_clock::now()
+                                                      : std::chrono::steady_clock::time_point{};
+                const auto found = context.second->get(material.material.keys[index_in_order]).has_value();
+                if (settings.latency) {
+                    latency_ns.push_back(
+                        std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started)
+                            .count());
+                }
+                hits += found ? 1U : 0U;
             }
             return hits;
         });

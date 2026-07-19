@@ -188,6 +188,38 @@ GLYPHA_TEST("Segment append synchronizes data before alternating commit slots an
     GLYPHA_REQUIRE(rejected_append.error->code == glyphastore::ErrorCode::invalid_argument);
 }
 
+GLYPHA_TEST("generation-pinned runtime read accepts a Record committed after handle open") {
+    SegmentTemporaryDirectory temporary;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity();
+    auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+    GLYPHA_REQUIRE(created.durable());
+    auto reader = glyphastore::DurableSegmentFile::open(*directory, identity,
+                                                        glyphastore::SegmentFileOpenMode::read_only);
+    GLYPHA_REQUIRE(reader.has_value());
+
+    const auto record = encoded_record(7, "active-key", "active-value");
+    GLYPHA_REQUIRE(record.has_value());
+    const auto offset = created.file->selected_commit().commit.committed_end;
+    GLYPHA_REQUIRE(created.file->append(*record).committed());
+    const glyphastore::RecordRef reference{
+        .segment_id = identity.segment_id,
+        .offset = glyphastore::RecordOffset{offset},
+        .size = glyphastore::RecordSize{static_cast<std::uint32_t>(record->size())},
+        .sequence = glyphastore::SequenceNumber{7},
+        .generation = identity.generation};
+    const auto visitor = [](void* context, const glyphastore::RecordView& view) -> glyphastore::Status {
+        *static_cast<std::string*>(context) =
+            std::string{reinterpret_cast<const char*>(view.value.data()), view.value.size()};
+        return {};
+    };
+    std::string value;
+    GLYPHA_REQUIRE(!reader->visit_record(reference, &value, visitor).has_value());
+    GLYPHA_REQUIRE(reader->visit_runtime_record(reference, &value, visitor).has_value());
+    GLYPHA_REQUIRE(value == "active-value");
+}
+
 GLYPHA_TEST("preallocation failure publishes no Segment and keeps directory healthy") {
     SegmentTemporaryDirectory temporary;
     SegmentInjectedFailure failure{.operation = glyphastore::FilesystemOperation::preallocate_segment,

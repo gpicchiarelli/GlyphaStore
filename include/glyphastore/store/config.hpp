@@ -29,6 +29,10 @@ inline constexpr std::size_t kDefaultMaximumDurableOpenFiles = 512;
 inline constexpr std::uint64_t kDefaultMaximumRecoveryMemoryBytes = 1024ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t kDefaultMaximumLiveKeys = 10'000'000;
 inline constexpr std::uint64_t kDefaultMaximumTemporaryCompactionBytes = 1024ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaximumHotCacheBytes = 256ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaximumHotCacheBytesPerWorker = 64ULL * 1024ULL * 1024ULL;
+inline constexpr std::uint64_t kDefaultMaximumHotCacheStagingBytesPerWorker = 16ULL * 1024ULL * 1024ULL;
+inline constexpr std::size_t kDefaultMaximumHotCacheEntriesPerWorker = 1'000'000;
 
 struct DurableResourceLimits {
     std::uint64_t max_store_bytes{kDefaultMaximumDurableStoreBytes};
@@ -40,6 +44,13 @@ struct DurableResourceLimits {
     std::size_t max_live_keys{kDefaultMaximumLiveKeys};
     std::uint64_t max_temporary_compaction_bytes{kDefaultMaximumTemporaryCompactionBytes};
     std::uint32_t max_write_amplification{4};
+    // Zero disables hot admission without affecting correctness. The global
+    // budget is partitioned across Workers, then capped by the per-Worker limit.
+    std::uint64_t max_hot_cache_bytes{kDefaultMaximumHotCacheBytes};
+    std::uint64_t max_hot_cache_bytes_per_worker{kDefaultMaximumHotCacheBytesPerWorker};
+    std::uint64_t max_hot_cache_staging_bytes_per_worker{
+        kDefaultMaximumHotCacheStagingBytesPerWorker};
+    std::size_t max_hot_cache_entries_per_worker{kDefaultMaximumHotCacheEntriesPerWorker};
 
     auto operator==(const DurableResourceLimits&) const -> bool = default;
 };

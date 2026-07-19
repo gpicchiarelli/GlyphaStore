@@ -139,6 +139,10 @@ glyphastore::StoreConfig config{
         .max_recovery_memory_bytes = 2ULL * 1024 * 1024 * 1024,
         .max_live_keys = 5'000'000,
         .max_temporary_compaction_bytes = 8ULL * 1024 * 1024 * 1024,
+        .max_hot_cache_bytes = 256ULL * 1024 * 1024,
+        .max_hot_cache_bytes_per_worker = 64ULL * 1024 * 1024,
+        .max_hot_cache_staging_bytes_per_worker = 16ULL * 1024 * 1024,
+        .max_hot_cache_entries_per_worker = 1'000'000,
     },
 };
 auto store = glyphastore::Store::open(config);

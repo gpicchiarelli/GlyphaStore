@@ -51,6 +51,16 @@ already pinned descriptor remains valid, so a `RecordRef` never crosses the Work
 without generation ownership. Normal misses and expiration do not poison the runtime; corruption or
 I/O disagreement on a still-current pin makes later operations return `unavailable`.
 
+The per-Worker active-Record hot cache is bounded by deterministic shares of a global byte budget,
+a per-Worker byte cap, a staging-byte cap, and an entry cap. Admission allocates the immutable value
+and publication node before persistent writes; exhaustion bypasses the cache and never rejects an
+otherwise valid mutation. Accounted resident/staged/bucket bytes, limits, hits, misses, and bypasses
+are observable without a global cache lock. A hot read snapshots shared immutable ownership under
+the Worker mutex and performs the value-sized owning copy after unlocking. On an active-generation
+miss, the pinned runtime reader may exceed its handle's opening boundary only for the exact
+authoritative `RecordRef`; the mandatory post-I/O Index and pin revalidation above is its
+linearization point. Rotation removes all entries charged to the retired active generation.
+
 The steady-state Segment-descriptor bound is the catalog Segment count plus the Worker count. Cold
 read concurrency reuses immutable pins and therefore does not increase that bound. Catalog lookup is
 binary search over the strictly ordered manifest, avoiding a second potentially million-entry map.
@@ -66,7 +76,8 @@ unchanged.
 
 Put performs these transitions while holding its Worker lock:
 
-1. Prepare Swiss-table capacity and long-key arena storage, then encode the complete Record.
+1. Prepare Swiss-table capacity, long-key arena storage, bounded hot-cache ownership, and the
+   complete encoded Record.
 2. Write and synchronize Record bytes.
 3. Write the alternate commit slot and synchronize the Segment.
 4. Publish the `RecordRef` in the prepared Index and advance the Worker sequence.

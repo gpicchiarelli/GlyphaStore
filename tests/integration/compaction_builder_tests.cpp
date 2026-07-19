@@ -331,6 +331,12 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
 
     auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
     GLYPHA_REQUIRE(runtime.has_value());
+    const std::string hot_key{"active-hot"};
+    const std::string hot_value{"cached"};
+    GLYPHA_REQUIRE((*runtime)
+                       ->put(std::as_bytes(std::span{hot_key}), std::as_bytes(std::span{hot_value}))
+                       .committed());
+    GLYPHA_REQUIRE((*runtime)->hot_cache_stats()[0].resident_entries == 1);
     const auto result = (*runtime)->compact_worker(0, 100);
     GLYPHA_REQUIRE(result.compacted());
     GLYPHA_REQUIRE(result.stats.source_index_records_verified == 2);
@@ -347,6 +353,8 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
     GLYPHA_REQUIRE(text(*(*runtime)->get("live-a", 100)) == "alpha");
     GLYPHA_REQUIRE(text(*(*runtime)->get("replacement", 100)) == "new");
     GLYPHA_REQUIRE(text(*(*runtime)->get("active", 100)) == "current");
+    GLYPHA_REQUIRE(text(*(*runtime)->get(hot_key, 100)) == hot_value);
+    GLYPHA_REQUIRE((*runtime)->hot_cache_stats()[0].resident_entries == 1);
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
                                             glyphastore::segment_filename(identity(old, old.segments[0]))));
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
@@ -361,6 +369,7 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
     GLYPHA_REQUIRE((*reopened)->get("live-a", 100)->sequence == 2);
     GLYPHA_REQUIRE((*reopened)->get("replacement", 100)->sequence == 4);
     GLYPHA_REQUIRE((*reopened)->get("active", 100)->sequence == 7);
+    GLYPHA_REQUIRE((*reopened)->get(hot_key, 100)->sequence == 8);
 }
 
 GLYPHA_TEST("durable runtime fails closed when online compaction requires recovery") {

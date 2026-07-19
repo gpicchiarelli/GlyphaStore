@@ -71,6 +71,10 @@ For engine memory analysis also report, when instrumented:
 - live and allocated Segment bytes;
 - connection input/output capacity and queued handoffs.
 
+`--latency` is available for durable parallel PUT and GET workloads. It adds one steady-clock sample
+around each operation and is therefore a tail-latency diagnostic, not a throughput baseline; report
+its instrumentation mode and do not compare its throughput with an uninstrumented run.
+
 RSS is not allocator-exact ownership. It must not be divided by operation count and called record size without component evidence.
 
 ## 7. Bandwidth

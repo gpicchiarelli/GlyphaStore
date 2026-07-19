@@ -609,6 +609,12 @@ auto DurableSegmentFile::scan_committed() const -> Result<std::vector<RecordRef>
 
 auto DurableSegmentFile::read_record_into(const RecordRef& reference, std::vector<std::byte>& bytes,
                                           RecordView& record) const -> Status {
+    return read_record_into_extent(reference, persisted_.commit.committed_end, bytes, record);
+}
+
+auto DurableSegmentFile::read_record_into_extent(const RecordRef& reference, const std::uint64_t readable_end,
+                                                 std::vector<std::byte>& bytes, RecordView& record) const
+    -> Status {
     if (!healthy()) {
         return fail(ErrorCode::io_error, "cannot read a poisoned Segment file");
     }
@@ -619,7 +625,7 @@ auto DurableSegmentFile::read_record_into(const RecordRef& reference, std::vecto
     const auto size = static_cast<std::uint64_t>(reference.size.value);
     if (offset < kSegmentHeaderReservedBytes || offset % kRecordAlignment != 0 ||
         size < kEncodedRecordHeaderSize || size > kMaxNormalRecordSize || size % kRecordAlignment != 0 ||
-        offset > persisted_.commit.committed_end || size > persisted_.commit.committed_end - offset) {
+        readable_end > kSegmentSizeBytes || offset > readable_end || size > readable_end - offset) {
         return fail(ErrorCode::invalid_reference, "Record reference is outside the committed Segment extent");
     }
     bytes.resize(reference.size.value);
@@ -659,6 +665,19 @@ auto DurableSegmentFile::visit_record(const RecordRef& reference, std::vector<st
     }
     RecordView record{};
     if (auto read = read_record_into(reference, scratch, record); !read) {
+        return unexpected(read.error());
+    }
+    return visitor(context, record);
+}
+
+auto DurableSegmentFile::visit_runtime_record(const RecordRef& reference, void* context,
+                                              const RecordVisitor visitor) const -> Status {
+    if (!visitor) {
+        return fail(ErrorCode::invalid_argument, "Record visitor cannot be null");
+    }
+    std::vector<std::byte> scratch;
+    RecordView record{};
+    if (auto read = read_record_into_extent(reference, kSegmentSizeBytes, scratch, record); !read) {
         return unexpected(read.error());
     }
     return visitor(context, record);
