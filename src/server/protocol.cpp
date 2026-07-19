@@ -199,7 +199,7 @@ auto decode_response(const std::span<const std::byte> input, const std::size_t m
                               .value = input.subspan(kResponseHeaderBytes, value_size)}};
 }
 
-auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>> {
+auto encoded_request_size(const RequestView& request) -> Result<std::size_t> {
     if (request.flags != 0) {
         return fail(ErrorCode::invalid_argument, "request flags are not defined in protocol v2");
     }
@@ -207,14 +207,24 @@ auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>
     if (!frame_size || *frame_size > kMaxFrameBytes) {
         return fail(ErrorCode::record_too_large, "request exceeds protocol frame limits");
     }
+    return *frame_size;
+}
+
+auto encode_request(const std::span<std::byte> output, const RequestView& request) -> Result<std::size_t> {
+    const auto frame_size = encoded_request_size(request);
+    if (!frame_size) {
+        return unexpected(frame_size.error());
+    }
+    if (output.size() < *frame_size) {
+        return fail(ErrorCode::invalid_argument, "request destination is smaller than encoded frame");
+    }
     auto encoded_frame_size = checked_u32(*frame_size, "request frame");
     auto encoded_key_size = checked_u32(request.key.size(), "request key");
     auto encoded_value_size = checked_u32(request.value.size(), "request value");
     if (!encoded_frame_size || !encoded_key_size || !encoded_value_size) {
         return fail(ErrorCode::record_too_large, "request fields exceed protocol limits");
     }
-    std::vector<std::byte> output(*frame_size);
-    const std::span<std::byte> bytes{output};
+    const auto bytes = output.first(*frame_size);
     store_u32(bytes, 0, *encoded_frame_size);
     store_u16(bytes, 4, kProtocolVersion);
     bytes[6] = static_cast<std::byte>(request.opcode);
@@ -228,6 +238,18 @@ auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>
     std::ranges::copy(request.key, bytes.begin() + static_cast<std::ptrdiff_t>(kRequestHeaderBytes));
     std::ranges::copy(request.value,
                       bytes.begin() + static_cast<std::ptrdiff_t>(kRequestHeaderBytes + request.key.size()));
+    return *frame_size;
+}
+
+auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>> {
+    const auto frame_size = encoded_request_size(request);
+    if (!frame_size) {
+        return unexpected(frame_size.error());
+    }
+    std::vector<std::byte> output(*frame_size);
+    if (auto encoded = encode_request(output, request); !encoded) {
+        return unexpected(encoded.error());
+    }
     return output;
 }
 

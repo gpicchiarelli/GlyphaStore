@@ -236,14 +236,9 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return {};
 }
 
-[[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
-                            const ClientConfig& config) -> ExchangeResult {
-    const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
-    auto sent = send_frame(socket.get(), request, deadline);
-    if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
-        return *failure;
-    }
-    const auto request_bytes_sent = std::get<std::size_t>(sent);
+[[nodiscard]] auto receive_response(Socket& socket, const ClientConfig& config,
+                                    const Clock::time_point deadline, const std::size_t request_bytes_sent)
+    -> ExchangeResult {
     std::array<std::byte, sizeof(std::uint32_t)> size_bytes{};
     if (auto received = receive_exact(socket.get(), size_bytes, deadline); !received) {
         return ExchangeFailure{received.error(), request_bytes_sent};
@@ -273,6 +268,17 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
                          .value = {decoded->frame.value.begin(), decoded->frame.value.end()}};
 }
 
+[[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
+                            const ClientConfig& config) -> ExchangeResult {
+    const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
+    auto sent = send_frame(socket.get(), request, deadline);
+    if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
+        return *failure;
+    }
+    const auto request_bytes_sent = std::get<std::size_t>(sent);
+    return receive_response(socket, config, deadline, request_bytes_sent);
+}
+
 [[nodiscard]] auto response_error(const server::ResponseStatus status) -> Error {
     switch (status) {
     case server::ResponseStatus::invalid_request:
@@ -299,12 +305,110 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
+[[nodiscard]] auto is_mutation(const PipelineOpcode opcode) noexcept -> bool {
+    return opcode == PipelineOpcode::put || opcode == PipelineOpcode::erase;
+}
+
+[[nodiscard]] auto is_supported(const PipelineOpcode opcode) noexcept -> bool {
+    return opcode == PipelineOpcode::get || opcode == PipelineOpcode::put || opcode == PipelineOpcode::erase;
+}
+
+[[nodiscard]] auto wire_opcode(const PipelineOpcode opcode) noexcept -> server::RequestOpcode {
+    switch (opcode) {
+    case PipelineOpcode::get:
+        return server::RequestOpcode::get;
+    case PipelineOpcode::put:
+        return server::RequestOpcode::put;
+    case PipelineOpcode::erase:
+        return server::RequestOpcode::erase;
+    }
+    return server::RequestOpcode::get;
+}
+
 struct WorkerConnection {
-    explicit WorkerConnection(const std::uint32_t index) : worker(index) {}
+    explicit WorkerConnection(const std::uint32_t index) : worker(index) {
+        input.reserve(64U * 1024U);
+    }
+
+    void reset() noexcept {
+        socket.reset();
+        input.clear();
+        input_offset = 0;
+    }
+
     std::uint32_t worker{};
     std::mutex mutex;
     Socket socket;
+    std::vector<std::byte> input;
+    std::size_t input_offset{};
 };
+
+[[nodiscard]] auto receive_buffered_response(WorkerConnection& connection, const ClientConfig& config,
+                                             const Clock::time_point deadline,
+                                             const std::size_t request_bytes_sent) -> ExchangeResult {
+    for (;;) {
+        const auto available = connection.input.size() - connection.input_offset;
+        if (available >= sizeof(std::uint32_t)) {
+            const std::span<const std::byte> pending{connection.input.data() + connection.input_offset,
+                                                     available};
+            const auto frame_size = static_cast<std::size_t>(load_u32(pending));
+            if (frame_size < server::kResponseHeaderBytes || frame_size > config.maximum_frame_bytes) {
+                return ExchangeFailure{
+                    {ErrorCode::corrupted_data, "server response size is outside client limits"},
+                    request_bytes_sent};
+            }
+            if (available >= frame_size) {
+                auto decoded = server::decode_response(pending.first(frame_size), config.maximum_frame_bytes);
+                if (!decoded || !decoded->complete || decoded->consumed != frame_size) {
+                    return ExchangeFailure{
+                        {ErrorCode::corrupted_data, "server returned an invalid response frame"},
+                        request_bytes_sent};
+                }
+                OwnedResponse response{.status = decoded->frame.status,
+                                       .request_id = decoded->frame.request_id,
+                                       .owner_worker = decoded->frame.owner_worker,
+                                       .worker_count = decoded->frame.worker_count,
+                                       .routing_epoch = decoded->frame.routing_epoch,
+                                       .value = {decoded->frame.value.begin(), decoded->frame.value.end()}};
+                connection.input_offset += frame_size;
+                if (connection.input_offset == connection.input.size()) {
+                    connection.input.clear();
+                    connection.input_offset = 0;
+                }
+                return response;
+            }
+        }
+
+        if (connection.input_offset > 0) {
+            connection.input.erase(connection.input.begin(),
+                                   connection.input.begin() +
+                                       static_cast<std::ptrdiff_t>(connection.input_offset));
+            connection.input_offset = 0;
+        }
+        std::array<std::byte, 64U * 1024U> chunk;
+        const auto count = ::recv(connection.socket.get(), chunk.data(), chunk.size(), 0);
+        if (count > 0) {
+            connection.input.insert(connection.input.end(), chunk.begin(),
+                                    chunk.begin() + static_cast<std::ptrdiff_t>(count));
+            continue;
+        }
+        if (count == 0) {
+            return ExchangeFailure{{ErrorCode::io_error, "server closed the TCP connection"},
+                                   request_bytes_sent};
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            auto ready = wait_for(connection.socket.get(), POLLIN, deadline);
+            if (ready) {
+                continue;
+            }
+            return ExchangeFailure{ready.error(), request_bytes_sent};
+        }
+        return ExchangeFailure{system_error(ErrorCode::io_error, "receive"), request_bytes_sent};
+    }
+}
 
 struct Metadata {
     std::uint32_t worker_count{};
@@ -320,7 +424,8 @@ class Client::Impl final {
     [[nodiscard]] auto initialize() -> Status {
         if (config_.host.empty() || config_.port == 0 || config_.connect_timeout_ms == 0 ||
             config_.request_timeout_ms == 0 || config_.maximum_frame_bytes < server::kResponseHeaderBytes ||
-            config_.maximum_frame_bytes > server::kMaxFrameBytes) {
+            config_.maximum_frame_bytes > server::kMaxFrameBytes || config_.maximum_pipeline_requests == 0 ||
+            config_.maximum_pipeline_bytes < server::kRequestHeaderBytes) {
             return fail(ErrorCode::invalid_argument, "client configuration is outside protocol limits");
         }
         auto first = std::make_unique<WorkerConnection>(0);
@@ -383,7 +488,7 @@ class Client::Impl final {
             }
             auto result = exchange(connection.socket, *encoded, config_);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
-                connection.socket.reset();
+                connection.reset();
                 if (failure->request_bytes_sent == 0 && attempt == 0) {
                     continue;
                 }
@@ -391,7 +496,7 @@ class Client::Impl final {
             }
             auto& response = std::get<OwnedResponse>(result);
             if (auto valid = validate_response(response, request_id, worker); !valid) {
-                connection.socket.reset();
+                connection.reset();
                 return indeterminate(valid.error());
             }
             if (response.status == server::ResponseStatus::ok) {
@@ -410,8 +515,149 @@ class Client::Impl final {
         return rejected({ErrorCode::unavailable, "could not send mutation"});
     }
 
+    [[nodiscard]] auto execute_pipeline(const std::span<const PipelineRequest> requests)
+        -> Result<std::vector<PipelineResponse>> {
+        if (requests.empty()) {
+            return std::vector<PipelineResponse>{};
+        }
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return fail(ErrorCode::unavailable, "client is closed or routing metadata changed");
+        }
+        if (requests.size() > config_.maximum_pipeline_requests) {
+            return fail(ErrorCode::resource_exhausted, "pipeline exceeds the configured request limit");
+        }
+
+        struct EncodedRequest {
+            std::uint64_t request_id{};
+            std::size_t begin{};
+            std::size_t size{};
+        };
+
+        const auto worker = worker_for(requests.front().key);
+        std::vector<PipelineResponse> responses(requests.size());
+        std::vector<EncodedRequest> metadata;
+        metadata.reserve(requests.size());
+        std::size_t output_size{};
+        for (const auto& request : requests) {
+            if (!is_supported(request.opcode)) {
+                return fail(ErrorCode::invalid_argument, "pipeline request contains an invalid opcode");
+            }
+            if (worker_for(request.key) != worker) {
+                return fail(ErrorCode::invalid_argument, "every pipeline key must route to the same Worker");
+            }
+            if ((request.opcode == PipelineOpcode::get || request.opcode == PipelineOpcode::erase) &&
+                (!request.value.empty() || request.put_options.expire_at_ns != 0)) {
+                return fail(ErrorCode::invalid_argument,
+                            "GET and ERASE pipeline requests cannot carry PUT fields");
+            }
+            auto frame_size = server::encoded_request_size({.opcode = wire_opcode(request.opcode),
+                                                            .expire_at_ns = request.put_options.expire_at_ns,
+                                                            .key = request.key,
+                                                            .value = request.value});
+            if (!frame_size) {
+                return unexpected(frame_size.error());
+            }
+            if (*frame_size > config_.maximum_frame_bytes ||
+                *frame_size > config_.maximum_pipeline_bytes - output_size) {
+                return fail(ErrorCode::record_too_large,
+                            "pipeline exceeds a configured frame or aggregate byte limit");
+            }
+            metadata.push_back({.begin = output_size, .size = *frame_size});
+            output_size += *frame_size;
+        }
+
+        std::vector<std::byte> output(output_size);
+        for (std::size_t index = 0; index < requests.size(); ++index) {
+            const auto& request = requests[index];
+            auto& encoded = metadata[index];
+            encoded.request_id = next_request_id();
+            auto written =
+                server::encode_request(std::span<std::byte>{output}.subspan(encoded.begin, encoded.size),
+                                       {.opcode = wire_opcode(request.opcode),
+                                        .request_id = encoded.request_id,
+                                        .expire_at_ns = request.put_options.expire_at_ns,
+                                        .key = request.key,
+                                        .value = request.value});
+            if (!written) {
+                return unexpected(written.error());
+            }
+        }
+
+        auto& connection = *connections_[worker];
+        const std::lock_guard lock{connection.mutex};
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return fail(ErrorCode::unavailable, "client closed before pipeline admission");
+        }
+        if (auto connected = ensure_connected(connection); !connected) {
+            return unexpected(connected.error());
+        }
+
+        const auto mark_unresolved = [&](const std::size_t first, const Error& error,
+                                         const std::size_t bytes_sent) {
+            for (std::size_t index = first; index < requests.size(); ++index) {
+                const auto mutation_may_have_arrived =
+                    is_mutation(requests[index].opcode) && bytes_sent > metadata[index].begin;
+                responses[index].outcome =
+                    mutation_may_have_arrived ? PipelineOutcome::indeterminate : PipelineOutcome::failed;
+                responses[index].error = error;
+            }
+        };
+
+        const auto deadline = Clock::now() + std::chrono::milliseconds{config_.request_timeout_ms};
+        auto sent = send_frame(connection.socket.get(), output, deadline);
+        if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
+            connection.reset();
+            mark_unresolved(0, failure->error, failure->request_bytes_sent);
+            return responses;
+        }
+        const auto bytes_sent = std::get<std::size_t>(sent);
+        for (std::size_t index = 0; index < requests.size(); ++index) {
+            ExchangeResult result = ExchangeFailure{{ErrorCode::resource_exhausted, {}}, bytes_sent};
+            try {
+                result = receive_buffered_response(connection, config_, deadline, bytes_sent);
+            } catch (const std::bad_alloc&) {
+                connection.reset();
+                mark_unresolved(
+                    index,
+                    {ErrorCode::resource_exhausted, "allocation failed while receiving pipeline responses"},
+                    bytes_sent);
+                return responses;
+            }
+            if (const auto* failure = std::get_if<ExchangeFailure>(&result)) {
+                connection.reset();
+                mark_unresolved(index, failure->error, bytes_sent);
+                return responses;
+            }
+            auto& response = std::get<OwnedResponse>(result);
+            if (auto valid = validate_response(response, metadata[index].request_id, worker); !valid) {
+                connection.reset();
+                mark_unresolved(index, valid.error(), bytes_sent);
+                return responses;
+            }
+            if (response.status == server::ResponseStatus::ok) {
+                responses[index].outcome = PipelineOutcome::succeeded;
+                responses[index].value = std::move(response.value);
+                continue;
+            }
+            auto error = response_error(response.status);
+            responses[index].outcome = is_mutation(requests[index].opcode) &&
+                                               response.status == server::ResponseStatus::internal_error
+                                           ? PipelineOutcome::indeterminate
+                                           : PipelineOutcome::failed;
+            responses[index].error = std::move(error);
+            if (response.status == server::ResponseStatus::wrong_owner ||
+                response.status == server::ResponseStatus::not_bound) {
+                healthy_.store(false, std::memory_order_release);
+            }
+        }
+        return responses;
+    }
+
     [[nodiscard]] auto worker_count() const noexcept -> std::uint32_t {
         return worker_count_;
+    }
+    [[nodiscard]] auto worker_for_key(const std::span<const std::byte> key) const noexcept -> std::uint32_t {
+        return worker_for(key);
     }
     [[nodiscard]] auto routing_epoch() const noexcept -> std::uint64_t {
         return routing_epoch_;
@@ -424,7 +670,7 @@ class Client::Impl final {
         healthy_.store(false, std::memory_order_release);
         for (auto& connection : connections_) {
             const std::lock_guard lock{connection->mutex};
-            connection->socket.reset();
+            connection->reset();
         }
     }
 
@@ -435,6 +681,7 @@ class Client::Impl final {
         if (!opened) {
             return unexpected(opened.error());
         }
+        connection.reset();
         connection.socket = std::move(*opened);
         const auto init_id = next_request_id();
         auto init = server::encode_request({.opcode = server::RequestOpcode::init, .request_id = init_id});
@@ -443,7 +690,7 @@ class Client::Impl final {
         }
         auto initialized = exchange(connection.socket, *init, config_);
         if (const auto* failure = std::get_if<ExchangeFailure>(&initialized)) {
-            connection.socket.reset();
+            connection.reset();
             return unexpected(failure->error);
         }
         const auto& response = std::get<OwnedResponse>(initialized);
@@ -452,13 +699,13 @@ class Client::Impl final {
             response.value.size() != identity.size() ||
             !std::ranges::equal(response.value, as_bytes(identity)) || response.worker_count == 0 ||
             response.worker_count > 256 || response.routing_epoch == 0) {
-            connection.socket.reset();
+            connection.reset();
             return fail(ErrorCode::corrupted_data, "server INIT response is not valid protocol v2 metadata");
         }
         const Metadata metadata{response.worker_count, response.routing_epoch};
         if (expected && (metadata.worker_count != expected->worker_count ||
                          metadata.routing_epoch != expected->routing_epoch)) {
-            connection.socket.reset();
+            connection.reset();
             return fail(ErrorCode::unavailable,
                         "server routing metadata changed during connection bootstrap");
         }
@@ -471,7 +718,7 @@ class Client::Impl final {
         }
         auto bound = exchange(connection.socket, *bind, config_);
         if (const auto* failure = std::get_if<ExchangeFailure>(&bound)) {
-            connection.socket.reset();
+            connection.reset();
             return unexpected(failure->error);
         }
         const auto& bind_response = std::get<OwnedResponse>(bound);
@@ -479,7 +726,7 @@ class Client::Impl final {
             bind_response.owner_worker != connection.worker ||
             bind_response.worker_count != metadata.worker_count ||
             bind_response.routing_epoch != metadata.routing_epoch) {
-            connection.socket.reset();
+            connection.reset();
             return fail(ErrorCode::corrupted_data, "server BIND_WORKER response is inconsistent");
         }
         return metadata;
@@ -525,12 +772,12 @@ class Client::Impl final {
             auto result = exchange(connection.socket, *encoded, config_);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 last_error = failure->error;
-                connection.socket.reset();
+                connection.reset();
                 continue;
             }
             auto& response = std::get<OwnedResponse>(result);
             if (auto valid = validate_response(response, request_id, worker); !valid) {
-                connection.socket.reset();
+                connection.reset();
                 return unexpected(valid.error());
             }
             if (response.status != server::ResponseStatus::ok) {
@@ -669,6 +916,26 @@ auto Client::erase(const std::span<const std::byte> key) -> MutationResult {
 
 auto Client::erase(const std::string_view key) -> MutationResult {
     return erase(as_bytes(key));
+}
+
+auto Client::execute_pipeline(const std::span<const PipelineRequest> requests)
+    -> Result<std::vector<PipelineResponse>> {
+    try {
+        if (!implementation_) {
+            return fail(ErrorCode::unavailable, "client was moved from");
+        }
+        return implementation_->execute_pipeline(requests);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, "pipeline allocation failed before completion");
+    }
+}
+
+auto Client::worker_for(const std::span<const std::byte> key) const noexcept -> std::uint32_t {
+    return implementation_ ? implementation_->worker_for_key(key) : 0;
+}
+
+auto Client::worker_for(const std::string_view key) const noexcept -> std::uint32_t {
+    return worker_for(as_bytes(key));
 }
 
 auto Client::worker_count() const noexcept -> std::uint32_t {

@@ -40,6 +40,7 @@ struct Options {
     Config config{.workers = 1, .threads = 1, .distribution = ParallelDistribution::owner_bound};
     RunSettings settings{};
     std::size_t pipeline{32};
+    std::size_t client_pipeline{};
     bool executor_affinity{};
     bool latency{};
     bool client_api{};
@@ -98,6 +99,9 @@ struct ClientResult {
             result.config.threads = next_size("--clients");
         } else if (argument == "--pipeline") {
             result.pipeline = next_size("--pipeline");
+        } else if (argument == "--client-pipeline") {
+            result.client_api = true;
+            result.client_pipeline = next_size("--client-pipeline");
         } else if (argument == "--warmup") {
             result.settings.warmup_iterations = next_size("--warmup");
         } else if (argument == "--repeats") {
@@ -111,7 +115,7 @@ struct ClientResult {
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
-                         " [--executor-affinity] [--latency] [--client-api]"
+                         " [--executor-affinity] [--latency] [--client-api] [--client-pipeline N]"
                          " [--warmup N] [--repeats N]\n";
             std::exit(0);
         } else {
@@ -471,8 +475,71 @@ class BufferedResponseReader final {
             if (options.latency) {
                 result.latency_ns.reserve((options.config.operations / options.config.threads + 1U) * 2U);
             }
+            std::vector<std::vector<glyphastore::client::PipelineRequest>> pipeline_batches;
+            if (options.client_pipeline != 0) {
+                std::vector<std::vector<glyphastore::client::PipelineRequest>> pending(client.worker_count());
+                for (auto& batch : pending) {
+                    batch.reserve(options.client_pipeline * 2U);
+                }
+                for (std::size_t operation = client_index; operation < options.config.operations;
+                     operation += options.config.threads) {
+                    auto& batch = pending[client.worker_for(material.keys[operation])];
+                    batch.push_back(
+                        {.opcode = glyphastore::client::PipelineOpcode::put,
+                         .key = bytes(material.keys[operation]),
+                         .value = {material.values[operation].data(), material.values[operation].size()}});
+                    batch.push_back({.opcode = glyphastore::client::PipelineOpcode::get,
+                                     .key = bytes(material.keys[operation])});
+                    if (batch.size() == options.client_pipeline * 2U) {
+                        pipeline_batches.push_back(std::move(batch));
+                        batch.clear();
+                        batch.reserve(options.client_pipeline * 2U);
+                    }
+                }
+                for (auto& batch : pending) {
+                    if (!batch.empty()) {
+                        pipeline_batches.push_back(std::move(batch));
+                    }
+                }
+            }
             ready.count_down();
             start.wait();
+            if (options.client_pipeline != 0) {
+                for (const auto& batch : pipeline_batches) {
+                    const auto batch_started = std::chrono::steady_clock::now();
+                    auto executed = client.execute_pipeline(batch);
+                    if (!executed || executed->size() != batch.size()) {
+                        return;
+                    }
+                    for (std::size_t index = 0; index < batch.size(); ++index) {
+                        if (!(*executed)[index].succeeded()) {
+                            return;
+                        }
+                        if (batch[index].opcode == glyphastore::client::PipelineOpcode::get &&
+                            !std::ranges::equal((*executed)[index].value, batch[index - 1U].value)) {
+                            return;
+                        }
+                        if (options.latency) {
+                            result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
+                                                            std::chrono::steady_clock::now() - batch_started)
+                                                            .count());
+                        }
+                    }
+                    result.hits += batch.size();
+                    for (const auto& request : batch) {
+                        result.ingress_bytes += glyphastore::server::kRequestHeaderBytes +
+                                                request.key.size() + request.value.size();
+                        result.egress_bytes +=
+                            glyphastore::server::kResponseHeaderBytes +
+                            (request.opcode == glyphastore::client::PipelineOpcode::get ? request.value.size()
+                                                                                        : 0U);
+                    }
+                    for (std::size_t index = 1; index < batch.size(); index += 2U) {
+                        result.egress_bytes += batch[index - 1U].value.size();
+                    }
+                }
+                return;
+            }
             for (std::size_t operation = client_index; operation < options.config.operations;
                  operation += options.config.threads) {
                 const auto put_started = std::chrono::steady_clock::now();
@@ -578,8 +645,9 @@ class BufferedResponseReader final {
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
                           std::make_move_iterator(measured.latency_ns.end()));
     }
-    const auto benchmark_name =
-        options.client_api ? "cpp_client_read_after_write" : "server_tcp_read_after_write";
+    const auto benchmark_name = options.client_pipeline != 0 ? "cpp_client_pipeline_read_after_write"
+                                : options.client_api         ? "cpp_client_read_after_write"
+                                                             : "server_tcp_read_after_write";
     auto result = glyphastore::bench::finalize_result(benchmark_name, options.config, options.settings,
                                                       options.config.operations * 2U, hits,
                                                       std::move(seconds), std::move(resources));
@@ -598,19 +666,31 @@ class BufferedResponseReader final {
 
 int main(int argc, char** argv) {
     const auto parsed = options(argc, argv);
-    if (!glyphastore::bench::validate_run_settings(parsed.settings, parsed.config) || parsed.pipeline == 0) {
+    if (!glyphastore::bench::validate_run_settings(parsed.settings, parsed.config) || parsed.pipeline == 0 ||
+        (parsed.client_api && parsed.client_pipeline > parsed.config.operations) ||
+        parsed.client_pipeline > glyphastore::client::ClientConfig{}.maximum_pipeline_requests / 2U) {
         return 2;
     }
     std::cout << "# glyphastore TCP server benchmark\n";
     glyphastore::bench::print_metadata(std::cout, parsed.settings);
-    std::cout << "# client_mode=" << (parsed.client_api ? "public-cpp-api" : "raw-wire") << '\n';
-    std::cout << "# pipeline=" << (parsed.client_api ? 1 : parsed.pipeline) << '\n';
+    std::cout << "# client_mode="
+              << (parsed.client_pipeline != 0 ? "public-cpp-pipeline"
+                  : parsed.client_api         ? "public-cpp-api"
+                                              : "raw-wire")
+              << '\n';
+    std::cout << "# pipeline="
+              << (parsed.client_pipeline != 0 ? parsed.client_pipeline
+                  : parsed.client_api         ? 1
+                                              : parsed.pipeline)
+              << '\n';
     std::cout << "# routing=owner-bound-connections\n";
     std::cout << "# traffic_scope=timed-protocol-frames-excluding-init-bind\n";
     std::cout << "# memory_scope=whole-benchmark-process-rss\n";
     std::cout << "# executor_affinity_requested=" << (parsed.executor_affinity ? 1 : 0) << '\n';
     std::cout << "# latency_measurement="
-              << (parsed.latency ? (parsed.client_api ? "synchronous-api-call" : "pipelined-response")
+              << (parsed.latency ? (parsed.client_pipeline != 0 ? "pipeline-batch-completion"
+                                    : parsed.client_api         ? "synchronous-api-call"
+                                                                : "pipelined-response")
                                  : "disabled")
               << '\n';
 #if defined(__APPLE__)

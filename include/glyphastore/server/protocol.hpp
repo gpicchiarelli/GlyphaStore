@@ -59,6 +59,9 @@ template <typename View> struct DecodedFrame {
                                    std::size_t maximum_frame_bytes = kMaxFrameBytes)
     -> Result<DecodedFrame<ResponseView>>;
 
+[[nodiscard]] auto encoded_request_size(const RequestView& request) -> Result<std::size_t>;
+[[nodiscard]] auto encode_request(std::span<std::byte> output, const RequestView& request)
+    -> Result<std::size_t>;
 [[nodiscard]] auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>>;
 [[nodiscard]] auto encoded_response_size(const ResponseView& response) -> Result<std::size_t>;
 [[nodiscard]] auto encode_response(std::span<std::byte> output, const ResponseView& response)

@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -49,6 +50,28 @@ GLYPHA_TEST("server protocol request round trips and handles partial frames") {
     GLYPHA_REQUIRE(decoded->frame.target_worker == 7);
     GLYPHA_REQUIRE(text(decoded->frame.key) == "key");
     GLYPHA_REQUIRE(text(decoded->frame.value) == "value");
+}
+
+GLYPHA_TEST("server protocol encodes requests into caller-owned storage") {
+    const glyphastore::server::RequestView request{
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 42,
+        .key = bytes("key"),
+        .value = bytes("value"),
+    };
+    const auto required = glyphastore::server::encoded_request_size(request);
+    GLYPHA_REQUIRE(required.has_value());
+    std::vector<std::byte> storage(*required);
+    const auto written = glyphastore::server::encode_request(storage, request);
+    GLYPHA_REQUIRE(written.has_value());
+    GLYPHA_REQUIRE(*written == storage.size());
+
+    const auto owned = glyphastore::server::encode_request(request);
+    GLYPHA_REQUIRE(owned.has_value());
+    GLYPHA_REQUIRE(storage == *owned);
+
+    storage.pop_back();
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request(storage, request).has_value());
 }
 
 GLYPHA_TEST("server protocol rejects noncanonical flags and reserved fields") {

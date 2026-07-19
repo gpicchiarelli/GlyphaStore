@@ -301,6 +301,15 @@ sent is never mislabeled as a definite rejection. Benchmark the public API with 
   --latency --warmup 1 --repeats 5
 ```
 
+For throughput-sensitive workloads, the same client exposes a bounded ordered pipeline on one
+Worker connection. Group keys with `worker_for(key)` and benchmark 32 `PUT`/`GET` pairs per batch
+with:
+
+```bash
+./scripts/dev.sh benchmark-server --client-pipeline 32 --ops 100000 \
+  --workers 4 --clients 4 --executor-affinity --warmup 1 --repeats 5
+```
+
 ```bash
 ./scripts/dev.sh build
 ./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379

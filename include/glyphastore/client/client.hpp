@@ -19,6 +19,8 @@ struct ClientConfig {
     std::uint32_t connect_timeout_ms{3'000};
     std::uint32_t request_timeout_ms{5'000};
     std::size_t maximum_frame_bytes{2U * 1024U * 1024U};
+    std::size_t maximum_pipeline_requests{256};
+    std::size_t maximum_pipeline_bytes{1024U * 1024U};
 };
 
 struct PutOptions {
@@ -38,6 +40,35 @@ struct MutationResult {
 
     [[nodiscard]] auto committed() const noexcept -> bool {
         return outcome == MutationOutcome::committed;
+    }
+};
+
+enum class PipelineOpcode {
+    get,
+    put,
+    erase,
+};
+
+struct PipelineRequest {
+    PipelineOpcode opcode{PipelineOpcode::get};
+    std::span<const std::byte> key;
+    std::span<const std::byte> value;
+    PutOptions put_options{};
+};
+
+enum class PipelineOutcome {
+    succeeded,
+    failed,
+    indeterminate,
+};
+
+struct PipelineResponse {
+    PipelineOutcome outcome{PipelineOutcome::failed};
+    std::vector<std::byte> value;
+    std::optional<Error> error;
+
+    [[nodiscard]] auto succeeded() const noexcept -> bool {
+        return outcome == PipelineOutcome::succeeded;
     }
 };
 
@@ -65,6 +96,14 @@ class Client final {
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> MutationResult;
     [[nodiscard]] auto erase(std::string_view key) -> MutationResult;
 
+    // Executes an ordered pipeline on one Worker-bound connection. Every key
+    // must route to the same Worker. Responses always correspond positionally
+    // to requests, including partial transport failures.
+    [[nodiscard]] auto execute_pipeline(std::span<const PipelineRequest> requests)
+        -> Result<std::vector<PipelineResponse>>;
+
+    [[nodiscard]] auto worker_for(std::span<const std::byte> key) const noexcept -> std::uint32_t;
+    [[nodiscard]] auto worker_for(std::string_view key) const noexcept -> std::uint32_t;
     [[nodiscard]] auto worker_count() const noexcept -> std::uint32_t;
     [[nodiscard]] auto routing_epoch() const noexcept -> std::uint64_t;
     [[nodiscard]] auto healthy() const noexcept -> bool;
