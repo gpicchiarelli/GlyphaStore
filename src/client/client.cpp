@@ -489,8 +489,11 @@ class Client::Impl final {
             auto result = exchange(connection.socket, *encoded, config_);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 connection.reset();
-                if (failure->request_bytes_sent == 0 && attempt == 0) {
-                    continue;
+                if (failure->request_bytes_sent == 0) {
+                    if (attempt == 0) {
+                        continue;
+                    }
+                    return rejected(failure->error);
                 }
                 return indeterminate(failure->error);
             }
@@ -500,6 +503,11 @@ class Client::Impl final {
                 return indeterminate(valid.error());
             }
             if (response.status == server::ResponseStatus::ok) {
+                if (!response.value.empty()) {
+                    connection.reset();
+                    return indeterminate(
+                        {ErrorCode::corrupted_data, "mutation response value must be empty"});
+                }
                 return {.outcome = MutationOutcome::committed};
             }
             auto error = response_error(response.status);
@@ -635,6 +643,14 @@ class Client::Impl final {
                 return responses;
             }
             if (response.status == server::ResponseStatus::ok) {
+                if (is_mutation(requests[index].opcode) && !response.value.empty()) {
+                    connection.reset();
+                    mark_unresolved(
+                        index,
+                        {ErrorCode::corrupted_data, "mutation response value must be empty"},
+                        bytes_sent);
+                    return responses;
+                }
                 responses[index].outcome = PipelineOutcome::succeeded;
                 responses[index].value = std::move(response.value);
                 continue;

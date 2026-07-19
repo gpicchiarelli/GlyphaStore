@@ -4,10 +4,14 @@ Published client-side pipeline benchmarks for the native Python and Perl SDKs at
 `0.1.0` (2026-07-19, Apple M4, same-host loopback against `macos-native-release` volatile
 `glyphastored`).
 
+This is a **public SDK baseline**: it measures official-client overhead, not absolute server
+capacity. See [analysis.md](analysis.md) for interpretation.
+
 ## Contents
 
 | Path | Purpose |
 | --- | --- |
+| `analysis.md` | Engineering judgment and what the suite does / does not prove |
 | `environment.txt` | Host, toolchain, SDK, and daemon metadata |
 | `commands.md` | Workload matrix and listen ports |
 | `summary.md` | Full comparison table (median ops/s) |
@@ -39,14 +43,8 @@ Every sample validates response count, success outcomes, and GET payload bytes.
 | w=4 p=1 | 42.3 k | 44.0 k | 39.3 k | 20.9 k |
 | w=4 p=128 | 113.0 k | 100.1 k | 98.6 k | 43.3 k |
 
-Observations from this run:
-
-- Pipeline depth dominates: moving from `p=1` to `p=128` roughly triples Python throughput.
-- On multi-Worker hosts, Python concurrent and async scale better than sequential/Perl, which
-  cannot overlap Workers.
-- Fair cross-language compare is Python sequential vs Perl (same single-threaded drain model);
-  Python remains ~2–2.5× faster at deep pipelines on this machine.
-- These are same-host loopback numbers, not production capacity claims.
+Pipeline depth dominates (~3× for Python). At deep pipelines sync and async converge, and adding
+server Workers barely moves the needle—evidence the client is the limiter in this suite.
 
 ## How to reproduce
 

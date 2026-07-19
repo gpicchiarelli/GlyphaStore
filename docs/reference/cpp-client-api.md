@@ -106,9 +106,9 @@ prove whether a server-side mutation linearized.
 
 | Outcome | Meaning | Safe default action |
 |---|---|---|
-| `committed` | An `OK` response with matching request and routing metadata was received. | Treat the mutation as applied. |
-| `rejected` | The mutation request was not sent, or the server explicitly rejected it before applying it. | Correct the cause; a retry does not duplicate a known commit. |
-| `indeterminate` | Request bytes may have reached the server but no trustworthy definitive response was received, or the server returned `INTERNAL_ERROR`. | Reconcile with a read or application idempotency policy before retrying. |
+| `committed` | An `OK` response with matching request and routing metadata was received, and a successful mutation response carried an empty value. | Treat the mutation as applied. |
+| `rejected` | The mutation request was not sent (including a final zero-byte send failure after the one allowed retry), or the server explicitly rejected it before applying it. | Correct the cause; a retry does not duplicate a known commit. |
+| `indeterminate` | Request bytes may have reached the server but no trustworthy definitive response was received, the server returned `INTERNAL_ERROR`, or a mutation `OK` carried a non-empty value. | Reconcile with a read or application idempotency policy before retrying. |
 
 Protocol v2 has no idempotency token. The client automatically retries `GET` and `PING` once after
 a transport failure because they are read-only. It retries a mutation only when zero bytes of its
@@ -132,8 +132,12 @@ Worker count and routing epoch.
 ## Cross-language SDK contract
 
 The C++ client and canonical fixtures define behavior to reproduce, not a C ABI to wrap. Python,
-Perl, and a future Erlang client should implement the same wire contract natively so each runtime
-retains its normal cancellation, scheduling, packaging, and binary-data conventions.
+Perl, and a future Erlang client must implement the same wire contract and the same mutation /
+pipeline outcome rules natively so each runtime retains its normal cancellation, scheduling,
+packaging, and binary-data conventions. Outcome classification is part of the public contract:
+zero-byte final send failures are `rejected`, and a successful mutation response with a non-empty
+value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may differ
+by language, but observable request/response semantics must not.
 
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|
