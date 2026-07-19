@@ -48,7 +48,8 @@ struct DurableMutationTask final {
 // execution for unrelated Workers.
 class DurableMutationExecutor final {
   public:
-    [[nodiscard]] static auto create(Store& store, std::size_t worker_count, std::size_t capacity_per_worker)
+    [[nodiscard]] static auto create(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
+                                     std::size_t threads_per_worker)
         -> Result<std::unique_ptr<DurableMutationExecutor>>;
     ~DurableMutationExecutor();
 
@@ -67,10 +68,12 @@ class DurableMutationExecutor final {
   private:
     struct Lane;
 
-    DurableMutationExecutor(Store& store, std::size_t worker_count, std::size_t capacity_per_worker);
+    DurableMutationExecutor(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
+                            std::size_t threads_per_worker);
     void run(std::size_t worker_index) noexcept;
 
     Store& store_;
+    const std::size_t threads_per_worker_;
     std::vector<std::unique_ptr<Lane>> lanes_;
     std::mutex lifecycle_mutex_;
     std::atomic_bool started_{};

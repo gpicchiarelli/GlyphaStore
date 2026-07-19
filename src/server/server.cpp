@@ -17,9 +17,11 @@ namespace {
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
         config.connection_handoff_capacity == 0 || config.disk_read_queue_capacity == 0 ||
         config.durable_mutation_queue_capacity == 0 || config.durable_mutation_queue_bytes == 0 ||
+        config.durable_group_mutation_concurrency == 0 ||
         config.connection_handoff_capacity > maximum_queue_capacity ||
         config.disk_read_queue_capacity > maximum_queue_capacity ||
         config.durable_mutation_queue_capacity > maximum_queue_capacity ||
+        config.durable_group_mutation_concurrency > 32 ||
         config.disk_read_thread_count > kMaximumWorkerCount ||
         config.maximum_connections > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "server capacity configuration is outside supported limits");
@@ -60,6 +62,16 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
     }
     store_config.worker_config.explicit_count = config.worker_count;
     const bool durable = store_config.storage_mode != StorageMode::volatile_memory;
+    const auto mutation_threads_per_worker =
+        store_config.storage_mode == StorageMode::durable_group
+            ? std::max<std::size_t>(1U, std::min<std::size_t>(config.durable_group_mutation_concurrency,
+                                                              store_config.durable_group.max_records))
+            : 1U;
+    constexpr std::size_t maximum_durable_mutation_threads = 1024;
+    if (durable && config.worker_count > maximum_durable_mutation_threads / mutation_threads_per_worker) {
+        return fail(ErrorCode::invalid_argument,
+                    "durable mutation thread configuration exceeds the process limit");
+    }
     auto store = Store::open(std::move(store_config));
     if (!store) {
         return unexpected(store.error());
@@ -76,7 +88,8 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
     server->disk_reads_ = std::move(*disk_reads);
     if (durable) {
         auto durable_mutations = DurableMutationExecutor::create(*server->store_, config.worker_count,
-                                                                 config.durable_mutation_queue_capacity);
+                                                                 config.durable_mutation_queue_capacity,
+                                                                 mutation_threads_per_worker);
         if (!durable_mutations) {
             return unexpected(durable_mutations.error());
         }

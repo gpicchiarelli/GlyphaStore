@@ -42,6 +42,9 @@ struct ReactorConfig {
     // stores do not create mutation lanes and pay no asynchronous hop.
     std::size_t durable_mutation_queue_capacity{256};
     std::size_t durable_mutation_queue_bytes{16U * 1024U * 1024U};
+    // Used only by durable-group. Multiple producers are required for a batch
+    // to accumulate while earlier producers await strict acknowledgement.
+    std::size_t durable_group_mutation_concurrency{4};
 };
 
 class Reactor final {

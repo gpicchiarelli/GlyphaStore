@@ -41,13 +41,16 @@ that connection until completion, so protocol-v2 responses remain strictly in re
 a reorder buffer. It may continue draining socket bytes into the configured input watermark so FIN,
 RST, and overflow remain observable. Other connections on the same Reactor continue normally.
 
-Durable `PUT` and `ERASE` use one bounded FIFO lane per Worker. The Reactor copies only the request's
+Durable `PUT` and `ERASE` use one bounded FIFO dispatch lane per Worker. The Reactor copies only the request's
 key/value into an owning task; no `RecordRef`, Segment, file handle, or borrowed protocol span crosses
 this boundary. Successful enqueue is the daemon admission/order point, not the storage visibility
 point. The lane releases its queue mutex before entering Store, and the Store's persistence-v1 state
 machine retains the actual visibility and durable commit points. A completion returns only after the
 selected acknowledgement policy completes. One in-flight Store request per connection preserves
-wire order, while independent Worker lanes avoid a shared request lock or queue.
+wire order, while independent Worker lanes avoid a shared request lock or queue. Sync and periodic
+modes use one storage thread per lane. Strict-group uses a bounded producer set so multiple admitted
+mutations can occupy one batch while earlier producers await acknowledgement; the configured width
+is capped by both the batch record limit and a process-wide thread ceiling.
 
 ## Protocol
 

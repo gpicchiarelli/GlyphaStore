@@ -275,6 +275,40 @@ class SyncReleaseGuard final {
     BlockingFileSync& sync_;
 };
 
+class GroupBatchObserver final {
+  public:
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& state = *static_cast<GroupBatchObserver*>(opaque);
+        const std::lock_guard lock{state.mutex_};
+        if (operation == glyphastore::FilesystemOperation::write_record) {
+            ++state.writes_since_sync_;
+        } else if (operation == glyphastore::FilesystemOperation::sync_record) {
+            state.maximum_writes_before_sync_ =
+                std::max(state.maximum_writes_before_sync_, state.writes_since_sync_);
+            state.writes_since_sync_ = 0;
+            ++state.sync_count_;
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto maximum_writes_before_sync() const -> std::size_t {
+        const std::lock_guard lock{mutex_};
+        return maximum_writes_before_sync_;
+    }
+
+    [[nodiscard]] auto sync_count() const -> std::size_t {
+        const std::lock_guard lock{mutex_};
+        return sync_count_;
+    }
+
+  private:
+    mutable std::mutex mutex_;
+    std::size_t writes_since_sync_{};
+    std::size_t maximum_writes_before_sync_{};
+    std::size_t sync_count_{};
+};
+
 } // namespace
 
 GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol buffers") {
@@ -293,6 +327,10 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
         !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_capacity = 0}).has_value());
     GLYPHA_REQUIRE(
         !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_bytes = 0}).has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .durable_group_mutation_concurrency = 0})
+                        .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .durable_group_mutation_concurrency = 33})
+                        .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .disk_read_thread_count = glyphastore::kMaximumWorkerCount + 1U})
                         .has_value());
@@ -526,6 +564,63 @@ GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store cl
     GLYPHA_REQUIRE(value.has_value());
     GLYPHA_REQUIRE(text(value->bytes) == "survives");
     GLYPHA_REQUIRE((*recovered)->close().has_value());
+}
+
+GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane producers") {
+    ServerTemporaryDirectory temporary;
+    GroupBatchObserver observer;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 2,
+         .durable_mutation_queue_capacity = 4,
+         .durable_group_mutation_concurrency = 2},
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'000, .min_records = 2},
+         .filesystem_hooks = {.context = &observer, .before = &GroupBatchObserver::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first_socket = connect_to(server.port());
+    const auto second_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(first_socket >= 0);
+    GLYPHA_REQUIRE(second_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(first_socket, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(second_socket, 0, 1));
+    const auto first = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 90,
+        .key = bytes("group-first"),
+        .value = bytes("first"),
+    });
+    const auto second = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 91,
+        .key = bytes("group-second"),
+        .value = bytes("second"),
+    });
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(send_all(first_socket, *first));
+    GLYPHA_REQUIRE(send_all(second_socket, *second));
+
+    const auto first_frame = receive_response(first_socket);
+    const auto second_frame = receive_response(second_socket);
+    const auto first_response = glyphastore::server::decode_response(first_frame);
+    const auto second_response = glyphastore::server::decode_response(second_frame);
+    GLYPHA_REQUIRE(first_response.has_value());
+    GLYPHA_REQUIRE(second_response.has_value());
+    GLYPHA_REQUIRE(first_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(observer.maximum_writes_before_sync() == 2);
+    GLYPHA_REQUIRE(observer.sync_count() == 1);
+
+    static_cast<void>(::close(first_socket));
+    static_cast<void>(::close(second_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
 }
 
 GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies bounded admission") {

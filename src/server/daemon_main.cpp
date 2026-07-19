@@ -36,6 +36,7 @@ enum OptionId : std::size_t {
     maximum_output_bytes,
     durable_mutation_queue_capacity,
     durable_mutation_queue_bytes,
+    durable_group_mutation_concurrency,
     reuse_port,
     no_reuse_port,
     executor_affinity,
@@ -81,6 +82,9 @@ constexpr std::array kOptionSpecs{
     glyphastore::cli::OptionSpec{durable_mutation_queue_bytes, "durable-mutation-queue-bytes", '\0',
                                  glyphastore::cli::OptionArity::required, "BYTES",
                                  "Bound owned durable mutation bytes per Worker (default: 16MiB)"},
+    glyphastore::cli::OptionSpec{durable_group_mutation_concurrency, "durable-group-concurrency", '\0',
+                                 glyphastore::cli::OptionArity::required, "COUNT",
+                                 "Run up to COUNT strict-group producers per Worker (default: 4)"},
     glyphastore::cli::OptionSpec{reuse_port,
                                  "reuse-port",
                                  '\0',
@@ -270,6 +274,12 @@ struct Options {
     if (auto status =
             set_byte_size_option(*parsed, durable_mutation_queue_bytes, "--durable-mutation-queue-bytes", 1,
                                  maximum_size, options.server.durable_mutation_queue_bytes);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    if (auto status =
+            set_size_option(*parsed, durable_group_mutation_concurrency, "--durable-group-concurrency", 1, 32,
+                            options.server.durable_group_mutation_concurrency);
         !status) {
         return glyphastore::unexpected(status.error());
     }

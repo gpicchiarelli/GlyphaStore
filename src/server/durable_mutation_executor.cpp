@@ -9,7 +9,9 @@
 namespace glyphastore::server {
 
 struct DurableMutationExecutor::Lane final {
-    explicit Lane(const std::size_t capacity) : queue(capacity) {}
+    Lane(const std::size_t capacity, const std::size_t thread_count) : queue(capacity) {
+        threads.reserve(thread_count);
+    }
 
     std::vector<std::optional<DurableMutationTask>> queue;
     std::size_t head{};
@@ -18,15 +20,16 @@ struct DurableMutationExecutor::Lane final {
     std::mutex mutex;
     std::condition_variable available;
     bool stopping{};
-    std::thread thread;
+    std::vector<std::thread> threads;
 };
 
 DurableMutationExecutor::DurableMutationExecutor(Store& store, const std::size_t worker_count,
-                                                 const std::size_t capacity_per_worker)
-    : store_(store) {
+                                                 const std::size_t capacity_per_worker,
+                                                 const std::size_t threads_per_worker)
+    : store_(store), threads_per_worker_(threads_per_worker) {
     lanes_.reserve(worker_count);
     for (std::size_t worker = 0; worker < worker_count; ++worker) {
-        lanes_.push_back(std::make_unique<Lane>(capacity_per_worker));
+        lanes_.push_back(std::make_unique<Lane>(capacity_per_worker, threads_per_worker));
     }
 }
 
@@ -35,14 +38,16 @@ DurableMutationExecutor::~DurableMutationExecutor() {
 }
 
 auto DurableMutationExecutor::create(Store& store, const std::size_t worker_count,
-                                     const std::size_t capacity_per_worker)
+                                     const std::size_t capacity_per_worker,
+                                     const std::size_t threads_per_worker)
     -> Result<std::unique_ptr<DurableMutationExecutor>> try {
-    if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0) {
+    if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0 ||
+        threads_per_worker == 0) {
         return fail(ErrorCode::invalid_argument,
                     "durable mutation executor requires one nonempty lane per Store Worker");
     }
     return std::unique_ptr<DurableMutationExecutor>(
-        new DurableMutationExecutor(store, worker_count, capacity_per_worker));
+        new DurableMutationExecutor(store, worker_count, capacity_per_worker, threads_per_worker));
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "durable mutation executor allocation failed");
 } catch (...) {
@@ -58,7 +63,9 @@ auto DurableMutationExecutor::start() -> Status try {
         return fail(ErrorCode::unavailable, "durable mutation executor has been stopped");
     }
     for (std::size_t worker = 0; worker < lanes_.size(); ++worker) {
-        lanes_[worker]->thread = std::thread{[this, worker] { run(worker); }};
+        for (std::size_t thread = 0; thread < threads_per_worker_; ++thread) {
+            lanes_[worker]->threads.emplace_back([this, worker] { run(worker); });
+        }
     }
     started_.store(true, std::memory_order_release);
     return {};
@@ -107,8 +114,10 @@ void DurableMutationExecutor::stop_and_drain() noexcept {
         }
     }
     for (auto& lane : lanes_) {
-        if (lane->thread.joinable()) {
-            lane->thread.join();
+        for (auto& thread : lane->threads) {
+            if (thread.joinable()) {
+                thread.join();
+            }
         }
     }
 }
