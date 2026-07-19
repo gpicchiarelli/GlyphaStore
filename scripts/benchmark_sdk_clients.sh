@@ -19,9 +19,13 @@ if [[ ! -x "$daemon" ]]; then
   exit 1
 fi
 
-mkdir -p "$outdir/python" "$outdir/perl" "$outdir/logs"
+mkdir -p "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/logs"
 export PYTHONPATH="$root/sdk/python/src"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
+go_bin="${GO:-go}"
+mkdir -p "$root/sdk/go/bin"
+(cd "$root/sdk/go" && "$go_bin" build -o bin/glyphastore-bench ./cmd/glyphastore-bench)
+go_bench="$root/sdk/go/bin/glyphastore-bench"
 
 capture_environment() {
   {
@@ -47,6 +51,8 @@ PY
     echo "python_sdk_version=$($python -c 'import glyphastore; print(glyphastore.__version__)')"
     echo "perl=$($perl -V:version -V:archname | tr '\n' ' ')"
     echo "perl_sdk_version=$($perl -MGlyphaStore -e 'print \$GlyphaStore::VERSION')"
+    echo "go=$($go_bin version)"
+    echo "go_sdk_version=0.1.0"
     echo "glyphastored=$daemon"
     echo "glyphastored_version=$("$daemon" --version 2>&1 | tr '\n' ' ')"
     echo "ops=$ops warmup=$warmup repeats=$repeats"
@@ -164,6 +170,16 @@ run_matrix() {
           --concurrent \
           | tee "$outdir/perl/concurrent-${label}.txt"
       fi
+
+      echo "running go concurrent $label"
+      "$go_bench" --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+        --pipeline "$p" --warmup "$warmup" --repeats "$repeats" --execution concurrent \
+        | tee "$outdir/go/concurrent-${label}.txt"
+
+      echo "running go sequential $label"
+      "$go_bench" --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+        --pipeline "$p" --warmup "$warmup" --repeats "$repeats" --execution sequential \
+        | tee "$outdir/go/sequential-${label}.txt"
     done
 
     stop_server "$port_file"
@@ -199,7 +215,11 @@ pattern = re.compile(
 )
 
 rows = []
-for path in sorted(outdir.glob("python/*.txt")) + sorted(outdir.glob("perl/*.txt")):
+for path in (
+    sorted(outdir.glob("python/*.txt"))
+    + sorted(outdir.glob("perl/*.txt"))
+    + sorted(outdir.glob("go/*.txt"))
+):
     text = path.read_text(encoding="utf-8")
     match = pattern.search(text)
     if not match:
@@ -241,7 +261,12 @@ lines = [
     "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
 ]
 for row in rows:
-    sdk = "Python" if row["file"].startswith("python/") else "Perl"
+    if row["file"].startswith("python/"):
+        sdk = "Python"
+    elif row["file"].startswith("perl/"):
+        sdk = "Perl"
+    else:
+        sdk = "Go"
     lines.append(
         "| {sdk} | {runtime} | {execution} | {workers} | {pipeline_pairs} | {median_ops_per_second:,.0f} | "
         "{min_ops_per_second:,.0f} | {max_ops_per_second:,.0f} | {median_seconds:.6f} |".format(
@@ -255,7 +280,8 @@ lines.extend(
         "",
         "- Python `concurrent` uses one OS thread per Worker against one shared `Client`.",
         "- Python `async` uses one `asyncio` task per Worker against one shared `AsyncClient`.",
-        "- Python `sequential` and Perl drain Workers one after another (fair cross-language compare).",
+        "- Python `sequential`, Perl sequential, and Go `sequential` drain Workers one after another.",
+        "- Go `concurrent` uses one goroutine per Worker against one shared `Client`.",
         "- Perl has no shared-client multi-threaded mode; ithreads are not used.",
         "- Do not treat same-host loopback numbers as production capacity.",
         "",
@@ -270,7 +296,7 @@ write_readme() {
   cat >"$outdir/README.md" <<EOF
 # GlyphaStore SDK benchmarks — ${sdk_version}
 
-Published client-side pipeline benchmarks for the native Python and Perl SDKs at version
+Published client-side pipeline benchmarks for the native Python, Perl, and Go SDKs at version
 \`${sdk_version}\`.
 
 ## Contents
@@ -283,6 +309,7 @@ Published client-side pipeline benchmarks for the native Python and Perl SDKs at
 | \`results.json\` | Machine-readable parsed results |
 | \`python/\` | Raw Python sync/async result files |
 | \`perl/\` | Raw Perl result files |
+| \`go/\` | Raw Go result files |
 | \`logs/\` | Server stdout/stderr |
 
 ## How to reproduce
@@ -291,7 +318,13 @@ Published client-side pipeline benchmarks for the native Python and Perl SDKs at
 ./scripts/benchmark_sdk_clients.sh
 \`\`\`
 
-Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`, \`PYTHON\`, \`PERL\`.
+Go-only:
+
+\`\`\`bash
+./scripts/benchmark_go_client.sh
+\`\`\`
+
+Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`, \`PYTHON\`, \`PERL\`, \`GO\`.
 EOF
 }
 

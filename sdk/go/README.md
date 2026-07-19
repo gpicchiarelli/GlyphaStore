@@ -71,6 +71,21 @@ cd sdk/go && go test ./...
 | `client` | Sync TCP client (Get/Put/Erase/Ping, pipeline, batch) |
 | `cmd/glyphastore-interop` | CLI for `scripts/test-sdk-interop.sh` |
 
+## Benchmarks
+
+Against a live `glyphastored` (same PUT/GET pipeline matrix as Python/Perl):
+
+```bash
+./scripts/benchmark_go_client.sh
+```
+
+Or build the harness and point it at an existing server:
+
+```bash
+cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
+./bin/glyphastore-bench --port 7379 --workers 4 --ops 100000 --pipeline 128 --execution concurrent
+```
+
 ## Performance notes
 
 - Contiguous little-endian frame encoding into pre-sized buffers (`EncodeRequestInto` / `AppendRequest`)
