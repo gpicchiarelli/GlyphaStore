@@ -1,10 +1,12 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/store/store.hpp"
+#include "persistence/hot_record_capacity.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 
@@ -26,6 +28,24 @@ auto fixed_heap_key(std::uint64_t suffix) -> std::string {
     return key;
 }
 } // namespace
+
+GLYPHA_TEST("hot record capacity grows geometrically instead of rehashing every insert") {
+    const auto initial = glyphastore::detail::plan_hot_record_reserve(0, 1, 0);
+    GLYPHA_REQUIRE(!initial.overflow);
+    GLYPHA_REQUIRE(initial.target == 64);
+
+    const auto within_capacity = glyphastore::detail::plan_hot_record_reserve(63, 1, 64);
+    GLYPHA_REQUIRE(!within_capacity.overflow);
+    GLYPHA_REQUIRE(within_capacity.target == 0);
+
+    const auto next_growth = glyphastore::detail::plan_hot_record_reserve(64, 1, 64);
+    GLYPHA_REQUIRE(!next_growth.overflow);
+    GLYPHA_REQUIRE(next_growth.target == 128);
+
+    const auto overflow = glyphastore::detail::plan_hot_record_reserve(
+        std::numeric_limits<std::size_t>::max(), 1, std::numeric_limits<std::size_t>::max());
+    GLYPHA_REQUIRE(overflow.overflow);
+}
 
 GLYPHA_TEST("index heap key arena survives erase churn and rehash") {
     glyphastore::Index index;

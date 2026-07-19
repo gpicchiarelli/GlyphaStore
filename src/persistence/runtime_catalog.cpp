@@ -8,6 +8,7 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "persistence/adaptive_batch_sizer.hpp"
+#include "persistence/hot_record_capacity.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -89,6 +90,23 @@ struct TransparentStringEqual {
 
 using HotRecordMap =
     std::unordered_map<std::string, HotRecordEntry, TransparentStringHash, TransparentStringEqual>;
+
+[[nodiscard]] auto prepare_hot_record_insertions(HotRecordMap& records, const std::size_t additional_records)
+    -> Status {
+    const auto raw_capacity =
+        static_cast<double>(records.bucket_count()) * static_cast<double>(records.max_load_factor());
+    const auto current_capacity = raw_capacity >= static_cast<double>(std::numeric_limits<std::size_t>::max())
+                                      ? std::numeric_limits<std::size_t>::max()
+                                      : static_cast<std::size_t>(raw_capacity);
+    const auto plan = detail::plan_hot_record_reserve(records.size(), additional_records, current_capacity);
+    if (plan.overflow) {
+        return fail(ErrorCode::arithmetic_overflow, "hot Record publication capacity overflow");
+    }
+    if (plan.target != 0) {
+        records.reserve(plan.target);
+    }
+    return {};
+}
 
 [[nodiscard]] auto hot_record_matches(const HotRecordEntry& entry, const RecordRef& reference) noexcept
     -> bool {
@@ -1052,15 +1070,10 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                 strict_batch ? (worker.pending_group_mutations.empty()
                                     ? static_cast<std::size_t>(options_.batch->max_records)
                                     : 0U)
-                             : 1U;
-            if (additional_hot_records >
-                std::numeric_limits<std::size_t>::max() - worker.hot_records.size()) {
-                return mutation_failure(
-                    DurableMutationOutcome::not_committed,
-                    Error{ErrorCode::arithmetic_overflow, "hot Record publication capacity overflow"});
-            }
-            if (additional_hot_records != 0) {
-                worker.hot_records.reserve(worker.hot_records.size() + additional_hot_records);
+                             : (key_present ? 0U : 1U);
+            if (auto prepared = prepare_hot_record_insertions(worker.hot_records, additional_hot_records);
+                !prepared) {
+                return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }
             const auto staged = worker.hot_record_staging.emplace(
                 std::string{hashed.key},
