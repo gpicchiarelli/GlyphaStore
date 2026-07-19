@@ -19,7 +19,10 @@ namespace glyphastore::server {
 
 class Server final {
   public:
-    [[nodiscard]] static auto create(const ReactorConfig& config = {}) -> Result<std::unique_ptr<Server>>;
+    // A missing Store Worker count inherits ReactorConfig::worker_count. An
+    // explicit Store count must match because each executor owns one Worker.
+    [[nodiscard]] static auto create(const ReactorConfig& config = {}, StoreConfig store_config = {})
+        -> Result<std::unique_ptr<Server>>;
     ~Server();
 
     Server(const Server&) = delete;

@@ -43,11 +43,17 @@ Server::~Server() {
     static_cast<void>(join());
 }
 
-auto Server::create(const ReactorConfig& config) -> Result<std::unique_ptr<Server>> {
+auto Server::create(const ReactorConfig& config, StoreConfig store_config)
+    -> Result<std::unique_ptr<Server>> {
     if (auto valid = validate_config(config); !valid) {
         return unexpected(valid.error());
     }
-    auto store = Store::open({.worker_config = {.explicit_count = config.worker_count}});
+    if (store_config.worker_config.explicit_count &&
+        *store_config.worker_config.explicit_count != config.worker_count) {
+        return fail(ErrorCode::invalid_argument, "Store worker count must match the server executor count");
+    }
+    store_config.worker_config.explicit_count = config.worker_count;
+    auto store = Store::open(std::move(store_config));
     if (!store) {
         return unexpected(store.error());
     }
@@ -112,10 +118,11 @@ auto Server::join() -> Status {
         }
     }
     threads_.clear();
+    auto closed = store_->close();
     if (failure_) {
         return unexpected(*failure_);
     }
-    return {};
+    return closed;
 }
 
 auto Server::port() const noexcept -> std::uint16_t {

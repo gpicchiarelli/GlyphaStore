@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <netinet/in.h>
 #include <span>
 #include <string_view>
@@ -124,6 +125,30 @@ auto initialize_and_bind(const int socket, const std::uint32_t worker, const std
            bound->frame.owner_worker == worker && bound->frame.worker_count == worker_count;
 }
 
+class ServerTemporaryDirectory final {
+  public:
+    ServerTemporaryDirectory() {
+        auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-server-XXXXXX").string();
+        std::vector<char> writable(pattern.begin(), pattern.end());
+        writable.push_back('\0');
+        const auto* created = ::mkdtemp(writable.data());
+        GLYPHA_REQUIRE(created != nullptr);
+        root_ = created;
+    }
+
+    ~ServerTemporaryDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(root_, ignored);
+    }
+
+    [[nodiscard]] auto store_path() const -> std::filesystem::path {
+        return root_ / "store";
+    }
+
+  private:
+    std::filesystem::path root_;
+};
+
 } // namespace
 
 GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol buffers") {
@@ -136,6 +161,70 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .maximum_output_bytes = glyphastore::server::kResponseHeaderBytes - 1U})
                         .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .worker_count = 2},
+                                                        {.worker_config = {.explicit_count = 1}})
+                        .has_value());
+}
+
+GLYPHA_TEST("server StoreConfig persists acknowledged wire writes across restart") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto opened = glyphastore::server::Server::create(
+            {.port = 0, .maximum_connections = 4},
+            {.storage_mode = glyphastore::StorageMode::durable_sync,
+             .data_directory = path,
+             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& server = **opened;
+        GLYPHA_REQUIRE(server.start().has_value());
+
+        const auto socket = connect_to(server.port());
+        GLYPHA_REQUIRE(socket >= 0);
+        GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+        const auto put = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::put,
+            .request_id = 3,
+            .key = bytes("durable-wire-key"),
+            .value = bytes("durable-wire-value"),
+        });
+        GLYPHA_REQUIRE(put.has_value());
+        GLYPHA_REQUIRE(send_all(socket, *put));
+        const auto put_frame = receive_response(socket);
+        const auto put_response = glyphastore::server::decode_response(put_frame);
+        GLYPHA_REQUIRE(put_response.has_value());
+        GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+        static_cast<void>(::close(socket));
+        server.request_stop();
+        GLYPHA_REQUIRE(server.join().has_value());
+    }
+
+    auto reopened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    auto& server = **reopened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 4,
+        .key = bytes("durable-wire-key"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *get));
+    const auto get_frame = receive_response(socket);
+    const auto get_response = glyphastore::server::decode_response(get_frame);
+    GLYPHA_REQUIRE(get_response.has_value());
+    GLYPHA_REQUIRE(get_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(get_response->frame.value) == "durable-wire-value");
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
 }
 
 GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {

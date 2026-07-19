@@ -272,9 +272,21 @@ if(BUILD_TESTING)
     )
     add_test(NAME glyphastore_cli_rejects_invalid_workers COMMAND glyphastored --workers 257)
     set_tests_properties(glyphastore_cli_rejects_invalid_workers PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME glyphastore_cli_daemon_rejects_missing_data_directory
+        COMMAND glyphastored --storage-mode durable-sync
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_missing_data_directory PROPERTIES WILL_FAIL TRUE)
+    add_test(NAME glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
+        COMMAND glyphastored --data-dir unused
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
+        PROPERTIES WILL_FAIL TRUE
+    )
     set_tests_properties(
         glyphastore_cli_daemon_help
         glyphastore_cli_daemon_version
+        glyphastore_cli_daemon_rejects_missing_data_directory
+        glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
         glyphastore_cli_inspect_help
         glyphastore_cli_rebuild_help
         glyphastore_cli_rejects_invalid_workers

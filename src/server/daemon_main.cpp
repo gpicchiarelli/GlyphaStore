@@ -7,6 +7,7 @@
 #include <csignal>
 #include <cstdint>
 #include <exception>
+#include <filesystem>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -36,6 +37,9 @@ enum OptionId : std::size_t {
     reuse_port,
     no_reuse_port,
     executor_affinity,
+    storage_mode,
+    data_directory,
+    durable_open_mode,
     quiet,
 };
 
@@ -87,6 +91,14 @@ constexpr std::array kOptionSpecs{
                                  glyphastore::cli::OptionArity::none,
                                  {},
                                  "Request executor CPU affinity where supported"},
+    glyphastore::cli::OptionSpec{storage_mode, "storage-mode", '\0', glyphastore::cli::OptionArity::required,
+                                 "MODE",
+                                 "Use volatile, durable-sync, durable-periodic, or durable-group storage"},
+    glyphastore::cli::OptionSpec{data_directory, "data-dir", '\0', glyphastore::cli::OptionArity::required,
+                                 "PATH", "Store durable v1 files below PATH (required for durable storage)"},
+    glyphastore::cli::OptionSpec{
+        durable_open_mode, "open-mode", '\0', glyphastore::cli::OptionArity::required, "MODE",
+        "Use open-or-create, create-new, or open-existing (default: open-or-create)"},
     glyphastore::cli::OptionSpec{quiet,
                                  "quiet",
                                  'q',
@@ -97,10 +109,56 @@ constexpr std::array kOptionSpecs{
 
 struct Options {
     glyphastore::server::ReactorConfig server;
+    glyphastore::StoreConfig store;
     bool show_help{};
     bool show_version{};
     bool quiet{};
 };
+
+[[nodiscard]] auto parse_storage_mode(const std::string_view value)
+    -> std::optional<glyphastore::StorageMode> {
+    if (value == "volatile") {
+        return glyphastore::StorageMode::volatile_memory;
+    }
+    if (value == "durable-sync") {
+        return glyphastore::StorageMode::durable_sync;
+    }
+    if (value == "durable-periodic") {
+        return glyphastore::StorageMode::durable_periodic;
+    }
+    if (value == "durable-group") {
+        return glyphastore::StorageMode::durable_group;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] auto parse_durable_open_mode(const std::string_view value)
+    -> std::optional<glyphastore::DurableOpenMode> {
+    if (value == "open-or-create") {
+        return glyphastore::DurableOpenMode::open_or_create;
+    }
+    if (value == "create-new") {
+        return glyphastore::DurableOpenMode::create_new;
+    }
+    if (value == "open-existing") {
+        return glyphastore::DurableOpenMode::open_existing;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] auto storage_mode_name(const glyphastore::StorageMode mode) -> std::string_view {
+    switch (mode) {
+    case glyphastore::StorageMode::volatile_memory:
+        return "volatile";
+    case glyphastore::StorageMode::durable_sync:
+        return "durable-sync";
+    case glyphastore::StorageMode::durable_periodic:
+        return "durable-periodic";
+    case glyphastore::StorageMode::durable_group:
+        return "durable-group";
+    }
+    return "unknown";
+}
 
 [[nodiscard]] auto set_size_option(const glyphastore::cli::ParsedArguments& parsed, const OptionId id,
                                    const std::string_view name, const std::size_t minimum,
@@ -206,6 +264,39 @@ struct Options {
         options.server.reuse_port = false;
     }
     options.server.executor_affinity = parsed->has(executor_affinity);
+
+    if (const auto mode = parsed->value(storage_mode)) {
+        const auto selected = parse_storage_mode(*mode);
+        if (!selected) {
+            return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                     "unknown --storage-mode: " + std::string{*mode});
+        }
+        options.store.storage_mode = *selected;
+    }
+    if (const auto path = parsed->value(data_directory)) {
+        if (path->empty()) {
+            return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                     "--data-dir must not be empty");
+        }
+        options.store.data_directory = std::filesystem::path{*path};
+    }
+    if (const auto mode = parsed->value(durable_open_mode)) {
+        const auto selected = parse_durable_open_mode(*mode);
+        if (!selected) {
+            return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                     "unknown --open-mode: " + std::string{*mode});
+        }
+        options.store.durable_open_mode = *selected;
+    }
+    const bool durable = options.store.storage_mode != glyphastore::StorageMode::volatile_memory;
+    if (durable && !options.store.data_directory) {
+        return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                 "--data-dir is required for durable storage");
+    }
+    if (!durable && (parsed->has(data_directory) || parsed->has(durable_open_mode))) {
+        return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                 "--data-dir and --open-mode require a durable --storage-mode");
+    }
     return options;
 }
 
@@ -245,7 +336,7 @@ int main(const int argc, char** argv) try {
         return 0;
     }
 
-    auto server = glyphastore::server::Server::create(arguments->server);
+    auto server = glyphastore::server::Server::create(arguments->server, arguments->store);
     if (!server) {
         std::cerr << program << ": error: " << server.error().message << '\n';
         return 1;
@@ -264,7 +355,8 @@ int main(const int argc, char** argv) try {
     }
     if (!arguments->quiet) {
         std::cout << program << ": listening address=" << arguments->server.bind_address
-                  << " port=" << (*server)->port() << " executors=" << (*server)->executor_count() << '\n';
+                  << " port=" << (*server)->port() << " executors=" << (*server)->executor_count()
+                  << " storage=" << storage_mode_name(arguments->store.storage_mode) << '\n';
     }
     while (g_stop_signal == 0 && (*server)->healthy()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});

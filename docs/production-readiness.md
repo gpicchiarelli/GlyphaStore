@@ -110,8 +110,10 @@ implementation or design document alone is not sufficient.
 ### Operations and security
 
 - [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
-  Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests;
-  daemon CLI/file/environment precedence and deployment profiles remain pending.
+  Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
+  The daemon now has explicit storage-mode, data-directory, and durable open-policy flags that are
+  validated before binding; batch/resource flags, CLI/file/environment precedence, and deployment
+  profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
 - [ ] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
