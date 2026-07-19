@@ -1,8 +1,8 @@
 {
   "schema_version": 2,
-  "generated_at": "2026-07-19T14:42:33+00:00",
-  "baseline_generated_at": null,
-  "matched_baseline_results": 0,
+  "generated_at": "2026-07-19T14:52:35+00:00",
+  "baseline_generated_at": "2026-07-14T13:10:23+00:00",
+  "matched_baseline_results": 22,
   "runs": [
     {
       "source": "client-api-latency-w4.txt",
@@ -395,7 +395,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 12076300.0,
+            "median_ops_per_second_delta_percent": 11.202934673699726
+          }
         },
         {
           "name": "index_replace",
@@ -438,7 +442,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 11503100.0,
+            "median_ops_per_second_delta_percent": -13.213394650137788
+          }
         },
         {
           "name": "index_find_hit",
@@ -481,7 +489,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 12435700.0,
+            "median_ops_per_second_delta_percent": 0.195405164164462
+          }
         },
         {
           "name": "index_find_miss",
@@ -524,7 +536,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 13617600.0,
+            "median_ops_per_second_delta_percent": 1.172012689460698
+          }
         },
         {
           "name": "index_churn_miss",
@@ -610,7 +626,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 12224500.0,
+            "median_ops_per_second_delta_percent": -6.452615648901795
+          }
         },
         {
           "name": "store_put",
@@ -653,7 +673,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 5000830.0,
+            "median_ops_per_second_delta_percent": -20.035474111297525
+          }
         },
         {
           "name": "store_get_copy",
@@ -696,7 +720,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 4607800.0,
+            "median_ops_per_second_delta_percent": -20.108728677459958
+          }
         },
         {
           "name": "store_put_get_copy",
@@ -739,7 +767,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 4750740.0,
+            "median_ops_per_second_delta_percent": -23.96089872314629
+          }
         },
         {
           "name": "store_read_after_write_copy",
@@ -782,7 +814,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 6095250.0,
+            "median_ops_per_second_delta_percent": -27.75243017103482
+          }
         }
       ]
     },
@@ -2600,6 +2636,281 @@
       ]
     },
     {
+      "source": "index-key-32.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 5,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "latency_measurement": "disabled"
+      },
+      "results": [
+        {
+          "name": "index_insert",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.025088,
+          "min_seconds": 0.0245705,
+          "max_seconds": 0.0254473,
+          "median_ops_per_second": 7971930.0,
+          "min_ops_per_second": 7859380.0,
+          "max_ops_per_second": 8139830.0,
+          "median_ns_per_op": 125.44,
+          "min_ns_per_op": 122.853,
+          "max_ns_per_op": 127.236,
+          "median_rss_bytes": 67354600.0,
+          "min_rss_bytes": 67338200.0,
+          "max_rss_bytes": 67371000.0,
+          "median_rss_delta_bytes": 16384,
+          "peak_rss_bytes": 67371000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "index_replace",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0277095,
+          "min_seconds": 0.0262303,
+          "max_seconds": 0.0281625,
+          "median_ops_per_second": 7217740.0,
+          "min_ops_per_second": 7101630.0,
+          "max_ops_per_second": 7624770.0,
+          "median_ns_per_op": 138.548,
+          "min_ns_per_op": 131.151,
+          "max_ns_per_op": 140.813,
+          "median_rss_bytes": 67436500.0,
+          "min_rss_bytes": 67403800.0,
+          "max_rss_bytes": 67436500.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 67436500.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "index_find_hit",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0274237,
+          "min_seconds": 0.0243436,
+          "max_seconds": 0.0283922,
+          "median_ops_per_second": 7292960.0,
+          "min_ops_per_second": 7044200.0,
+          "max_ops_per_second": 8215720.0,
+          "median_ns_per_op": 137.119,
+          "min_ns_per_op": 121.718,
+          "max_ns_per_op": 141.961,
+          "median_rss_bytes": 67452900.0,
+          "min_rss_bytes": 67452900.0,
+          "max_rss_bytes": 67469300.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 67469300.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "index_find_miss",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0211977,
+          "min_seconds": 0.0206734,
+          "max_seconds": 0.0216425,
+          "median_ops_per_second": 9435000.0,
+          "min_ops_per_second": 9241080.0,
+          "max_ops_per_second": 9674260.0,
+          "median_ns_per_op": 105.988,
+          "min_ns_per_op": 103.367,
+          "max_ns_per_op": 108.213,
+          "median_rss_bytes": 85131300.0,
+          "min_rss_bytes": 85131300.0,
+          "max_rss_bytes": 85131300.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 85131300.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "index_churn_miss",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0210281,
+          "min_seconds": 0.0176549,
+          "max_seconds": 0.0261905,
+          "median_ops_per_second": 9511090.0,
+          "min_ops_per_second": 7636370.0,
+          "max_ops_per_second": 11328300.0,
+          "median_ns_per_op": 105.14,
+          "min_ns_per_op": 88.2744,
+          "max_ns_per_op": 130.952,
+          "median_rss_bytes": 102728000.0,
+          "min_rss_bytes": 101925000.0,
+          "max_rss_bytes": 103547000.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 103547000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "index_erase",
+          "key_size": 32,
+          "value_size": 64,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0508987,
+          "min_seconds": 0.0473658,
+          "max_seconds": 0.0532662,
+          "median_ops_per_second": 3929370.0,
+          "min_ops_per_second": 3754730.0,
+          "max_ops_per_second": 4222460.0,
+          "median_ns_per_op": 254.494,
+          "min_ns_per_op": 236.829,
+          "max_ns_per_op": 266.331,
+          "median_rss_bytes": 104153000.0,
+          "min_rss_bytes": 103743000.0,
+          "max_rss_bytes": 104235000.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 104235000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        }
+      ]
+    },
+    {
       "source": "index-key-64.txt",
       "metadata": {
         "git_sha": "28a12ae",
@@ -3880,6 +4191,152 @@
       ]
     },
     {
+      "source": "scaling-affine-w10.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 7,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "latency_measurement": "disabled"
+      },
+      "results": [
+        {
+          "name": "store_parallel_put",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "worker-affine",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0136734,
+          "min_seconds": 0.0116747,
+          "max_seconds": 0.0160097,
+          "median_ops_per_second": 14626900.0,
+          "min_ops_per_second": 12492400.0,
+          "max_ops_per_second": 17131100.0,
+          "median_ns_per_op": 68.3671,
+          "min_ns_per_op": 58.3733,
+          "max_ns_per_op": 80.0485,
+          "median_rss_bytes": 95453200.0,
+          "min_rss_bytes": 91127800.0,
+          "max_rss_bytes": 95584300.0,
+          "median_rss_delta_bytes": 16384,
+          "peak_rss_bytes": 95797200.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "store_parallel_get_copy",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "worker-affine",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0107801,
+          "min_seconds": 0.0106414,
+          "max_seconds": 0.0109762,
+          "median_ops_per_second": 18552700.0,
+          "min_ops_per_second": 18221200.0,
+          "max_ops_per_second": 18794500.0,
+          "median_ns_per_op": 53.9004,
+          "min_ns_per_op": 53.2071,
+          "max_ns_per_op": 54.881,
+          "median_rss_bytes": 102711000.0,
+          "min_rss_bytes": 102679000.0,
+          "max_rss_bytes": 102728000.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 102941000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "store_parallel_read_after_write_copy",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "worker-affine",
+          "random": 0,
+          "operations": 400000,
+          "hits": 400000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0209909,
+          "min_seconds": 0.0182628,
+          "max_seconds": 0.0223239,
+          "median_ops_per_second": 19055900.0,
+          "min_ops_per_second": 17918000.0,
+          "max_ops_per_second": 21902500.0,
+          "median_ns_per_op": 52.4772,
+          "min_ns_per_op": 45.6569,
+          "max_ns_per_op": 55.8098,
+          "median_rss_bytes": 102760000.0,
+          "min_rss_bytes": 102744000.0,
+          "max_rss_bytes": 102777000.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 102990000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        }
+      ]
+    },
+    {
       "source": "scaling-affine-w2.txt",
       "metadata": {
         "git_sha": "28a12ae",
@@ -4464,6 +4921,152 @@
       ]
     },
     {
+      "source": "scaling-uniform-w10.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 7,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "latency_measurement": "disabled"
+      },
+      "results": [
+        {
+          "name": "store_parallel_put",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0606959,
+          "min_seconds": 0.0576152,
+          "max_seconds": 0.0619208,
+          "median_ops_per_second": 3295110.0,
+          "min_ops_per_second": 3229930.0,
+          "max_ops_per_second": 3471310.0,
+          "median_ns_per_op": 303.48,
+          "min_ns_per_op": 288.076,
+          "max_ns_per_op": 309.604,
+          "median_rss_bytes": 89440300.0,
+          "min_rss_bytes": 87359500.0,
+          "max_rss_bytes": 91586600.0,
+          "median_rss_delta_bytes": 999424,
+          "peak_rss_bytes": 91783200.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "store_parallel_get_copy",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0501827,
+          "min_seconds": 0.0477976,
+          "max_seconds": 0.0509989,
+          "median_ops_per_second": 3985440.0,
+          "min_ops_per_second": 3921650.0,
+          "max_ops_per_second": 4184310.0,
+          "median_ns_per_op": 250.913,
+          "min_ns_per_op": 238.988,
+          "max_ns_per_op": 254.995,
+          "median_rss_bytes": 92045300.0,
+          "min_rss_bytes": 91996200.0,
+          "max_rss_bytes": 92061700.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 92241900.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        },
+        {
+          "name": "store_parallel_read_after_write_copy",
+          "key_size": 16,
+          "value_size": 64,
+          "workers": 10,
+          "threads": 10,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 400000,
+          "hits": 400000,
+          "samples": 7,
+          "warmup": 1,
+          "median_seconds": 0.0805952,
+          "min_seconds": 0.0751731,
+          "max_seconds": 0.0840606,
+          "median_ops_per_second": 4963070.0,
+          "min_ops_per_second": 4758470.0,
+          "max_ops_per_second": 5321050.0,
+          "median_ns_per_op": 201.488,
+          "min_ns_per_op": 187.933,
+          "max_ns_per_op": 210.152,
+          "median_rss_bytes": 92078100.0,
+          "min_rss_bytes": 92061700.0,
+          "max_rss_bytes": 92094500.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 92291100.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        }
+      ]
+    },
+    {
       "source": "scaling-uniform-w2.txt",
       "metadata": {
         "git_sha": "28a12ae",
@@ -4964,7 +5567,11 @@
           "p50_latency_ns": 67250,
           "p95_latency_ns": 110084,
           "p99_latency_ns": 144500,
-          "p999_latency_ns": 1031920.0
+          "p999_latency_ns": 1031920.0,
+          "comparison": {
+            "baseline_median_ops_per_second": 1373830.0,
+            "median_ops_per_second_delta_percent": 23.189186435002878
+          }
         }
       ]
     },
@@ -5032,6 +5639,73 @@
           "p95_latency_ns": 63292,
           "p99_latency_ns": 89875,
           "p999_latency_ns": 254125
+        }
+      ]
+    },
+    {
+      "source": "server-size-k16-v0.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 5,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "client_mode": "raw-wire",
+        "pipeline": 128,
+        "routing": "owner-bound-connections",
+        "traffic_scope": "timed-protocol-frames-excluding-init-bind",
+        "memory_scope": "whole-benchmark-process-rss",
+        "executor_affinity_requested": 1,
+        "latency_measurement": "disabled",
+        "executor_affinity_semantics": "mach-advisory"
+      },
+      "results": [
+        {
+          "name": "server_tcp_read_after_write",
+          "key_size": 16,
+          "value_size": 0,
+          "workers": 4,
+          "threads": 4,
+          "distribution": "owner-bound",
+          "random": 0,
+          "operations": 200000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.0221922,
+          "min_seconds": 0.02105,
+          "max_seconds": 0.0225729,
+          "median_ops_per_second": 9012170.0,
+          "min_ops_per_second": 8860180.0,
+          "max_ops_per_second": 9501190.0,
+          "median_ns_per_op": 110.961,
+          "min_ns_per_op": 105.25,
+          "max_ns_per_op": 112.865,
+          "median_rss_bytes": 45695000.0,
+          "min_rss_bytes": 43450400.0,
+          "max_rss_bytes": 45744100.0,
+          "median_rss_delta_bytes": 32768,
+          "peak_rss_bytes": 45957100.0,
+          "ingress_bytes": 11200000,
+          "egress_bytes": 8000000,
+          "median_ingress_bytes_per_second": 504682000.0,
+          "min_ingress_bytes_per_second": 496170000.0,
+          "max_ingress_bytes_per_second": 532067000.0,
+          "median_egress_bytes_per_second": 360487000.0,
+          "min_egress_bytes_per_second": 354407000.0,
+          "max_egress_bytes_per_second": 380048000.0,
+          "median_duplex_bytes_per_second": 865169000.0,
+          "min_duplex_bytes_per_second": 850577000.0,
+          "max_duplex_bytes_per_second": 912114000.0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
         }
       ]
     },
@@ -5366,7 +6040,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 86267.7,
+            "median_ops_per_second_delta_percent": 5.229999176980496
+          }
         }
       ]
     },
@@ -5433,7 +6111,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 2493590.0,
+            "median_ops_per_second_delta_percent": -8.99706848359193
+          }
         }
       ]
     },
@@ -5500,7 +6182,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 1443770.0,
+            "median_ops_per_second_delta_percent": -8.961261142702785
+          }
         }
       ]
     },
@@ -5567,7 +6253,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 582639.0,
+            "median_ops_per_second_delta_percent": -1.9035800899012938
+          }
         }
       ]
     },
@@ -5634,7 +6324,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 77892.6,
+            "median_ops_per_second_delta_percent": 54.55640202021756
+          }
         }
       ]
     },
@@ -5701,7 +6395,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 2774870.0,
+            "median_ops_per_second_delta_percent": 45.72394382439538
+          }
         }
       ]
     },
@@ -5768,7 +6466,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 2018980.0,
+            "median_ops_per_second_delta_percent": 16.950638441193078
+          }
         }
       ]
     },
@@ -5835,7 +6537,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 728405.0,
+            "median_ops_per_second_delta_percent": -15.863564912377043
+          }
         }
       ]
     },
@@ -5902,7 +6608,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 114737.0,
+            "median_ops_per_second_delta_percent": 48.56846527275421
+          }
         }
       ]
     },
@@ -5969,7 +6679,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 4751800.0,
+            "median_ops_per_second_delta_percent": 14.088135022517784
+          }
         }
       ]
     },
@@ -6036,7 +6750,11 @@
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,
           "p99_latency_ns": 0,
-          "p999_latency_ns": 0
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 2556620.0,
+            "median_ops_per_second_delta_percent": 20.32331750514351
+          }
         }
       ]
     },
@@ -6099,6 +6817,130 @@
           "median_duplex_bytes_per_second": 196825000.0,
           "min_duplex_bytes_per_second": 178762000.0,
           "max_duplex_bytes_per_second": 230167000.0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0,
+          "comparison": {
+            "baseline_median_ops_per_second": 835244.0,
+            "median_ops_per_second_delta_percent": 47.28031569218097
+          }
+        }
+      ]
+    },
+    {
+      "source": "store-size-k16-v0.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 5,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "latency_measurement": "disabled"
+      },
+      "results": [
+        {
+          "name": "store_put_get_copy",
+          "key_size": 16,
+          "value_size": 0,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 400000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.097916,
+          "min_seconds": 0.0927624,
+          "max_seconds": 0.102355,
+          "median_ops_per_second": 4085140.0,
+          "min_ops_per_second": 3907950.0,
+          "max_ops_per_second": 4312090.0,
+          "median_ns_per_op": 244.79,
+          "min_ns_per_op": 231.906,
+          "max_ns_per_op": 255.889,
+          "median_rss_bytes": 61571100.0,
+          "min_rss_bytes": 61571100.0,
+          "max_rss_bytes": 61603800.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 61603800.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
+          "latency_samples": 0,
+          "p50_latency_ns": 0,
+          "p95_latency_ns": 0,
+          "p99_latency_ns": 0,
+          "p999_latency_ns": 0
+        }
+      ]
+    },
+    {
+      "source": "store-size-k16-v256.txt",
+      "metadata": {
+        "git_sha": "28a12ae",
+        "arch": "arm64",
+        "platform": "macos",
+        "compiler": "Apple LLVM 21.0.0 (clang-2100.1.1.101)",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 5,
+        "cpu_pin_requested": 0,
+        "cpu_pin_applied": 0,
+        "note": "use plugged-in power; thermal throttling affects spread",
+        "latency_measurement": "disabled"
+      },
+      "results": [
+        {
+          "name": "store_put_get_copy",
+          "key_size": 16,
+          "value_size": 256,
+          "workers": 1,
+          "threads": 1,
+          "distribution": "uniform",
+          "random": 0,
+          "operations": 400000,
+          "hits": 200000,
+          "samples": 5,
+          "warmup": 1,
+          "median_seconds": 0.106962,
+          "min_seconds": 0.102262,
+          "max_seconds": 0.116805,
+          "median_ops_per_second": 3739650.0,
+          "min_ops_per_second": 3424500.0,
+          "max_ops_per_second": 3911510.0,
+          "median_ns_per_op": 267.404,
+          "min_ns_per_op": 255.655,
+          "max_ns_per_op": 292.013,
+          "median_rss_bytes": 163889000.0,
+          "min_rss_bytes": 163889000.0,
+          "max_rss_bytes": 163922000.0,
+          "median_rss_delta_bytes": 0,
+          "peak_rss_bytes": 163922000.0,
+          "ingress_bytes": 0,
+          "egress_bytes": 0,
+          "median_ingress_bytes_per_second": 0,
+          "min_ingress_bytes_per_second": 0,
+          "max_ingress_bytes_per_second": 0,
+          "median_egress_bytes_per_second": 0,
+          "min_egress_bytes_per_second": 0,
+          "max_egress_bytes_per_second": 0,
+          "median_duplex_bytes_per_second": 0,
+          "min_duplex_bytes_per_second": 0,
+          "max_duplex_bytes_per_second": 0,
           "latency_samples": 0,
           "p50_latency_ns": 0,
           "p95_latency_ns": 0,

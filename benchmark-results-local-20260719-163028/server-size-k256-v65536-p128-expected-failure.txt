@@ -1,0 +1,17 @@
+# glyphastore TCP server benchmark
+# git_sha=28a12ae
+# arch=arm64
+# platform=macos
+# compiler=Apple LLVM 21.0.0 (clang-2100.1.1.101)
+# benchmark_warmup=1
+# benchmark_repeats=5
+# cpu_pin_requested=0
+# cpu_pin_applied=0
+# client_mode=raw-wire
+# pipeline=128
+# routing=owner-bound-connections
+# executor_affinity_requested=1
+# latency_measurement=disabled
+# expected_exit_code=1
+# expected_error=benchmark error: TCP sample validation failed
+# interpretation=outstanding 65536-byte frames exceed the default 4 MiB per-connection byte watermark

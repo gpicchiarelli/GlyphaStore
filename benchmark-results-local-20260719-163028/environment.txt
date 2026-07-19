@@ -7,11 +7,26 @@ product=macOS 26.5.2 (25F84)
 cpu=Apple M4
 logical_cpu=10
 physical_cpu=10
+performance_cores=4
+efficiency_cores=6
+performance_l2_bytes=16777216
+efficiency_l2_bytes=4194304
 memory_bytes=17179869184
+memory_free_percent_after_suite=54
 cache_line_bytes=128
 page_size_bytes=16384
 compiler=Apple clang version 21.0.0 (clang-2100.1.1.101)
 cmake=cmake version 4.4.0
+release_flags=-O3 -DNDEBUG
+release_lto=OFF
+lto_flags=-O3 -DNDEBUG
+lto_enabled=ON
+native_flags=-O3 -DNDEBUG -mcpu=native
+filesystem=APFS
+storage=SSD
+storage_size_bytes=494384795648
+storage_free_bytes_after_suite=95495004160
+durable_temporary_directory=/private/tmp (same APFS data volume as repository)
 power_mode=AC Power: Sleep On Power Button 1 autorestartatconnect 0 lowpowermode 1 standby 0 ttyskeepawake 1 powernap 1 displaysleep 2 womp 1 networkoversleep 0 sleep 0 tcpkeepalive 1 autorestart 0 disksleep 10
 Note: No thermal warning level has been recorded
 Note: No performance warning level has been recorded

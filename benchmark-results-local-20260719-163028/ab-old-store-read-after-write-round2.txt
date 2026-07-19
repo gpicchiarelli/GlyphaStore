@@ -1,0 +1,11 @@
+# glyphastore benchmark
+# git_sha=7f54681
+# arch=arm64
+# platform=macos
+# compiler=Apple LLVM 21.0.0 (clang-2100.1.1.101)
+# benchmark_warmup=1
+# benchmark_repeats=7
+# cpu_pin_requested=0
+# cpu_pin_applied=0
+# note=use plugged-in power; thermal throttling affects spread
+name=store_read_after_write_copy key_size=16 value_size=64 workers=1 threads=1 distribution=uniform random=0 operations=400000 hits=400000 samples=7 warmup=1 median_seconds=0.123397 min_seconds=0.11993 max_seconds=0.130296 median_ops_per_second=3.24156e+06 min_ops_per_second=3.06994e+06 max_ops_per_second=3.33528e+06 median_ns_per_op=308.493 min_ns_per_op=299.825 max_ns_per_op=325.739 median_rss_bytes=9.79436e+07 min_rss_bytes=9.75995e+07 max_rss_bytes=9.79599e+07 median_rss_delta_bytes=16384 peak_rss_bytes=9.79599e+07 ingress_bytes=0 egress_bytes=0 median_ingress_bytes_per_second=0 min_ingress_bytes_per_second=0 max_ingress_bytes_per_second=0 median_egress_bytes_per_second=0 min_egress_bytes_per_second=0 max_egress_bytes_per_second=0 median_duplex_bytes_per_second=0 min_duplex_bytes_per_second=0 max_duplex_bytes_per_second=0 latency_samples=0 p50_latency_ns=0 p95_latency_ns=0 p99_latency_ns=0 p999_latency_ns=0
