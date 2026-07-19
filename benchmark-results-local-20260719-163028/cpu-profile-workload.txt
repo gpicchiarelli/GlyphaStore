@@ -1,0 +1,19 @@
+# glyphastore TCP server benchmark
+# git_sha=28a12ae
+# arch=arm64
+# platform=macos
+# compiler=Apple LLVM 21.0.0 (clang-2100.1.1.101)
+# benchmark_warmup=1
+# benchmark_repeats=20
+# cpu_pin_requested=0
+# cpu_pin_applied=0
+# note=use plugged-in power; thermal throttling affects spread
+# client_mode=raw-wire
+# pipeline=32
+# routing=owner-bound-connections
+# traffic_scope=timed-protocol-frames-excluding-init-bind
+# memory_scope=whole-benchmark-process-rss
+# executor_affinity_requested=1
+# latency_measurement=disabled
+# executor_affinity_semantics=mach-advisory
+name=server_tcp_read_after_write key_size=16 value_size=64 workers=4 threads=4 distribution=owner-bound random=0 operations=2000000 hits=2000000 samples=20 warmup=1 median_seconds=0.970995 min_seconds=0.653083 max_seconds=2.54051 median_ops_per_second=2.06386e+06 min_ops_per_second=787245 max_ops_per_second=3.0624e+06 median_ns_per_op=485.498 min_ns_per_op=326.542 max_ns_per_op=1270.25 median_rss_bytes=7.81476e+08 min_rss_bytes=7.63806e+08 max_rss_bytes=7.85793e+08 median_rss_delta_bytes=8192 peak_rss_bytes=7.87038e+08 ingress_bytes=176000000 egress_bytes=144000000 median_ingress_bytes_per_second=1.8162e+08 min_ingress_bytes_per_second=6.92776e+07 max_ingress_bytes_per_second=2.69491e+08 median_egress_bytes_per_second=1.48598e+08 min_egress_bytes_per_second=5.66816e+07 max_egress_bytes_per_second=2.20493e+08 median_duplex_bytes_per_second=3.30217e+08 min_duplex_bytes_per_second=1.25959e+08 max_duplex_bytes_per_second=4.89984e+08 latency_samples=0 p50_latency_ns=0 p95_latency_ns=0 p99_latency_ns=0 p999_latency_ns=0

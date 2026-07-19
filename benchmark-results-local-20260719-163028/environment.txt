@@ -1,0 +1,18 @@
+captured_at=2026-07-19T14:31:08Z
+git_sha=28a12ae8b056e2f43d16fb8208f31fb575d943c7
+git_status=clean
+kernel=Darwin 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:26:22 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T8132 arm64
+hardware=arm64
+product=macOS 26.5.2 (25F84)
+cpu=Apple M4
+logical_cpu=10
+physical_cpu=10
+memory_bytes=17179869184
+cache_line_bytes=128
+page_size_bytes=16384
+compiler=Apple clang version 21.0.0 (clang-2100.1.1.101)
+cmake=cmake version 4.4.0
+power_mode=AC Power: Sleep On Power Button 1 autorestartatconnect 0 lowpowermode 1 standby 0 ttyskeepawake 1 powernap 1 displaysleep 2 womp 1 networkoversleep 0 sleep 0 tcpkeepalive 1 autorestart 0 disksleep 10
+Note: No thermal warning level has been recorded
+Note: No performance warning level has been recorded
+Note: No CPU power status has been recorded
