@@ -37,6 +37,16 @@ class Status(IntEnum):
 
 
 @dataclass(frozen=True, slots=True)
+class Request:
+    opcode: Opcode
+    request_id: int
+    expire_at_ns: int = 0
+    target_worker: int = NO_WORKER
+    key: bytes = b""
+    value: bytes = b""
+
+
+@dataclass(frozen=True, slots=True)
 class Response:
     status: Status
     request_id: int
@@ -52,6 +62,12 @@ def _u64(value: int, field: str) -> int:
     return value
 
 
+def _u32(value: int, field: str) -> int:
+    if not 0 <= value <= 0xFFFF_FFFF:
+        raise ValueError(f"{field} is outside unsigned 32-bit range")
+    return value
+
+
 def encode_request(
     opcode: Opcode,
     request_id: int,
@@ -64,10 +80,29 @@ def encode_request(
     """Encode one canonical protocol-v2 request frame."""
     if not isinstance(opcode, Opcode):
         raise ValueError("opcode is not defined by wire protocol v2")
+    if not isinstance(key, (bytes, bytearray, memoryview)) or not isinstance(
+        value, (bytes, bytearray, memoryview)
+    ):
+        raise TypeError("key and value must be bytes-like")
+    key = bytes(key)
+    value = bytes(value)
+    if opcode is Opcode.INIT and (key or value or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("INIT request cannot carry key, value, expiry, or target_worker")
+    if opcode is Opcode.PING and (key or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("PING request cannot carry key, expiry, or target_worker")
+    if opcode is Opcode.GET and (value or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("GET request cannot carry value, expiry, or target_worker")
+    if opcode is Opcode.PUT and target_worker != NO_WORKER:
+        raise ValueError("PUT request cannot carry target_worker")
+    if opcode is Opcode.ERASE and (value or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("ERASE request cannot carry value, expiry, or target_worker")
+    if opcode is Opcode.BIND_WORKER and (key or value or expire_at_ns != 0):
+        raise ValueError("BIND_WORKER request cannot carry key, value, or expiry")
+    if opcode is Opcode.BIND_WORKER and target_worker == NO_WORKER:
+        raise ValueError("BIND_WORKER request requires an explicit target_worker")
     _u64(request_id, "request_id")
     _u64(expire_at_ns, "expire_at_ns")
-    if not 0 <= target_worker <= 0xFFFF_FFFF:
-        raise ValueError("target_worker is outside unsigned 32-bit range")
+    _u32(target_worker, "target_worker")
     frame_size = REQUEST_HEADER_BYTES + len(key) + len(value)
     if frame_size > MAX_FRAME_BYTES:
         raise ValueError("request exceeds the protocol frame limit")
@@ -83,6 +118,81 @@ def encode_request(
         target_worker,
         0,
     ) + key + value
+
+
+def decode_request(
+    frame: bytes | bytearray | memoryview,
+    maximum_frame_bytes: int = MAX_FRAME_BYTES,
+) -> Request:
+    """Decode one complete request and reject noncanonical fields."""
+    if len(frame) < REQUEST_HEADER_BYTES:
+        raise ValueError("request is shorter than its header")
+    (
+        frame_size,
+        version,
+        opcode,
+        flags,
+        request_id,
+        key_size,
+        value_size,
+        expire_at_ns,
+        target_worker,
+        reserved,
+    ) = _REQUEST_HEADER.unpack_from(frame)
+    if frame_size != len(frame) or frame_size > maximum_frame_bytes:
+        raise ValueError("request frame extent is invalid")
+    if version != VERSION:
+        raise ValueError("request protocol version is unsupported")
+    if flags != 0 or reserved != 0:
+        raise ValueError("request canonical fields are invalid")
+    if REQUEST_HEADER_BYTES + key_size + value_size != frame_size:
+        raise ValueError("request payload extent is invalid")
+    try:
+        decoded_opcode = Opcode(opcode)
+    except ValueError as error:
+        raise ValueError("request opcode is unknown") from error
+    key_start = REQUEST_HEADER_BYTES
+    value_start = key_start + key_size
+    return Request(
+        opcode=decoded_opcode,
+        request_id=request_id,
+        expire_at_ns=expire_at_ns,
+        target_worker=target_worker,
+        key=bytes(frame[key_start:value_start]),
+        value=bytes(frame[value_start : value_start + value_size]),
+    )
+
+
+def encode_response(
+    status: Status,
+    request_id: int,
+    *,
+    value: bytes = b"",
+    owner_worker: int = NO_WORKER,
+    worker_count: int = 0,
+    routing_epoch: int = 0,
+) -> bytes:
+    """Encode one canonical protocol-v2 response frame."""
+    if not isinstance(status, Status):
+        raise ValueError("status is not defined by wire protocol v2")
+    _u64(request_id, "request_id")
+    _u32(owner_worker, "owner_worker")
+    _u32(worker_count, "worker_count")
+    _u64(routing_epoch, "routing_epoch")
+    frame_size = RESPONSE_HEADER_BYTES + len(value)
+    if frame_size > MAX_FRAME_BYTES:
+        raise ValueError("response exceeds the protocol frame limit")
+    return _RESPONSE_HEADER.pack(
+        frame_size,
+        VERSION,
+        status,
+        request_id,
+        len(value),
+        owner_worker,
+        worker_count,
+        0,
+        routing_epoch,
+    ) + value
 
 
 def decode_response(

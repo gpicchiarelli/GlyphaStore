@@ -1,8 +1,13 @@
 # GlyphaStore Python client
 
-Pure-Python, synchronous client for GlyphaStore wire protocol v2. It opens and binds one TCP
-connection per Worker, routes binary keys with canonical FNV-1a 64-bit, retries reads after a
-transient disconnect, and never reports an uncertain mutation as rejected.
+Pure-Python client for GlyphaStore wire protocol v2. It opens and binds one TCP connection per
+Worker, routes binary keys with canonical FNV-1a 64-bit, retries reads after a transient
+disconnect, and never reports an uncertain mutation as rejected.
+
+The package ships both a thread-safe synchronous `Client` and an `asyncio` `AsyncClient` that share
+the same codec, configuration, and outcome model. Runtime dependency: none (Python ≥ 3.11 stdlib).
+
+License: BSD-3-Clause.
 
 ```python
 from glyphastore import Client
@@ -13,32 +18,51 @@ with Client.connect() as cache:
         print(cache.get(b"session:42"))
 ```
 
-For throughput-sensitive paths, submit an ordered, non-atomic pipeline whose keys route to one
-Worker:
-
 ```python
-from glyphastore import PipelineOpcode, PipelineRequest
+from glyphastore import AsyncClient, PipelineOpcode, PipelineRequest
 
-responses = cache.execute_pipeline([
-    PipelineRequest(PipelineOpcode.PUT, b"key", b"value"),
-    PipelineRequest(PipelineOpcode.GET, b"key"),
-])
-assert all(response.succeeded for response in responses)
+async with await AsyncClient.connect() as cache:
+    responses = await cache.execute_pipeline([
+        PipelineRequest(PipelineOpcode.PUT, b"key", b"value"),
+        PipelineRequest(PipelineOpcode.GET, b"key"),
+    ])
+    assert all(response.succeeded for response in responses)
 ```
 
-This first package surface is deliberately synchronous. An `asyncio` implementation will share the
-codec and semantic tests but use one ordered task per Worker rather than wrapping this client in a
-thread pool.
+## Install
+
+From PyPI (once published):
+
+```bash
+pip install glyphastore
+```
+
+From this source tree:
+
+```bash
+pip install ./sdk/python
+```
+
+## Tests
+
+```bash
+./scripts/test-python-client.sh
+```
+
+Packaging verification (sdist, wheel, `twine check`, install-from-wheel tests):
+
+```bash
+./scripts/package-python-client.sh
+```
+
+See [PACKAGING.md](PACKAGING.md) for TestPyPI/PyPI upload steps and the version-bump checklist.
 
 ## Performance benchmark
 
-Start `glyphastored`, then run the same ordered `PUT`/`GET` workload used by the C++ client benchmark:
+Start `glyphastored`, then run the same ordered `PUT`/`GET` workload used by the C++ client
+benchmark:
 
 ```bash
 python3 benchmarks/client_benchmark.py --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 ```
-
-The benchmark prepares keys and request objects before timing, validates every response and reports
-operations per second over both PUT and GET frames. It intentionally includes Python request
-encoding and owned response construction, just as an application experiences them.

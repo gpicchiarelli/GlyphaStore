@@ -138,8 +138,8 @@ retains its normal cancellation, scheduling, packaging, and binary-data conventi
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|
 | C++ | Implemented reference client | synchronous, thread-safe, one connection per Worker |
-| Python | Native synchronous package implemented under `sdk/python`; `asyncio` next | one locked connection per Worker |
-| Perl | Native module using byte strings | synchronous handles, optional event-loop adapter later |
+| Python | Native package under `sdk/python` (`Client` + `AsyncClient`) | sync: one locked connection per Worker; async: one `asyncio.Lock` per Worker |
+| Perl | Native module under `sdk/perl` using byte strings | synchronous handles; one client per process/thread (event-loop adapter later) |
 | Erlang | Native OTP application | supervised Worker-connection processes |
 
 Every SDK must consume the canonical request/response corpus under `tests/fixtures/`, use unsigned

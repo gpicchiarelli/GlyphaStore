@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
+  cp "$root/tests/fixtures/$fixture" "$root/sdk/python/tests/fixtures/$fixture"
+  cp "$root/tests/fixtures/$fixture" "$root/sdk/perl/t/fixtures/$fixture"
+  echo "synced $fixture"
+done

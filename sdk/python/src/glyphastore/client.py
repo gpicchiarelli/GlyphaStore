@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import socket
 import threading
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from collections.abc import Sequence
 from typing import Final
 
 from .protocol import (
@@ -116,6 +117,17 @@ class _SendFailure(Exception):
         self.bytes_sent = bytes_sent
 
 
+def _deadline_after(seconds: float) -> float:
+    return time.monotonic() + seconds
+
+
+def _remaining(deadline: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TransportError("request deadline expired")
+    return remaining
+
+
 class _Connection:
     def __init__(self, worker: int) -> None:
         self.worker = worker
@@ -137,7 +149,12 @@ class _Connection:
 
 
 class Client:
-    """Thread-safe synchronous client with one bound connection per Worker."""
+    """Thread-safe synchronous client with one bound connection per Worker.
+
+    Health is a plain boolean written without nesting under connection locks,
+    matching the C++ ``atomic`` fail-closed model and avoiding lock-order
+    deadlocks with ``close()``.
+    """
 
     def __init__(self, config: ClientConfig) -> None:
         self._validate_config(config)
@@ -147,7 +164,6 @@ class Client:
         self._routing_epoch = 0
         self._request_id = 1
         self._request_id_lock = threading.Lock()
-        self._state_lock = threading.Lock()
         self._healthy = True
 
     @classmethod
@@ -192,10 +208,11 @@ class Client:
 
     @property
     def healthy(self) -> bool:
-        with self._state_lock:
-            return self._healthy
+        return self._healthy
 
     def worker_for(self, key: bytes | bytearray | memoryview) -> int:
+        if self._worker_count <= 0:
+            raise Unavailable("client is not connected")
         return worker_for(bytes(key), self._worker_count)
 
     def get(self, key: bytes | bytearray | memoryview) -> bytes:
@@ -222,7 +239,7 @@ class Client:
         """Execute one ordered, non-atomic pipeline on a single Worker connection."""
         if not requests:
             return []
-        if not self.healthy:
+        if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
         if len(requests) > self._config.maximum_pipeline_requests:
             raise InvalidArgument("pipeline exceeds the configured request limit")
@@ -270,9 +287,10 @@ class Client:
         responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
         connection = self._connections[worker]
         with connection.lock:
-            if not self.healthy:
+            if not self._healthy:
                 raise Unavailable("client closed before pipeline admission")
             self._ensure_connected(connection)
+            deadline = _deadline_after(self._config.request_timeout)
 
             def mark_unresolved(first: int, error: GlyphaError, bytes_sent: int) -> None:
                 for index in range(first, len(normalized)):
@@ -289,7 +307,7 @@ class Client:
                     )
 
             try:
-                self._send(connection, output)
+                self._send(connection, output, deadline)
             except _SendFailure as error:
                 connection.reset()
                 mark_unresolved(0, error.error, error.bytes_sent)
@@ -297,13 +315,21 @@ class Client:
 
             for index, (opcode, _, _, _) in enumerate(normalized):
                 try:
-                    response = self._receive_response(connection)
+                    response = self._receive_response(connection, deadline)
                     self._validate_response(response, metadata[index][0], worker)
                 except (TransportError, ProtocolError, Unavailable) as error:
                     connection.reset()
                     mark_unresolved(index, error, len(output))
                     return responses
                 if response.status is Status.OK:
+                    if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE) and response.value:
+                        connection.reset()
+                        mark_unresolved(
+                            index,
+                            ProtocolError("mutation response value must be empty"),
+                            len(output),
+                        )
+                        return responses
                     responses[index] = PipelineResponse(
                         PipelineOutcome.SUCCEEDED, value=response.value
                     )
@@ -317,13 +343,11 @@ class Client:
                     error=error,
                 )
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
-                    with self._state_lock:
-                        self._healthy = False
+                    self._healthy = False
             return responses
 
     def close(self) -> None:
-        with self._state_lock:
-            self._healthy = False
+        self._healthy = False
         for connection in self._connections:
             with connection.lock:
                 connection.reset()
@@ -333,6 +357,12 @@ class Client:
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def _next_request_id(self) -> int:
         with self._request_id_lock:
@@ -345,7 +375,6 @@ class Client:
             opened = socket.create_connection(
                 (self._config.host, self._config.port), self._config.connect_timeout
             )
-            opened.settimeout(self._config.request_timeout)
             opened.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             return opened
         except OSError as error:
@@ -356,10 +385,11 @@ class Client:
     ) -> tuple[int, int]:
         connection.reset()
         connection.socket = self._open_socket()
+        deadline = _deadline_after(self._config.request_timeout)
         try:
             init_id = self._next_request_id()
             response = self._exchange(
-                connection, encode_request(Opcode.INIT, init_id)
+                connection, encode_request(Opcode.INIT, init_id), deadline
             )
             if (
                 response.status is not Status.OK
@@ -380,6 +410,7 @@ class Client:
                     bind_id,
                     target_worker=connection.worker,
                 ),
+                deadline,
             )
             if (
                 bound.status is not Status.OK
@@ -403,20 +434,26 @@ class Client:
         if connection.socket is None:
             self._bootstrap(connection, (self._worker_count, self._routing_epoch))
 
-    def _send(self, connection: _Connection, frame: bytes) -> None:
+    def _send(self, connection: _Connection, frame: bytes, deadline: float) -> None:
         assert connection.socket is not None
         sent = 0
         view = memoryview(frame)
         try:
             while sent < len(frame):
+                connection.socket.settimeout(_remaining(deadline))
                 count = connection.socket.send(view[sent:])
                 if count == 0:
                     raise OSError("socket closed during send")
                 sent += count
-        except (OSError, TimeoutError) as error:
-            raise _SendFailure(TransportError(f"request send failed: {error}"), sent) from error
+        except (OSError, TimeoutError, TransportError) as error:
+            wrapped = (
+                error
+                if isinstance(error, TransportError)
+                else TransportError(f"request send failed: {error}")
+            )
+            raise _SendFailure(wrapped, sent) from error
 
-    def _receive_response(self, connection: _Connection) -> Response:
+    def _receive_response(self, connection: _Connection, deadline: float) -> Response:
         assert connection.socket is not None
         while True:
             available = len(connection.input) - connection.input_offset
@@ -445,16 +482,19 @@ class Client:
                 del connection.input[: connection.input_offset]
                 connection.input_offset = 0
             try:
+                connection.socket.settimeout(_remaining(deadline))
                 chunk = connection.socket.recv(64 * 1024)
                 if not chunk:
                     raise OSError("server closed the connection")
                 connection.input.extend(chunk)
-            except (OSError, TimeoutError) as error:
+            except (OSError, TimeoutError, TransportError) as error:
+                if isinstance(error, TransportError):
+                    raise
                 raise TransportError(f"response receive failed: {error}") from error
 
-    def _exchange(self, connection: _Connection, frame: bytes) -> Response:
-        self._send(connection, frame)
-        return self._receive_response(connection)
+    def _exchange(self, connection: _Connection, frame: bytes, deadline: float) -> Response:
+        self._send(connection, frame, deadline)
+        return self._receive_response(connection, deadline)
 
     def _validate_response(self, response: Response, request_id: int, worker: int) -> None:
         if response.request_id != request_id:
@@ -463,12 +503,10 @@ class Client:
             response.worker_count != self._worker_count
             or response.routing_epoch != self._routing_epoch
         ):
-            with self._state_lock:
-                self._healthy = False
+            self._healthy = False
             raise Unavailable("server routing metadata changed")
         if response.owner_worker != worker and response.status is not Status.WRONG_OWNER:
-            with self._state_lock:
-                self._healthy = False
+            self._healthy = False
             raise ProtocolError("server response came from the wrong Worker")
 
     @staticmethod
@@ -486,12 +524,12 @@ class Client:
         return GlyphaError("server reported an internal error")
 
     def _read(self, opcode: Opcode, key: bytes, value: bytes) -> bytes:
-        if not self.healthy:
+        if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
         worker = 0 if opcode is Opcode.PING else self.worker_for(key)
         connection = self._connections[worker]
         with connection.lock:
-            if not self.healthy:
+            if not self._healthy:
                 raise Unavailable("client closed before read admission")
             last_error: GlyphaError = Unavailable("request was not attempted")
             for _ in range(2):
@@ -504,15 +542,12 @@ class Client:
                         raise InvalidArgument(str(error)) from error
                     if len(frame) > self._config.maximum_frame_bytes:
                         raise InvalidArgument("request exceeds the configured frame limit")
-                    response = self._exchange(
-                        connection,
-                        frame,
-                    )
+                    deadline = _deadline_after(self._config.request_timeout)
+                    response = self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)
                     if response.status is not Status.OK:
                         if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
-                            with self._state_lock:
-                                self._healthy = False
+                            self._healthy = False
                         raise self._status_error(response.status)
                     return response.value
                 except (TransportError, _SendFailure) as error:
@@ -520,7 +555,7 @@ class Client:
                     connection.reset()
                 except Unavailable as error:
                     connection.reset()
-                    if not self.healthy:
+                    if not self._healthy:
                         raise
                     last_error = error
                 except ProtocolError:
@@ -531,7 +566,7 @@ class Client:
     def _mutate(
         self, opcode: Opcode, key: bytes, value: bytes, expire_at_ns: int
     ) -> MutationResult:
-        if not self.healthy:
+        if not self._healthy:
             return MutationResult(
                 MutationOutcome.REJECTED,
                 Unavailable("client is closed or routing metadata changed"),
@@ -539,7 +574,7 @@ class Client:
         worker = self.worker_for(key)
         connection = self._connections[worker]
         with connection.lock:
-            if not self.healthy:
+            if not self._healthy:
                 return MutationResult(
                     MutationOutcome.REJECTED,
                     Unavailable("client closed before mutation admission"),
@@ -568,27 +603,32 @@ class Client:
                             MutationOutcome.REJECTED,
                             InvalidArgument("request exceeds the configured frame limit"),
                         )
-                    response = self._exchange(
-                        connection,
-                        frame,
-                    )
+                    deadline = _deadline_after(self._config.request_timeout)
+                    response = self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)
                 except _SendFailure as error:
                     connection.reset()
-                    if error.bytes_sent == 0 and attempt == 0:
-                        continue
+                    if error.bytes_sent == 0:
+                        if attempt == 0:
+                            continue
+                        return MutationResult(MutationOutcome.REJECTED, error.error)
                     return MutationResult(MutationOutcome.INDETERMINATE, error.error)
                 except (TransportError, ProtocolError, Unavailable) as error:
                     connection.reset()
                     return MutationResult(MutationOutcome.INDETERMINATE, error)
                 if response.status is Status.OK:
+                    if response.value:
+                        connection.reset()
+                        return MutationResult(
+                            MutationOutcome.INDETERMINATE,
+                            ProtocolError("mutation response value must be empty"),
+                        )
                     return MutationResult(MutationOutcome.COMMITTED)
                 error = self._status_error(response.status)
                 if response.status is Status.INTERNAL_ERROR:
                     return MutationResult(MutationOutcome.INDETERMINATE, error)
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
-                    with self._state_lock:
-                        self._healthy = False
+                    self._healthy = False
                 return MutationResult(MutationOutcome.REJECTED, error)
             return MutationResult(
                 MutationOutcome.REJECTED, Unavailable("could not send mutation")

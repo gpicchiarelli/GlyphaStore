@@ -1,0 +1,21 @@
+captured_at=2026-07-19T16:32:54Z
+git_sha=214c938e00b2d0c9e19e25e91b733b95c9ad59f5
+git_dirty_paths=25
+kernel=Darwin iMacdiGIACOMO63.fritz.box 25.5.0 Darwin Kernel Version 25.5.0: Tue Jun  9 22:26:22 PDT 2026; root:xnu-12377.121.10~1/RELEASE_ARM64_T8132 arm64
+hardware=arm64
+product=macOS 26.5.2 (25F84)
+cpu=Apple M4
+logical_cpu=10
+physical_cpu=10
+memory_bytes=17179869184
+python=3.13.14 (main, Jun 13 2026, 14:16:49) [Clang 21.0.0 (clang-2100.1.1.101)]
+python_sdk_version=0.1.0
+perl=version='5.42.2'; archname='darwin-thread-multi-2level'; 
+perl_sdk_version=0.1.0
+glyphastored=/Users/gpicchiarelli/Documents/GlyphaStore/build/macos-native-release/glyphastored
+glyphastored_version=glyphastored 0.1.0 
+ops=50000 warmup=1 repeats=7
+workload=ordered PUT/GET pipeline read-after-write, value_size=64
+storage_mode=volatile
+server_build=macos-native-release
+note=same-host loopback; load generator and server share the machine

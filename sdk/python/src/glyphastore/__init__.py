@@ -1,5 +1,6 @@
 """GlyphaStore native Python client."""
 
+from .async_client import AsyncClient
 from .client import (
     Client,
     ClientConfig,
@@ -18,7 +19,10 @@ from .client import (
     Unavailable,
 )
 
+__version__ = "0.1.0"
+
 __all__ = [
+    "AsyncClient",
     "Client",
     "ClientConfig",
     "GlyphaError",
@@ -34,4 +38,5 @@ __all__ = [
     "ProtocolError",
     "TransportError",
     "Unavailable",
+    "__version__",
 ]

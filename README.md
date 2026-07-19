@@ -311,18 +311,35 @@ with:
 ```
 
 The first native Python SDK is under `sdk/python` and uses no runtime dependency outside the Python
-standard library:
+standard library. It provides both a thread-safe synchronous `Client` and an `asyncio`
+`AsyncClient`:
 
 ```python
-from glyphastore import Client
+from glyphastore import AsyncClient, Client
 
 with Client.connect() as cache:
     if cache.put(b"key", b"value").committed:
         assert cache.get(b"key") == b"value"
 ```
 
-Run its canonical wire-fixture and TCP behavior tests with `./scripts/test-python-client.sh`.
+Run its tests with `./scripts/test-python-client.sh` and packaging verification (sdist, wheel,
+`twine check`, install-from-wheel) with `./scripts/package-python-client.sh`. See
+`sdk/python/PACKAGING.md` for PyPI upload.
 
+A native Perl SDK lives under `sdk/perl` with the same wire contract and mutation-outcome model:
+
+```perl
+use GlyphaStore::Client;
+
+my $cache = GlyphaStore::Client->connect(port => 7379);
+if ($cache->put("key", "value")->{outcome} eq 'committed') {
+    my $value = $cache->get("key");
+}
+```
+
+Run its suite with `./scripts/test-perl-client.sh` and CPAN packaging verification
+(`make disttest` + tarball) with `./scripts/package-perl-client.sh`. See
+`sdk/perl/PACKAGING.md` for PAUSE/MetaCPAN upload.
 ```bash
 ./scripts/dev.sh build
 ./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379

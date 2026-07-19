@@ -1,0 +1,7 @@
+Revision history for Perl distribution GlyphaStore
+
+0.1.0 2026-07-19
+        - Initial CPAN-ready release of the native wire-protocol v2 client.
+        - GlyphaStore::Client with INIT/BIND bootstrap, pipelines, and
+          indeterminate mutation outcomes.
+        - GlyphaStore::Protocol bidirectional codec and FNV-1a Worker routing.

@@ -1,16 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import socket
-import struct
 import sys
 import threading
 import unittest
 from pathlib import Path
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PACKAGE_ROOT / "src"))
+try:
+    import glyphastore  # noqa: F401
+except ImportError:
+    sys.path.insert(0, str(PACKAGE_ROOT / "src"))
 
 from glyphastore import (  # noqa: E402
+    AsyncClient,
     Client,
     ClientConfig,
     InvalidArgument,
@@ -20,23 +24,39 @@ from glyphastore import (  # noqa: E402
     PipelineOutcome,
     PipelineRequest,
 )
-from glyphastore.protocol import Opcode, Status  # noqa: E402
-
-REQUEST = struct.Struct("<IHBBQIIQII")
-RESPONSE = struct.Struct("<IHHQIIIIQ")
+from glyphastore.protocol import (  # noqa: E402
+    Opcode,
+    Status,
+    decode_request,
+    encode_response,
+    worker_for,
+)
 
 
 class FakeServer:
-    def __init__(self, *, disconnect_on_put: bool = False) -> None:
+    """Minimal protocol-v2 server with one bound connection per Worker."""
+
+    def __init__(
+        self,
+        *,
+        worker_count: int = 1,
+        disconnect_on_put: bool = False,
+        internal_error_on_put: bool = False,
+    ) -> None:
+        self._worker_count = worker_count
         self._disconnect_on_put = disconnect_on_put
+        self._internal_error_on_put = internal_error_on_put
         self._values: dict[bytes, bytes] = {}
+        self._values_lock = threading.Lock()
         self._listener = socket.socket()
         self._listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._listener.bind(("127.0.0.1", 0))
-        self._listener.listen(1)
+        self._listener.listen(max(worker_count * 4, 8))
         self.port = self._listener.getsockname()[1]
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self._threads: list[threading.Thread] = []
+        self._stop = threading.Event()
+        self._acceptor = threading.Thread(target=self._accept, daemon=True)
+        self._acceptor.start()
 
     @staticmethod
     def _receive_exact(connection: socket.socket, size: int) -> bytes:
@@ -48,67 +68,182 @@ class FakeServer:
             output.extend(chunk)
         return bytes(output)
 
-    def _receive(self, connection: socket.socket) -> tuple[Opcode, int, int, bytes, bytes]:
+    def _receive(self, connection: socket.socket):
         prefix = self._receive_exact(connection, 4)
         size = int.from_bytes(prefix, "little")
-        frame = prefix + self._receive_exact(connection, size - 4)
-        (_, version, opcode, flags, request_id, key_size, value_size, expiry, target, reserved) = (
-            REQUEST.unpack_from(frame)
-        )
-        if version != 2 or flags != 0 or reserved != 0:
-            raise ValueError
-        key = frame[40 : 40 + key_size]
-        value = frame[40 + key_size : 40 + key_size + value_size]
-        return Opcode(opcode), request_id, target, key, value
+        return decode_request(prefix + self._receive_exact(connection, size - 4))
 
-    @staticmethod
     def _send(
+        self,
         connection: socket.socket,
         status: Status,
         request_id: int,
+        *,
+        owner_worker: int,
         value: bytes = b"",
     ) -> None:
         connection.sendall(
-            RESPONSE.pack(40 + len(value), 2, status, request_id, len(value), 0, 1, 0, 9)
-            + value
+            encode_response(
+                status,
+                request_id,
+                value=value,
+                owner_worker=owner_worker,
+                worker_count=self._worker_count,
+                routing_epoch=9,
+            )
         )
 
-    def _run(self) -> None:
+    def _accept(self) -> None:
+        self._listener.settimeout(0.2)
         try:
-            connection, _ = self._listener.accept()
-            with connection:
-                bound = False
-                while True:
-                    opcode, request_id, target, key, value = self._receive(connection)
-                    if opcode is Opcode.INIT:
-                        self._send(connection, Status.OK, request_id, b"GlyphaStore/2")
-                    elif opcode is Opcode.BIND_WORKER and target == 0:
-                        bound = True
-                        self._send(connection, Status.OK, request_id)
-                    elif not bound:
-                        self._send(connection, Status.NOT_BOUND, request_id)
-                    elif opcode is Opcode.PING:
-                        self._send(connection, Status.OK, request_id, value)
-                    elif opcode is Opcode.PUT:
-                        self._values[key] = value
-                        if self._disconnect_on_put:
-                            return
-                        self._send(connection, Status.OK, request_id)
-                    elif opcode is Opcode.GET:
-                        if key in self._values:
-                            self._send(connection, Status.OK, request_id, self._values[key])
-                        else:
-                            self._send(connection, Status.NOT_FOUND, request_id)
-                    elif opcode is Opcode.ERASE:
-                        status = Status.OK if self._values.pop(key, None) is not None else Status.NOT_FOUND
-                        self._send(connection, status, request_id)
-        except (EOFError, OSError):
-            pass
+            while not self._stop.is_set():
+                try:
+                    connection, _ = self._listener.accept()
+                except TimeoutError:
+                    continue
+                except OSError:
+                    break
+                thread = threading.Thread(
+                    target=self._serve, args=(connection,), daemon=True
+                )
+                self._threads.append(thread)
+                thread.start()
         finally:
             self._listener.close()
 
+    def stop(self) -> None:
+        self._stop.set()
+        try:
+            socket.create_connection(("127.0.0.1", self.port), timeout=0.2).close()
+        except OSError:
+            pass
+
+    def _serve(self, connection: socket.socket) -> None:
+        bound_worker: int | None = None
+        try:
+            with connection:
+                while True:
+                    request = self._receive(connection)
+                    if request.opcode is Opcode.INIT:
+                        self._send(
+                            connection,
+                            Status.OK,
+                            request.request_id,
+                            owner_worker=0,
+                            value=b"GlyphaStore/2",
+                        )
+                    elif request.opcode is Opcode.BIND_WORKER:
+                        if request.target_worker >= self._worker_count:
+                            self._send(
+                                connection,
+                                Status.INVALID_REQUEST,
+                                request.request_id,
+                                owner_worker=0,
+                            )
+                            continue
+                        bound_worker = request.target_worker
+                        self._send(
+                            connection,
+                            Status.OK,
+                            request.request_id,
+                            owner_worker=bound_worker,
+                        )
+                    elif bound_worker is None:
+                        self._send(
+                            connection,
+                            Status.NOT_BOUND,
+                            request.request_id,
+                            owner_worker=0,
+                        )
+                    elif request.opcode is Opcode.PING:
+                        self._send(
+                            connection,
+                            Status.OK,
+                            request.request_id,
+                            owner_worker=bound_worker,
+                            value=request.value,
+                        )
+                    elif request.opcode is Opcode.PUT:
+                        owner = worker_for(request.key, self._worker_count)
+                        if bound_worker != owner:
+                            self._send(
+                                connection,
+                                Status.WRONG_OWNER,
+                                request.request_id,
+                                owner_worker=owner,
+                            )
+                            continue
+                        with self._values_lock:
+                            self._values[request.key] = request.value
+                        if self._disconnect_on_put:
+                            return
+                        if self._internal_error_on_put:
+                            self._send(
+                                connection,
+                                Status.INTERNAL_ERROR,
+                                request.request_id,
+                                owner_worker=bound_worker,
+                            )
+                            continue
+                        self._send(
+                            connection,
+                            Status.OK,
+                            request.request_id,
+                            owner_worker=bound_worker,
+                        )
+                    elif request.opcode is Opcode.GET:
+                        owner = worker_for(request.key, self._worker_count)
+                        if bound_worker != owner:
+                            self._send(
+                                connection,
+                                Status.WRONG_OWNER,
+                                request.request_id,
+                                owner_worker=owner,
+                            )
+                            continue
+                        with self._values_lock:
+                            value = self._values.get(request.key)
+                        if value is None:
+                            self._send(
+                                connection,
+                                Status.NOT_FOUND,
+                                request.request_id,
+                                owner_worker=bound_worker,
+                            )
+                        else:
+                            self._send(
+                                connection,
+                                Status.OK,
+                                request.request_id,
+                                owner_worker=bound_worker,
+                                value=value,
+                            )
+                    elif request.opcode is Opcode.ERASE:
+                        owner = worker_for(request.key, self._worker_count)
+                        if bound_worker != owner:
+                            self._send(
+                                connection,
+                                Status.WRONG_OWNER,
+                                request.request_id,
+                                owner_worker=owner,
+                            )
+                            continue
+                        with self._values_lock:
+                            found = self._values.pop(request.key, None) is not None
+                        self._send(
+                            connection,
+                            Status.OK if found else Status.NOT_FOUND,
+                            request.request_id,
+                            owner_worker=bound_worker,
+                        )
+        except (EOFError, OSError, ValueError):
+            pass
+
     def join(self) -> None:
-        self._thread.join(timeout=2)
+        self.stop()
+        self._acceptor.join(timeout=2)
+        for thread in self._threads:
+            thread.join(timeout=2)
 
 
 class ClientTests(unittest.TestCase):
@@ -126,6 +261,50 @@ class ClientTests(unittest.TestCase):
             self.assertTrue(client.erase(b"binary\x00key").committed)
             with self.assertRaises(NotFound):
                 client.get(b"binary\x00key")
+        server.join()
+
+    def test_internal_error_mutation_is_indeterminate(self) -> None:
+        server = FakeServer(internal_error_on_put=True)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            result = client.put(b"key", b"value")
+            self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
+        server.join()
+
+    def test_close_does_not_deadlock_against_inflight_read(self) -> None:
+        server = FakeServer()
+        client = Client.connect(ClientConfig(port=server.port, request_timeout=1.0))
+        started = threading.Event()
+        finished = threading.Event()
+
+        def reader() -> None:
+            started.set()
+            try:
+                client.get(b"missing")
+            except Exception:
+                pass
+            finished.set()
+
+        thread = threading.Thread(target=reader)
+        thread.start()
+        self.assertTrue(started.wait(1.0))
+        client.close()
+        self.assertTrue(finished.wait(2.0))
+        thread.join(timeout=2.0)
+        self.assertFalse(client.healthy)
+        server.join()
+
+    def test_multi_worker_bootstrap_and_routing(self) -> None:
+        server = FakeServer(worker_count=2)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            self.assertEqual(client.worker_count, 2)
+            keys = [f"mw-{index}".encode() for index in range(32)]
+            owners = {key: client.worker_for(key) for key in keys}
+            self.assertEqual(set(owners.values()), {0, 1})
+            for key in keys:
+                self.assertTrue(client.put(key, key[::-1]).committed)
+            for key in keys:
+                self.assertEqual(client.get(key), key[::-1])
+                self.assertEqual(worker_for(key, 2), owners[key])
         server.join()
 
     def test_disconnect_after_mutation_is_indeterminate(self) -> None:
@@ -181,6 +360,46 @@ class ClientTests(unittest.TestCase):
                         PipelineRequest(PipelineOpcode.GET, b"key"),
                     ]
                 )
+        server.join()
+
+
+class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
+    async def test_async_put_get_pipeline_and_close(self) -> None:
+        server = FakeServer()
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            self.assertEqual(client.worker_count, 1)
+            self.assertTrue((await client.put(b"async\x00key", b"value\xff")).committed)
+            self.assertEqual(await client.get(b"async\x00key"), b"value\xff")
+            self.assertEqual(await client.ping(b"ping"), b"ping")
+            responses = await client.execute_pipeline(
+                [
+                    PipelineRequest(PipelineOpcode.PUT, b"async\x00key", b"next"),
+                    PipelineRequest(PipelineOpcode.GET, b"async\x00key"),
+                ]
+            )
+            self.assertTrue(responses[0].succeeded)
+            self.assertEqual(responses[1].value, b"next")
+        server.join()
+
+    async def test_async_multi_worker_concurrent_pipelines(self) -> None:
+        server = FakeServer(worker_count=2)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            self.assertEqual(client.worker_count, 2)
+
+            async def round_trip(key: bytes) -> None:
+                value = key[::-1]
+                result = await client.put(key, value)
+                self.assertTrue(result.committed)
+                self.assertEqual(await client.get(key), value)
+
+            await asyncio.gather(*(round_trip(f"a{i}".encode()) for i in range(20)))
+        server.join()
+
+    async def test_async_disconnect_after_mutation_is_indeterminate(self) -> None:
+        server = FakeServer(disconnect_on_put=True)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            result = await client.put(b"key", b"value")
+            self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
         server.join()
 
 

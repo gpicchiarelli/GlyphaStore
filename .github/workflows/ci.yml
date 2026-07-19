@@ -76,6 +76,23 @@ jobs:
       - name: Verify format fixtures
         run: python scripts/generate_format_fixtures.py --verify tests/fixtures
 
+  sdk-clients:
+    name: Native SDK clients
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Test Python client
+        run: ./scripts/test-python-client.sh
+      - name: Test Perl client
+        run: ./scripts/test-perl-client.sh
+      - name: Package and verify Python client
+        run: ./scripts/package-python-client.sh
+      - name: Package and verify Perl client
+        run: ./scripts/package-perl-client.sh
+
   install-consumer:
     name: Release install / external consumer
     runs-on: ubuntu-latest
