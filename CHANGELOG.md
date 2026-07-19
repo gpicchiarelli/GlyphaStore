@@ -20,6 +20,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Fix hardening feature checks to evaluate their result variables, enforce extension-free ISO C++23
+  while permitting newer standards, apply supported stack-protector and PIE flags to every binary,
+  and enable optimized Linux `_FORTIFY_SOURCE=3`, RELRO, and immediate binding. A strict Release CI
+  job verifies both emitted compile/link commands and the resulting ELF security properties.
 - Track SwissTable deleted controls and effective occupancy, reuse tombstones exactly, and perform
   bounded same-capacity cleanup before probe stability degrades. Rehash now builds an independent
   table and key arena before atomic in-memory installation, preserving the old Index on allocation

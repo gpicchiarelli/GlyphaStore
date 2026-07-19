@@ -8,7 +8,7 @@ function(glyphastore_set_warnings target)
             -Wnull-dereference -Wdouble-promotion -Wformat=2
             -Wimplicit-fallthrough
         )
-        if(DEFINED ENV{CI})
+        if(GLYPHASTORE_WARNINGS_AS_ERRORS OR DEFINED ENV{CI})
             target_compile_options(${target} PRIVATE -Werror)
         endif()
     endif()

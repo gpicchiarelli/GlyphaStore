@@ -13,6 +13,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  strict-iso-hardening:
+    name: ISO C++23 / Linux hardening evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install build and ELF inspection tools
+        run: |
+          python -m pip install --disable-pip-version-check cmake ninja
+          sudo apt-get update
+          sudo apt-get install -y binutils
+      - name: Configure strict release
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-strict
+      - name: Build strict release
+        run: cmake --build --preset unix-strict
+      - name: Verify emitted flags and ELF protections
+        run: python scripts/verify_hardening.py build/unix-strict
+      - name: Test strict release
+        run: ctest --preset unix-strict
+
   build-test:
     name: ${{ matrix.os }} / ${{ matrix.compiler }}
     runs-on: ${{ matrix.os }}

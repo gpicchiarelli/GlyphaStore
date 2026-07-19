@@ -55,6 +55,7 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - `segment-format.md` and `manifest-format.md` provide detailed v1 field tables;
 - `durable-runtime-catalog.md` describes the implemented durable runtime;
 - `durable-compaction.md` describes whole-Worker durable compaction;
+- `build-hardening.md` defines compiler, linker, and artifact verification;
 - `server-model.md` explains Reactor and connection ownership.
 
 ## Decisions, development, and operations

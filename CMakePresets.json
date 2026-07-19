@@ -9,6 +9,7 @@
       "cacheVariables": {
         "CMAKE_CXX_STANDARD": "23",
         "CMAKE_CXX_STANDARD_REQUIRED": "ON",
+        "CMAKE_CXX_EXTENSIONS": "OFF",
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
         "BUILD_TESTING": "ON",
         "GLYPHASTORE_BUILD_BENCHMARKS": "ON"
@@ -114,6 +115,15 @@
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
     },
     {
+      "name": "unix-strict",
+      "inherits": "unix-release",
+      "displayName": "Unix strict ISO C++23 + hardening",
+      "cacheVariables": {
+        "CMAKE_CXX_EXTENSIONS": "OFF",
+        "GLYPHASTORE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "unix-asan",
       "inherits": "unix-debug",
       "displayName": "Unix ASan + UBSan",
@@ -184,6 +194,7 @@
     { "name": "xcode-release", "configurePreset": "xcode", "configuration": "Release" },
     { "name": "unix-debug", "configurePreset": "unix-debug" },
     { "name": "unix-release", "configurePreset": "unix-release" },
+    { "name": "unix-strict", "configurePreset": "unix-strict" },
     { "name": "unix-asan", "configurePreset": "unix-asan" },
     { "name": "unix-tsan", "configurePreset": "unix-tsan" },
     { "name": "unix-clang-tidy", "configurePreset": "unix-clang-tidy" },
@@ -199,6 +210,7 @@
     { "name": "macos-release-lto", "configurePreset": "macos-release-lto", "output": { "outputOnFailure": true } },
     { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "unix-debug", "configurePreset": "unix-debug", "output": { "outputOnFailure": true } },
+    { "name": "unix-strict", "configurePreset": "unix-strict", "output": { "outputOnFailure": true } },
     { "name": "unix-asan", "configurePreset": "unix-asan", "output": { "outputOnFailure": true } },
     { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } },
     { "name": "unix-release-lto", "configurePreset": "unix-release-lto", "output": { "outputOnFailure": true } }
