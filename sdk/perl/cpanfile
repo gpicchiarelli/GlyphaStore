@@ -11,3 +11,8 @@ on test => sub {
     requires 'FindBin';
     requires 'POSIX';
 };
+
+on develop => sub {
+    requires 'Perl::Critic', '1.140';
+    requires 'Perl::Tidy';
+};

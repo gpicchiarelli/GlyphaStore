@@ -279,4 +279,29 @@ for my $key (@keys) {
 $client->close;
 waitpid($pid, 0);
 
+($port, $pid) = start_server(worker_count => 2);
+$client = GlyphaStore::Client->connect(port => $port);
+{
+    my @wave = ([], []);
+    for my $key (@keys) {
+        my $owner = $owners{$key};
+        my $value = scalar reverse $key;
+        push @{$wave[$owner]}, { opcode => 'put', key => $key, value => "$value-c" };
+        push @{$wave[$owner]}, { opcode => 'get', key => $key };
+    }
+    my $all = $client->execute_worker_pipelines(\@wave);
+    is(scalar(@$all), 2, 'concurrent worker pipelines return one slot per Worker');
+    for my $worker (0, 1) {
+        my $responses = $all->[$worker];
+        is(scalar(@$responses), scalar(@{$wave[$worker]}), "worker $worker response count");
+        for (my $index = 0; $index < @{$wave[$worker]}; $index += 2) {
+            is($responses->[$index]->{outcome}, 'succeeded', "concurrent PUT worker $worker");
+            is($responses->[$index + 1]->{value}, $wave[$worker][$index]{value},
+                "concurrent GET worker $worker ordered");
+        }
+    }
+}
+$client->close;
+waitpid($pid, 0);
+
 done_testing;

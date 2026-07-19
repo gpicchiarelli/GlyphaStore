@@ -1,9 +1,13 @@
 benchmarks/client_benchmark.pl
 Changes
 cpanfile
+.perlcriticrc
+.perltidyrc
 lib/GlyphaStore.pm
 lib/GlyphaStore/Client.pm
+lib/GlyphaStore/Error.pm
 lib/GlyphaStore/Protocol.pm
+lib/GlyphaStore/SendFailure.pm
 LICENSE
 Makefile.PL
 MANIFEST			This list of files

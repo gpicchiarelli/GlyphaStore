@@ -57,6 +57,31 @@ Bidirectional request/response codec and Worker routing helpers.
 
 Runtime dependencies are core modules only.
 
+=head1 SUBROUTINES/METHODS
+
+This distribution root module exports no runtime API. Use
+L<GlyphaStore::Client> or L<GlyphaStore::Protocol>.
+
+=head1 DIAGNOSTICS
+
+None at this level.
+
+=head1 CONFIGURATION AND ENVIRONMENT
+
+None.
+
+=head1 DEPENDENCIES
+
+Core modules only.
+
+=head1 INCOMPATIBILITIES
+
+Requires Perl 5.32 or newer and a 64-bit integer build for protocol codecs.
+
+=head1 BUGS AND LIMITATIONS
+
+None known.
+
 =head1 SEE ALSO
 
 L<GlyphaStore::Client>, L<GlyphaStore::Protocol>,

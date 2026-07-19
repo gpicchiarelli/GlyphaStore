@@ -90,6 +90,14 @@ WriteMakefile(
                 file    => 'lib/GlyphaStore/Protocol.pm',
                 version => $version,
             },
+            'GlyphaStore::Error' => {
+                file    => 'lib/GlyphaStore/Error.pm',
+                version => $version,
+            },
+            'GlyphaStore::SendFailure' => {
+                file    => 'lib/GlyphaStore/SendFailure.pm',
+                version => $version,
+            },
         },
         x_static_install => 1,
     },

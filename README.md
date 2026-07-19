@@ -68,7 +68,9 @@ explicit.
 
 The scope is intentionally narrow: GlyphaStore is not Redis-compatible, a RESP implementation, a
 SQL or document database, or evidence of unverified throughput claims. The current TCP protocol is
-experimental and has no compatibility promise.
+experimental and has no compatibility promise. For when a fast KV path actually moves the needle in
+an application (and when it does not), see
+[Where performance matters](docs/architecture/where-performance-matters.md).
 
 ## Quick start
 
@@ -359,6 +361,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [C++ TCP client API](docs/reference/cpp-client-api.md) | Reference client, mutation outcomes, and cross-language SDK plan |
 | [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
+| [Where performance matters](docs/architecture/where-performance-matters.md) | When fast KV helps real apps; engine vs SDK; not a Redis claim |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
 | [Durability and recovery](docs/architecture/durability-recovery.md) | Alpha commit point, manifest ordering, crash states, and recovery |
 | [Durable Segment files](docs/architecture/segment-filesystem.md) | Platform allocation, alternate commit slots, and bounded recovery scan |

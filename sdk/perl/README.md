@@ -46,6 +46,10 @@ cd sdk/perl && perl Makefile.PL && make && make test && make install
 ./scripts/package-perl-client.sh
 ```
 
+`./scripts/test-perl-client.sh` runs **Perl::Critic at severity 1** (brutal) against
+`lib/` using `.perlcriticrc`, then the unit tests. Install the develop tools with
+`cpanm --installdeps --with-develop .` from `sdk/perl/`, or `cpanm Perl::Critic Perl::Tidy`.
+
 `GlyphaStore::Protocol` exposes the full bidirectional codec and FNV-1a Worker routing. See
 [PACKAGING.md](PACKAGING.md) for PAUSE/MetaCPAN upload steps.
 
@@ -56,5 +60,9 @@ perl benchmarks/client_benchmark.pl --port 7379 --workers 1 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 ```
 
-Perl ithreads clone interpreter state and are not a shared-client concurrency mechanism. Use one
-client per process/thread, or an event-loop adapter, when driving several Workers concurrently.
+With multiple Workers the harness defaults to overlapping pipelines via
+`execute_worker_pipelines` (`--no-concurrent` forces the old sequential drain).
+
+The client keeps pure-Perl framing but hot paths use native `pack 'Q<'`, avoid
+copying octet strings, wrap FNV-1a in 64-bit integer arithmetic, and reuse
+`IO::Select` / in-place `sysread` buffers.

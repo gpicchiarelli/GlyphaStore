@@ -12,6 +12,8 @@ core modules only (Perl ≥ 5.32).
   after changing the repository corpus.
 - License: BSD-3-Clause (`LICENSE`), matching the GlyphaStore project
 - PAUSE account authorized to upload the `GlyphaStore` namespace
+- For local quality gates: `Perl::Critic` and `Perl::Tidy` (see `cpanfile` develop
+  requirements). `./scripts/test-perl-client.sh` runs critic at severity 1 before tests.
 
 ## Local verification
 

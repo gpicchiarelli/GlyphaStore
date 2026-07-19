@@ -25,6 +25,12 @@ rm -rf blib GlyphaStore-* Makefile Makefile.old pm_to_blib MYMETA.* *.tar.gz
 
 "$perl" Makefile.PL
 "$make" manifest
+# ExtUtils::Manifest skips dotfiles by default; keep the brutal critic profile in the tarball.
+for profile in .perlcriticrc .perltidyrc; do
+  if [[ -f "$profile" ]] && ! grep -qxF "$profile" MANIFEST; then
+    echo "$profile" >>MANIFEST
+  fi
+done
 "$make" disttest
 "$make" dist
 
@@ -40,7 +46,10 @@ fi
   my $meta = decode_json(<$fh>);
   die "license missing\n" unless ($meta->{license} // "") =~ /bsd/i
       || grep { /bsd/i } @{$meta->{license} // []};
-  for my $module (qw(GlyphaStore GlyphaStore::Client GlyphaStore::Protocol)) {
+  for my $module (qw(
+    GlyphaStore GlyphaStore::Client GlyphaStore::Protocol
+    GlyphaStore::Error GlyphaStore::SendFailure
+  )) {
     die "$module missing from provides\n" unless $meta->{provides}{$module};
   }
   print "META provides and license OK\n";
@@ -49,7 +58,10 @@ fi
   local $/;
   my $text = <$fh>;
   die "license missing\n" unless $text =~ /license:\s*.*bsd/i;
-  for my $module (qw(GlyphaStore GlyphaStore::Client GlyphaStore::Protocol)) {
+  for my $module (qw(
+    GlyphaStore GlyphaStore::Client GlyphaStore::Protocol
+    GlyphaStore::Error GlyphaStore::SendFailure
+  )) {
     die "$module missing from provides\n" unless $text =~ /\Q$module\E/;
   }
   print "META provides and license OK\n";

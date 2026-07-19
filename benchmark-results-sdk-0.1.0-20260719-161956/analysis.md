@@ -85,3 +85,9 @@ show much higher rates when the load generator is not the Python/Perl SDK path.
 
 Publish raw results and the summary together so SDK performance can be tracked release-to-release.
 This 0.1.0 folder is the first such baseline.
+
+For how these numbers (and the much higher engine rates) translate to real services—cache, session,
+gateway, chat, gaming, AI—see
+[Where GlyphaStore performance matters](../../docs/architecture/where-performance-matters.md).
+The short version: the win is more concurrent requests per CPU when the hot path is many small
+lookups, not a magically faster page when PostgreSQL or an LLM dominates the budget.

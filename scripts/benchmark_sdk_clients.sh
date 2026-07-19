@@ -153,7 +153,17 @@ run_matrix() {
       "$perl" "$root/sdk/perl/benchmarks/client_benchmark.pl" \
         --host "$host" --port "$port" --workers "$w" --ops "$ops" \
         --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+        --no-concurrent \
         | tee "$outdir/perl/sequential-${label}.txt"
+
+      if [[ "$w" -gt 1 ]]; then
+        echo "running perl concurrent $label"
+        "$perl" "$root/sdk/perl/benchmarks/client_benchmark.pl" \
+          --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+          --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+          --concurrent \
+          | tee "$outdir/perl/concurrent-${label}.txt"
+      fi
     done
 
     stop_server "$port_file"
