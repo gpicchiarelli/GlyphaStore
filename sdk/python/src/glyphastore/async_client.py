@@ -283,6 +283,48 @@ class AsyncClient:
                 if not completed:
                     await connection.reset()
 
+    async def execute_batch(self, requests: Sequence[PipelineRequest]) -> list[PipelineResponse]:
+        """Group by Worker, run per-Worker pipelines concurrently, restore caller order."""
+        if not requests:
+            return []
+        if not self._healthy:
+            raise Unavailable("client is closed or routing metadata changed")
+
+        groups: dict[int, list[tuple[int, PipelineRequest]]] = {}
+        for index, request in enumerate(requests):
+            if not isinstance(request.opcode, PipelineOpcode):
+                raise InvalidArgument("batch request contains an invalid opcode")
+            key = bytes(request.key)
+            value = bytes(request.value)
+            if request.opcode in (PipelineOpcode.GET, PipelineOpcode.ERASE) and (
+                value or request.expire_at_ns != 0
+            ):
+                raise InvalidArgument("GET and ERASE batch requests cannot carry PUT fields")
+            worker = self.worker_for(key)
+            bucket = groups.setdefault(worker, [])
+            if len(bucket) >= self._config.maximum_pipeline_requests:
+                raise InvalidArgument("batch exceeds the configured per-Worker request limit")
+            bucket.append((index, request))
+
+        responses: list[PipelineResponse | None] = [None] * len(requests)
+
+        async def run_group(
+            items: list[tuple[int, PipelineRequest]],
+        ) -> tuple[list[int], list[PipelineResponse]]:
+            indices = [index for index, _ in items]
+            group_requests = [request for _, request in items]
+            return indices, await self.execute_pipeline(group_requests)
+
+        results = await asyncio.gather(*(run_group(items) for items in groups.values()))
+        for indices, group_responses in results:
+            for index, response in zip(indices, group_responses, strict=True):
+                responses[index] = response
+
+        return [
+            response if response is not None else PipelineResponse(PipelineOutcome.FAILED)
+            for response in responses
+        ]
+
     async def close(self) -> None:
         self._healthy = False
         for connection in self._connections:

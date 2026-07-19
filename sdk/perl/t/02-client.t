@@ -304,4 +304,45 @@ $client = GlyphaStore::Client->connect(port => $port);
 $client->close;
 waitpid($pid, 0);
 
+($port, $pid) = start_server(worker_count => 2);
+$client = GlyphaStore::Client->connect(port => $port);
+{
+    my @batch;
+    for my $key (@keys) {
+        my $value = scalar reverse $key;
+        push @batch, { opcode => 'put', key => $key, value => "$value-b" };
+    }
+    for my $key (@keys) {
+        push @batch, { opcode => 'get', key => $key };
+    }
+    my $ordered = $client->execute_batch(\@batch);
+    is(scalar(@$ordered), scalar(@batch), 'execute_batch restores caller order length');
+    for my $index (0 .. $#keys) {
+        is($ordered->[$index]->{outcome}, 'succeeded', "batch PUT $keys[$index]");
+        is($ordered->[scalar(@keys) + $index]->{value}, (scalar reverse $keys[$index]) . '-b',
+            "batch GET $keys[$index] ordered");
+    }
+}
+$client->close;
+waitpid($pid, 0);
+
+($port, $pid) = start_server(worker_count => 2);
+$client = GlyphaStore::Client->connect(
+    port => $port,
+    maximum_pipeline_requests => 1,
+);
+{
+    my $key0 = (grep { $owners{$_} == 0 } @keys)[0];
+    ok(!eval {
+        $client->execute_batch([
+            { opcode => 'get', key => $key0 },
+            { opcode => 'get', key => $key0 },
+        ]);
+        1;
+    } && ref($@) eq 'GlyphaStore::Error' && $@->category eq 'invalid_argument',
+        'batch per-Worker limit fails before transmission');
+}
+$client->close;
+waitpid($pid, 0);
+
 done_testing;

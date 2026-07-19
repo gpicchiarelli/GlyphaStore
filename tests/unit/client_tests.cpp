@@ -321,6 +321,55 @@ GLYPHA_TEST("C++ client pipeline preserves order and enforces one Worker") {
     GLYPHA_REQUIRE(client.healthy());
 }
 
+GLYPHA_TEST("C++ client batch groups Workers and restores caller order") {
+    constexpr std::size_t workers = 2;
+    RunningServer server{workers};
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+
+    const auto key0 = key_for_worker(0, workers);
+    const auto key1 = key_for_worker(1, workers);
+    GLYPHA_REQUIRE(client.worker_for(key0) == 0);
+    GLYPHA_REQUIRE(client.worker_for(key1) == 1);
+
+    const std::array requests{
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::put,
+                                             .key = bytes(key1),
+                                             .value = bytes("v1")},
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::put,
+                                             .key = bytes(key0),
+                                             .value = bytes("v0")},
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
+                                             .key = bytes(key1)},
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
+                                             .key = bytes(key0)},
+    };
+    auto executed = client.execute_batch(requests);
+    GLYPHA_REQUIRE(executed.has_value());
+    GLYPHA_REQUIRE(executed->size() == requests.size());
+    for (const auto& response : *executed) {
+        GLYPHA_REQUIRE(response.succeeded());
+    }
+    GLYPHA_REQUIRE(text((*executed)[2].value) == "v1");
+    GLYPHA_REQUIRE(text((*executed)[3].value) == "v0");
+    client.close();
+
+    auto limited = glyphastore::client::Client::connect(
+        {.port = server.port(), .maximum_pipeline_requests = 1});
+    GLYPHA_REQUIRE(limited.has_value());
+    auto limited_client = std::move(*limited);
+    const std::array oversized{
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
+                                             .key = bytes(key0)},
+        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
+                                             .key = bytes(key0)},
+    };
+    auto rejected = limited_client.execute_batch(oversized);
+    GLYPHA_REQUIRE(!rejected.has_value());
+    GLYPHA_REQUIRE(rejected.error().code == glyphastore::ErrorCode::resource_exhausted);
+}
+
 GLYPHA_TEST("C++ client pipeline preserves indeterminate mutation outcomes after disconnect") {
     DisconnectingPipelineServer server;
     auto connected = glyphastore::client::Client::connect({.port = server.port()});

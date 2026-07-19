@@ -106,9 +106,13 @@ Official clients implement **at most one** automatic retry for:
 Clients **must not** automatically retry:
 
 - pipelines as a whole;
+- multi-Worker `execute_batch` as a whole (same rule: no automatic retry of the batch);
 - mutations after any positive `bytes_sent`;
 - `INTERNAL_ERROR` or other `indeterminate` outcomes;
 - unhealthy clients (routing epoch/count change, wrong owner on bound traffic).
+
+`execute_batch` is a client-side grouping helper: one pipeline per Worker, responses restored to
+caller order. It is not atomic across Workers.
 
 Reconnect after a transient failure must accept only the **original** `worker_count` and
 `routing_epoch`. A mismatch → `unavailable`, client unhealthy, no further automatic retry.

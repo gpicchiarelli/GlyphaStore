@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
+#include <functional>
+#include <future>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -22,6 +24,7 @@
 #include <unistd.h>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace glyphastore::client {
 namespace {
@@ -669,6 +672,99 @@ class Client::Impl final {
         return responses;
     }
 
+    [[nodiscard]] auto execute_batch(const std::span<const PipelineRequest> requests)
+        -> Result<std::vector<PipelineResponse>> {
+        if (requests.empty()) {
+            return std::vector<PipelineResponse>{};
+        }
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return fail(ErrorCode::unavailable, "client is closed or routing metadata changed");
+        }
+
+        struct WorkerJob {
+            std::vector<PipelineRequest> requests;
+            std::vector<std::size_t> original_indices;
+        };
+
+        std::vector<WorkerJob> jobs(worker_count_);
+        for (std::size_t index = 0; index < requests.size(); ++index) {
+            const auto& request = requests[index];
+            if (!is_supported(request.opcode)) {
+                return fail(ErrorCode::invalid_argument, "batch request contains an invalid opcode");
+            }
+            if ((request.opcode == PipelineOpcode::get || request.opcode == PipelineOpcode::erase) &&
+                (!request.value.empty() || request.put_options.expire_at_ns != 0)) {
+                return fail(ErrorCode::invalid_argument,
+                            "GET and ERASE batch requests cannot carry PUT fields");
+            }
+            const auto worker = worker_for(request.key);
+            if (worker >= worker_count_) {
+                return fail(ErrorCode::internal_error, "batch routing produced an invalid Worker");
+            }
+            auto& job = jobs[worker];
+            if (job.requests.size() >= config_.maximum_pipeline_requests) {
+                return fail(ErrorCode::resource_exhausted,
+                            "batch exceeds the configured per-Worker request limit");
+            }
+            job.requests.push_back(request);
+            job.original_indices.push_back(index);
+        }
+
+        std::vector<PipelineResponse> responses(requests.size());
+        struct ActiveJob {
+            WorkerJob* job{};
+            std::future<Result<std::vector<PipelineResponse>>> future;
+        };
+        std::vector<ActiveJob> active;
+        active.reserve(worker_count_);
+
+        const auto run_job = [this](WorkerJob& job) -> Result<std::vector<PipelineResponse>> {
+            return execute_pipeline(job.requests);
+        };
+
+        for (auto& job : jobs) {
+            if (job.requests.empty()) {
+                continue;
+            }
+            if (active.empty() &&
+                std::none_of(jobs.begin(), jobs.end(), [&](const WorkerJob& other) {
+                    return &other != &job && !other.requests.empty();
+                })) {
+                auto executed = run_job(job);
+                if (!executed) {
+                    for (const auto index : job.original_indices) {
+                        responses[index].outcome = PipelineOutcome::failed;
+                        responses[index].error = executed.error();
+                    }
+                    return responses;
+                }
+                for (std::size_t offset = 0; offset < job.original_indices.size(); ++offset) {
+                    responses[job.original_indices[offset]] = std::move((*executed)[offset]);
+                }
+                return responses;
+            }
+            active.push_back({
+                .job = &job,
+                .future = std::async(std::launch::async, run_job, std::ref(job)),
+            });
+        }
+
+        for (auto& item : active) {
+            auto executed = item.future.get();
+            if (!executed) {
+                for (const auto index : item.job->original_indices) {
+                    responses[index].outcome = PipelineOutcome::failed;
+                    responses[index].error = executed.error();
+                }
+                continue;
+            }
+            for (std::size_t offset = 0; offset < item.job->original_indices.size(); ++offset) {
+                responses[item.job->original_indices[offset]] = std::move((*executed)[offset]);
+            }
+        }
+        return responses;
+    }
+
     [[nodiscard]] auto worker_count() const noexcept -> std::uint32_t {
         return worker_count_;
     }
@@ -943,6 +1039,18 @@ auto Client::execute_pipeline(const std::span<const PipelineRequest> requests)
         return implementation_->execute_pipeline(requests);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "pipeline allocation failed before completion");
+    }
+}
+
+auto Client::execute_batch(const std::span<const PipelineRequest> requests)
+    -> Result<std::vector<PipelineResponse>> {
+    try {
+        if (!implementation_) {
+            return fail(ErrorCode::unavailable, "client was moved from");
+        }
+        return implementation_->execute_batch(requests);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, "batch allocation failed before completion");
     }
 }
 

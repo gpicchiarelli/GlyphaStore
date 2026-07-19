@@ -102,6 +102,12 @@ class Client final {
     [[nodiscard]] auto execute_pipeline(std::span<const PipelineRequest> requests)
         -> Result<std::vector<PipelineResponse>>;
 
+    // Groups requests by Worker, runs one pipeline per Worker (concurrently when
+    // more than one Worker is involved), and restores caller order. Not atomic:
+    // Workers succeed or fail independently after admission.
+    [[nodiscard]] auto execute_batch(std::span<const PipelineRequest> requests)
+        -> Result<std::vector<PipelineResponse>>;
+
     [[nodiscard]] auto worker_for(std::span<const std::byte> key) const noexcept -> std::uint32_t;
     [[nodiscard]] auto worker_for(std::string_view key) const noexcept -> std::uint32_t;
     [[nodiscard]] auto worker_count() const noexcept -> std::uint32_t;

@@ -23,13 +23,16 @@ my $value = $cache->get("session\x00key") if $stored->{outcome} eq 'committed';
 $cache->close;
 ```
 
-Ordered, non-atomic pipelines use hash references and return one positional result per request:
+Ordered, non-atomic pipelines use hash references and return one positional result per request.
+`execute_batch` groups by Worker, overlaps per-Worker pipelines, and restores caller order (not a
+transaction). Prefer `execute_worker_pipelines` when you already have per-Worker vectors.
 
 ```perl
 my $responses = $cache->execute_pipeline([
     { opcode => 'put', key => 'key', value => 'value' },
     { opcode => 'get', key => 'key' },
 ]);
+my $ordered = $cache->execute_batch(\@mixed_worker_requests);
 ```
 
 ## Install

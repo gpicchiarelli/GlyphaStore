@@ -29,6 +29,13 @@ async with await AsyncClient.connect() as cache:
         PipelineRequest(PipelineOpcode.GET, b"key"),
     ])
     assert all(response.succeeded for response in responses)
+    # Multi-Worker: groups by Worker, overlaps pipelines, restores caller order.
+    ordered = await cache.execute_batch([
+        PipelineRequest(PipelineOpcode.PUT, b"a", b"1"),
+        PipelineRequest(PipelineOpcode.PUT, b"b", b"2"),
+        PipelineRequest(PipelineOpcode.GET, b"a"),
+        PipelineRequest(PipelineOpcode.GET, b"b"),
+    ])
 ```
 
 ## Install

@@ -595,6 +595,44 @@ sub execute_pipeline {
     return \@responses;
 }
 
+sub execute_batch {
+    my ($self, $requests) = @_;
+    _throw('invalid_argument', 'batch requests must be an array reference')
+        if ref($requests) ne 'ARRAY';
+    return [] if !@$requests;
+    _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
+
+    my @batches = map { [] } 0 .. $self->{worker_count} - 1;
+    my @original_indices = map { [] } 0 .. $self->{worker_count} - 1;
+    for my $index (0 .. $#$requests) {
+        my $request = $requests->[$index];
+        _throw('invalid_argument', 'batch request must be a hash reference')
+            if ref($request) ne 'HASH';
+        my $name = $request->{opcode} // '';
+        _throw('invalid_argument', 'batch request contains an invalid opcode')
+            if $name ne 'get' && $name ne 'put' && $name ne 'erase';
+        my $key = $request->{key} // '';
+        my $worker = $self->worker_for($key);
+        if (@{$batches[$worker]} >= $self->{maximum_pipeline_requests}) {
+            _throw('invalid_argument', 'batch exceeds the configured per-Worker request limit');
+        }
+        push @{$batches[$worker]}, $request;
+        push @{$original_indices[$worker]}, $index;
+    }
+
+    my $worker_results = $self->execute_worker_pipelines(\@batches);
+    my @responses = map { { outcome => 'failed', value => '', error => undef } } 0 .. $#$requests;
+    for my $worker (0 .. $self->{worker_count} - 1) {
+        my $group = $worker_results->[$worker] // [];
+        my $indices = $original_indices[$worker];
+        for my $offset (0 .. $#$indices) {
+            $responses[$indices->[$offset]] = $group->[$offset]
+                if defined $group->[$offset];
+        }
+    }
+    return \@responses;
+}
+
 # Drive one pipeline batch per Worker concurrently via a shared select loop.
 # $batches is an arrayref indexed by Worker; each element is an arrayref of requests (or undef/[]).
 sub _pipeline_failed_responses {
@@ -943,6 +981,11 @@ C<execute_worker_pipelines>.
 =item ping($payload?)
 
 =item execute_pipeline(\@requests)
+
+=item execute_batch(\@requests)
+
+Group requests by Worker, run one pipeline per Worker (overlapping I/O when multiple Workers are
+used), and restore caller order. Not an atomic transaction.
 
 =item execute_worker_pipelines(\@batches_by_worker)
 

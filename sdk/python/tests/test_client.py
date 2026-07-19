@@ -362,6 +362,41 @@ class ClientTests(unittest.TestCase):
                 )
         server.join()
 
+    def test_batch_groups_workers_and_restores_order(self) -> None:
+        server = FakeServer(worker_count=2)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            keys = [f"batch-{index}".encode() for index in range(64)]
+            owners = {key: client.worker_for(key) for key in keys}
+            self.assertEqual(set(owners.values()), {0, 1})
+            requests = [
+                PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys
+            ] + [PipelineRequest(PipelineOpcode.GET, key) for key in keys]
+            responses = client.execute_batch(requests)
+            self.assertEqual(len(responses), len(requests))
+            for response in responses:
+                self.assertTrue(response.succeeded)
+            for index, key in enumerate(keys):
+                self.assertEqual(responses[len(keys) + index].value, key[::-1])
+        server.join()
+
+        server = FakeServer(worker_count=2)
+        with Client.connect(
+            ClientConfig(port=server.port, maximum_pipeline_requests=1)
+        ) as limited:
+            key0 = next(
+                key
+                for key in (f"batch-limit-{index}".encode() for index in range(64))
+                if limited.worker_for(key) == 0
+            )
+            with self.assertRaises(InvalidArgument):
+                limited.execute_batch(
+                    [
+                        PipelineRequest(PipelineOpcode.GET, key0),
+                        PipelineRequest(PipelineOpcode.GET, key0),
+                    ]
+                )
+        server.join()
+
 
 class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_async_put_get_pipeline_and_close(self) -> None:
@@ -393,6 +428,22 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(await client.get(key), value)
 
             await asyncio.gather(*(round_trip(f"a{i}".encode()) for i in range(20)))
+        server.join()
+
+    async def test_async_batch_groups_workers_and_restores_order(self) -> None:
+        server = FakeServer(worker_count=2)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            keys = [f"abatch-{index}".encode() for index in range(32)]
+            self.assertEqual({client.worker_for(key) for key in keys}, {0, 1})
+            requests = [
+                PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys
+            ] + [PipelineRequest(PipelineOpcode.GET, key) for key in keys]
+            responses = await client.execute_batch(requests)
+            self.assertEqual(len(responses), len(requests))
+            for response in responses:
+                self.assertTrue(response.succeeded)
+            for index, key in enumerate(keys):
+                self.assertEqual(responses[len(keys) + index].value, key[::-1])
         server.join()
 
     async def test_async_disconnect_after_mutation_is_indeterminate(self) -> None:

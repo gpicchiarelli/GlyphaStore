@@ -58,19 +58,12 @@ own policy. A stable `client_id + operation_id` retained briefly on the server w
 `PUT`/`ERASE` retries without double-apply. Not required for the first release; it turns
 indeterminate from “application problem” into “protocol-managed.”
 
-### 4. Multi-Worker batch API
+### 4. Multi-Worker batch API — **done**
 
-Pipelines remain single-Worker by design. Add a distinct non-atomic API (name TBD; e.g.
-`execute_batch`) that:
-
-1. groups requests by Worker;
-2. sends one pipeline per Worker;
-3. overlaps groups;
-4. restores caller order in the response vector.
-
-Perl already exposes `execute_worker_pipelines` for concurrent per-Worker batches; C++ and Python
-need the same surface, and all three need a single ordered multi-Worker batch helper for generic
-apps.
+`execute_batch` (C++ / Python sync+async / Perl) groups requests by Worker, runs one pipeline per
+Worker (overlapping when multiple Workers are involved), and restores caller order. Not a
+transaction: Workers succeed or fail independently after admission. Perl still exposes
+`execute_worker_pipelines` for explicit per-Worker vectors.
 
 ### 5. Configurable connections per Worker (measure first)
 
