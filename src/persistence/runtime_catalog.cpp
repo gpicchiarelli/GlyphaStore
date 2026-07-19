@@ -335,6 +335,37 @@ auto resolve_interrupted_compaction(DataDirectory& directory, const std::uint64_
     return std::optional<DurableRecoveryState>{std::move(*recovered)};
 }
 
+auto rollback_prepared_compaction(DataDirectory& directory, const Manifest& old_manifest,
+                                  const std::span<const ManifestSegmentEntry> replacements,
+                                  const DurableResourceLimits& limits) -> Result<NamespaceAuditReport> {
+    auto authority = directory.read_manifest(limits.max_manifest_bytes);
+    if (!authority) {
+        return unexpected(authority.error());
+    }
+    if (*authority != old_manifest) {
+        return fail(ErrorCode::sequence_conflict,
+                    "cannot roll back compaction after its old manifest lost authority");
+    }
+    const auto retired = directory.retire_compaction_segments(old_manifest.store_id, replacements);
+    if (!retired.durable()) {
+        return unexpected(
+            retired.error.value_or(Error{ErrorCode::io_error, "compaction replacement rollback failed"}));
+    }
+    const auto removed = directory.remove_compaction_intent();
+    if (!removed.durable()) {
+        return unexpected(
+            removed.error.value_or(Error{ErrorCode::io_error, "compaction intent rollback failed"}));
+    }
+    auto audit = audit_data_directory(directory, old_manifest);
+    if (!audit) {
+        return unexpected(audit.error());
+    }
+    if (auto safe = validate_namespace_for_recovery(*audit); !safe) {
+        return unexpected(safe.error());
+    }
+    return audit;
+}
+
 } // namespace
 
 struct DurableRuntimeCatalog::PendingGroupMutation {
@@ -345,6 +376,16 @@ struct DurableRuntimeCatalog::PendingGroupMutation {
     std::uint64_t key_hash{};
     std::uint64_t expire_at_ns{};
     bool completed{};
+};
+
+// One immutable handle for one exact on-disk Segment generation. A GET may
+// carry a RecordRef outside the Worker mutex only as part of a shared ownership
+// of this object. POSIX unlink then retires the catalog name without
+// invalidating an already linearized reader's descriptor.
+struct DurableRuntimeCatalog::RuntimeSegmentGeneration {
+    SegmentHeaderIdentity identity;
+    SelectedSegmentCommit selected;
+    DurableSegmentFile file;
 };
 
 struct DurableRuntimeCatalog::RuntimeWorker {
@@ -370,6 +411,8 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     detail::AdaptiveBatchSizer batch_sizer;
     bool batch_closing{};
     std::condition_variable batch_closed;
+    bool compaction_commit_active{};
+    std::condition_variable compaction_commit_finished;
 };
 
 DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
@@ -579,7 +622,8 @@ void DurableRuntimeCatalog::wait_for_batch_close(RuntimeWorker& worker, PendingG
 
 auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) -> Status {
     for (auto& worker : workers_) {
-        std::lock_guard lock{worker->mutex};
+        std::unique_lock lock{worker->mutex};
+        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
         const std::shared_lock catalog_lock{catalog_mutex_};
         if (auto flushed = flush_worker_batch(*worker, sync); !flushed) {
             return flushed;
@@ -590,7 +634,8 @@ auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) 
 
 auto DurableRuntimeCatalog::flush_due_batches(const SegmentCommitSync sync) -> Status {
     for (auto& worker : workers_) {
-        std::lock_guard lock{worker->mutex};
+        std::unique_lock lock{worker->mutex};
+        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
         if (!should_flush_batch(*worker)) {
             continue;
         }
@@ -643,13 +688,45 @@ auto DurableRuntimeCatalog::open_locked(DataDirectory directory, const std::uint
         return fail(ErrorCode::unavailable,
                     "durable Store requires interrupted rotation completion before runtime service");
     }
-    return std::unique_ptr<DurableRuntimeCatalog>(
+    auto runtime = std::unique_ptr<DurableRuntimeCatalog>(
         new DurableRuntimeCatalog(std::move(directory), std::move(*recovered), options));
+    if (auto pinned = runtime->initialize_generation_pins(); !pinned) {
+        return unexpected(pinned.error());
+    }
+    return runtime;
+}
+
+auto DurableRuntimeCatalog::initialize_generation_pins() -> Status {
+    if (manifest_.segments.size() != segments_.size()) {
+        return fail(ErrorCode::corrupted_data, "runtime Segment catalog is not aligned");
+    }
+    std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> pins;
+    pins.reserve(manifest_.segments.size());
+    for (std::size_t index = 0; index < manifest_.segments.size(); ++index) {
+        const auto& entry = manifest_.segments[index];
+        const SegmentHeaderIdentity identity{.store_id = manifest_.store_id,
+                                             .segment_id = entry.segment_id,
+                                             .generation = entry.generation,
+                                             .owner_worker = entry.owner_worker};
+        auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_only);
+        if (!opened) {
+            return unexpected(opened.error());
+        }
+        if (opened->selected_commit() != segments_[index].selected) {
+            return fail(ErrorCode::corrupted_data,
+                        "runtime Segment commit boundary changed while generation pins were built");
+        }
+        pins.push_back(std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
+            .identity = identity, .selected = segments_[index].selected, .file = std::move(*opened)}));
+    }
+    generation_pins_ = std::move(pins);
+    return {};
 }
 
 auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
     for (auto& worker : workers_) {
-        std::lock_guard lock{worker->mutex};
+        std::unique_lock lock{worker->mutex};
+        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
         if (!worker->cached_file || !worker->cached_writable || !worker->cached_file->is_dirty()) {
             continue;
         }
@@ -744,78 +821,102 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
         std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.key.data()), key.key.size()};
     const auto worker_index = route_worker(key.hash, workers_.size());
     auto& worker = *workers_[worker_index];
-    const std::lock_guard lock{worker.mutex};
-    const std::shared_lock catalog_lock{catalog_mutex_};
-    if (!healthy()) {
-        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
-    }
 
-    const auto reference = worker.index.find(key);
-    if (!reference) {
-        return fail(ErrorCode::not_found, "key is not present");
-    }
-    const auto found =
-        std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
-                         [](const ManifestSegmentEntry& entry, const SegmentId id) {
-                             return entry.segment_id.value < id.value;
-                         });
-    if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
-        return fail_closed(
-            Error{ErrorCode::corrupted_data, "durable Index references a Segment absent from the catalog"});
-    }
-    const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
-    if (found->generation != reference->generation || found->owner_worker != worker.worker_id) {
-        return fail_closed(Error{ErrorCode::corrupted_data,
-                                 "durable Index reference disagrees with catalog identity or ownership"});
-    }
-
-    if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
-        if (hot_record_matches(cached->second, *reference)) {
-            if (cached->second.expire_at_ns != 0 && now_ns != 0 && cached->second.expire_at_ns <= now_ns) {
-                return fail(ErrorCode::not_found, "key has expired");
-            }
-            return Result<OwnedValue>{owned_value_from_hot(cached->second)};
-        }
-        worker.hot_records.erase(cached);
-    }
-
-    const SegmentHeaderIdentity identity{
-        .store_id = manifest_.store_id,
-        .segment_id = found->segment_id,
-        .generation = found->generation,
-        .owner_worker = found->owner_worker,
+    struct PinnedRead final {
+        RecordRef reference;
+        std::shared_ptr<const RuntimeSegmentGeneration> generation;
     };
-    if (!worker.cached_file || worker.cached_file->identity() != identity) {
-        worker.cached_file.reset();
-        auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_only);
-        if (!opened) {
-            auto error = opened.error();
-            if (error.code == ErrorCode::not_found) {
-                error.code = ErrorCode::corrupted_data;
-            }
-            error.message =
-                "runtime Segment " + std::to_string(found->segment_id.value) + ": " + error.message;
-            return fail_closed(std::move(error));
-        }
-        if (opened->selected_commit() != segments_[catalog_index].selected) {
-            return fail_closed(Error{
-                ErrorCode::corrupted_data,
-                "runtime Segment commit boundary changed after durable recovery",
-            });
-        }
-        worker.cached_file.emplace(std::move(*opened));
-        worker.cached_writable = false;
-    }
 
-    ReadContext context{.expected_key = key_bytes, .expected_hash = key.hash, .now_ns = now_ns};
-    if (auto visited = worker.cached_file->visit_record(*reference, &context, &copy_verified_value);
-        !visited) {
-        if (visited.error().code == ErrorCode::not_found) {
-            return unexpected(visited.error());
+    for (;;) {
+        std::optional<PinnedRead> read;
+        {
+            const std::lock_guard worker_lock{worker.mutex};
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (!healthy()) {
+                return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+            }
+
+            const auto reference = worker.index.find(key);
+            if (!reference) {
+                return fail(ErrorCode::not_found, "key is not present");
+            }
+            const auto found =
+                std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
+                                 [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                                     return entry.segment_id.value < id.value;
+                                 });
+            if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
+                return fail_closed(Error{ErrorCode::corrupted_data,
+                                         "durable Index references a Segment absent from the catalog"});
+            }
+            const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+            if (found->generation != reference->generation || found->owner_worker != worker.worker_id ||
+                catalog_index >= generation_pins_.size()) {
+                return fail_closed(
+                    Error{ErrorCode::corrupted_data,
+                          "durable Index reference disagrees with catalog identity or ownership"});
+            }
+
+            if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
+                if (hot_record_matches(cached->second, *reference)) {
+                    if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
+                        cached->second.expire_at_ns <= now_ns) {
+                        return fail(ErrorCode::not_found, "key has expired");
+                    }
+                    return Result<OwnedValue>{owned_value_from_hot(cached->second)};
+                }
+                worker.hot_records.erase(cached);
+            }
+
+            const auto& pin = generation_pins_[catalog_index];
+            if (!pin || pin->identity.segment_id != reference->segment_id ||
+                pin->identity.generation != reference->generation ||
+                pin->identity.owner_worker != worker.worker_id) {
+                return fail_closed(Error{ErrorCode::corrupted_data,
+                                         "durable Segment generation pin disagrees with the Index"});
+            }
+            read.emplace(PinnedRead{.reference = *reference, .generation = pin});
         }
-        return fail_closed(visited.error());
+
+        ReadContext context{.expected_key = key_bytes, .expected_hash = key.hash, .now_ns = now_ns};
+        auto visited = read->generation->file.visit_record(read->reference, &context, &copy_verified_value);
+
+        // Linearization point for a cold GET: while holding the Worker and
+        // catalog locks, the key must still designate both the same RecordRef
+        // and the same immutable generation pin. I/O and CRC validation happen
+        // before this point and never hold either lock.
+        bool still_current{};
+        {
+            const std::lock_guard worker_lock{worker.mutex};
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (!healthy()) {
+                return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+            }
+            const auto current = worker.index.find(key);
+            if (current && *current == read->reference) {
+                const auto found = std::lower_bound(
+                    manifest_.segments.begin(), manifest_.segments.end(), current->segment_id,
+                    [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                        return entry.segment_id.value < id.value;
+                    });
+                if (found != manifest_.segments.end() && found->segment_id == current->segment_id) {
+                    const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+                    still_current = catalog_index < generation_pins_.size() &&
+                                    generation_pins_[catalog_index] == read->generation;
+                }
+            }
+        }
+        if (!still_current) {
+            continue;
+        }
+        if (!visited) {
+            if (visited.error().code == ErrorCode::not_found) {
+                return unexpected(visited.error());
+            }
+            return fail_closed(visited.error());
+        }
+        return Result<OwnedValue>{std::move(context.value)};
     }
-    return Result<OwnedValue>{std::move(context.value)};
 }
 
 auto DurableRuntimeCatalog::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
@@ -844,6 +945,12 @@ auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult
 
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutationResult {
     const std::lock_guard publication_lock{manifest_publication_mutex_};
+    if (compaction_publication_active_) {
+        return mutation_failure(
+            DurableMutationOutcome::not_committed,
+            Error{ErrorCode::sequence_conflict,
+                  "durable rotation conflicts with an active compaction publication lease"});
+    }
     const std::unique_lock catalog_lock{catalog_mutex_};
     const auto old_position =
         std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), worker.active_segment,
@@ -877,6 +984,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         return mutation_failure(DurableMutationOutcome::not_committed, available.error());
     }
     segments_.reserve(segments_.size() + 1U);
+    generation_pins_.reserve(generation_pins_.size() + 1U);
 
     const SegmentHeaderIdentity old_identity{.store_id = manifest_.store_id,
                                              .segment_id = old_entry.segment_id,
@@ -910,6 +1018,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         segments_[old_index].selected = worker.cached_file->selected_commit();
     }
 
+    auto sealed_generation = std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
+        .identity = old_identity,
+        .selected = worker.cached_file->selected_commit(),
+        .file = std::move(*worker.cached_file),
+    });
+    worker.cached_file.reset();
+    worker.cached_writable = false;
+
     const auto& replacement_entry = next_manifest->segments.back();
     const SegmentHeaderIdentity replacement_identity{
         .store_id = manifest_.store_id,
@@ -929,6 +1045,20 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
             created.error.value_or(Error{ErrorCode::io_error, "replacement Segment creation failed"}));
     }
     const auto replacement_selected = created.file->selected_commit();
+    auto replacement_reader =
+        DurableSegmentFile::open(directory_, replacement_identity, SegmentFileOpenMode::read_only);
+    if (!replacement_reader || replacement_reader->selected_commit() != replacement_selected) {
+        auto error = replacement_reader
+                         ? Error{ErrorCode::corrupted_data,
+                                 "new active Segment changed before generation pin publication"}
+                         : replacement_reader.error();
+        return mutation_failure(DurableMutationOutcome::not_committed, std::move(error));
+    }
+    auto replacement_generation = std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
+        .identity = replacement_identity,
+        .selected = replacement_selected,
+        .file = std::move(*replacement_reader),
+    });
     const auto published = directory_.publish_manifest(*next_manifest, options_.limits.max_manifest_bytes);
     if (!published.durable()) {
         healthy_.store(false, std::memory_order_release);
@@ -942,6 +1072,8 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     const auto replacement_segment_id = replacement_entry.segment_id;
     manifest_ = std::move(*next_manifest);
     segments_.push_back({.selected = replacement_selected});
+    generation_pins_[old_index] = std::move(sealed_generation);
+    generation_pins_.push_back(std::move(replacement_generation));
     worker.active_segment = replacement_segment_id;
     worker.cached_file.emplace(std::move(*created.file));
     worker.cached_writable = true;
@@ -987,6 +1119,11 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         if (!healthy()) {
             return mutation_failure(DurableMutationOutcome::indeterminate,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        }
+        if (worker.compaction_commit_active) {
+            return mutation_failure(DurableMutationOutcome::not_committed,
+                                    Error{ErrorCode::sequence_conflict,
+                                          "durable mutation conflicts with compaction manifest publication"});
         }
         if (worker.next_sequence.value == 0 ||
             worker.next_sequence.value == std::numeric_limits<std::uint64_t>::max()) {
@@ -1421,35 +1558,98 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
         }
 
         auto& worker = *workers_[worker_index];
-        std::unique_lock worker_lock{worker.mutex};
-        if (dedicated_commit_executor_) {
-            worker.batch_closed.wait(worker_lock, [&] { return !worker.batch_closing || !healthy(); });
+        Manifest snapshot;
+        SequenceNumber snapshot_next_sequence{};
+        std::vector<IndexEntry> snapshot_entries;
+        std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> source_pins;
+
+        // Phase A: capture only owning state. No file operation is allowed in
+        // this scope. The complete Index enumeration is currently necessary
+        // because the replacement Index must retain active-Segment references.
+        {
+            std::unique_lock worker_lock{worker.mutex};
+            if (dedicated_commit_executor_) {
+                worker.batch_closed.wait(worker_lock, [&] { return !worker.batch_closing || !healthy(); });
+            }
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (!healthy()) {
+                return failure(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+            }
+            if (!worker.pending_group_mutations.empty() || worker.batch_closing) {
+                return failure(Error{ErrorCode::sequence_conflict,
+                                     "durable compaction cannot snapshot a pending group publication"});
+            }
+            snapshot = manifest_;
+            snapshot_next_sequence = worker.next_sequence;
+            const auto index_size = worker.index.stats().size;
+            snapshot_entries = worker.index.entries();
+            if (snapshot_entries.size() != index_size || generation_pins_.size() != segments_.size() ||
+                segments_.size() != snapshot.segments.size()) {
+                return failure(
+                    Error{ErrorCode::corrupted_data, "durable compaction snapshot is not catalog-aligned"});
+            }
+            for (std::size_t index = 0; index < snapshot.segments.size(); ++index) {
+                const auto& entry = snapshot.segments[index];
+                if (entry.owner_worker != worker.worker_id || entry.role != ManifestSegmentRole::sealed) {
+                    continue;
+                }
+                const auto& pin = generation_pins_[index];
+                if (!pin || pin->identity.segment_id != entry.segment_id ||
+                    pin->identity.generation != entry.generation ||
+                    pin->identity.owner_worker != entry.owner_worker) {
+                    return failure(Error{ErrorCode::corrupted_data,
+                                         "durable compaction source has no matching generation pin"});
+                }
+                source_pins.push_back(pin);
+            }
         }
-        if (!healthy()) {
-            return failure(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+
+        if (source_pins.empty()) {
+            return failure(Error{ErrorCode::not_found, "durable Worker has no sealed Segments to compact"});
         }
+
+        // Reserve the right to publish this exact old/next authority pair, but
+        // do not retain the serializer while the builder performs file I/O.
+        // Rotations observe the lease and fail with a finite conflict instead
+        // of waiting behind the complete compaction build.
+        {
+            const std::lock_guard publication_lock{manifest_publication_mutex_};
+            if (compaction_publication_active_) {
+                return failure(
+                    Error{ErrorCode::sequence_conflict, "another durable compaction publication is active"});
+            }
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (manifest_ != snapshot) {
+                return failure(
+                    Error{ErrorCode::sequence_conflict, "manifest changed before compaction build"});
+            }
+            compaction_publication_active_ = true;
+        }
+        struct PublicationLease final {
+            DurableRuntimeCatalog& runtime;
+
+            explicit PublicationLease(DurableRuntimeCatalog& owner) noexcept : runtime(owner) {}
+            ~PublicationLease() {
+                const std::lock_guard lock{runtime.manifest_publication_mutex_};
+                runtime.compaction_publication_active_ = false;
+            }
+
+            PublicationLease(const PublicationLease&) = delete;
+            auto operator=(const PublicationLease&) -> PublicationLease& = delete;
+        } publication_lease{*this};
+
         {
             const std::shared_lock catalog_lock{catalog_mutex_};
-            if (auto flushed = flush_worker_batch(worker, SegmentCommitSync::immediate); !flushed) {
-                return failure(flushed.error());
-            }
-        }
-        if (worker.cached_file && worker.cached_writable && worker.cached_file->is_dirty()) {
-            const auto synced = worker.cached_file->sync_file();
-            if (!synced.committed()) {
-                return failure(synced.error.value_or(
-                    Error{ErrorCode::io_error, "target Worker flush before compaction failed"}));
+            if (manifest_ != snapshot) {
+                return failure(
+                    Error{ErrorCode::sequence_conflict, "manifest changed before compaction build"});
             }
         }
 
-        const std::lock_guard publication_lock{manifest_publication_mutex_};
-        std::shared_lock catalog_snapshot_lock{catalog_mutex_};
-        Manifest snapshot = manifest_;
-        worker.cached_file.reset();
-        worker.cached_writable = false;
-
-        auto built = build_durable_worker_compaction(directory_, snapshot, worker.worker_id, worker.index,
-                                                     now_ns, options_.limits);
+        // Phase B: scans, CRC checks, allocation, Record copies, file writes,
+        // and replacement verification execute without Worker/catalog locks.
+        auto built = build_durable_worker_compaction(directory_, snapshot, worker.worker_id,
+                                                     std::move(snapshot_entries), now_ns, options_.limits);
         if (!built.succeeded()) {
             if (built.outcome == DurableCompactionBuildOutcome::not_beneficial) {
                 return {.outcome = DurableCompactionOutcome::not_beneficial,
@@ -1464,22 +1664,98 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
         auto prepared = std::move(*built.prepared);
         stats = prepared.stats;
         auto sources = std::move(prepared.plan.sources);
+        const auto abort_prepared = [&](Error reason) -> DurableCompactionResult {
+            auto rolled_back = rollback_prepared_compaction(directory_, snapshot, prepared.plan.replacements,
+                                                            options_.limits);
+            if (!rolled_back) {
+                return failure(rolled_back.error());
+            }
+            {
+                const std::unique_lock catalog_lock{catalog_mutex_};
+                namespace_audit_ = std::move(*rolled_back);
+            }
+            recovery_required = false;
+            return failure(std::move(reason));
+        };
+        if (prepared.replacement_commits.size() != prepared.plan.replacements.size()) {
+            return abort_prepared(
+                Error{ErrorCode::internal_error, "compaction replacement commit catalog is incomplete"});
+        }
         std::vector<RecoveredSegmentState> next_segments;
         next_segments.reserve(prepared.plan.next_manifest.segments.size());
-        catalog_snapshot_lock.unlock();
+        std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> replacement_pins;
+        replacement_pins.reserve(prepared.plan.replacements.size());
+        for (std::size_t index = 0; index < prepared.plan.replacements.size(); ++index) {
+            const auto& entry = prepared.plan.replacements[index];
+            const SegmentHeaderIdentity identity{.store_id = snapshot.store_id,
+                                                 .segment_id = entry.segment_id,
+                                                 .generation = entry.generation,
+                                                 .owner_worker = entry.owner_worker};
+            auto opened = DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_only);
+            if (!opened) {
+                return abort_prepared(opened.error());
+            }
+            if (opened->selected_commit() != prepared.replacement_commits[index]) {
+                return abort_prepared(
+                    Error{ErrorCode::corrupted_data,
+                          "compaction replacement changed before generation pin publication"});
+            }
+            replacement_pins.push_back(
+                std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
+                    .identity = identity,
+                    .selected = prepared.replacement_commits[index],
+                    .file = std::move(*opened),
+                }));
+        }
+        std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> next_generation_pins;
+        next_generation_pins.reserve(prepared.plan.next_manifest.segments.size());
+        std::vector<std::size_t> retained_old_indices;
+        retained_old_indices.reserve(prepared.plan.next_manifest.segments.size());
+        auto installed_manifest = prepared.plan.next_manifest;
+
+        // Phase C first validates and prepares a non-allocating publication
+        // while locked. The durable manifest write happens only after the
+        // target Worker is logically quiesced and every physical mutex has
+        // been released.
+        std::unique_lock worker_lock{worker.mutex, std::try_to_lock};
+        if (!worker_lock.owns_lock()) {
+            return abort_prepared(
+                Error{ErrorCode::sequence_conflict, "Worker changed while compaction was prepared"});
+        }
+        std::unique_lock catalog_lock{catalog_mutex_};
+        bool sources_still_pinned = source_pins.size() == sources.size();
+        for (std::size_t source_index = 0; sources_still_pinned && source_index < sources.size();
+             ++source_index) {
+            const auto found = std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(),
+                                                sources[source_index].segment_id,
+                                                [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                                                    return entry.segment_id.value < id.value;
+                                                });
+            if (found == manifest_.segments.end() || *found != sources[source_index]) {
+                sources_still_pinned = false;
+                break;
+            }
+            const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+            sources_still_pinned = catalog_index < generation_pins_.size() &&
+                                   generation_pins_[catalog_index] == source_pins[source_index];
+        }
+        if (!healthy() || manifest_ != snapshot || segments_.size() != snapshot.segments.size() ||
+            worker.next_sequence != snapshot_next_sequence || !worker.pending_group_mutations.empty() ||
+            worker.batch_closing || !sources_still_pinned) {
+            catalog_lock.unlock();
+            worker_lock.unlock();
+            return abort_prepared(
+                Error{ErrorCode::sequence_conflict, "runtime state changed during durable compaction"});
+        }
 
         {
-            const std::unique_lock catalog_lock{catalog_mutex_};
-            if (manifest_ != snapshot || segments_.size() != snapshot.segments.size() ||
-                prepared.replacement_commits.size() != prepared.plan.replacements.size()) {
-                return failure(
-                    Error{ErrorCode::sequence_conflict, "runtime catalog changed during durable compaction"});
-            }
             std::size_t replacement_index{};
             for (const auto& entry : prepared.plan.next_manifest.segments) {
                 if (replacement_index < prepared.plan.replacements.size() &&
                     entry == prepared.plan.replacements[replacement_index]) {
                     next_segments.push_back({.selected = prepared.replacement_commits[replacement_index]});
+                    next_generation_pins.push_back(replacement_pins[replacement_index]);
+                    retained_old_indices.push_back(std::numeric_limits<std::size_t>::max());
                     ++replacement_index;
                     continue;
                 }
@@ -1494,24 +1770,85 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                 }
                 const auto old_index = static_cast<std::size_t>(found - snapshot.segments.begin());
                 next_segments.push_back(segments_[old_index]);
+                if (old_index >= generation_pins_.size() || !generation_pins_[old_index]) {
+                    return failure(Error{ErrorCode::corrupted_data,
+                                         "retained compaction Segment has no generation pin"});
+                }
+                next_generation_pins.push_back(generation_pins_[old_index]);
+                retained_old_indices.push_back(old_index);
             }
             if (replacement_index != prepared.plan.replacements.size() ||
-                next_segments.size() != prepared.plan.next_manifest.segments.size()) {
+                next_segments.size() != prepared.plan.next_manifest.segments.size() ||
+                next_generation_pins.size() != prepared.plan.next_manifest.segments.size() ||
+                retained_old_indices.size() != prepared.plan.next_manifest.segments.size()) {
                 return failure(
                     Error{ErrorCode::internal_error, "compaction runtime catalog preparation is incomplete"});
             }
+        }
 
-            const auto published =
-                directory_.publish_manifest(prepared.plan.next_manifest, options_.limits.max_manifest_bytes);
-            if (!published.durable()) {
-                return failure(published.error.value_or(
-                    Error{ErrorCode::io_error, "compaction manifest publication failed"}));
+        worker.compaction_commit_active = true;
+        struct WorkerCommitGate final {
+            RuntimeWorker& worker;
+            bool active{true};
+
+            explicit WorkerCommitGate(RuntimeWorker& owner) noexcept : worker(owner) {}
+            ~WorkerCommitGate() {
+                if (!active) {
+                    return;
+                }
+                const std::lock_guard lock{worker.mutex};
+                worker.compaction_commit_active = false;
+                worker.compaction_commit_finished.notify_all();
+            }
+            void clear_locked() noexcept {
+                worker.compaction_commit_active = false;
+                active = false;
+                worker.compaction_commit_finished.notify_all();
+            }
+
+            WorkerCommitGate(const WorkerCommitGate&) = delete;
+            auto operator=(const WorkerCommitGate&) -> WorkerCommitGate& = delete;
+        } commit_gate{worker};
+        catalog_lock.unlock();
+        worker_lock.unlock();
+
+        const auto published =
+            directory_.publish_manifest(prepared.plan.next_manifest, options_.limits.max_manifest_bytes);
+        if (!published.durable()) {
+            return failure(published.error.value_or(
+                Error{ErrorCode::io_error, "compaction manifest publication failed"}));
+        }
+
+        try {
+            worker_lock.lock();
+            catalog_lock.lock();
+            for (std::size_t next_index = 0; next_index < retained_old_indices.size(); ++next_index) {
+                const auto old_index = retained_old_indices[next_index];
+                if (old_index == std::numeric_limits<std::size_t>::max()) {
+                    continue;
+                }
+                next_segments[next_index] = segments_[old_index];
+                next_generation_pins[next_index] = generation_pins_[old_index];
             }
             manifest_ = std::move(prepared.plan.next_manifest);
             segments_ = std::move(next_segments);
+            generation_pins_ = std::move(next_generation_pins);
             worker.index = std::move(prepared.index);
-            worker.hot_records.clear();
+            commit_gate.clear_locked();
+        } catch (...) {
+            if (worker_lock.owns_lock()) {
+                commit_gate.clear_locked();
+            }
+            if (catalog_lock.owns_lock()) {
+                catalog_lock.unlock();
+            }
+            if (worker_lock.owns_lock()) {
+                worker_lock.unlock();
+            }
+            throw;
         }
+        catalog_lock.unlock();
+        worker_lock.unlock();
 
         const auto retired = directory_.retire_compaction_segments(snapshot.store_id, sources);
         if (!retired.durable()) {
@@ -1523,7 +1860,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             return failure(
                 removed.error.value_or(Error{ErrorCode::io_error, "compaction intent removal failed"}));
         }
-        auto audit = audit_data_directory(directory_, manifest_);
+        auto audit = audit_data_directory(directory_, installed_manifest);
         if (!audit) {
             return failure(audit.error());
         }
@@ -1531,7 +1868,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             return failure(safe.error());
         }
         {
-            const std::unique_lock catalog_lock{catalog_mutex_};
+            const std::unique_lock audit_lock{catalog_mutex_};
             namespace_audit_ = std::move(*audit);
         }
         recovery_required = false;

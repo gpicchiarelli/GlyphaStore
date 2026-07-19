@@ -8,9 +8,12 @@ full key -> RecordRef(segment_id, offset, size, sequence, generation)
 ```
 
 The production Index partition is a SwissTable-style flat open-addressing table with group control
-bytes, hash fingerprints, a 7/8 load limit, cached full hashes, inline keys through 24 bytes, and a
-long-key arena. The exact algorithm is specified in [Index v1](../spec/index-v1.md); rationale is in
-[ADR 0007](../adr/0007-swiss-table-index.md).
+bytes, hash fingerprints, a 7/8 load limit, cached 32-bit hash tags, inline keys through 24 bytes, and
+a long-key arena. Each slot is exactly 64 bytes on supported 64-bit targets: inline storage and the
+heap offset share one union, while the inline mode occupies the high bit of packed key length. Hash
+tags are only a comparison filter; complete key bytes remain the collision-safety authority.
+Rehashing reconstructs the stable full hash from those bytes. The exact algorithm is specified in
+[Index v1](../spec/index-v1.md); rationale is in [ADR 0007](../adr/0007-swiss-table-index.md).
 
 Further layout and SIMD choices must be based on GlyphaStore workloads:
 

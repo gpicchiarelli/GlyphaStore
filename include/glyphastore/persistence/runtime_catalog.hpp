@@ -63,8 +63,9 @@ struct DurableCompactionResult {
 };
 
 // Internal materialization of one recovered durable Store. It keeps the
-// directory lock for its complete lifetime and caches at most one Segment
-// descriptor per Worker.
+// directory lock for its complete lifetime. Mutable Segment handles remain
+// Worker-owned; immutable generation pins keep cold-read handles alive across
+// catalog publication and Segment retirement.
 class DurableRuntimeCatalog final {
   public:
     [[nodiscard]] static auto open_existing(const std::filesystem::path& path,
@@ -112,9 +113,11 @@ class DurableRuntimeCatalog final {
   private:
     struct PendingGroupMutation;
     struct RuntimeWorker;
+    struct RuntimeSegmentGeneration;
 
     DurableRuntimeCatalog(DataDirectory directory, DurableRecoveryState recovered,
                           DurableRuntimeOptions options);
+    [[nodiscard]] auto initialize_generation_pins() -> Status;
     [[nodiscard]] auto flush_pending_batches(SegmentCommitSync sync) -> Status;
     [[nodiscard]] auto flush_due_batches(SegmentCommitSync sync) -> Status;
     [[nodiscard]] auto flush_dirty_segments() -> Status;
@@ -135,6 +138,7 @@ class DurableRuntimeCatalog final {
     Manifest manifest_;
     NamespaceAuditReport namespace_audit_;
     std::vector<RecoveredSegmentState> segments_;
+    std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> generation_pins_;
     std::vector<std::unique_ptr<RuntimeWorker>> workers_;
     DurableRecoveryStats recovery_stats_;
     DurableRuntimeOptions options_;
@@ -144,6 +148,10 @@ class DurableRuntimeCatalog final {
     std::atomic_bool closed_{false};
     std::mutex close_mutex_;
     std::optional<Error> close_error_;
+    // Guarded by manifest_publication_mutex_. A compaction lease excludes
+    // manifest-changing rotations without keeping the serializer locked while
+    // replacement Records are scanned and copied.
+    bool compaction_publication_active_{};
     std::mutex manifest_publication_mutex_;
     mutable std::shared_mutex catalog_mutex_;
 };

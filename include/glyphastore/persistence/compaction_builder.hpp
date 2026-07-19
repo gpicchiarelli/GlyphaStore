@@ -43,8 +43,9 @@ struct DurableCompactionBuildResult {
     }
 };
 
-// The caller must freeze the target Worker for the complete call. Before the
-// durable intent, failures are not_started and publish no replacement name.
+// `current_index` must remain immutable for the complete call. Runtime callers
+// use the owning-entry overload so Worker locks can be released first. Before
+// the durable intent, failures are not_started and publish no replacement name.
 // not_beneficial is a successful policy decision made before the intent when
 // the exact output layout would reclaim no physical Segment.
 // Once intent publication may have occurred, failures are recovery_required;
@@ -54,5 +55,12 @@ struct DurableCompactionBuildResult {
                                                    std::uint64_t now_ns,
                                                    const DurableResourceLimits& limits = {})
     -> DurableCompactionBuildResult;
+
+// Runtime snapshot overload. The entries are owning and may be consumed after
+// every runtime lock has been released.
+[[nodiscard]] auto
+build_durable_worker_compaction(DataDirectory& directory, const Manifest& current, WorkerId worker_id,
+                                std::vector<IndexEntry> current_entries, std::uint64_t now_ns,
+                                const DurableResourceLimits& limits = {}) -> DurableCompactionBuildResult;
 
 } // namespace glyphastore

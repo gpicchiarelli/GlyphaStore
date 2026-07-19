@@ -88,9 +88,9 @@ For volatile mode, `flush()` succeeds as a no-op.
 auto compact() -> Result<CompactionResult>;
 ```
 
-Runs explicit durable compaction according to the configured selection and budget. Only one public compaction attempt may run at a time; a concurrent attempt returns `sequence_conflict`. Success with no eligible work returns a result with `compacted == false`.
+Runs explicit compaction according to the storage mode's selection policy. Durable mode uses its crash-consistent whole-Worker transaction. Volatile mode copy-builds replacements for selected sparse sealed Segments and publishes them only when the Worker uses fewer physical Segments afterward. Only one public compaction attempt may run at a time; a concurrent attempt returns `sequence_conflict`. Success with no eligible or physically beneficial work returns a result with `compacted == false`.
 
-Volatile mode returns `invalid_argument` because it has no current public compaction contract. Compaction preserves logical key/value visibility and crash recovery authority; it may change Record references and physical Segment identities.
+Compaction preserves logical key/value visibility and may change Record references and physical Segment identities. Volatile source bytes remain alive while an already returned internal snapshot retains shared ownership; durable compaction additionally preserves crash recovery authority.
 
 ## 9. Verification
 

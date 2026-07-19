@@ -89,7 +89,7 @@ auto find_source_index(const std::span<const ManifestSegmentEntry> sources, cons
 } // namespace
 
 auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& current,
-                                     const WorkerId worker_id, const Index& current_index,
+                                     const WorkerId worker_id, std::vector<IndexEntry> entries,
                                      const std::uint64_t now_ns, const DurableResourceLimits& limits)
     -> DurableCompactionBuildResult {
     bool recovery_required{};
@@ -151,23 +151,16 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
             source_commits.push_back(opened->selected_commit());
         }
 
-        auto prepared_index = current_index.make_empty();
-        const auto current_stats = current_index.stats();
-        if (auto reserved = prepared_index.reserve(current_stats.size); !reserved) {
+        Index prepared_index;
+        if (auto reserved = prepared_index.reserve(entries.size()); !reserved) {
             return failure(reserved.error());
-        }
-        auto entries = current_index.entries();
-        if (entries.size() != current_stats.size) {
-            return failure(
-                Error{ErrorCode::corrupted_data, "durable compaction Index enumeration changed size"});
         }
         std::vector<IndexEntry> source_entries;
         source_entries.reserve(entries.size());
         for (auto& entry : entries) {
             const auto key_hash = hash_key(entry.key);
             const HashedKey hashed{.key = entry.key, .hash = key_hash};
-            if (route_worker(key_hash, current.worker_count) != worker_id.value ||
-                current_index.find(hashed) != entry.record) {
+            if (route_worker(key_hash, current.worker_count) != worker_id.value) {
                 return failure(Error{ErrorCode::corrupted_data,
                                      "durable compaction Index routing or hash is inconsistent"});
             }
@@ -459,6 +452,28 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
     } catch (...) {
         return failure(Error{ErrorCode::internal_error, {}});
     }
+}
+
+auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& current,
+                                     const WorkerId worker_id, const Index& current_index,
+                                     const std::uint64_t now_ns, const DurableResourceLimits& limits)
+    -> DurableCompactionBuildResult {
+    const auto stats = current_index.stats();
+    auto entries = current_index.entries();
+    if (entries.size() != stats.size) {
+        return build_failure(
+            DurableCompactionBuildOutcome::not_started,
+            Error{ErrorCode::corrupted_data, "durable compaction Index enumeration changed size"});
+    }
+    for (const auto& entry : entries) {
+        const auto hashed = HashedKey::compute(entry.key);
+        if (current_index.find(hashed) != entry.record) {
+            return build_failure(
+                DurableCompactionBuildOutcome::not_started,
+                Error{ErrorCode::corrupted_data, "durable compaction Index snapshot is inconsistent"});
+        }
+    }
+    return build_durable_worker_compaction(directory, current, worker_id, std::move(entries), now_ns, limits);
 }
 
 } // namespace glyphastore

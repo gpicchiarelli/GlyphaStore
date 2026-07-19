@@ -2,6 +2,7 @@
 
 #include "glyphastore/persistence/filesystem.hpp"
 
+#include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstdlib>
@@ -19,12 +20,18 @@ struct CheckpointState {
     std::filesystem::path checkpoint_dir;
     std::string kill_at;
     bool signaled{false};
+    std::array<std::size_t, static_cast<std::size_t>(FilesystemOperation::remove_compaction_segment) + 1U>
+        occurrences{};
 
     static void after(void* context, const FilesystemOperation operation) {
         auto& state = *static_cast<CheckpointState*>(context);
-        const auto marker = state.checkpoint_dir / std::string{filesystem_operation_name(operation)};
-        std::ofstream{marker}.put('1');
-        if (!state.kill_at.empty() && state.kill_at == filesystem_operation_name(operation) &&
+        const auto name = std::string{filesystem_operation_name(operation)};
+        const auto operation_index = static_cast<std::size_t>(operation);
+        const auto occurrence = ++state.occurrences[operation_index];
+        const auto occurrence_name = name + '#' + std::to_string(occurrence);
+        std::ofstream{state.checkpoint_dir / name}.put('1');
+        std::ofstream{state.checkpoint_dir / occurrence_name}.put('1');
+        if (!state.kill_at.empty() && (state.kill_at == name || state.kill_at == occurrence_name) &&
             !state.signaled) {
             state.signaled = true;
             // Stop exactly at the boundary. The parent observes the marker and

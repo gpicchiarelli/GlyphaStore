@@ -54,9 +54,10 @@ class Store final {
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 
     [[nodiscard]] auto flush() -> Status;
-    // Runs at most one durable whole-Worker compaction transaction. Calls do
-    // not queue behind an existing compaction; an empty successful result
-    // means no Worker currently offers a physical Segment gain.
+    // Runs at most one Worker compaction transaction. Durable mode replaces a
+    // whole sealed Worker history; volatile mode vacuums selected sparse sealed
+    // Segments. Calls do not queue behind an existing compaction. An empty
+    // successful result means no Worker currently offers a physical Segment gain.
     [[nodiscard]] auto compact() -> Result<CompactionResult>;
     // Idempotently prevents new operations, waits for calls already in
     // progress, flushes durable state, stops background executors, and releases

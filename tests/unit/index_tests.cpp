@@ -49,8 +49,27 @@ GLYPHA_TEST("index grows and rejects impossible reserve sizes") {
         GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
     }
     GLYPHA_REQUIRE(index.stats().size == 1'000);
+    GLYPHA_REQUIRE(index.stats().slot_bytes == 64);
+    GLYPHA_REQUIRE(index.stats().table_allocated_bytes ==
+                   index.stats().bucket_count * (index.stats().slot_bytes + sizeof(std::uint8_t)));
     GLYPHA_REQUIRE(!index.reserve(std::numeric_limits<std::size_t>::max()).has_value());
     GLYPHA_REQUIRE(!index.prepare_batch_insert(std::numeric_limits<std::size_t>::max(), 0).has_value());
+}
+
+GLYPHA_TEST("index resolves complete-hash collisions by full key bytes") {
+    glyphastore::Index index;
+    constexpr std::uint64_t forced_hash = 0xDEADBEEF12345678ULL;
+    const glyphastore::HashedKey first{"collision-a", forced_hash};
+    const glyphastore::HashedKey second{"collision-b", forced_hash};
+    const glyphastore::RecordRef first_ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                           glyphastore::RecordSize{20}, glyphastore::SequenceNumber{11},
+                                           glyphastore::GenerationId{1}};
+    auto second_ref = first_ref;
+    second_ref.sequence = glyphastore::SequenceNumber{12};
+    GLYPHA_REQUIRE(index.insert_or_assign(first, first_ref).has_value());
+    GLYPHA_REQUIRE(index.insert_or_assign(second, second_ref).has_value());
+    GLYPHA_REQUIRE(index.find(first) == first_ref);
+    GLYPHA_REQUIRE(index.find(second) == second_ref);
 }
 
 GLYPHA_TEST("index preflights long-key publication before a durable commit") {

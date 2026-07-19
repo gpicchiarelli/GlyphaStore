@@ -1,5 +1,8 @@
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/segment/global_manager.hpp"
+#include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/store.hpp"
 
 #include <array>
@@ -323,6 +326,84 @@ void initialize_store(const std::filesystem::path& path, const bool seed) {
     }
 }
 
+void append_compaction_record(glyphastore::DurableSegmentFile& segment, const std::uint64_t sequence,
+                              const std::string_view key, const std::string_view value) {
+    const auto encoded = glyphastore::encode_record({
+        .sequence = glyphastore::SequenceNumber{sequence},
+        .opcode = glyphastore::Opcode::put,
+        .type = glyphastore::ValueType::bytes,
+        .flags = 0,
+        .key_hash = glyphastore::hash_key(key),
+        .expire_at_ns = 0,
+        .key = bytes(key),
+        .value = bytes(value),
+    });
+    require(encoded.has_value(), "failed to encode allocation compaction Record");
+    require(segment.append(*encoded).committed(), "failed to append allocation compaction Record");
+}
+
+void initialize_compaction_store(const std::filesystem::path& path) {
+    initialize_store(path, false);
+    auto directory = glyphastore::DataDirectory::open_and_lock(path);
+    require(directory.has_value(), "failed to lock allocation compaction Store");
+    auto manifest = directory->read_manifest();
+    require(manifest.has_value() && manifest->segments.size() == 1,
+            "allocation compaction Store has an unexpected initial manifest");
+
+    auto first_entry = manifest->segments.front();
+    const glyphastore::SegmentHeaderIdentity first_identity{
+        .store_id = manifest->store_id,
+        .segment_id = first_entry.segment_id,
+        .generation = first_entry.generation,
+        .owner_worker = first_entry.owner_worker,
+    };
+    auto first = glyphastore::DurableSegmentFile::open(*directory, first_identity,
+                                                       glyphastore::SegmentFileOpenMode::read_write);
+    require(first.has_value(), "failed to open first allocation compaction Segment");
+    append_compaction_record(*first, 1, "first", "first-value");
+    require(first->seal().committed(), "failed to seal first allocation compaction Segment");
+    first_entry.role = glyphastore::ManifestSegmentRole::sealed;
+
+    const glyphastore::ManifestSegmentEntry second_entry{
+        .segment_id = glyphastore::SegmentId{2},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::sealed,
+    };
+    const glyphastore::SegmentHeaderIdentity second_identity{
+        .store_id = manifest->store_id,
+        .segment_id = second_entry.segment_id,
+        .generation = second_entry.generation,
+        .owner_worker = second_entry.owner_worker,
+    };
+    auto second_created = glyphastore::DurableSegmentFile::create(*directory, second_identity);
+    require(second_created.durable() && second_created.file.has_value(),
+            "failed to create second allocation compaction Segment");
+    append_compaction_record(*second_created.file, 2, "second", "second-value");
+    require(second_created.file->seal().committed(), "failed to seal second allocation compaction Segment");
+
+    const glyphastore::ManifestSegmentEntry active_entry{
+        .segment_id = glyphastore::SegmentId{3},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    const glyphastore::SegmentHeaderIdentity active_identity{
+        .store_id = manifest->store_id,
+        .segment_id = active_entry.segment_id,
+        .generation = active_entry.generation,
+        .owner_worker = active_entry.owner_worker,
+    };
+    auto active_created = glyphastore::DurableSegmentFile::create(*directory, active_identity);
+    require(active_created.durable(), "failed to create active allocation compaction Segment");
+
+    ++manifest->manifest_generation;
+    manifest->next_segment_id = glyphastore::SegmentId{4};
+    manifest->segments = {first_entry, second_entry, active_entry};
+    require(directory->publish_manifest(*manifest).durable(),
+            "failed to publish allocation compaction manifest");
+}
+
 [[nodiscard]] auto open_runtime(const std::filesystem::path& path,
                                 const glyphastore::DurableRuntimeOptions options,
                                 WriteBoundaryObserver* observer = nullptr)
@@ -539,6 +620,173 @@ void run_background_allocation_failure_waiters() {
     require(!(*runtime)->healthy(), "background allocation failure did not fail closed");
 }
 
+void require_recovered_compaction_state(const std::filesystem::path& path) {
+    auto runtime = open_runtime(path, {});
+    const auto first = runtime->get("first");
+    const auto second = runtime->get("second");
+    require(first.has_value() && value_text(*first) == "first-value",
+            "allocation compaction recovery lost the first value");
+    require(second.has_value() && value_text(*second) == "second-value",
+            "allocation compaction recovery lost the second value");
+    require(runtime->namespace_audit().clean(), "allocation compaction recovery left a dirty namespace");
+}
+
+void run_exhaustive_compaction_allocation_failures() {
+    constexpr std::size_t kMaximumExpectedAllocations = 512;
+    bool completed{};
+    for (std::size_t fail_at = 0; fail_at < kMaximumExpectedAllocations; ++fail_at) {
+        TemporaryDirectory temporary;
+        initialize_compaction_store(temporary.path());
+        auto runtime = open_runtime(temporary.path(), {});
+
+        glyphastore::DurableCompactionResult result;
+        allocation_fault::arm(fail_at);
+        try {
+            result = runtime->compact_worker(0, 0);
+        } catch (...) {
+            static_cast<void>(allocation_fault::disarm());
+            throw;
+        }
+        const auto allocation = allocation_fault::disarm();
+        if (!allocation.fired) {
+            require(result.compacted(), "allocation compaction baseline did not compact");
+            require(fail_at == allocation.observed,
+                    "compaction allocation enumeration changed before its terminal count");
+            runtime.reset();
+            require_recovered_compaction_state(temporary.path());
+            completed = true;
+            break;
+        }
+
+        require(result.error.has_value(), "injected compaction allocation failure returned no error");
+        require(result.error->code == glyphastore::ErrorCode::resource_exhausted,
+                "injected compaction allocation failure was not resource_exhausted");
+        require(result.outcome == glyphastore::DurableCompactionOutcome::not_compacted ||
+                    result.outcome == glyphastore::DurableCompactionOutcome::recovery_required,
+                "injected compaction allocation failure returned an invalid outcome");
+        require(runtime->healthy() ==
+                    (result.outcome == glyphastore::DurableCompactionOutcome::not_compacted),
+                "compaction allocation failure health disagrees with recovery requirement");
+        runtime.reset();
+        require_recovered_compaction_state(temporary.path());
+    }
+    require(completed, "durable compaction exceeded its allocation enumeration limit");
+}
+
+void run_volatile_rotation_allocation_failures() {
+    glyphastore::GlobalSegmentManager manager;
+    const auto active = manager.allocate_active(glyphastore::WorkerId{0});
+    glyphastore::SegmentPtr replacement;
+
+    constexpr std::size_t kMaximumExpectedAllocations = 8;
+    for (std::size_t fail_at = 0; fail_at < kMaximumExpectedAllocations; ++fail_at) {
+        bool threw{};
+        allocation_fault::arm(fail_at);
+        try {
+            const auto prepared = manager.prepare_rotation(active, glyphastore::WorkerId{0});
+            require(prepared.has_value(), "volatile rotation preparation returned an error");
+            replacement = *prepared;
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        const auto allocation = allocation_fault::disarm();
+        require(active->state() == glyphastore::SegmentState::active,
+                "failed rotation preparation sealed the old active Segment");
+        require(manager.segments().size() == 1,
+                "failed rotation preparation published a replacement Segment");
+        if (!threw) {
+            require(!allocation.fired, "rotation preparation swallowed an allocation failure");
+            require(fail_at == allocation.observed,
+                    "rotation preparation allocation enumeration changed unexpectedly");
+            break;
+        }
+        require(allocation.fired, "rotation preparation threw before the injected allocation");
+    }
+    require(replacement != nullptr, "rotation preparation exceeded its allocation bound");
+    require(manager.find(replacement->id()) == nullptr,
+            "prepared replacement became visible before rotation commit");
+
+    bool commit_threw{};
+    allocation_fault::arm(0);
+    try {
+        static_cast<void>(manager.commit_rotation(active, replacement));
+    } catch (const std::bad_alloc&) {
+        commit_threw = true;
+    }
+    const auto commit_allocation = allocation_fault::disarm();
+    require(commit_threw && commit_allocation.fired,
+            "rotation commit did not expose its first catalog allocation");
+    require(active->state() == glyphastore::SegmentState::active,
+            "failed rotation commit sealed the old active Segment");
+    require(manager.find(replacement->id()) == nullptr,
+            "failed rotation commit published the replacement Segment");
+
+    require(manager.commit_rotation(active, replacement).has_value(),
+            "rotation commit did not recover after allocation failure");
+    require(active->state() == glyphastore::SegmentState::sealed,
+            "successful rotation did not seal the previous active Segment");
+    require(manager.find(replacement->id()) == replacement,
+            "successful rotation did not publish the replacement Segment");
+}
+
+void run_volatile_vacuum_publication_allocation_failures() {
+    constexpr std::size_t kMaximumExpectedAllocations = 8;
+    bool completed{};
+    for (std::size_t fail_at = 0; fail_at < kMaximumExpectedAllocations; ++fail_at) {
+        glyphastore::GlobalSegmentManager manager;
+        const auto first = manager.allocate_active(glyphastore::WorkerId{0});
+        const auto second = manager.prepare_rotation(first, glyphastore::WorkerId{0});
+        require(second.has_value(), "failed to prepare the second vacuum source Segment");
+        require(manager.commit_rotation(first, *second).has_value(),
+                "failed to publish the second vacuum source Segment");
+        const auto active = manager.prepare_rotation(*second, glyphastore::WorkerId{0});
+        require(active.has_value(), "failed to prepare the post-vacuum active Segment");
+        require(manager.commit_rotation(*second, *active).has_value(),
+                "failed to publish the post-vacuum active Segment");
+
+        const auto first_replacement = manager.prepare_segment(glyphastore::WorkerId{0});
+        const auto second_replacement = manager.prepare_segment(glyphastore::WorkerId{0});
+        require(first_replacement.has_value() && second_replacement.has_value(),
+                "failed to prepare vacuum replacement Segments");
+        require((*first_replacement)->seal().has_value() && (*second_replacement)->seal().has_value(),
+                "failed to seal vacuum replacement Segments");
+        const std::array sources{first->id(), (*second)->id()};
+        const std::array replacements{*first_replacement, *second_replacement};
+
+        bool threw{};
+        glyphastore::Status result;
+        allocation_fault::arm(fail_at);
+        try {
+            result = manager.replace_sealed(sources, replacements);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        const auto allocation = allocation_fault::disarm();
+        if (threw) {
+            require(allocation.fired, "vacuum publication threw before the injected allocation");
+            require(manager.find(first->id()) == first && manager.find((*second)->id()) == *second,
+                    "failed vacuum publication retired a source Segment");
+            require(manager.find((*first_replacement)->id()) == nullptr &&
+                        manager.find((*second_replacement)->id()) == nullptr,
+                    "failed vacuum publication left a partial replacement catalog");
+            continue;
+        }
+
+        require(result.has_value(), "vacuum publication baseline returned an error");
+        require(!allocation.fired, "vacuum publication swallowed an allocation failure");
+        require(fail_at == allocation.observed,
+                "vacuum publication allocation enumeration changed unexpectedly");
+        require(manager.find(first->id()) == nullptr && manager.find((*second)->id()) == nullptr,
+                "successful vacuum publication retained a source Segment");
+        require(manager.find((*first_replacement)->id()) == *first_replacement &&
+                    manager.find((*second_replacement)->id()) == *second_replacement,
+                "successful vacuum publication omitted a replacement Segment");
+        completed = true;
+        break;
+    }
+    require(completed, "vacuum publication exceeded its allocation bound");
+}
+
 void run_all_tests() {
     const glyphastore::DurableRuntimeOptions synchronous{};
     const glyphastore::DurableRuntimeOptions strict_group{
@@ -567,6 +815,9 @@ void run_all_tests() {
     run_no_post_write_allocation(synchronous);
     run_no_post_write_allocation(strict_group);
     run_background_allocation_failure_waiters();
+    run_exhaustive_compaction_allocation_failures();
+    run_volatile_rotation_allocation_failures();
+    run_volatile_vacuum_publication_allocation_failures();
 }
 
 } // namespace

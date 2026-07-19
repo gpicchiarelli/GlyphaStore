@@ -30,6 +30,8 @@ constexpr std::string_view kSeedValue{"seed-value"};
 constexpr std::string_view kCrashKey{"crash-key"};
 constexpr std::string_view kCrashValue{"crash-value"};
 constexpr std::string_view kRotateKey{"rotate-key"};
+constexpr std::string_view kCompactionFirstKey{"compaction-first"};
+constexpr std::string_view kCompactionSecondKey{"compaction-second"};
 
 [[nodiscard]] auto crash_run_suffix() -> const std::string& {
     static const auto suffix = std::to_string(static_cast<unsigned long long>(::getpid())) + "-" +
@@ -103,11 +105,11 @@ struct Options {
 }
 
 void print_usage(const char* program) {
-    std::cerr
-        << "usage: " << program
-        << " --mode {worker|verify|matrix|periodic-matrix|group-matrix} [--scenario bootstrap|put|rotate] "
-           "[--boundary OP]\n"
-        << "       [--storage {sync|periodic|group}] [--data-dir PATH] [--checkpoint-dir PATH]\n";
+    std::cerr << "usage: " << program
+              << " --mode {worker|verify|matrix|periodic-matrix|group-matrix} "
+                 "[--scenario bootstrap|put|rotate|compact] "
+                 "[--boundary OP]\n"
+              << "       [--storage {sync|periodic|group}] [--data-dir PATH] [--checkpoint-dir PATH]\n";
 }
 
 [[nodiscard]] auto periodic_storage(const Options& options) -> bool {
@@ -256,6 +258,65 @@ void seed_rotate_store(const std::filesystem::path& data_dir) {
     }
 }
 
+void seed_compaction_store(const std::filesystem::path& data_dir) {
+    std::filesystem::create_directories(data_dir.parent_path());
+    const auto store_id = recovery_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{3},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        data_dir, glyphastore::DataDirectoryOpenMode::open_or_create);
+    if (!directory) {
+        throw std::runtime_error("failed to open data directory for compaction seed");
+    }
+    const auto create = [&](const glyphastore::ManifestSegmentEntry& entry) {
+        auto created =
+            glyphastore::DurableSegmentFile::create(*directory, {.store_id = store_id,
+                                                                 .segment_id = entry.segment_id,
+                                                                 .generation = entry.generation,
+                                                                 .owner_worker = entry.owner_worker});
+        if (!created.durable() || !created.file) {
+            throw std::runtime_error("failed to create compaction seed Segment");
+        }
+        return std::move(*created.file);
+    };
+    auto first = create(entries[0]);
+    append_record(first, 1, kCompactionFirstKey, "first-value");
+    if (!first.seal().committed()) {
+        throw std::runtime_error("failed to seal first compaction seed Segment");
+    }
+    auto second = create(entries[1]);
+    append_record(second, 2, kCompactionSecondKey, "second-value");
+    if (!second.seal().committed()) {
+        throw std::runtime_error("failed to seal second compaction seed Segment");
+    }
+    static_cast<void>(create(entries[2]));
+    const glyphastore::Manifest manifest{
+        .store_id = store_id,
+        .manifest_generation = 1,
+        .routing_algorithm = glyphastore::RoutingAlgorithm::fnv1a64_v1,
+        .worker_count = 1,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{4},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments = entries,
+    };
+    if (!directory->publish_manifest(manifest).durable()) {
+        throw std::runtime_error("failed to publish compaction seed manifest");
+    }
+}
+
 void run_worker(const Options& options) {
     glyphastore::crash::remove_checkpoint_markers(options.checkpoint_dir);
     std::filesystem::create_directories(options.checkpoint_dir);
@@ -308,6 +369,17 @@ void run_worker(const Options& options) {
                                        'r');
         if (!runtime->put(bytes(kRotateKey), bytes(rotate_value)).committed()) {
             throw std::runtime_error("rotate worker failed to commit rotation put");
+        }
+        return;
+    }
+
+    if (options.scenario == "compact") {
+        auto runtime = open_runtime_for_worker(options, hooks);
+        if (!runtime) {
+            throw std::runtime_error("compaction worker failed to open runtime");
+        }
+        if (!runtime->compact_worker(0, 0).compacted()) {
+            throw std::runtime_error("compaction worker failed to compact");
         }
         return;
     }
@@ -398,6 +470,17 @@ enum class RecoveryExpectation { absent, optional, present };
         return true;
     }
 
+    if (options.scenario == "compact") {
+        const auto first = (*opened)->get(kCompactionFirstKey);
+        const auto second = (*opened)->get(kCompactionSecondKey);
+        if (!first || owned_text(*first) != "first-value" || !second ||
+            owned_text(*second) != "second-value") {
+            std::cerr << "verify: compaction values were not preserved\n";
+            return false;
+        }
+        return true;
+    }
+
     std::cerr << "verify: unknown scenario\n";
     return false;
 }
@@ -419,6 +502,33 @@ enum class RecoveryExpectation { absent, optional, present };
                 "sync_manifest",     "rename_manifest",  "write_record",        "sync_record",
                 "write_commit_slot", "sync_commit_slot"};
     }
+    if (scenario == "compact") {
+        return {"write_compaction_intent",
+                "sync_compaction_intent",
+                "rename_compaction_intent",
+                "sync_directory#1",
+                "preallocate_segment",
+                "write_segment_header",
+                "sync_segment_file",
+                "rename_segment",
+                "sync_directory#2",
+                "write_record#1",
+                "sync_record#1",
+                "write_commit_slot#1",
+                "sync_commit_slot#1",
+                "write_record#2",
+                "write_commit_slot#2",
+                "sync_commit_slot#2",
+                "write_manifest",
+                "sync_manifest",
+                "rename_manifest",
+                "sync_directory#3",
+                "remove_compaction_segment#1",
+                "remove_compaction_segment#2",
+                "sync_directory#4",
+                "remove_compaction_intent",
+                "sync_directory#5"};
+    }
     return {};
 }
 
@@ -432,6 +542,8 @@ enum class RecoveryExpectation { absent, optional, present };
         seed_put_store(options.data_dir);
     } else if (options.scenario == "rotate") {
         seed_rotate_store(options.data_dir);
+    } else if (options.scenario == "compact") {
+        seed_compaction_store(options.data_dir);
     }
 
     std::filesystem::create_directories(options.checkpoint_dir);
@@ -479,7 +591,7 @@ void cleanup_matrix_case(const Options& options) {
 }
 
 [[nodiscard]] auto run_matrix() -> bool {
-    const std::vector<std::string_view> scenarios{"bootstrap", "put", "rotate"};
+    const std::vector<std::string_view> scenarios{"bootstrap", "put", "rotate", "compact"};
     bool success = true;
     for (const auto scenario : scenarios) {
         for (const auto boundary : scenario_boundaries(scenario)) {

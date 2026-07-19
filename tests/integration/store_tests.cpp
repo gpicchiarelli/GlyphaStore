@@ -675,12 +675,12 @@ GLYPHA_TEST("Store close is idempotent and rejects operations after releasing vo
     GLYPHA_REQUIRE(verified.error().code == glyphastore::ErrorCode::unavailable);
 }
 
-GLYPHA_TEST("Store compaction is explicit durable maintenance and no-ops without sealed history") {
+GLYPHA_TEST("Store compaction is explicit maintenance and no-ops without sealed history") {
     auto volatile_store = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
     GLYPHA_REQUIRE(volatile_store.has_value());
-    const auto unsupported = (*volatile_store)->compact();
-    GLYPHA_REQUIRE(!unsupported.has_value());
-    GLYPHA_REQUIRE(unsupported.error().code == glyphastore::ErrorCode::invalid_argument);
+    const auto volatile_no_work = (*volatile_store)->compact();
+    GLYPHA_REQUIRE(volatile_no_work.has_value());
+    GLYPHA_REQUIRE(!volatile_no_work->compacted);
 
     StoreTemporaryDirectory temporary;
     auto durable_store = glyphastore::Store::open({

@@ -5,6 +5,7 @@
 #include "glyphastore/segment/segment.hpp"
 
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <vector>
 
@@ -16,8 +17,11 @@ struct VacuumPolicy {
 };
 
 struct VacuumStats {
+    std::uint64_t source_records_verified{};
+    std::uint64_t source_bytes_verified{};
     std::uint64_t records_copied{};
     std::uint64_t bytes_copied{};
+    std::uint64_t expired_records_dropped{};
     std::uint64_t old_segments{};
     std::uint64_t new_segments{};
 };
@@ -39,9 +43,14 @@ class VacuumPlanner final {
 
 class VacuumBuilder final {
   public:
+    using SegmentAllocator = std::function<Result<SegmentPtr>()>;
+
     [[nodiscard]] auto rebuild(const Index& current_index, std::span<const SegmentPtr> current_segments,
                                SegmentId first_new_segment, WorkerId owner = {}) const
         -> Result<VacuumResult>;
+    [[nodiscard]] auto rebuild(const Index& current_index, std::span<const SegmentPtr> current_segments,
+                               std::span<const SegmentId> candidates, SegmentAllocator allocate_segment,
+                               std::uint64_t now_ns = 0) const -> Result<VacuumResult>;
 };
 
 } // namespace glyphastore

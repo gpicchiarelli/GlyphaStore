@@ -46,19 +46,37 @@ class SwissTableIndex final {
 
   private:
     struct Slot {
+        static constexpr std::uint32_t kInlineKeyMask = 1U << 31U;
+
+        union KeyStorage {
+            std::byte inline_key[kSwissInlineKeyBytes];
+            std::uint32_t heap_key_offset;
+
+            constexpr KeyStorage() noexcept : inline_key{} {}
+        };
+
         RecordRef ref{};
-        std::uint64_t key_hash{};
-        std::uint32_t key_size{};
-        bool key_is_inline{};
-        alignas(RecordRef) std::byte inline_key[kSwissInlineKeyBytes]{};
-        std::uint32_t heap_key_offset{};
+        KeyStorage key;
+        std::uint32_t key_hash_tag{};
+        std::uint32_t key_size_and_mode{};
 
         Slot() = default;
         Slot(Slot&&) = default;
         auto operator=(Slot&&) -> Slot& = default;
         Slot(const Slot&) = delete;
         auto operator=(const Slot&) -> Slot& = delete;
+
+        [[nodiscard]] auto key_size() const noexcept -> std::uint32_t {
+            return key_size_and_mode & ~kInlineKeyMask;
+        }
+        [[nodiscard]] auto key_is_inline() const noexcept -> bool {
+            return (key_size_and_mode & kInlineKeyMask) != 0;
+        }
+        void set_key_metadata(const std::uint32_t size, const bool is_inline) noexcept {
+            key_size_and_mode = size | (is_inline ? kInlineKeyMask : 0U);
+        }
     };
+    static_assert(sizeof(Slot) == 64, "Swiss slot memory amplification regression");
 
     [[nodiscard]] auto mix_hash(std::uint64_t key_hash) const noexcept -> std::uint64_t;
     [[nodiscard]] static auto h2(std::uint64_t hash) noexcept -> std::uint8_t;

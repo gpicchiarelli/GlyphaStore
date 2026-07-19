@@ -250,18 +250,26 @@ sync with explicit pre-operation/indeterminate outcomes. Runtime reopen now reso
 intent against exactly the old or next authority, fully recovers that catalog before deletion,
 validates obsolete identities, performs idempotent rollback/source retirement, synchronizes the
 directory, removes the intent, and re-audits the namespace. This prevents a per-Segment tombstone
-drop from resurrecting older values. A durable builder now freezes against an exact manifest/Index
-snapshot, verifies routed source Records, drops expired puts, computes exact non-spanning Segment
+drop from resurrecting older values. A durable builder now consumes an owning manifest/Index
+snapshot and exact source-generation pins, verifies routed source Records, drops expired puts,
+computes exact non-spanning Segment
 layout, prebuilds the replacement Index, publishes the intent, copies original v1 bytes with a
 reused buffer, seals and reopens every output, and validates checksums and commit metadata. The
-internal durable runtime now freezes the target Worker, installs the prepared manifest, commit
-catalog, and Index atomically, retires sources, removes the intent, and fails closed on any state
-that requires restart recovery. A manifest-publication serializer prevents rotation or another
-compaction from creating a third authority, while immutable-identity descriptor caches let other
-Workers continue across catalog entry removal. Public `Store::compact()` now uses a non-queuing
+internal durable runtime now holds no Worker/catalog lock during scan, CRC, replacement writes,
+seal, or reopen validation. A brief final try-lock publishes only if sequence, batch, manifest,
+source identity, and generation pins still match; concurrent mutation instead triggers finite
+old-authority rollback and preserves the mutation. It installs the prepared manifest, commit
+catalog, and Index atomically, releases data locks before retiring sources, removes the intent, and
+fails closed only when recovery is genuinely required. A logical manifest-publication lease makes
+rotation or another compaction fail fast instead of waiting behind the build, while immutable
+generation pins let readers continue across catalog entry removal. Final manifest write/sync also
+runs without Worker, catalog, or publication mutexes under a Worker-local commit gate. Public
+`Store::compact()` now uses a non-queuing
 Store-wide maintenance gate, selects Workers round-robin, skips exact no-gain layouts, executes at
-most one transaction per call, and reports copy statistics. Automatic policy and the complete crash
-matrix remain open.
+most one transaction per call, and reports copy statistics. The online single-output crash and I/O
+fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
+syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
+policy, multi-output randomized crash histories, and native power-loss certification remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -291,8 +299,12 @@ Builder tests cover exact sequence and value preservation, superseded/tombstoned
 TTL reclamation, active-reference preservation, zero-output retirement, non-spanning layout
 fragmentation, intent-aware peak-space accounting, and rollback after an injected post-intent copy
 failure. Runtime integration tests cover atomic in-memory installation and source retirement,
-restart visibility, fail-closed rollback after an online post-intent failure, and preservation of
-another Worker's cached descriptor when catalog positions shift.
+restart visibility, fail-closed rollback after an online post-intent failure, preservation of
+another Worker's cached descriptor when catalog positions shift, and artificially blocked Phase B
+where same-Worker GET, PUT, erase, and TTL update complete before the stale build rolls back with
+`sequence_conflict`. A forced unrelated rotation returns conflict without waiting; a blocked final
+manifest sync proves that reads and other-Worker writes continue without any Worker, catalog, or
+publication mutex held. Close during Phase B rolls the old authority back to a clean reopen.
 Public integration tests additionally cover no-op maintenance without sealed history, rejection on
 volatile and closed Stores, restart visibility, one-Worker-per-call round-robin progress, and
 post-compaction no-gain detection.
@@ -320,9 +332,13 @@ post-compaction no-gain detection.
 - Parallelize recovery by Worker only behind descriptor, memory, and I/O-token limits. Compare
   sequential and bounded parallel scans on SSD, HDD, and constrained containers.
 - Replace temporary allocating string lookups with transparent `string_view` hashing/equality.
-- Measure whether `hot_records` should be removed or replaced by a bounded prepared-node cache. Add
-  a bounded per-Worker LRU of validated Segment descriptors or mappings so random reads across
-  sealed Segments do not reopen and revalidate a file for every access.
+- Cold reads now acquire an immutable exact-generation handle pin with their `RecordRef`, perform
+  all positional I/O and validation without the Worker or catalog lock, and linearize at a final
+  locked `Index`/pin identity check. Tests suspend `pread` while a same-Worker mutation completes and
+  while compaction publishes and retires the source. Descriptor use is bounded by catalog Segments
+  plus mutable Worker handles. Next, measure whether `hot_records` should be removed or replaced by
+  a byte-bounded admission/eviction policy; active-Segment cold reads need an explicit pinned commit
+  boundary before cached values can be safely evicted.
 - Lazily remove expired Index entries after a validated read and make durable TTL reclamation part
   of compaction. Repeated reads of an expired key must not repeatedly perform avoidable disk I/O.
 
@@ -399,9 +415,13 @@ Primary references:
 
 ### Data structures and scheduling
 
-- Benchmark SwissTable load factor, control-byte groups, probe lengths, tombstone cleanup, and
-  transparent lookup on x86-64 and ARM64. Add scalar/SSE2/AVX2/NEON implementations only with
-  runtime or compile-time dispatch and identical property/fuzz results.
+- The Swiss slot is now 64 rather than 80 bytes on supported 64-bit targets. Inline bytes and heap
+  offset share storage, mode and length are packed, a 32-bit hash tag filters candidates, and full
+  key bytes remain the collision authority. A 1M-entry ARM64 run reduced RSS by about 31.5 MiB,
+  matching 16 bytes across 2,097,152 allocated slots; controlled repetitions and x86-64 evidence
+  remain required. Continue benchmarking load factor, control groups, probe lengths, tombstone
+  cleanup, and transparent lookup. Add scalar/SSE2/AVX2/NEON implementations only with runtime or
+  compile-time dispatch and identical property/fuzz results.
 - Make group commit deadline-driven and fairness-aware. Record batch occupancy, queue delay, sync
   duration, leader work, and per-Worker starvation. Adaptation may change batch size within explicit
   min/max and latency SLOs, never acknowledgement semantics.

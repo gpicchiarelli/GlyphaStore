@@ -2,8 +2,16 @@
 
 #include "glyphastore/core/key_hash.hpp"
 
+#include <algorithm>
+#include <stdexcept>
+#include <type_traits>
+
 namespace glyphastore {
 namespace {
+
+static_assert(std::is_nothrow_move_assignable_v<Index>);
+static_assert(std::is_nothrow_swappable_v<std::vector<SegmentPtr>>);
+static_assert(std::is_nothrow_swappable_v<std::unordered_map<SegmentId, Segment*>>);
 
 [[nodiscard]] auto validate_live_record(const Segment& segment, const RecordRef& ref) -> Status {
     if (auto valid = segment.validate_ref_extent(ref); !valid) {
@@ -24,8 +32,23 @@ Worker::Worker(WorkerId id, GlobalSegmentManager& manager) : id_(id), manager_(m
 }
 
 void Worker::register_owned_segment(SegmentPtr segment) {
-    owned_by_id_.insert_or_assign(segment->id(), segment.get());
+    const auto id = segment->id();
     owned_.push_back(std::move(segment));
+    try {
+        const auto [position, inserted] = owned_by_id_.emplace(id, owned_.back().get());
+        static_cast<void>(position);
+        if (!inserted) {
+            throw std::logic_error{"duplicate Worker Segment registration"};
+        }
+    } catch (...) {
+        owned_.pop_back();
+        throw;
+    }
+}
+
+void Worker::unregister_owned_segment(const SegmentId id) noexcept {
+    owned_by_id_.erase(id);
+    std::erase_if(owned_, [id](const SegmentPtr& candidate) { return candidate && candidate->id() == id; });
 }
 
 auto Worker::find_owned_segment(const SegmentId id) noexcept -> Segment* {
@@ -39,9 +62,15 @@ auto Worker::find_owned_segment(const SegmentId id) const noexcept -> const Segm
 }
 
 void Worker::maybe_retire(Segment& segment) {
-    if (segment.state() == SegmentState::sealed && segment.stats().live_records == 0) {
-        static_cast<void>(manager_.try_retire(segment.id()));
+    if (segment.state() != SegmentState::sealed || segment.stats().live_records != 0) {
+        return;
     }
+
+    const auto id = segment.id();
+    if (auto retired = manager_.try_retire(id); !retired) {
+        return;
+    }
+    unregister_owned_segment(id);
 }
 
 auto Worker::next_sequence() -> SequenceNumber {
@@ -53,12 +82,23 @@ auto Worker::next_sequence() -> SequenceNumber {
 auto Worker::append_record(const RecordInput& input) -> Result<RecordRef> {
     auto ref = active_->append(input);
     if (!ref && ref.error().code == ErrorCode::segment_full) {
-        auto rotated = manager_.rotate_active(active_, id_);
-        if (!rotated) {
-            return unexpected(rotated.error());
+        auto sealed = active_;
+        auto replacement = manager_.prepare_rotation(sealed, id_);
+        if (!replacement) {
+            return unexpected(replacement.error());
         }
-        active_ = *rotated;
-        register_owned_segment(active_);
+        register_owned_segment(*replacement);
+        try {
+            if (auto committed = manager_.commit_rotation(sealed, *replacement); !committed) {
+                unregister_owned_segment((*replacement)->id());
+                return unexpected(committed.error());
+            }
+        } catch (...) {
+            unregister_owned_segment((*replacement)->id());
+            throw;
+        }
+        active_ = *replacement;
+        maybe_retire(*sealed);
         ref = active_->append(input);
     }
     return ref;
@@ -153,6 +193,102 @@ auto Worker::put(const HashedKey& key, const std::span<const std::byte> value,
 auto Worker::erase(const HashedKey& key) -> Status {
     const std::lock_guard lock{mutex_};
     return erase_locked(key);
+}
+
+auto Worker::compact(const std::uint64_t now_ns, const VacuumPolicy policy)
+    -> Result<std::optional<VacuumStats>> {
+    const std::lock_guard lock{mutex_};
+    const VacuumPlanner planner{policy};
+    const auto candidates = planner.candidates(owned_);
+    if (candidates.empty()) {
+        return std::optional<VacuumStats>{};
+    }
+
+    VacuumBuilder builder;
+    auto vacuumed =
+        builder.rebuild(index_, owned_, candidates, [this] { return manager_.prepare_segment(id_); }, now_ns);
+    if (!vacuumed) {
+        return unexpected(vacuumed.error());
+    }
+    if (vacuumed->segments.size() >= candidates.size()) {
+        return std::optional<VacuumStats>{};
+    }
+
+    const auto is_candidate = [&](const SegmentId id) {
+        return std::ranges::find(candidates, id) != candidates.end();
+    };
+    std::vector<SegmentPtr> next_owned;
+    next_owned.reserve(owned_.size() - candidates.size() + vacuumed->segments.size());
+    for (const auto& segment : owned_) {
+        if (!is_candidate(segment->id())) {
+            next_owned.push_back(segment);
+        }
+    }
+    for (const auto& segment : vacuumed->segments) {
+        next_owned.push_back(segment);
+    }
+
+    std::unordered_map<SegmentId, Segment*> next_owned_by_id;
+    next_owned_by_id.reserve(next_owned.size());
+    for (const auto& segment : next_owned) {
+        if (!next_owned_by_id.emplace(segment->id(), segment.get()).second) {
+            return fail(ErrorCode::corrupted_data,
+                        "volatile vacuum produced a duplicate owned Segment identity");
+        }
+    }
+    if (!next_owned_by_id.contains(active_->id())) {
+        return fail(ErrorCode::corrupted_data, "volatile vacuum attempted to replace the active Segment");
+    }
+
+    const auto entries = index_.entries();
+    std::size_t marked_dead{};
+    const auto restore_liveness = [&] {
+        std::size_t restored{};
+        for (const auto& entry : entries) {
+            if (!is_candidate(entry.record.segment_id)) {
+                continue;
+            }
+            if (restored == marked_dead) {
+                break;
+            }
+            auto* segment = find_owned_segment(entry.record.segment_id);
+            if (segment != nullptr) {
+                static_cast<void>(segment->mark_live(entry.record));
+            }
+            ++restored;
+        }
+    };
+    for (const auto& entry : entries) {
+        if (!is_candidate(entry.record.segment_id)) {
+            continue;
+        }
+        auto* segment = find_owned_segment(entry.record.segment_id);
+        if (segment == nullptr) {
+            restore_liveness();
+            return fail(ErrorCode::invalid_reference,
+                        "volatile vacuum source disappeared from Worker ownership");
+        }
+        if (auto dead = segment->mark_dead(entry.record); !dead) {
+            restore_liveness();
+            return unexpected(dead.error());
+        }
+        ++marked_dead;
+    }
+
+    try {
+        if (auto published = manager_.replace_sealed(candidates, vacuumed->segments); !published) {
+            restore_liveness();
+            return unexpected(published.error());
+        }
+    } catch (...) {
+        restore_liveness();
+        throw;
+    }
+
+    index_ = std::move(vacuumed->index);
+    owned_.swap(next_owned);
+    owned_by_id_.swap(next_owned_by_id);
+    return std::optional<VacuumStats>{vacuumed->stats};
 }
 
 auto Worker::get_locked(const HashedKey& key, const std::uint64_t now_ns) -> Result<RecordView> {

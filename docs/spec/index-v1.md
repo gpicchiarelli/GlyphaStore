@@ -43,17 +43,18 @@ The fingerprint `H2` is the low seven bits of the mixed hash, with zero changed 
 group = ((mixed >> 7) AND (group_count - 1)) * 8
 ```
 
-The original key hash is cached in an occupied slot. It is a fast rejection filter and allows rehashing without reading or hashing key bytes again; it is not a substitute for full key equality.
+The low 32 bits of the original key hash are cached in an occupied slot as a fast rejection tag. The tag is not a substitute for full key equality. Rehashing reconstructs the original stable 64-bit hash from the complete owned key bytes.
 
 ## 4. Slot and key ownership
 
 A slot contains logically:
 
 - the current `RecordRef`;
-- cached 64-bit key hash;
-- key size;
-- inline/external representation tag;
-- either up to 24 inline key bytes or an offset in `KeyArena`.
+- cached 32-bit key-hash tag;
+- packed key size and inline/external representation tag;
+- a 24-byte union containing either the inline key or an offset in `KeyArena`.
+
+On supported 64-bit targets the physical slot is exactly 64 bytes. The high bit of packed key size is the inline tag, so the implementation rejects keys at or above 2 GiB; Record v1 limits are substantially smaller.
 
 `KeyArena` is a contiguous, bump-allocated byte store for keys longer than 24 bytes. Offsets fit in 32 bits. Individual long keys are not freed on erase; live and dead byte counts trigger arena compaction.
 
@@ -65,7 +66,7 @@ An occupied candidate equals a query only if all conditions hold:
 
 1. control fingerprint matches;
 2. key length matches;
-3. cached full key hash matches;
+3. cached 32-bit key-hash tag matches;
 4. all key bytes match.
 
 The empty key is valid. Equality for a zero-length key succeeds after the metadata checks without dereferencing key storage or calling a byte comparison on a null pointer.
@@ -115,7 +116,7 @@ projected_occupied > capacity - capacity/8
 
 Growth doubles capacity. `reserve(n)` selects a power-of-two capacity large enough that `n` entries remain within the 7/8 limit; equivalently it allows at least `n + ceil(n/7)` slots, normalized to valid group capacity.
 
-Rehash allocates a fresh control/slot array and reinserts occupied entries using cached hashes. It eliminates deleted controls and may rebuild `KeyArena` with only live long-key bytes. The logical mapping must remain unchanged if rehash succeeds. A failed preparatory allocation must leave the original Index valid.
+Rehash allocates a fresh control/slot array, reconstructs each stable full hash from the owned key bytes, and reinserts occupied entries. It eliminates deleted controls and may rebuild `KeyArena` with only live long-key bytes. The logical mapping must remain unchanged if rehash succeeds. A failed preparatory allocation must leave the original Index valid.
 
 ## 10. Arena compaction
 

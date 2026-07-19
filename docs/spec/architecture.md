@@ -80,15 +80,15 @@ Dependencies point downward. Persistence and networking may use core types and c
 - its active and sealed in-memory segments;
 - one mutex that serializes that Worker's Store operations.
 
-`GlobalSegmentManager` assigns segment identities and tracks active, sealed, and retired segment objects. Its snapshot APIs return values, not references into protected containers. Normal key lookup does not consult every segment or every Worker: the routing hash selects the Worker, and that Worker's Index identifies the record.
+`GlobalSegmentManager` assigns monotonic segment identities and owns active and sealed segment objects. Retirement removes catalog ownership immediately; snapshots already returned retain independent shared ownership until their readers finish. Snapshot order is deterministic by Segment ID. Normal key lookup does not consult every segment or every Worker: the routing hash selects the Worker, and that Worker's Index identifies the record.
 
-Volatile `flush()` is a successful no-op. Volatile `compact()` is unsupported because the current volatile implementation does not expose a compaction contract.
+Volatile `flush()` is a successful no-op. Volatile `compact()` selects sparse sealed Segments from at most one Worker, copy-builds replacement Segments and a complete replacement Index under that Worker's lock, validates source liveness, atomically replaces the catalog authority, and retires the selected sources only when the replacement reduces the physical Segment count. Existing snapshots retain shared ownership of retired source bytes until their readers finish.
 
 ## 6. Durable runtime
 
 The durable runtime contains one internal runtime Worker per routing Worker. Each owns a mutex, an Index, a current writable file segment, and bounded hot-record state. `DurableRuntimeCatalog` owns namespace-wide metadata and segment handles. `DataDirectory` validates and manages the engine-owned filesystem namespace. `Manifest` is the recovery authority for the published set of segments.
 
-The durable path is file-backed; it does not require all segment contents to remain resident in RAM. Reads locate a `RecordRef` in the owning Index, then use the catalog and file segment to obtain and validate the record. The hot-record cache is an optimization and never recovery authority.
+The durable path is file-backed; it does not require all segment contents to remain resident in RAM. A cold read pins the exact immutable Segment generation together with its `RecordRef` under the owning Worker and catalog locks, releases both locks for all file I/O and validation, and linearizes only when a final locked check still finds the same Index reference and generation pin. The hot-record cache is an optimization and never recovery authority.
 
 The `DurableFlushCoordinator` supplies periodic and deadline-driven group commit. It invokes the flush callback without holding its internal condition-state mutex. Foreground `flush()` can wait for a numbered flush-all generation.
 

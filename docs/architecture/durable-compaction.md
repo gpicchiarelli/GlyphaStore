@@ -53,14 +53,22 @@ both manifest payloads embedded in the intent.
 The implementation must use this order:
 
 ```text
-lock target Worker and freeze its Index
+briefly lock target Worker + catalog
+  -> copy owning Index entries and pin exact sealed generations
+  -> release both locks
+  -> reserve the exact old/next authority pair under the publication serializer
+  -> release the serializer; rotations now fail fast while the logical lease exists
   -> collect and verify visible source Records
   -> prepare replacement Index publication without post-commit allocation
   -> publish and directory-sync an exact compaction intent
   -> create, fill, seal, and re-open validate every replacement
-  -> atomically publish and directory-sync the next v1 Manifest
-  -> publish prepared in-memory Index/catalog state
-  -> close cached source descriptors
+  -> try-lock target Worker and lock catalog
+  -> reject if sequence, batch, manifest, source identity, or pin changed
+  -> prepare the complete non-allocating in-memory publication
+  -> mark the target Worker commit-gated and release both locks
+  -> atomically publish and directory-sync the next v1 Manifest with no mutex held
+  -> re-lock, merge retained commit metadata, and publish prepared in-memory state
+  -> clear the commit gate and release both locks
   -> unlink every old source name
   -> directory sync
   -> remove compaction intent
@@ -72,7 +80,7 @@ previous and next manifest generations, and exact source/replacement identities 
 It is durable before any unlisted replacement name can appear.
 
 Before publishing that intent, the builder verifies the manifest is still authoritative, validates
-every frozen Index reference against its catalog identity and routed source Record, drops expired
+every snapshot Index reference against its catalog identity and routed source Record, drops expired
 source puts at the supplied Store time, and constructs the complete replacement Index. Source
 entries are ordered by their preserved sequence; one reusable Record buffer avoids per-read
 allocation. After publication, encoded v1 Record bytes are copied exactly, batched into the planned
@@ -118,20 +126,35 @@ repeats the same authoritative recovery, finishes the idempotent retirement batc
 intent, and performs a final ordinary namespace audit.
 
 No old source is unlinked before the new manifest and its directory entry are durable. `unlinkat`
-is descriptor-relative. An already open file remains usable until its last descriptor closes on the
-POSIX platforms, but GlyphaStore does not depend on that grace period: the target Worker lock drains
-owning reads, and other Workers cannot reference its routed Segments. The directory is synchronized
-after the retirement batch so restart observes either names still awaiting cleanup or their durable
-removal.
+is descriptor-relative. A cold reader carries shared ownership of the exact immutable generation
+and its already-open descriptor; source retirement can remove the pathname after publication without
+invalidating that reader. Its final locked validation observes the replacement `RecordRef`/pin and
+retries before returning. The directory is synchronized after the retirement batch so restart
+observes either names still awaiting cleanup or their durable removal.
 
 ## Cooperative scheduling policy
 
 Compaction must not run in a mutation or acknowledgement critical path. The implemented internal
-`compact_worker` transaction freezes only its target Worker. Other Workers continue reads and
-ordinary mutations during copy and validation. A Store-wide publication mutex serializes rotation
-and compaction authorities until intent removal; the short manifest and in-memory catalog switch
-uses the catalog-exclusive lock. Cached Segment descriptors are keyed by immutable file identity,
-not a manifest vector position, so removal of source entries cannot stale another Worker's cache.
+`compact_worker` takes a brief owning snapshot, then performs source reads, CRC validation,
+replacement writes, sealing, and reopen validation without the target Worker or catalog lock. Reads
+and ordinary mutations continue on that Worker. A mutation wins publication: sequence/batch drift
+causes a finite `sequence_conflict`, durable removal of replacement files and intent under the still
+authoritative old manifest, and no fail-close unless rollback itself becomes uncertain. Publication
+uses a non-waiting Worker try-lock and the catalog-exclusive lock only to validate and prepare
+already-reserved vectors. It then installs a Worker-local logical commit gate and releases every
+physical mutex before manifest write, sync, rename, and directory sync. Reads continue through the
+old Index and pinned sources. Mutations on that Worker receive a finite `sequence_conflict`; flush
+paths wait on a condition variable that releases the Worker mutex. After durable publication, the
+runtime reacquires the locks, refreshes retained commit metadata that other Workers may have
+advanced, performs the allocation-free in-memory switch, and clears the gate. Source retirement and
+final audit also run unlocked.
+
+Persistence v1 admits exactly the old and next manifest authorities. A Store-wide logical
+publication lease preserves that invariant without holding the publication mutex through intent
+installation, replacement creation, manifest I/O, or retirement. Rotation and a second compaction
+take the physical serializer only long enough to observe the lease and return a finite
+`sequence_conflict`; ordinary operations on other Workers continue. This removes the former
+catalog-equivalent head-of-line block without changing any v1 on-disk byte.
 
 The public `Store::compact()` scheduler is explicit and creates no background thread. It examines
 eligible Workers in round-robin order, skips exact layouts that would reclaim no physical Segment,
@@ -142,9 +165,13 @@ already admitted transaction to finish.
 
 ## Required evidence
 
-Before P0-08 can close, tests must kill the process before and after intent publication, every
-replacement write/sync/seal/validation boundary, manifest rename and directory sync, each unlink,
-retirement directory sync, intent removal, and final directory sync. Reopen must recover exactly one
-catalog and prove that concurrent owning readers never observe missing backing storage. Tests must
-also cover tombstone non-resurrection, TTL reclamation, zero-output compaction, generation/resource
-limits, allocation failure, and repeated compaction.
+The process-kill matrix now addresses intent publication, each of two replacement writes, the batched
+Record sync, both commit-slot publications (data boundary and seal), replacement rename, manifest
+publication, both source unlinks, intent removal, and all five directory-sync occurrences. Every case
+reopens through the ordinary recovery entry point, preserves both values, and verifies the rebuilt
+Index. A complementary pre-operation I/O-fault matrix covers the same 25 boundaries and checks both
+runtime outcome/health and clean reopen. Allocator interposition enumerates every allocation observed
+by the online transaction and reopens after each failure. Existing tests also cover tombstone
+non-resurrection, TTL reclamation, zero-output compaction, generation/resource limits, and repeated
+compaction. Multi-output, larger randomized histories and native power-loss evidence remain required
+before P0-08 can be certified across all supported platforms.

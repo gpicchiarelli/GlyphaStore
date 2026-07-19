@@ -73,3 +73,59 @@ GLYPHA_TEST("vacuum copies exactly visible records and leaves source immutable")
     GLYPHA_REQUIRE(source->stats().record_count == before.record_count);
     GLYPHA_REQUIRE(source->read(first).has_value());
 }
+
+GLYPHA_TEST("selective vacuum preserves references outside its candidate set") {
+    auto candidate = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{20});
+    const auto moved = append(*candidate, 10, glyphastore::Opcode::put, "moved", "value");
+    GLYPHA_REQUIRE(candidate->mark_live(moved).has_value());
+    GLYPHA_REQUIRE(candidate->seal().has_value());
+
+    auto retained = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{21});
+    const auto stable = append(*retained, 11, glyphastore::Opcode::put, "stable", "value");
+    GLYPHA_REQUIRE(retained->mark_live(stable).has_value());
+
+    glyphastore::Index index;
+    GLYPHA_REQUIRE(index.insert_or_assign("moved", moved).has_value());
+    GLYPHA_REQUIRE(index.insert_or_assign("stable", stable).has_value());
+    const std::vector<glyphastore::SegmentPtr> segments{candidate, retained};
+    const std::vector<glyphastore::SegmentId> candidates{candidate->id()};
+
+    glyphastore::VacuumBuilder builder;
+    auto vacuumed =
+        builder.rebuild(index, segments, candidates, []() -> glyphastore::Result<glyphastore::SegmentPtr> {
+            return std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{100});
+        });
+    GLYPHA_REQUIRE(vacuumed.has_value());
+    GLYPHA_REQUIRE(vacuumed->index.find("stable") == stable);
+    GLYPHA_REQUIRE(vacuumed->index.find("moved").has_value());
+    GLYPHA_REQUIRE(vacuumed->index.find("moved") != moved);
+    GLYPHA_REQUIRE(vacuumed->stats.source_records_verified == 1);
+    GLYPHA_REQUIRE(vacuumed->stats.records_copied == 1);
+    GLYPHA_REQUIRE(vacuumed->segments.size() == 1);
+}
+
+GLYPHA_TEST("selective vacuum drops expired candidates without allocating output") {
+    auto candidate = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{30});
+    const auto expired = append(*candidate, 20, glyphastore::Opcode::put, "expired", "value", 7, 100);
+    GLYPHA_REQUIRE(candidate->mark_live(expired).has_value());
+    GLYPHA_REQUIRE(candidate->seal().has_value());
+    glyphastore::Index index;
+    GLYPHA_REQUIRE(index.insert_or_assign("expired", expired).has_value());
+    const std::vector<glyphastore::SegmentPtr> segments{candidate};
+    const std::vector<glyphastore::SegmentId> candidates{candidate->id()};
+    std::size_t allocations{};
+
+    glyphastore::VacuumBuilder builder;
+    auto vacuumed = builder.rebuild(
+        index, segments, candidates,
+        [&allocations]() -> glyphastore::Result<glyphastore::SegmentPtr> {
+            ++allocations;
+            return std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{101});
+        },
+        101);
+    GLYPHA_REQUIRE(vacuumed.has_value());
+    GLYPHA_REQUIRE(!vacuumed->index.find("expired").has_value());
+    GLYPHA_REQUIRE(vacuumed->segments.empty());
+    GLYPHA_REQUIRE(vacuumed->stats.expired_records_dropped == 1);
+    GLYPHA_REQUIRE(allocations == 0);
+}

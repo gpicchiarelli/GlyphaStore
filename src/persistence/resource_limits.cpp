@@ -31,13 +31,17 @@ namespace {
                             "durable Segment byte budget overflow");
 }
 
-[[nodiscard]] auto validate_descriptor_budget(const std::size_t worker_count,
+[[nodiscard]] auto validate_descriptor_budget(const std::size_t worker_count, const std::size_t segment_count,
                                               const DurableResourceLimits& limits) -> Status {
     constexpr auto kNonWorkerDescriptors = std::size_t{4};
-    if (worker_count > std::numeric_limits<std::size_t>::max() - kNonWorkerDescriptors) {
+    if (worker_count > std::numeric_limits<std::size_t>::max() - segment_count ||
+        worker_count + segment_count > std::numeric_limits<std::size_t>::max() - kNonWorkerDescriptors) {
         return fail(ErrorCode::arithmetic_overflow, "durable descriptor requirement overflow");
     }
-    const auto required = worker_count + kNonWorkerDescriptors;
+    // Runtime keeps one immutable read pin per catalog Segment and may also
+    // keep one mutable active handle per Worker. Cold reads reuse the pinned
+    // descriptors, so request concurrency does not grow this requirement.
+    const auto required = worker_count + segment_count + kNonWorkerDescriptors;
     if (required > limits.max_open_files) {
         return fail(ErrorCode::descriptor_exhausted,
                     "durable Store Worker count exceeds the configured open-file budget");
@@ -127,7 +131,7 @@ auto validate_durable_bootstrap_resources(const std::size_t worker_count, const 
         return fail(ErrorCode::resource_exhausted,
                     "durable live-key budget cannot provide one partition per Worker");
     }
-    return validate_descriptor_budget(worker_count, limits);
+    return validate_descriptor_budget(worker_count, worker_count, limits);
 }
 
 auto validate_durable_manifest_resources(const Manifest& manifest, const DurableResourceLimits& limits)
@@ -154,7 +158,7 @@ auto validate_durable_manifest_resources(const Manifest& manifest, const Durable
         return fail(ErrorCode::resource_exhausted,
                     "durable live-key budget cannot provide one partition per Worker");
     }
-    return validate_descriptor_budget(manifest.worker_count, limits);
+    return validate_descriptor_budget(manifest.worker_count, manifest.segments.size(), limits);
 }
 
 auto validate_durable_rotation_resources(const std::size_t current_segment_count,

@@ -6,9 +6,11 @@
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "glyphastore/vacuum/vacuum.hpp"
 
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string_view>
 #include <unordered_map>
@@ -44,6 +46,8 @@ class Worker final {
     [[nodiscard]] auto put(const HashedKey& key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
     [[nodiscard]] auto erase(const HashedKey& key) -> Status;
+    [[nodiscard]] auto compact(std::uint64_t now_ns, VacuumPolicy policy = {})
+        -> Result<std::optional<VacuumStats>>;
 
   private:
     [[nodiscard]] auto get_locked(const HashedKey& key, std::uint64_t now_ns) -> Result<RecordView>;
@@ -52,6 +56,7 @@ class Worker final {
     [[nodiscard]] auto erase_locked(const HashedKey& key) -> Status;
     [[nodiscard]] auto next_sequence() -> SequenceNumber;
     void register_owned_segment(SegmentPtr segment);
+    void unregister_owned_segment(SegmentId id) noexcept;
     [[nodiscard]] auto find_owned_segment(SegmentId id) noexcept -> Segment*;
     [[nodiscard]] auto find_owned_segment(SegmentId id) const noexcept -> const Segment*;
     void maybe_retire(Segment& segment);

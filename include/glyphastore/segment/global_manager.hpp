@@ -5,32 +5,37 @@
 #include "glyphastore/segment/segment.hpp"
 
 #include <cstddef>
+#include <memory>
 #include <mutex>
+#include <span>
+#include <unordered_map>
 #include <vector>
 
 namespace glyphastore {
 
-// Global Segment Manager: catalog, scan order, and retirement pools for all Workers.
+// Global Segment Manager: live catalog, deterministic snapshots, and retirement accounting.
 class GlobalSegmentManager final {
   public:
     explicit GlobalSegmentManager(SegmentId first_id = SegmentId{1});
 
     [[nodiscard]] auto allocate_active(WorkerId owner) -> SegmentPtr;
-    [[nodiscard]] auto rotate_active(SegmentPtr active, WorkerId owner) -> Result<SegmentPtr>;
-    [[nodiscard]] auto find(SegmentId id) noexcept -> Segment*;
-    [[nodiscard]] auto find(SegmentId id) const noexcept -> const Segment*;
+    [[nodiscard]] auto prepare_segment(WorkerId owner) -> Result<SegmentPtr>;
+    [[nodiscard]] auto prepare_rotation(const SegmentPtr& active, WorkerId owner) -> Result<SegmentPtr>;
+    [[nodiscard]] auto commit_rotation(const SegmentPtr& active, const SegmentPtr& replacement) -> Status;
+    [[nodiscard]] auto replace_sealed(std::span<const SegmentId> sources,
+                                      std::span<const SegmentPtr> replacements) -> Status;
+    [[nodiscard]] auto find(SegmentId id) -> SegmentPtr;
+    [[nodiscard]] auto find(SegmentId id) const -> std::shared_ptr<const Segment>;
     [[nodiscard]] auto segments() const -> std::vector<SegmentPtr>;
-    [[nodiscard]] auto retired_pool() const -> std::vector<SegmentId>;
+    [[nodiscard]] auto retired_count() const -> std::size_t;
     [[nodiscard]] auto try_retire(SegmentId id) -> Status;
 
   private:
     [[nodiscard]] auto register_segment(SegmentPtr segment) -> SegmentPtr;
 
-    SegmentId first_id_;
     SegmentId next_id_;
-    std::vector<SegmentPtr> catalog_;
-    std::vector<SegmentPtr> segments_;
-    std::vector<SegmentId> retired_pool_;
+    std::unordered_map<SegmentId, SegmentPtr> catalog_;
+    std::size_t retired_count_{};
     mutable std::mutex mutex_;
 };
 

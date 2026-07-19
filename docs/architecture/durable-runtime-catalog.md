@@ -16,7 +16,8 @@ missing catalog Segment is corruption rather than an initialization state.
 
 `DurableRuntimeCatalog::open_existing` locks the data directory, completes only an exactly validated
 interrupted rotation, performs full manifest/namespace/Segment/Record recovery, moves each recovered
-Index into its runtime Worker, and retains the lock for its lifetime. Cached Segment handles are
+Index into its runtime Worker, and retains the lock for its lifetime. It then opens one immutable
+read handle per exact catalog Segment generation. Generation pins and mutable Segment handles are
 destroyed before the directory owner.
 
 Rotation completion is the sole mutating open transition. All other invalid namespaces and recovery
@@ -24,30 +25,42 @@ failures leave files untouched and release the lock.
 
 ## Bounded descriptors and verified reads
 
-Each Worker owns one mutex and at most one cached Segment descriptor. Reads and ordinary mutations
-hold a shared catalog lock; different Workers therefore proceed concurrently. Rotation alone takes
-the exclusive catalog lock because it appends the globally ordered manifest and commit-state vectors.
-Online compaction freezes one target Worker while its replacements are copied, then takes the same
-exclusive lock for the prepared manifest/commit-state/Index switch. Rotation and compaction
-publication share one serializer so no third manifest authority can appear before an installed
-compaction intent is removed.
+Each Worker owns one mutex and at most one mutable active-Segment descriptor. The catalog owns one
+immutable shared generation pin, including a read-only descriptor, per published Segment. Ordinary
+mutations hold a shared catalog lock; different Workers therefore proceed concurrently. Rotation
+alone takes the exclusive catalog lock because it appends the globally ordered manifest and
+commit-state vectors.
+Online compaction briefly snapshots one target Worker, owns copied Index entries and exact sealed
+generation pins, then performs replacement I/O without the Worker or catalog lock. Publication
+try-locks the Worker, takes the catalog lock, and succeeds only if sequence, batch, manifest, source,
+and pin tokens still match; otherwise the prepared old-authority transaction is durably rolled back.
+A logical publication lease makes rotations and concurrent compactions fail fast without retaining
+the physical serializer during replacement I/O. Final manifest I/O also holds no Worker, catalog, or
+publication mutex: a Worker-local commit gate rejects target mutations, lets reads continue, and
+makes flush wait with its mutex released. After durable publication, the allocation-free in-memory
+switch refreshes commit metadata for other Workers before clearing that gate. No third manifest
+authority can appear while the lease exists.
 
-A read-only cache miss reopens with no-follow and private-file checks, validates the complete identity
-and exact recovered commit snapshot, and then verifies the Record extent, CRC32C, sequence, key hash,
-full binary key, opcode, and expiration. Only owning bytes escape in `OwnedValue`. Normal misses and
-expiration do not poison the runtime; corruption or I/O disagreement makes later operations return
-`unavailable`.
+A cold read acquires both its `RecordRef` and a shared pin of the exact Segment generation while the
+Worker and catalog locks are held. It then releases both locks before positional I/O, decoding,
+CRC32C, sequence, key-hash, full-binary-key, opcode, expiration validation, and the owning value copy.
+It finally reacquires the locks and linearizes only if the Index still names the same `RecordRef` and
+the catalog still names the same generation-pin object; otherwise it discards the result and retries.
+No file-cache mutex is held during I/O. A manifest publication may retire the pathname while an
+already pinned descriptor remains valid, so a `RecordRef` never crosses the Worker-lock boundary
+without generation ownership. Normal misses and expiration do not poison the runtime; corruption or
+I/O disagreement on a still-current pin makes later operations return `unavailable`.
 
-The steady-state Segment-descriptor bound is the Worker count. Catalog lookup is binary search over
-the strictly ordered manifest, avoiding a second potentially million-entry map. A cached descriptor
-is matched by immutable Store/Segment/generation/owner identity rather than its vector index, which
-remains correct when another Worker's compaction removes catalog entries.
+The steady-state Segment-descriptor bound is the catalog Segment count plus the Worker count. Cold
+read concurrency reuses immutable pins and therefore does not increase that bound. Catalog lookup is
+binary search over the strictly ordered manifest, avoiding a second potentially million-entry map.
 
-Configured descriptor policy must cover the Worker cache plus directory, lock, enumeration, and
-transient publication descriptors and must fit the process `RLIMIT_NOFILE`. New-key admission uses a
-deterministic Worker share of the global live-key budget. Rotation validates Segment, manifest,
-peak-byte, and currently available-space budgets before sealing the old active Segment; a budget
-failure is therefore `not_committed` and leaves the existing rotation state unchanged.
+Configured descriptor policy must cover generation pins, Worker mutable handles, directory, lock,
+enumeration, and transient publication descriptors and must fit the process `RLIMIT_NOFILE`.
+New-key admission uses a deterministic Worker share of the global live-key budget. Rotation validates
+Segment, manifest, peak-byte, and currently available-space budgets before sealing the old active
+Segment; a budget failure is therefore `not_committed` and leaves the existing rotation state
+unchanged.
 
 ## Durable mutation order
 
@@ -102,7 +115,9 @@ manifest and namespace recovery selects and validates the completed state.
 
 ## Evidence and remaining gates
 
-Tests cover binary reads, expiration, concurrent readers, lock lifetime, sticky corruption handling,
+Tests cover binary reads, expiration, concurrent readers, a deliberately blocked cold `pread` that
+does not block a same-Worker mutation, blocked compaction build and manifest-sync concurrency,
+fail-fast unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
 preflighted long-key publication, puts/replacements/tombstones across restart, sealed-active
 completion, and exact prepared-replacement adoption. A separate allocator-interposition executable
 fails every allocation observed in native put, update, erase, owning-read, strict-group, and rotation

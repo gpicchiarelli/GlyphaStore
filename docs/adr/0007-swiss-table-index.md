@@ -10,3 +10,10 @@ is removed from the runtime; recovery scratch maps during segment scan remain of
 
 The table is the production shape. SIMD group matching, reference-based keys, and incremental
 resize tuning are performance refinements on this layout, not alternate architectures.
+
+The supported 64-bit layout fixes each slot at 64 bytes. Inline bytes and the long-key arena offset
+share storage; key length and representation mode are packed; a 32-bit hash tag rejects almost all
+fingerprint collisions before the complete byte comparison. The tag is never a correctness
+authority, and resize reconstructs the stable 64-bit hash from owned key bytes. This trades extra
+rehash CPU for a permanent 20% reduction from the former 80-byte slot and better cache density on
+the steady-state lookup path.

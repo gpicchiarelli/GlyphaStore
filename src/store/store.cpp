@@ -76,6 +76,18 @@ auto public_compaction_result(const std::size_t worker_index, DurableCompactionR
     };
 }
 
+auto public_compaction_result(const std::size_t worker_index, const VacuumStats& stats) -> CompactionResult {
+    return CompactionResult{
+        .compacted = true,
+        .worker_index = worker_index,
+        .source_records_verified = stats.source_records_verified,
+        .source_bytes_verified = stats.source_bytes_verified,
+        .records_copied = stats.records_copied,
+        .bytes_copied = stats.bytes_copied,
+        .expired_records_dropped = stats.expired_records_dropped,
+    };
+}
+
 [[nodiscard]] auto resource_exhausted() -> Unexpected {
     return unexpected(Error{ErrorCode::resource_exhausted, {}});
 }
@@ -615,13 +627,26 @@ auto Store::compact() -> Result<CompactionResult> try {
     if (!operation) {
         return closed_store();
     }
-    if (!impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "compaction requires durable storage");
-    }
     std::unique_lock maintenance_lock{impl_->compaction_mutex, std::try_to_lock};
     if (!maintenance_lock.owns_lock()) {
         return fail(ErrorCode::sequence_conflict, "another Store compaction is already running");
     }
+    if (impl_->volatile_runtime) {
+        const auto now_ns = impl_->now_ns();
+        for (std::size_t attempted = 0; attempted < impl_->worker_count_value; ++attempted) {
+            const auto worker_index = impl_->next_compaction_worker;
+            impl_->next_compaction_worker = (worker_index + 1U) % impl_->worker_count_value;
+            auto result = impl_->volatile_runtime->workers.worker(worker_index).compact(now_ns);
+            if (!result) {
+                return unexpected(result.error());
+            }
+            if (*result) {
+                return public_compaction_result(worker_index, **result);
+            }
+        }
+        return CompactionResult{};
+    }
+
     std::optional<std::size_t> first_candidate;
     for (;;) {
         auto candidate = impl_->durable_runtime->next_compaction_worker(impl_->next_compaction_worker);

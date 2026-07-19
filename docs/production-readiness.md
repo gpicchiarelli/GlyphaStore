@@ -104,7 +104,10 @@ implementation or design document alone is not sufficient.
   238/480/957 put/s to 898/1.74k/2.97k put/s and reduced p50 from about 16 ms to 4--5 ms. Four
   Workers at 8/16 producers improved from 315/636 put/s to 1.73k/3.03k put/s; saturated 32-producer
   samples remained within 3--7% of the prior local range. Hot-cache durable get remains around
-  1.9M ops/s. These local measurements are diagnostic baselines, not release claims;
+  1.9M ops/s. The ARM64 Swiss-slot reduction from 80 to 64 bytes removed about 31.5 MiB RSS at the
+  2,097,152-slot capacity used by a 1M-entry run; cold-read generation pins now allow a blocked
+  `pread` to coexist with same-Worker mutation and source-retiring compaction without stale return.
+  These local measurements are diagnostic baselines, not release claims;
   controlled-hardware CI evidence and an enforced tail-latency target remain pending.
 
 ### Operations and security

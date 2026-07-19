@@ -185,3 +185,89 @@ GLYPHA_TEST("worker local segment catalog resolves records across rotation") {
     GLYPHA_REQUIRE(first->bytes.size() == value.size());
     GLYPHA_REQUIRE(first->bytes.front() == std::byte{'v'});
 }
+
+GLYPHA_TEST("volatile overwrite churn releases fully dead segment storage") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string value(900U * 1024U, 'r');
+    auto initial_segments = glyphastore::detail::StoreAccess::segments(store);
+    GLYPHA_REQUIRE(initial_segments.size() == 1);
+    const std::weak_ptr<glyphastore::Segment> initial_lifetime = initial_segments.front();
+    initial_segments.clear();
+
+    for (std::size_t iteration = 0; iteration < 160; ++iteration) {
+        GLYPHA_REQUIRE(store.put("stable-live-key", bytes(value)).has_value());
+    }
+
+    const auto& worker = glyphastore::detail::StoreAccess::worker(store, 0);
+    GLYPHA_REQUIRE(worker.index().stats().size == 1);
+    GLYPHA_REQUIRE(worker.owned_segments().size() == 1);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::segments(store).size() == 1);
+    GLYPHA_REQUIRE(initial_lifetime.expired());
+    GLYPHA_REQUIRE(store.verify_index().has_value());
+
+    const auto visible = store.get("stable-live-key");
+    GLYPHA_REQUIRE(visible.has_value());
+    GLYPHA_REQUIRE(visible->bytes.size() == value.size());
+}
+
+GLYPHA_TEST("volatile vacuum consolidates sparse sealed segments and preserves visibility") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string churn_value(900U * 1024U, 'c');
+
+    for (std::size_t generation = 0; generation < 4; ++generation) {
+        const auto stable_key = "vacuum-stable-" + std::to_string(generation);
+        const auto stable_value = "value-" + std::to_string(generation);
+        GLYPHA_REQUIRE(store.put(stable_key, bytes(stable_value)).has_value());
+        const auto target_segments = generation + 2;
+        std::size_t attempts{};
+        while (glyphastore::detail::StoreAccess::worker(store, 0).owned_segments().size() < target_segments) {
+            GLYPHA_REQUIRE(store.put("vacuum-churn", bytes(churn_value)).has_value());
+            GLYPHA_REQUIRE(++attempts < 100);
+        }
+    }
+
+    auto before = glyphastore::detail::StoreAccess::segments(store);
+    GLYPHA_REQUIRE(before.size() == 5);
+    auto retained_snapshot = before.front();
+    const std::weak_ptr<glyphastore::Segment> retired_lifetime = retained_snapshot;
+    before.clear();
+
+    const auto compacted = store.compact();
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(compacted->compacted);
+    GLYPHA_REQUIRE(compacted->worker_index == 0);
+    GLYPHA_REQUIRE(compacted->source_records_verified == 4);
+    GLYPHA_REQUIRE(compacted->records_copied == 4);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::segments(store).size() == 2);
+    GLYPHA_REQUIRE(!retired_lifetime.expired());
+    GLYPHA_REQUIRE(retained_snapshot->state() == glyphastore::SegmentState::retired);
+    retained_snapshot.reset();
+    GLYPHA_REQUIRE(retired_lifetime.expired());
+    GLYPHA_REQUIRE(store.verify_index().has_value());
+
+    for (std::size_t generation = 0; generation < 4; ++generation) {
+        const auto stable_key = "vacuum-stable-" + std::to_string(generation);
+        const auto stable_value = "value-" + std::to_string(generation);
+        const auto visible = store.get(stable_key);
+        GLYPHA_REQUIRE(visible.has_value());
+        GLYPHA_REQUIRE(std::string(reinterpret_cast<const char*>(visible->bytes.data()),
+                                   visible->bytes.size()) == stable_value);
+    }
+    const auto churn = store.get("vacuum-churn");
+    GLYPHA_REQUIRE(churn.has_value());
+    GLYPHA_REQUIRE(churn->bytes.size() == churn_value.size());
+
+    const auto stable_catalog = glyphastore::detail::StoreAccess::segments(store);
+    const auto no_gain = store.compact();
+    GLYPHA_REQUIRE(no_gain.has_value());
+    GLYPHA_REQUIRE(!no_gain->compacted);
+    const auto unchanged_catalog = glyphastore::detail::StoreAccess::segments(store);
+    GLYPHA_REQUIRE(unchanged_catalog.size() == stable_catalog.size());
+    for (std::size_t index = 0; index < stable_catalog.size(); ++index) {
+        GLYPHA_REQUIRE(unchanged_catalog[index] == stable_catalog[index]);
+    }
+}

@@ -12,9 +12,11 @@ current {Index, Segment set}
        -> reclaim after readers and retention obligations are gone
 ```
 
-The prototype implements a single-threaded offline builder proving that visible state is
-preserved and source Segments remain immutable. Concurrent publication requires an explicit epoch
-or equivalent reclamation design before it may enter the runtime.
+The volatile runtime uses the single-threaded builder under the selected Worker's mutex. It copies
+only Index-visible Records owned by selected sparse sealed Segments, builds the complete replacement
+Index before publication, validates aggregate source liveness, and commits the replacement catalog
+without an allocation after source liveness changes. Existing snapshots provide the reclamation
+epoch: retired source bytes remain alive until their last shared owner releases them.
 
 Whole-Segment reclaim is cheaper than compaction. A sealed Segment with zero live Records and no
 retention or reader obligation may be retired without scanning its Records. Partially live
