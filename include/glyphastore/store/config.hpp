@@ -1,6 +1,6 @@
 #pragma once
 
-#include "glyphastore/persistence/filesystem.hpp"
+#include "glyphastore/persistence/filesystem_hooks.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -48,8 +48,7 @@ struct DurableResourceLimits {
     // budget is partitioned across Workers, then capped by the per-Worker limit.
     std::uint64_t max_hot_cache_bytes{kDefaultMaximumHotCacheBytes};
     std::uint64_t max_hot_cache_bytes_per_worker{kDefaultMaximumHotCacheBytesPerWorker};
-    std::uint64_t max_hot_cache_staging_bytes_per_worker{
-        kDefaultMaximumHotCacheStagingBytesPerWorker};
+    std::uint64_t max_hot_cache_staging_bytes_per_worker{kDefaultMaximumHotCacheStagingBytesPerWorker};
     std::size_t max_hot_cache_entries_per_worker{kDefaultMaximumHotCacheEntriesPerWorker};
 
     auto operator==(const DurableResourceLimits&) const -> bool = default;

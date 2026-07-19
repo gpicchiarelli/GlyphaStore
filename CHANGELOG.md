@@ -20,6 +20,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Add an installable synchronous C++ wire-v2 client with per-Worker bound connections, explicit
+  committed/rejected/indeterminate mutation outcomes, canonical independent wire fixtures, and a
+  public-client TCP benchmark mode. Split the public filesystem fault-hook types from persistence
+  implementation headers so installed Store and client consumers compile against a closed header set.
 - Fix hardening feature checks to evaluate their result variables, enforce extension-free ISO C++23
   while permitting newer standards, apply supported stack-protector and PIE flags to every binary,
   and enable optimized Linux `_FORTIFY_SOURCE=3`, RELRO, and immediate binding. A strict Release CI

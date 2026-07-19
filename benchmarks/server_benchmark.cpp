@@ -1,3 +1,4 @@
+#include "glyphastore/client/client.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
@@ -41,6 +42,7 @@ struct Options {
     std::size_t pipeline{32};
     bool executor_affinity{};
     bool latency{};
+    bool client_api{};
 };
 
 struct ClientWork {
@@ -104,10 +106,12 @@ struct ClientResult {
             result.executor_affinity = true;
         } else if (argument == "--latency") {
             result.latency = true;
+        } else if (argument == "--client-api") {
+            result.client_api = true;
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
-                         " [--executor-affinity] [--latency]"
+                         " [--executor-affinity] [--latency] [--client-api]"
                          " [--warmup N] [--repeats N]\n";
             std::exit(0);
         } else {
@@ -437,6 +441,102 @@ class BufferedResponseReader final {
             .valid = stopped.has_value() && hits == expected};
 }
 
+[[nodiscard]] auto run_client_api_sample(const Options& options,
+                                         const glyphastore::bench::KeyMaterial& material) -> Sample {
+    auto server = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = std::max(std::size_t{16}, options.config.workers * 2U),
+        .worker_count = options.config.workers,
+        .executor_affinity = options.executor_affinity,
+    });
+    if (!server || !(*server)->start()) {
+        return {};
+    }
+    auto connected = glyphastore::client::Client::connect({.port = (*server)->port()});
+    if (!connected) {
+        (*server)->request_stop();
+        static_cast<void>((*server)->join());
+        return {};
+    }
+    auto client = std::move(*connected);
+    auto resources = glyphastore::bench::process_memory_snapshot();
+    std::latch ready{static_cast<std::ptrdiff_t>(options.config.threads)};
+    std::latch start{1};
+    std::vector<ClientResult> client_results(options.config.threads);
+    std::vector<std::thread> clients;
+    clients.reserve(options.config.threads);
+    for (std::size_t client_index = 0; client_index < options.config.threads; ++client_index) {
+        clients.emplace_back([&, client_index] {
+            auto& result = client_results[client_index];
+            if (options.latency) {
+                result.latency_ns.reserve((options.config.operations / options.config.threads + 1U) * 2U);
+            }
+            ready.count_down();
+            start.wait();
+            for (std::size_t operation = client_index; operation < options.config.operations;
+                 operation += options.config.threads) {
+                const auto put_started = std::chrono::steady_clock::now();
+                if (!client
+                         .put(bytes(material.keys[operation]),
+                              {material.values[operation].data(), material.values[operation].size()})
+                         .committed()) {
+                    return;
+                }
+                if (options.latency) {
+                    result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
+                                                    std::chrono::steady_clock::now() - put_started)
+                                                    .count());
+                }
+                ++result.hits;
+                const auto get_started = std::chrono::steady_clock::now();
+                auto loaded = client.get(material.keys[operation]);
+                if (!loaded || !std::ranges::equal(*loaded, material.values[operation])) {
+                    return;
+                }
+                if (options.latency) {
+                    result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
+                                                    std::chrono::steady_clock::now() - get_started)
+                                                    .count());
+                }
+                ++result.hits;
+                result.ingress_bytes += 2U * glyphastore::server::kRequestHeaderBytes +
+                                        material.keys[operation].size() * 2U +
+                                        material.values[operation].size();
+                result.egress_bytes +=
+                    2U * glyphastore::server::kResponseHeaderBytes + material.values[operation].size();
+            }
+        });
+    }
+    ready.wait();
+    const auto started = std::chrono::steady_clock::now();
+    start.count_down();
+    for (auto& thread : clients) {
+        thread.join();
+    }
+    const auto elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    const auto after = glyphastore::bench::process_memory_snapshot();
+    resources.rss_after_bytes = after.rss_after_bytes;
+    resources.peak_rss_bytes = after.peak_rss_bytes;
+    std::size_t hits{};
+    std::vector<double> latency_ns;
+    for (auto& result : client_results) {
+        hits += result.hits;
+        resources.ingress_bytes += result.ingress_bytes;
+        resources.egress_bytes += result.egress_bytes;
+        latency_ns.insert(latency_ns.end(), std::make_move_iterator(result.latency_ns.begin()),
+                          std::make_move_iterator(result.latency_ns.end()));
+    }
+    client.close();
+    (*server)->request_stop();
+    const auto stopped = (*server)->join();
+    const auto expected = options.config.operations * 2U;
+    return {.hits = hits,
+            .seconds = elapsed,
+            .resources = resources,
+            .latency_ns = std::move(latency_ns),
+            .valid = stopped.has_value() && hits == expected};
+}
+
 [[nodiscard]] auto percentile(const std::vector<double>& sorted, const double quantile) -> double {
     if (sorted.empty()) {
         return 0.0;
@@ -447,12 +547,17 @@ class BufferedResponseReader final {
 
 [[nodiscard]] auto run_benchmark(const Options& options) -> Result {
     const auto material = make_material(options.config);
-    const auto work = prepare_work(options.config, options.pipeline, material);
-    if (work.size() != options.config.threads) {
+    const auto work = options.client_api ? std::vector<ClientWork>{}
+                                         : prepare_work(options.config, options.pipeline, material);
+    if (!options.client_api && work.size() != options.config.threads) {
         return {};
     }
+    const auto sample = [&] {
+        return options.client_api ? run_client_api_sample(options, material)
+                                  : run_sample(options, material, work);
+    };
     for (std::size_t iteration = 0; iteration < options.settings.warmup_iterations; ++iteration) {
-        if (!run_sample(options, material, work).valid) {
+        if (!sample().valid) {
             return {};
         }
     }
@@ -463,18 +568,20 @@ class BufferedResponseReader final {
     resources.reserve(options.settings.measured_iterations);
     std::size_t hits{};
     for (std::size_t iteration = 0; iteration < options.settings.measured_iterations; ++iteration) {
-        const auto sample = run_sample(options, material, work);
-        if (!sample.valid) {
+        auto measured = sample();
+        if (!measured.valid) {
             return {};
         }
-        hits = sample.hits;
-        seconds.push_back(sample.seconds);
-        resources.push_back(sample.resources);
-        latency_ns.insert(latency_ns.end(), std::make_move_iterator(sample.latency_ns.begin()),
-                          std::make_move_iterator(sample.latency_ns.end()));
+        hits = measured.hits;
+        seconds.push_back(measured.seconds);
+        resources.push_back(measured.resources);
+        latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
+                          std::make_move_iterator(measured.latency_ns.end()));
     }
-    auto result = glyphastore::bench::finalize_result("server_tcp_read_after_write", options.config,
-                                                      options.settings, options.config.operations * 2U, hits,
+    const auto benchmark_name =
+        options.client_api ? "cpp_client_read_after_write" : "server_tcp_read_after_write";
+    auto result = glyphastore::bench::finalize_result(benchmark_name, options.config, options.settings,
+                                                      options.config.operations * 2U, hits,
                                                       std::move(seconds), std::move(resources));
     if (!latency_ns.empty()) {
         std::ranges::sort(latency_ns);
@@ -496,12 +603,16 @@ int main(int argc, char** argv) {
     }
     std::cout << "# glyphastore TCP server benchmark\n";
     glyphastore::bench::print_metadata(std::cout, parsed.settings);
-    std::cout << "# pipeline=" << parsed.pipeline << '\n';
+    std::cout << "# client_mode=" << (parsed.client_api ? "public-cpp-api" : "raw-wire") << '\n';
+    std::cout << "# pipeline=" << (parsed.client_api ? 1 : parsed.pipeline) << '\n';
     std::cout << "# routing=owner-bound-connections\n";
     std::cout << "# traffic_scope=timed-protocol-frames-excluding-init-bind\n";
     std::cout << "# memory_scope=whole-benchmark-process-rss\n";
     std::cout << "# executor_affinity_requested=" << (parsed.executor_affinity ? 1 : 0) << '\n';
-    std::cout << "# latency_measurement=" << (parsed.latency ? "pipelined-response" : "disabled") << '\n';
+    std::cout << "# latency_measurement="
+              << (parsed.latency ? (parsed.client_api ? "synchronous-api-call" : "pipelined-response")
+                                 : "disabled")
+              << '\n';
 #if defined(__APPLE__)
     std::cout << "# executor_affinity_semantics=mach-advisory\n";
 #elif defined(__linux__)

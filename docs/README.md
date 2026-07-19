@@ -45,6 +45,7 @@ format, acknowledgement point, ownership rule, or compatibility guarantee.
 | [Persistence v1](spec/persistence-v1.md) | Complete durable namespace, binary formats, checksums, authority |
 | [Benchmark standard](spec/benchmark-standard.md) | Workload and result semantics |
 | [Public C++ API](reference/cpp-api.md) | Supported API contracts and error behavior |
+| [C++ TCP client API](reference/cpp-client-api.md) | Client routing, mutation outcomes, lifecycle, and SDK contract |
 
 ## Architecture and implementation guides
 

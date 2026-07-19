@@ -32,7 +32,8 @@ Every request has a 40-byte header followed by exactly `key_size` key bytes and 
 | 40 | `key_size` | bytes | key |
 | … | `value_size` | bytes | value |
 
-`frame_size` must equal `40 + key_size + value_size` without overflow. Senders must set `flags` and `reserved` to zero. Version 2 receivers currently ignore their values; no meaning may be inferred from nonzero bits.
+`frame_size` must equal `40 + key_size + value_size` without overflow. Senders must set `flags` and
+`reserved` to zero. Version 2 receivers reject nonzero values; no meaning may be inferred from them.
 
 Keys and values are arbitrary bytes and need not be text or NUL-terminated.
 

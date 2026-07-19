@@ -281,6 +281,26 @@ response, including p50, p95, p99, and p99.9. Latency collection is opt-in so it
 clock reads do not distort throughput-only runs. The automated workflow exercises 1, 2, and 4
 workers at pipeline depths 1, 8, 32, and 128, plus a dedicated latency run.
 
+The reference C++ client is a separate installable library. It discovers routing metadata and
+maintains one bound, thread-safe connection per Worker:
+
+```cpp
+#include <glyphastore/client/client.hpp>
+
+auto opened = glyphastore::client::Client::connect({.host = "127.0.0.1", .port = 7379});
+auto cache = std::move(*opened);
+auto stored = cache.put("key", "value");
+auto value = cache.get("key");
+```
+
+Mutations report `committed`, `rejected`, or `indeterminate`; a disconnect after request bytes were
+sent is never mislabeled as a definite rejection. Benchmark the public API with `--client-api`:
+
+```bash
+./scripts/dev.sh benchmark-server --client-api --ops 100000 --workers 4 --clients 4 \
+  --latency --warmup 1 --repeats 5
+```
+
 ```bash
 ./scripts/dev.sh build
 ./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379
@@ -297,6 +317,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [Documentation map](docs/README.md) | Normative hierarchy and complete technical-document index |
 | [Architecture specification](docs/spec/architecture.md) | Current volatile, durable, and TCP runtime architecture |
 | [Wire protocol v2](docs/spec/wire-protocol-v2.md) | Complete client framing, routing, session, and error contract |
+| [C++ TCP client API](docs/reference/cpp-client-api.md) | Reference client, mutation outcomes, and cross-language SDK plan |
 | [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |

@@ -91,6 +91,42 @@ glyphastore_enable_hardening(glyphastore_core)
 glyphastore_enable_ipo(glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES FOLDER "Libraries")
 
+add_library(glyphastore_wire
+    src/server/protocol.cpp
+)
+add_library(GlyphaStore::wire ALIAS glyphastore_wire)
+set_target_properties(glyphastore_wire PROPERTIES EXPORT_NAME wire)
+target_compile_features(glyphastore_wire PUBLIC cxx_std_23)
+target_include_directories(glyphastore_wire
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_wire PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>)
+glyphastore_set_warnings(glyphastore_wire)
+glyphastore_enable_hardening(glyphastore_wire)
+glyphastore_enable_ipo(glyphastore_wire)
+set_target_properties(glyphastore_wire PROPERTIES FOLDER "Libraries")
+
+add_library(glyphastore_client
+    src/client/client.cpp
+)
+add_library(GlyphaStore::client ALIAS glyphastore_client)
+set_target_properties(glyphastore_client PROPERTIES EXPORT_NAME client)
+target_compile_features(glyphastore_client PUBLIC cxx_std_23)
+target_include_directories(glyphastore_client
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_client
+    PRIVATE GlyphaStore::wire $<BUILD_INTERFACE:glyphastore_project_options>
+)
+glyphastore_set_warnings(glyphastore_client)
+glyphastore_enable_hardening(glyphastore_client)
+glyphastore_enable_ipo(glyphastore_client)
+set_target_properties(glyphastore_client PROPERTIES FOLDER "Libraries")
+
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set(GLYPHASTORE_POLLER_SOURCE src/server/poller_epoll.cpp)
 elseif(APPLE OR CMAKE_SYSTEM_NAME STREQUAL "FreeBSD" OR CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
@@ -102,7 +138,6 @@ endif()
 add_library(glyphastore_server_core
     src/server/connection_handoff.cpp
     src/server/disk_read_executor.cpp
-    src/server/protocol.cpp
     src/server/reactor.cpp
     src/server/server.cpp
     src/server/socket.cpp
@@ -121,7 +156,7 @@ target_include_directories(glyphastore_server_core
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 target_link_libraries(glyphastore_server_core
-    PUBLIC GlyphaStore::core
+    PUBLIC GlyphaStore::core GlyphaStore::wire
     PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
 )
 glyphastore_set_warnings(glyphastore_server_core)
@@ -165,6 +200,7 @@ if(BUILD_TESTING)
         tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
+        tests/unit/client_tests.cpp
         tests/unit/durable_flush_coordinator_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/resource_limits_tests.cpp
@@ -187,7 +223,7 @@ if(BUILD_TESTING)
         tests/property/history_property_tests.cpp
     )
     target_link_libraries(glyphastore_tests
-        PRIVATE GlyphaStore::server glyphastore_cli_support glyphastore_project_options
+        PRIVATE GlyphaStore::server GlyphaStore::client glyphastore_cli_support glyphastore_project_options
     )
     target_include_directories(glyphastore_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -348,7 +384,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
         benchmarks/harness.cpp
     )
     target_link_libraries(glyphastore_server_benchmarks
-        PRIVATE GlyphaStore::server glyphastore_project_options)
+        PRIVATE GlyphaStore::server GlyphaStore::client glyphastore_project_options)
     target_include_directories(glyphastore_server_benchmarks
         PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/benchmarks")
     target_compile_definitions(glyphastore_server_benchmarks
@@ -479,7 +515,7 @@ endif()
 
 glyphastore_add_xcode_project_files()
 
-install(TARGETS glyphastore_core
+install(TARGETS glyphastore_core glyphastore_wire glyphastore_client
     EXPORT GlyphaStoreTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime NAMELINK_COMPONENT Development
@@ -491,8 +527,23 @@ install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glypha
     COMPONENT Runtime
 )
 install(FILES
+    include/glyphastore/client/client.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/client"
+    COMPONENT Development
+)
+install(FILES
     include/glyphastore/core/error.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/core"
+    COMPONENT Development
+)
+install(FILES
+    include/glyphastore/persistence/filesystem_hooks.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/persistence"
+    COMPONENT Development
+)
+install(FILES
+    include/glyphastore/server/protocol.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/server"
     COMPONENT Development
 )
 install(FILES

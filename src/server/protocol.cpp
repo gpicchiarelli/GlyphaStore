@@ -132,6 +132,9 @@ auto decode_request(const std::span<const std::byte> input, const std::size_t ma
     if (load_u16(input, 4) != kProtocolVersion) {
         return fail(ErrorCode::invalid_record, "request protocol version is unsupported");
     }
+    if (input[7] != std::byte{0} || load_u32(input, 36) != 0) {
+        return fail(ErrorCode::invalid_record, "request flags or reserved field are not canonical");
+    }
     auto opcode = request_opcode(std::to_integer<std::uint8_t>(input[6]));
     if (!opcode) {
         return unexpected(opcode.error());
@@ -173,6 +176,9 @@ auto decode_response(const std::span<const std::byte> input, const std::size_t m
     if (load_u16(input, 4) != kProtocolVersion) {
         return fail(ErrorCode::invalid_record, "response protocol version is unsupported");
     }
+    if (load_u32(input, 28) != 0) {
+        return fail(ErrorCode::invalid_record, "response reserved field is not canonical");
+    }
     auto status = response_status(load_u16(input, 6));
     if (!status) {
         return unexpected(status.error());
@@ -194,6 +200,9 @@ auto decode_response(const std::span<const std::byte> input, const std::size_t m
 }
 
 auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>> {
+    if (request.flags != 0) {
+        return fail(ErrorCode::invalid_argument, "request flags are not defined in protocol v2");
+    }
     const auto frame_size = checked_frame_size(kRequestHeaderBytes, request.key.size(), request.value.size());
     if (!frame_size || *frame_size > kMaxFrameBytes) {
         return fail(ErrorCode::record_too_large, "request exceeds protocol frame limits");
