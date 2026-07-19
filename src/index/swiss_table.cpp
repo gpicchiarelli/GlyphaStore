@@ -233,7 +233,17 @@ auto SwissTableIndex::maybe_compact_heap_keys() -> Status {
     if (heap_dead_bytes_ == 0) {
         return {};
     }
-    if (heap_dead_bytes_ < heap_live_bytes_ && heap_dead_bytes_ < kHeapArenaCompactDeadThreshold) {
+    if (heap_live_bytes_ == 0) {
+        heap_keys_.clear();
+        heap_dead_bytes_ = 0;
+        return {};
+    }
+    // Require both a meaningful absolute saving and at least 50% arena
+    // fragmentation. Compacting at every fixed-size amount of dead storage
+    // repeatedly recopies almost the entire live arena during an erase sweep.
+    // The geometric trigger bounds total copied key bytes amortized over the
+    // sweep while keeping dead storage below max(live bytes, threshold).
+    if (heap_dead_bytes_ < kHeapArenaCompactDeadThreshold || heap_dead_bytes_ < heap_live_bytes_) {
         return {};
     }
     return compact_heap_keys(slots_, control_);

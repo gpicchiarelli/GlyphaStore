@@ -166,10 +166,15 @@ glyphastore::StoreConfig config{
     .storage_mode = glyphastore::StorageMode::durable_group,
     .data_directory = "/private/path/to/store",
     .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,
-    .durable_group = {.max_records = 32, .max_bytes = 65536, .max_wait_ms = 10},
+    .durable_group =
+        {.max_records = 32, .max_bytes = 65536, .max_wait_ms = 10, .min_records = 1},
 };
 auto store = glyphastore::Store::open(config);
 ```
+
+Strict group batching starts at `max_records`, contracts toward observed deadline occupancy, and
+grows again when more producers are already admitted. `min_records` and `max_records` are hard
+bounds; adaptation never changes the absolute deadline or successful-ack durability.
 
 Per-record strict durability:
 

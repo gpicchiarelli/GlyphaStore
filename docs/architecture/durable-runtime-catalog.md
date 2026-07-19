@@ -65,10 +65,12 @@ post-commit publication error reports the committed boundary and makes the runti
 
 Strict group commit with one v1 Worker separates admission from commit execution. Producers stage
 bounded pending mutations and wait for completion; the durability coordinator owns Record ordering,
-commit-slot synchronization, whole-batch Index publication, and waiter wakeup. A threshold closes
-admission until that batch completes. The first Record schedules an absolute batch deadline, and
-explicit `flush()` is dispatched to and completed by the same coordinator thread. A multi-Worker
-Store retains independent Worker-local batches and commit domains.
+commit-slot synchronization, whole-batch Index publication, and waiter wakeup. An adaptive record
+target bounded by configured minimum and maximum values closes admission until that batch completes.
+A deadline contracts the next target to observed occupancy; admitted producer pressure grows it.
+The first Record still schedules one absolute batch deadline, and explicit `flush()` is dispatched
+to and completed by the same coordinator thread. A multi-Worker Store retains independent
+Worker-local batches and commit domains.
 
 ## Observable shutdown
 

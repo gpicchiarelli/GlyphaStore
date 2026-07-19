@@ -170,9 +170,10 @@ Durable-group mutation processing follows this order:
 1. Validate arguments, limits, ownership, sequence availability, and publication capacity.
 2. Encode the complete immutable Record outside the committed extent.
 3. Write all Record bytes without publishing a commit slot.
-4. When the Worker batch closes by record count, byte threshold, or `max_wait_ms`, establish the
-   platform Record-before-slot ordering boundary, publish one commit slot, and synchronize the
-   Segment again.
+4. When the Worker batch closes by its adaptive record target, byte threshold, or `max_wait_ms`,
+   establish the platform Record-before-slot ordering boundary, publish one commit slot, and
+   synchronize the Segment again. The record target remains within the configured `min_records`
+   and `max_records` bounds.
 5. Publish the `RecordRef`, liveness changes, and visibility in memory for each mutation in the
    closed batch while the commit executor owns the Worker lock.
 6. Return success or encode the successful network response.
@@ -182,8 +183,10 @@ succeeded for a batch, every mutation in that batch must survive restart. The co
 completes all in-memory publication before waking the batch waiters; a flush or publication failure
 wakes all waiters with the runtime fail-closed. A full Segment first closes any staged batch before
 rotation. The one-Worker runtime delegates the commit phases to its durability coordinator and
-bounds admission when `max_records` or `max_bytes` closes the batch. A multi-Worker Store keeps
-independent Worker-local producer-closed batches and commit domains.
+bounds admission when the adaptive record target or `max_bytes` closes the batch. Deadline-limited
+occupancy contracts the next target; already-admitted producer pressure grows it, without changing
+the absolute deadline or acknowledgement semantics. A multi-Worker Store keeps independent
+Worker-local producer-closed batches and commit domains.
 
 ### Durable-periodic batching
 

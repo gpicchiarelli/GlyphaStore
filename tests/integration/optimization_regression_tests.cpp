@@ -16,6 +16,15 @@ auto bytes(std::string_view value) -> std::span<const std::byte> {
 auto heap_key(std::uint64_t suffix) -> std::string {
     return std::string(32, 'h') + std::to_string(suffix);
 }
+
+auto fixed_heap_key(std::uint64_t suffix) -> std::string {
+    std::string key(64, 'h');
+    for (std::size_t index = 0; index < sizeof(suffix); ++index) {
+        key[key.size() - 1U - index] = static_cast<char>(suffix & 0xFFU);
+        suffix >>= 8U;
+    }
+    return key;
+}
 } // namespace
 
 GLYPHA_TEST("index heap key arena survives erase churn and rehash") {
@@ -60,6 +69,36 @@ GLYPHA_TEST("index heap arena reclaims memory after insert erase churn") {
     GLYPHA_REQUIRE(index.stats().size == 0);
     GLYPHA_REQUIRE(index.stats().arena_live_bytes == 0);
     GLYPHA_REQUIRE(index.stats().arena_allocated_bytes <= key.size() + 64U);
+}
+
+GLYPHA_TEST("index heap arena waits for geometric fragmentation before reclaim") {
+    glyphastore::Index index;
+    constexpr std::uint64_t count = 8'192;
+    constexpr std::uint64_t first_erase_count = 2'048;
+    for (std::uint64_t value = 0; value < count; ++value) {
+        const auto key = fixed_heap_key(value);
+        const glyphastore::RecordRef ref{glyphastore::SegmentId{1}, glyphastore::RecordOffset{10},
+                                         glyphastore::RecordSize{20}, glyphastore::SequenceNumber{value},
+                                         glyphastore::GenerationId{1}};
+        GLYPHA_REQUIRE(index.insert_or_assign(key, ref).has_value());
+    }
+
+    for (std::uint64_t value = 0; value < first_erase_count; ++value) {
+        GLYPHA_REQUIRE(index.erase(fixed_heap_key(value)).previous.has_value());
+    }
+    const auto before_geometric_trigger = index.stats();
+    GLYPHA_REQUIRE(before_geometric_trigger.arena_allocated_bytes >
+                   before_geometric_trigger.arena_live_bytes + 65'536U);
+
+    for (std::uint64_t value = first_erase_count; value < (count / 2U) + 1U; ++value) {
+        GLYPHA_REQUIRE(index.erase(fixed_heap_key(value)).previous.has_value());
+    }
+    const auto after_geometric_trigger = index.stats();
+    GLYPHA_REQUIRE(after_geometric_trigger.arena_allocated_bytes <=
+                   after_geometric_trigger.arena_live_bytes + 256U);
+    for (std::uint64_t value = (count / 2U) + 1U; value < count; ++value) {
+        GLYPHA_REQUIRE(index.find(fixed_heap_key(value)).has_value());
+    }
 }
 
 GLYPHA_TEST("index swiss table probe path matches under mixed inline and heap keys") {

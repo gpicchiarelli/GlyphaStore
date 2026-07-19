@@ -7,6 +7,7 @@
 #include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "persistence/adaptive_batch_sizer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -347,6 +348,8 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::size_t pending_group_insertions{};
     std::size_t pending_group_heap_key_bytes{};
     std::chrono::steady_clock::time_point batch_started{};
+    std::atomic_size_t active_group_mutations{};
+    detail::AdaptiveBatchSizer batch_sizer;
     bool batch_closing{};
     std::condition_variable batch_closed;
 };
@@ -358,7 +361,11 @@ DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRec
       recovery_stats_(recovered.stats), options_(options) {
     workers_.reserve(recovered.workers.size());
     for (auto& worker : recovered.workers) {
-        workers_.push_back(std::make_unique<RuntimeWorker>(std::move(worker)));
+        auto runtime_worker = std::make_unique<RuntimeWorker>(std::move(worker));
+        if (options_.batch) {
+            runtime_worker->batch_sizer.reset(options_.batch->min_records, options_.batch->max_records);
+        }
+        workers_.push_back(std::move(runtime_worker));
     }
     // A single Worker has one file-backed commit domain, so its dedicated
     // executor can own batch closure without cross-Worker coordination.
@@ -403,7 +410,7 @@ DurableRuntimeCatalog::~DurableRuntimeCatalog() {
     }
 }
 
-auto DurableRuntimeCatalog::should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool {
+auto DurableRuntimeCatalog::should_flush_batch(RuntimeWorker& worker) const noexcept -> bool {
     if (!options_.batch || !worker.cached_file || !worker.cached_file->has_pending_commit()) {
         return false;
     }
@@ -411,15 +418,31 @@ auto DurableRuntimeCatalog::should_flush_batch(const RuntimeWorker& worker) cons
         return true;
     }
     const auto& config = *options_.batch;
-    if (worker.cached_file->pending_record_count() >= config.max_records) {
+    const auto pending_records = worker.cached_file->pending_record_count();
+    if (pending_records >= config.max_records) {
         return true;
     }
     if (worker.cached_file->pending_bytes() >= config.max_bytes) {
         return true;
     }
+    const auto record_target = worker.batch_sizer.target();
+    if (options_.strict_ack && pending_records >= record_target) {
+        // If more producers are already admitted than fit in this batch, grow
+        // the next target up to the observed burst. A relaxed sample is enough:
+        // this is a tuning hint and never affects acknowledgement correctness.
+        const auto admissions = worker.active_group_mutations.load(std::memory_order_relaxed);
+        worker.batch_sizer.observe_target_reached(pending_records, admissions);
+        return true;
+    }
     if (worker.batch_started != std::chrono::steady_clock::time_point{}) {
         const auto elapsed = std::chrono::steady_clock::now() - worker.batch_started;
         if (elapsed >= std::chrono::milliseconds{config.max_wait_ms}) {
+            // A deadline means the current target exceeded available
+            // concurrency. Contract the next batch to the occupancy actually
+            // achieved, within the caller's explicit bounds.
+            if (options_.strict_ack) {
+                worker.batch_sizer.observe_deadline(pending_records);
+            }
             return true;
         }
     }
@@ -922,6 +945,23 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         }
         const auto worker_index = route_worker(key_hash, workers_.size());
         auto& worker = *workers_[worker_index];
+        const bool strict_batch = options_.batch.has_value() && options_.strict_ack;
+        struct GroupAdmission final {
+            std::atomic_size_t* active{};
+
+            explicit GroupAdmission(std::atomic_size_t* counter) noexcept : active(counter) {
+                if (active) {
+                    active->fetch_add(1U, std::memory_order_relaxed);
+                }
+            }
+            ~GroupAdmission() {
+                if (active) {
+                    active->fetch_sub(1U, std::memory_order_relaxed);
+                }
+            }
+            GroupAdmission(const GroupAdmission&) = delete;
+            auto operator=(const GroupAdmission&) -> GroupAdmission& = delete;
+        } admission{strict_batch ? &worker.active_group_mutations : nullptr};
         std::unique_lock worker_lock{worker.mutex};
         if (dedicated_commit_executor_) {
             worker.batch_closed.wait(worker_lock, [&] { return !worker.batch_closing || !healthy(); });
@@ -938,7 +978,6 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         }
 
         const HashedKey hashed{.key = as_string_view(key), .hash = key_hash};
-        const bool strict_batch = options_.batch.has_value() && options_.strict_ack;
         bool key_present = worker.index.find(hashed).has_value();
         if (strict_batch) {
             const auto pending = std::find_if(

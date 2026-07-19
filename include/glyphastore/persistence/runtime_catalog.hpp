@@ -119,7 +119,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto flush_due_batches(SegmentCommitSync sync) -> Status;
     [[nodiscard]] auto flush_dirty_segments() -> Status;
     [[nodiscard]] auto flush_worker_batch(RuntimeWorker& worker, SegmentCommitSync sync) -> Status;
-    [[nodiscard]] auto should_flush_batch(const RuntimeWorker& worker) const noexcept -> bool;
+    [[nodiscard]] auto should_flush_batch(RuntimeWorker& worker) const noexcept -> bool;
     void abandon_pending_batches() noexcept;
     void wait_for_batch_close(RuntimeWorker& worker, PendingGroupMutation& mutation,
                               std::unique_lock<std::mutex>& lock);

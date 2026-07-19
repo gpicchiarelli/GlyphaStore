@@ -20,6 +20,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Make volatile long-key erase reclaim geometrically instead of recopying the live key arena at
+  every fixed 64 KiB of churn. Add strict-group record-target adaptation bounded by explicit
+  `min_records`/`max_records`, contracting on deadline occupancy and growing with admitted producer
+  pressure without changing acknowledgement semantics.
 - Add per-directory deterministic file-I/O fault injection for short positional transfers,
   `EINTR`, writeback `EIO`, disk/quota exhaustion, and read-only filesystems; extend pre/post
   publication and mutation recovery-oracle matrices without global test state.

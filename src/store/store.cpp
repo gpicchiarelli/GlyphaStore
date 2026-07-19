@@ -101,9 +101,13 @@ auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOp
 }
 
 [[nodiscard]] auto validate_batch_config(const DurableGroupConfig& batch) -> Status {
-    if (batch.max_records == 0 || batch.max_bytes == 0 || batch.max_wait_ms == 0) {
+    if (batch.max_records == 0 || batch.max_bytes == 0 || batch.max_wait_ms == 0 || batch.min_records == 0) {
         return fail(ErrorCode::invalid_argument,
-                    "durable batching requires max_records, max_bytes, and max_wait_ms greater than zero");
+                    "durable batching requires record, byte, and wait limits greater than zero");
+    }
+    if (batch.min_records > batch.max_records) {
+        return fail(ErrorCode::invalid_argument,
+                    "durable batching requires min_records no greater than max_records");
     }
     return {};
 }

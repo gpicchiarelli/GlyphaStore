@@ -32,6 +32,7 @@ Add `StorageMode::durable_group` with configurable `DurableGroupConfig`:
 - `max_records` (default 32)
 - `max_bytes` (default 65536)
 - `max_wait_ms` (default 10)
+- `min_records` (default 1)
 
 Acknowledgement occurs only after the batch containing the mutation completes the Record-data
 synchronization, commit-slot write, and commit-slot synchronization. Clients may block until the
@@ -42,6 +43,10 @@ the compatibility multi-Worker path still uses the producer that closes each Wor
 perform no serialized per-mutation publication work after the durability barriers, and readers
 observe either the pre-batch state or the complete committed batch while holding the Worker lock.
 The first Record establishes an absolute `max_wait_ms` deadline; later arrivals do not extend it.
+The runtime starts at `max_records`. A deadline contracts the next record target to the occupancy
+actually observed, never below `min_records`; when more producers are already admitted than fit in
+the current target, the following batch grows toward that observed burst, never above
+`max_records`. This changes only batch closure policy, not acknowledgement or ordering semantics.
 
 ### `durable_periodic` batching
 
@@ -62,10 +67,12 @@ struct DurableGroupConfig {
     std::uint32_t max_records{32};
     std::uint32_t max_bytes{65536};
     std::uint32_t max_wait_ms{10};
+    std::uint32_t min_records{1};
 };
 ```
 
-All three parameters must be greater than zero when batching is enabled.
+All parameters must be greater than zero when batching is enabled, and `min_records` must not exceed
+`max_records`.
 
 ## Recovery
 

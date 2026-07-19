@@ -46,6 +46,7 @@ struct DurableGroupConfig {
     std::uint32_t max_records{32};
     std::uint32_t max_bytes{65536};
     std::uint32_t max_wait_ms{10};
+    std::uint32_t min_records{1};
 };
 
 enum class StorageMode : std::uint8_t {

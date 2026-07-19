@@ -145,6 +145,7 @@ if(BUILD_TESTING)
         tests/test_main.cpp
         tests/unit/compaction_intent_tests.cpp
         tests/unit/compaction_tests.cpp
+        tests/unit/adaptive_batch_sizer_tests.cpp
         tests/unit/index_tests.cpp
         tests/unit/manifest_tests.cpp
         tests/unit/namespace_audit_tests.cpp

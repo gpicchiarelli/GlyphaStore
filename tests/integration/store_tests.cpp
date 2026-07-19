@@ -823,6 +823,20 @@ GLYPHA_TEST("durable_group rejects invalid batch configuration") {
                                                   .durable_group = {.max_records = 0}});
     GLYPHA_REQUIRE(!opened.has_value());
     GLYPHA_REQUIRE(opened.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    const auto zero_minimum = glyphastore::Store::open(
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = temporary.store_path(),
+         .durable_group = {.max_records = 4, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 0}});
+    GLYPHA_REQUIRE(!zero_minimum.has_value());
+    GLYPHA_REQUIRE(zero_minimum.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    const auto inverted = glyphastore::Store::open(
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = temporary.store_path(),
+         .durable_group = {.max_records = 4, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 5}});
+    GLYPHA_REQUIRE(!inverted.has_value());
+    GLYPHA_REQUIRE(inverted.error().code == glyphastore::ErrorCode::invalid_argument);
 }
 
 GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {

@@ -100,9 +100,12 @@ implementation or design document alone is not sufficient.
   6.28k put/s over seven 4,096-operation samples, effectively neutral against its 6.21k baseline.
   The four-Worker path measured 6.14k put/s in the same follow-up. With one sparse client and an
   absolute 10 ms batch deadline, end-to-end p99 including both persistence phases measured 20.08 ms.
-  Hot-cache durable get remains around 1.9M ops/s. These local measurements are diagnostic baselines,
-  not release claims; controlled-hardware CI evidence and an enforced tail-latency target remain
-  pending.
+  Occupancy-adaptive record targets then raised one-Worker throughput at 4/8/16 producers from
+  238/480/957 put/s to 898/1.74k/2.97k put/s and reduced p50 from about 16 ms to 4--5 ms. Four
+  Workers at 8/16 producers improved from 315/636 put/s to 1.73k/3.03k put/s; saturated 32-producer
+  samples remained within 3--7% of the prior local range. Hot-cache durable get remains around
+  1.9M ops/s. These local measurements are diagnostic baselines, not release claims;
+  controlled-hardware CI evidence and an enforced tail-latency target remain pending.
 
 ### Operations and security
 
