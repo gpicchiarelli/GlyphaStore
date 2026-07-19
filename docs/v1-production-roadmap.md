@@ -27,8 +27,8 @@ It is not production ready yet. The most important gaps are behavioral rather th
   enumeration are implemented; native-platform evidence remains a release gate;
 - recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
   Worker; released-artifact and native-platform evidence remains to be accumulated;
-- durable compaction has an internal crash-safe publication and retirement transaction, but no
-  Store-level scheduling or complete kill/fault matrix yet;
+- durable compaction has an internal crash-safe publication and retirement transaction plus
+  explicit `Store::compact()` scheduling, but no complete kill/fault matrix or automatic policy yet;
 - embedded durable operation now has explicit disk, descriptor, recovery, live-key, temporary-space,
   and write-amplification policy; daemon configuration and compaction-time enforcement remain;
 - process-kill coverage is useful but is not evidence for sudden power loss, every supported

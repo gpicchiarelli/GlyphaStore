@@ -24,6 +24,10 @@ The engine-owned names are:
 | `.glyphastore.lock` | lifetime of the exclusive process lock |
 | `.manifest.glypha.tmp` | replaceable, recognizable publication temporary |
 | `manifest.glypha` | authoritative complete manifest |
+| `.glyphastore.bootstrap.tmp` | temporary bootstrap-intent publication |
+| `.glyphastore.bootstrap` | bootstrap intent encoded as a complete v1 Manifest |
+| `.glyphastore.compaction.tmp` | temporary compaction-intent publication |
+| `.glyphastore.compaction` | checksummed compaction intent with old and replacement manifests |
 | `.segment-<id>-<generation>.glypha.tmp` | recognizable unpublished Segment temporary |
 | `segment-<id>-<generation>.glypha` | immutable-identity Segment generation |
 

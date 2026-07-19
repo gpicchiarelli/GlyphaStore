@@ -113,5 +113,5 @@ Record write boundary through coherent runtime publication.
 Still required before durability can be certified:
 
 - native-platform process-kill and power-loss evidence at every mutation and rotation boundary;
-- Store-level compaction scheduling and the complete online compaction kill/fault matrix;
+- the complete online compaction kill/fault matrix and any future automatic scheduling policy;
 - disk-full and native Linux/FreeBSD/OpenBSD evidence.

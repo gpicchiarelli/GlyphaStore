@@ -107,8 +107,8 @@ serving writes.
 The returned Segment-state vector is index-for-index aligned with `manifest.segments`; catalog
 identity is not duplicated. Every Worker state contains its rebuilt Index, next sequence, manifest
 active Segment, and rotation flag. Segment descriptors are closed after scanning. The owning Store
-must retain the locked `DataDirectory` and reopen backing files through verified identities when the
-runtime durable catalog is integrated.
+retains the locked `DataDirectory` and reopens backing files through verified identities in the
+integrated durable runtime catalog.
 
 `DurableRuntimeCatalog` consumes this state without copying Index keys, retains the directory lock,
 serves CRC-verified owning reads through at most one cached Segment descriptor per Worker, and
@@ -120,8 +120,8 @@ expiration, sequence restoration, lifecycle transitions, missing files, Store-ID
 hash mismatch, wrong-Worker routing, equal winning sequences, sequence exhaustion, crash temporaries,
 and unlisted-Segment rejection without adoption.
 
-Still required before enabling `durable_sync`:
+Still required for production certification:
 
 - add explicit operator quarantine/repair for arbitrary orphans;
-- integrate the durable runtime with Store/daemon construction and network acknowledgement;
-- run process-kill, disk-full, native-platform, and power-loss matrices.
+- complete daemon-side asynchronous durable-I/O handling;
+- expand process-kill, disk-full, native-platform, and power-loss matrices.

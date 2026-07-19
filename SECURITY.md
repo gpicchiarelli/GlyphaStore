@@ -34,7 +34,7 @@ severity or eligibility for a CVE.
 
 ## Security scope
 
-Persisted segment files, future network frames, and recovery metadata are all treated as untrusted
+Persisted segment files, native network frames, and recovery metadata are all treated as untrusted
 input. A crash, out-of-bounds access, integer overflow, use-after-free, data race, or silent
 corruption is considered security-relevant.
 

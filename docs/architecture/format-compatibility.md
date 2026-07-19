@@ -19,9 +19,13 @@ and wire versions advance together.
 | Segment header | 1 | Exact v1 only | Emits v1 | [`segment_header_v1.hex`](../../tests/fixtures/segment_header_v1.hex) | Internal codec complete |
 | Commit slot | 1 | Exact v1, independently validated | Emits v1 | Both slots in the Segment header fixture | Internal codec complete |
 | Record | 1 | Exact canonical v1 only | Emits v1 | [`record_v1.hex`](../../tests/fixtures/record_v1.hex) | Internal codec complete |
+| Bootstrap intent | 1 | Exact Manifest v1 | Emits canonical Manifest v1 | Bootstrap and recovery integration tests | Integrated; shares Manifest codec |
+| Compaction intent | 1 | Exact v1 only | Emits v1 | Unit and interrupted-compaction recovery tests | Integrated; golden fixture pending |
 | Native wire protocol | 2 | Exact v2 only | Emits v2 | Round-trip and malformed-frame tests | Experimental; golden fixture pending |
 
-“Exact” means that unknown required versions, sizes, flags, and non-zero reserved bytes are rejected.
+For persistent codecs, “exact” means that unknown required versions, sizes, flags, and non-zero
+reserved bytes are rejected. Wire v2 requires senders to zero flags and reserved fields, while the
+current receiver ignores them; this behavior is fixed in the wire specification until versioned.
 Record v1 additionally requires the minimal 8-byte-aligned extent and zero alignment padding, so
 one logical Record cannot have multiple correctly checksummed encodings.
 
@@ -34,6 +38,8 @@ one logical Record cannot have multiple correctly checksummed encodings.
 | Segment header v1 with one torn or checksum-invalid slot | Accepted only through the other valid slot |
 | Correctly checksummed unknown commit-slot version | Rejected as incompatible; no fallback to older committed data |
 | Canonical Record v1 | Accepted after extent, checksum, enum, and zero-padding validation |
+| Bootstrap intent containing canonical initial Manifest v1 | Accepted only in a valid bootstrap namespace state |
+| Compaction intent v1 with valid old/new Manifest v1 payloads | Accepted only when its transition and current authority agree |
 | Unknown manifest, Segment, header, Record, or wire version | Rejected before publication or service |
 | Any pre-v1 persistent artifact | Unsupported; no legacy persistent format was released |
 | Any future persistent version | Unsupported until a reader row, fixture, and migration decision are added |

@@ -27,8 +27,8 @@ with Redis or any text protocol.
 - Durable Store creation persists the routing algorithm, Worker count, and routing epoch. Reopen
   uses that configuration until an explicit migration changes it.
 - Vacuum uses copy-build-validate-publish-retire and never rewrites published records in place.
-- The Index and active Segments are RAM-resident. Sealed Segments may be persisted, mapped, or
-  evicted by explicit policy.
+- The Index is RAM-resident. Volatile Segments are RAM-resident; durable active and sealed Segments
+  are file-backed and may use bounded descriptors, mapped pages, or a bounded hot-record cache.
 - Linux, macOS, FreeBSD, and OpenBSD are architectural targets since `0.1.0`; macOS is the primary
   development environment. Only Linux and macOS currently have continuous build-and-test evidence.
 - Memory safety, integer safety, data-race freedom, corruption detection, and bounded resource

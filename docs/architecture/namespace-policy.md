@@ -85,6 +85,7 @@ temporaries, unlisted files, malformed and unknown names, symlinks, hard links, 
 and the enumeration bound. Recovery integration proves that temporaries are reported without deletion
 and that an unlisted Segment blocks recovery without adoption or deletion.
 
-Still required before durable mode can be enabled: explicit operator quarantine/repair tooling,
-collision-safe orphan ID reservation, native Linux/FreeBSD/OpenBSD CI, process-kill and disk-full
-matrices, and runtime durable Store materialization.
+Still required for production certification: explicit operator quarantine/repair tooling,
+native FreeBSD/OpenBSD evidence, expanded process-kill and disk-full matrices, and documented
+operator handling for every quarantined namespace state. Runtime durable Store materialization is
+implemented and remains governed by the strict normal-open policy above.

@@ -6,9 +6,9 @@ descriptor-relative intent publication/removal primitives, and restart recovery 
 transaction. The durable builder now prepares the replacement Index, installs the intent, copies
 and revalidates exact visible Records, and supports zero-output retirement. The internal durable
 runtime now installs the prepared manifest, commit catalog, and Worker Index atomically, retires the
-old sources, and fails closed whenever restart must complete recovery. Store-level exposure,
-scheduling, and the complete crash matrix remain implementation work; durable compaction is
-therefore not yet available through `Store`.
+old sources, and fails closed whenever restart must complete recovery. Explicit Store-level
+scheduling is available through `Store::compact()`. Automatic background policy and the complete
+online kill/fault matrix remain implementation and certification work.
 
 ## Why the complete sealed history is one unit
 

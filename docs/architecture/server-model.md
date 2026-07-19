@@ -30,6 +30,9 @@ private owner-checked Store path and do not acquire the public Store API's per-W
 
 ## Protocol
 
+The normative, client-implementable contract is [Wire Protocol v2](../spec/wire-protocol-v2.md).
+The summary below is intentionally non-exhaustive.
+
 Frames use explicit little-endian fields and never decode persisted bytes through C++ object
 layout. Protocol version 2 uses a 40-byte request header:
 
@@ -67,8 +70,9 @@ u64 routing_epoch
 value bytes
 ```
 
-The required session sequence is `INIT`, then `BIND_WORKER`, then pipelined Store operations. `INIT`
-returns protocol and routing metadata. Store commands before binding receive `not_bound`.
+The recommended session sequence is `INIT`, then one `BIND_WORKER`, then pipelined Store operations.
+Version 2 also permits `PING` before initialization and repeated `INIT`; binding itself requires
+initialization and is one-time. `INIT` returns protocol and routing metadata. Store commands before binding receive `not_bound`.
 Misdirected keys receive `wrong_owner`; the client retries on the correct bound connection.
 `request_id` correlates pipelined responses. Frames are length-checked before spans are formed. The
 current maximum frame is 2 MiB.

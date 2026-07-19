@@ -14,7 +14,11 @@ Each Worker owns:
 - one active Segment at a time;
 - a monotonic sequence counter;
 - references to Segments it produced;
-- future bounded command queues and local metrics.
+- Worker-local accounting and maintenance state.
+
+The volatile `Worker` owns in-memory Segments through `GlobalSegmentManager`. Durable mode uses a
+separate internal runtime Worker that owns a file-backed active Segment and bounded hot-record state
+through `DurableRuntimeCatalog`. They share the routing/ownership contract, not one concrete class.
 
 Routing is deterministic from a key hash. The first implementation may route directly by Worker
 count; online Worker resizing would require a stable routing-slot table and migration protocol and
@@ -35,6 +39,9 @@ state transition; it must not introduce peer-to-peer fallback searches in the no
 Lock ordering for maintenance: `verify_index()` acquires every Worker mutex in ascending index order
 before scanning Segments or comparing Index partitions. Direct use of `Worker::index()` bypasses
 this synchronization and is intended for single-threaded tests and tools only.
+
+The complete lock order, atomic publication rules, operation admission, and shutdown model are
+normative in the [concurrency and memory model](../spec/concurrency-memory-model.md).
 
 The supported public API returns an owning value copy. Internal server execution may use a
 `RecordView` only through the build-tree-only Store access bridge and must encode the response

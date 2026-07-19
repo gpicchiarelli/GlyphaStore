@@ -1,0 +1,76 @@
+# GlyphaStore Test Strategy
+
+Status: maintained quality policy
+Applies to: all supported builds
+Owner: maintainers
+Last reviewed: 2026-07-19
+
+## 1. Principles
+
+Tests provide layered evidence. Unit tests prove local contracts, integration tests prove component composition, property tests explore histories, crash tests prove recovery boundaries, sanitizers expose classes of undefined behavior, and compatibility fixtures freeze bytes. No single layer substitutes for another.
+
+All tests must be deterministic by default. Randomized tests record their seed on failure. Tests must not depend on directory iteration order, wall-clock races, internet access, or developer-machine state.
+
+## 2. Suites
+
+| Suite | Purpose | Typical location |
+|---|---|---|
+| Unit | codec, algorithm, bounds, queue, policy | `tests/unit` |
+| Integration | Store/runtime/network/recovery composition | `tests/integration` |
+| Property/history | model agreement over operation sequences | `tests/property` |
+| Crash | kill/reopen durability checkpoints | `tests/crash` |
+| Quality/fault | allocation failure and fail-closed behavior | `tests/quality` |
+| Consumer | installed-package and public-header usability | `tests/consumer` |
+| Fuzz | untrusted decoder state space | `fuzz` |
+
+## 3. Mandatory contract coverage
+
+Index changes cover empty and binary keys, collisions, wraparound, deleted chains, resize, arena boundaries, allocation failure, and scalar/SIMD equivalence.
+
+Persistent format changes cover exact golden bytes, round trip, every truncated length class, overflowed lengths, bit flips, unknown versions, nonzero reserved bytes, checksum scope, allocation limits, and encode canonicality.
+
+Recovery changes cover missing/extra/aliased objects, both commit slots, crash tail versus committed corruption, sequence conflicts, interrupted bootstrap/rotation/compaction, resource preflight, and enumeration-order independence.
+
+Concurrency changes cover same-key and different-Worker histories, close races, flush waiters, queue full/empty/wraparound, ownership transfer, and sanitizer runs. Deterministic orchestration is preferred to sleeps.
+
+Protocol changes cover exact headers, partial frames, multiple pipelined frames, maximum boundaries, invalid opcode/version/size, session order, wrong owner, output backpressure, EOF, and handoff saturation.
+
+## 4. Sanitizers and tools
+
+- ASan/UBSan: memory safety, alignment, overflow paths not already checked.
+- TSan: data races in Store, coordinator, and server tests.
+- Fuzzing: record, manifest, Segment header, intent, and protocol decoders.
+- Warnings-as-errors and formatting: every supported compiler profile.
+
+A sanitizer exclusion needs a documented toolchain defect or unsupported primitive and a compensating test.
+
+## 5. Crash evidence
+
+Inject failure before and after every durability ordering boundary. Each checkpoint must specify the expected recovered namespace and whether the last mutation is required, optional, or forbidden. Process termination verifies software ordering; platform power-loss testing is separately required for durable certification.
+
+Crash tests retain failing directories or a reproducible artifact description. Recovery must produce the same outcome regardless of file enumeration order.
+
+## 6. CI tiers
+
+1. Per change: build, unit/integration/property tests, formatting.
+2. Required extended: ASan/UBSan and TSan.
+3. Nightly: fuzz smoke, crash matrix, broader compilers/platforms.
+4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence.
+
+Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy.
+
+## 7. Coverage policy
+
+Line coverage is diagnostic, not the acceptance metric. Review must map each normative invariant and failure branch to evidence. A change is under-tested when its new state transition, ownership transfer, or recovery ambiguity has no test even if aggregate coverage rises.
+
+## 8. Commands
+
+```sh
+./scripts/dev.sh test
+./scripts/dev.sh asan
+./scripts/dev.sh tsan
+./scripts/dev.sh fuzz-build
+./scripts/dev.sh test-lto
+```
+
+Run focused binaries while iterating, then the repository workflow appropriate to the change before handoff.

@@ -290,6 +290,10 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 
 | Read | Purpose |
 | --- | --- |
+| [Documentation map](docs/README.md) | Normative hierarchy and complete technical-document index |
+| [Architecture specification](docs/spec/architecture.md) | Current volatile, durable, and TCP runtime architecture |
+| [Wire protocol v2](docs/spec/wire-protocol-v2.md) | Complete client framing, routing, session, and error contract |
+| [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
 | [Durability and recovery](docs/architecture/durability-recovery.md) | Alpha commit point, manifest ordering, crash states, and recovery |
@@ -323,8 +327,9 @@ input and all encoded lengths and offsets must be validated.
 
 ## Contributing
 
-This repository is initially private. Development rules and review expectations are in
-[CONTRIBUTING.md](CONTRIBUTING.md).
+Contributions are welcome. Development rules and review expectations are in
+[CONTRIBUTING.md](CONTRIBUTING.md); start with the [documentation map](docs/README.md) and
+[code tour](docs/development/code-tour.md).
 
 ## License
 

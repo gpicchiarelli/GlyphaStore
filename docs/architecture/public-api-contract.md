@@ -12,9 +12,10 @@ persisted routing metadata.
 
 ## Supported surface
 
-The supported embedded API contains Store creation/open/close, byte-key `get`, `put`, and `erase`,
-owned result values, an optional pinned read handle, configuration value types, stable error
-categories, and immutable diagnostic snapshots.
+The supported embedded API contains Store creation/open/close, byte-key `get`, `get_copy`, `put`,
+and `erase`, owning result values, configuration value types, typed error categories, explicit
+flush/compaction, and Index verification. A pinned read handle is a reserved future extension and
+is not part of the current public API.
 
 Workers, Index partitions, Segments, Record codecs, routing hashes, pollers, reactors, and vacuum
 builders are implementation mechanisms. They are not supported merely because a header is present
@@ -50,7 +51,8 @@ caller-supplied key/hash mismatch from violating Worker ownership.
 
 ## Read ownership
 
-The default `get` returns an owning value object. Its bytes and metadata remain valid after later
+`get` and the compatibility spelling `get_copy` return an owning value object. `get_copy` does not
+select a distinct slow or zero-copy path. Returned bytes and metadata remain valid after later
 Store calls, mutation of the same key, vacuum, and Store destruction. This is the safe default and
 the source-compatible API on which ordinary consumers should rely.
 
@@ -107,10 +109,13 @@ the authoritative allocation boundary.
 
 ## Errors and mutation outcomes
 
-Public errors have stable categories and may carry diagnostic text that is not intended for
-machine parsing. At minimum the API distinguishes invalid input, not found/expired, resource
-limit, storage/quota exhaustion, file-size limit, descriptor exhaustion, read-only filesystem,
-incompatible format, corruption, I/O failure, unavailable/overloaded, and internal fail-closed state.
+Public errors have typed categories and may carry diagnostic text that is not intended for machine
+parsing. The current categories distinguish invalid arguments, checked arithmetic overflow, Record
+and Segment constraints, invalid/corrupted/checksum state, reference and sequence conflicts,
+not-found, resource/storage exhaustion, file-size and descriptor limits, read-only filesystem,
+I/O, unavailable state, and internal failure. There is not yet a dedicated
+`incompatible_format` category; unsupported required versions use an existing validation or
+corruption category until the planned additive error-model work lands.
 
 - Invalid input and not-found failures do not mutate state.
 - A durable-sync failure before the durable commit point must not reappear after recovery.

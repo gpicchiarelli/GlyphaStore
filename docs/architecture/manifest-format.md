@@ -71,6 +71,6 @@ catalog ownership, active-Worker coverage, unknown-version failure, and publicat
 Filesystem naming, locking, temporary-file cleanup, atomic replacement, and directory synchronization
 are deliberately outside this codec. The first implementation layer is documented in
 [`persistence-filesystem.md`](persistence-filesystem.md); its integration remains governed by the
-[durability and recovery contract](durability-recovery.md) and requires crash-injection evidence
-before durable mode can be enabled. Supported component combinations are listed in the [format
-compatibility matrix](format-compatibility.md).
+[durability and recovery contract](durability-recovery.md). Embedded durable recovery is implemented;
+released-artifact compatibility and complete native power-loss evidence remain release gates.
+Supported component combinations are listed in the [format compatibility matrix](format-compatibility.md).

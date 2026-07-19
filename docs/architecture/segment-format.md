@@ -116,7 +116,8 @@ canonical binary-key fixture is
 
 Manifest, Segment header, commit slot, and Record codecs now have exact v1 layouts and golden
 fixtures. Segment creation, alternate-slot append/seal, and committed-boundary scan are described in
-[durable Segment files](segment-filesystem.md). The complete on-disk system is not stable yet:
-Store-level recovery, migration, and crash evidence remain required before durable mode can be
-enabled. The authoritative catalog layout is in the [manifest format](manifest-format.md), and
-supported reader/writer pairs are tracked in the [format compatibility matrix](format-compatibility.md).
+[durable Segment files](segment-filesystem.md). Embedded Store recovery and all v1 durability modes
+are implemented, but the on-disk contract is not yet declared stable: migration policy, released-
+artifact compatibility, and complete native power-loss evidence remain release gates. The
+authoritative catalog layout is in the [manifest format](manifest-format.md), and supported
+reader/writer pairs are tracked in the [format compatibility matrix](format-compatibility.md).

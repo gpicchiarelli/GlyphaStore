@@ -4,21 +4,22 @@
 
 ```text
 Store
-  Workers
-    Index partition
-    active Segment
-    owned Segment references
-    monotonic sequence counter
-
-Global Segment Manager
-  Segment catalog
-  free/retired Segment pools
-  persistence and residency state
+  volatile runtime
+    Worker -> Index + in-memory Segments + mutex
+    GlobalSegmentManager -> allocation/lifecycle snapshots
+  or durable runtime
+    runtime Worker -> Index + active file Segment + mutex + hot cache
+    DurableRuntimeCatalog -> manifest-aligned file namespace
 ```
 
 The Store presents one key-space. Routing chooses a Worker deterministically from the key hash.
 The Worker owns mutation of its Index partition and appends immutable Records to an assigned active
 Segment.
+
+The volatile `Worker` and durable runtime Worker are separate implementations of the same ownership
+rule. The global manager/catalog is control plane; normal exact-key lookup remains in the routed
+Worker data plane. The normative component and dependency map is in the
+[architecture specification](../spec/architecture.md).
 
 ## Read and write paths
 
@@ -31,7 +32,7 @@ Publishing the Index reference makes a new Record visible. Replacing or removing
 updates Segment liveness accounting; the old Record remains physically present until its Segment
 is reclaimed or vacuumed.
 
-In target durable-sync mode, successful synchronization of the alternate Segment commit slot is
+In durable-sync mode, successful synchronization of the alternate Segment commit slot is
 the durable commit point and precedes in-memory publication. The full ordering and acknowledgement
 rules are specified in the [durability and recovery contract](durability-recovery.md).
 
