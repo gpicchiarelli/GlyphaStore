@@ -90,23 +90,31 @@ class SwissTableIndex final {
         -> std::optional<std::size_t>;
     [[nodiscard]] auto find_insert_index(std::string_view key, std::uint64_t key_hash,
                                          std::uint64_t mixed_hash) -> Result<std::size_t>;
-    [[nodiscard]] auto rehash(std::size_t new_capacity) -> Status;
+    [[nodiscard]] auto rehash(std::size_t new_capacity, bool force_same_capacity = false) -> Status;
     [[nodiscard]] auto set_key(Slot& slot, std::string_view key, std::uint64_t key_hash) -> Status;
     void clear_slot(std::size_t index);
     [[nodiscard]] auto compact_heap_keys(std::span<Slot> slots, std::span<const std::uint8_t> control)
         -> Status;
     [[nodiscard]] auto maybe_compact_heap_keys() -> Status;
     [[nodiscard]] auto grow_if_needed() -> Status;
+    [[nodiscard]] auto effective_occupancy() const noexcept -> std::size_t;
+    [[nodiscard]] auto maximum_occupancy() const noexcept -> std::size_t;
+    [[nodiscard]] auto tombstone_rebuild_beneficial() const noexcept -> bool;
+    void observe_probe(std::size_t groups) const noexcept;
     [[nodiscard]] static auto normalize_capacity(std::size_t minimum_slots) -> Result<std::size_t>;
 
     std::uint64_t seed_;
     std::size_t size_{};
+    std::size_t deleted_count_{};
     std::size_t capacity_{};
     std::size_t heap_live_bytes_{};
     std::size_t heap_dead_bytes_{};
     std::vector<std::uint8_t> control_;
     std::vector<Slot> slots_;
     KeyArena heap_keys_;
+    mutable std::size_t maximum_probe_groups_{};
+    std::uint64_t rehash_count_{};
+    std::uint64_t tombstone_rebuild_count_{};
 };
 
 } // namespace glyphastore

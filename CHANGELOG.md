@@ -20,6 +20,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Track SwissTable deleted controls and effective occupancy, reuse tombstones exactly, and perform
+  bounded same-capacity cleanup before probe stability degrades. Rehash now builds an independent
+  table and key arena before atomic in-memory installation, preserving the old Index on allocation
+  failure; expose tombstone, effective-load, probe, rehash, and cleanup statistics plus a churn-miss
+  benchmark.
 - Bound the durable active-Record hot cache with deterministic global/per-Worker byte partitions,
   entry and staging limits, conservative observable accounting, and cold fallback on exhaustion.
   Hot GET now snapshots shared immutable value ownership and copies outside the Worker mutex; active

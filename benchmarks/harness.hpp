@@ -24,6 +24,7 @@ enum class BenchmarkKind {
     index_replace,
     index_find_hit,
     index_find_miss,
+    index_churn_miss,
     index_erase,
     index_insert_find,
     index_all,
@@ -530,6 +531,9 @@ inline void print_result(std::ostream& out, const Result& result) {
     }
     if (value == "index-find-miss") {
         return BenchmarkKind::index_find_miss;
+    }
+    if (value == "index-churn-miss") {
+        return BenchmarkKind::index_churn_miss;
     }
     if (value == "index-erase") {
         return BenchmarkKind::index_erase;

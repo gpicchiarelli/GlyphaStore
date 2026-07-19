@@ -15,6 +15,11 @@ tags are only a comparison filter; complete key bytes remain the collision-safet
 Rehashing reconstructs the stable full hash from those bytes. The exact algorithm is specified in
 [Index v1](../spec/index-v1.md); rationale is in [ADR 0007](../adr/0007-swiss-table-index.md).
 
+Live and deleted controls are counted separately. Capacity policy uses their effective occupancy,
+reuses deleted slots, and transactionally rebuilds at the same capacity when tombstones dominate;
+durable `erase_no_compact()` remains allocation-free and defers maintenance to prepared insertion.
+Index statistics expose effective load, tombstones, observed probe groups, and rebuild counters.
+
 Further layout and SIMD choices must be based on GlyphaStore workloads:
 
 - key sizes 8, 16, 32, 64, and 256 bytes;

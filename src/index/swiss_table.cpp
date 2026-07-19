@@ -15,6 +15,7 @@ namespace {
 inline constexpr std::uint64_t kSwissSeed = 0x243F6A8885A308D3ULL;
 inline constexpr std::uint64_t kSwissMixConstant = 0x9E3779B97F4A7C15ULL;
 inline constexpr std::size_t kHeapArenaCompactDeadThreshold = 65'536;
+inline constexpr std::size_t kSwissMinimumDeletedRebuild = kSwissGroupSize;
 } // namespace
 
 SwissTableIndex::SwissTableIndex() : seed_(kSwissSeed) {
@@ -60,6 +61,25 @@ auto SwissTableIndex::next_group(const std::size_t group_start, const std::size_
     return next >= capacity ? next - capacity : next;
 }
 
+auto SwissTableIndex::effective_occupancy() const noexcept -> std::size_t {
+    return size_ + deleted_count_;
+}
+
+auto SwissTableIndex::maximum_occupancy() const noexcept -> std::size_t {
+    return capacity_ - capacity_ / 8U;
+}
+
+auto SwissTableIndex::tombstone_rebuild_beneficial() const noexcept -> bool {
+    const auto threshold = std::max(kSwissMinimumDeletedRebuild, capacity_ / 4U);
+    return deleted_count_ >= threshold && deleted_count_ > size_;
+}
+
+void SwissTableIndex::observe_probe(const std::size_t groups) const noexcept {
+    if (groups > maximum_probe_groups_) {
+        maximum_probe_groups_ = groups;
+    }
+}
+
 auto SwissTableIndex::slot_key(const Slot& slot) const noexcept -> std::string_view {
     const auto key_size = slot.key_size();
     if (key_size == 0) {
@@ -100,21 +120,24 @@ auto SwissTableIndex::find_slot_index(const std::string_view key, const std::uin
     const auto fingerprint = h2(hash);
     auto group_start = probe_start(hash);
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
-        (void)probe;
+        const auto probe_groups = probe / kSwissGroupSize + 1U;
         const auto control_word = detail::load_control_group64(&control_[group_start]);
         const auto fingerprint_mask = detail::equal_byte_mask(&control_[group_start], fingerprint);
         for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
             const auto control = detail::control_byte_at(control_word, offset);
             if (control == kSwissEmpty) {
+                observe_probe(probe_groups);
                 return std::nullopt;
             }
             if ((fingerprint_mask & (1ULL << offset)) != 0 &&
                 key_equals(slots_[group_start + offset], key, key_hash)) {
+                observe_probe(probe_groups);
                 return group_start + offset;
             }
         }
         group_start = next_group(group_start, capacity_);
     }
+    observe_probe(capacity_ / kSwissGroupSize);
     return std::nullopt;
 }
 
@@ -128,24 +151,27 @@ auto SwissTableIndex::find_insert_index(const std::string_view key, const std::u
     std::optional<std::size_t> first_deleted;
 
     for (std::size_t probe = 0; probe < capacity_; probe += kSwissGroupSize) {
-        (void)probe;
+        const auto probe_groups = probe / kSwissGroupSize + 1U;
         const auto control_word = detail::load_control_group64(&control_[group_start]);
         const auto fingerprint_mask = detail::equal_byte_mask(&control_[group_start], fingerprint);
         for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
             const auto index = group_start + offset;
             const auto control = detail::control_byte_at(control_word, offset);
             if (control == kSwissEmpty) {
+                observe_probe(probe_groups);
                 return first_deleted.value_or(index);
             }
             if (control == kSwissDeleted && !first_deleted.has_value()) {
                 first_deleted = index;
             }
             if ((fingerprint_mask & (1ULL << offset)) != 0 && key_equals(slots_[index], key, key_hash)) {
+                observe_probe(probe_groups);
                 return index;
             }
         }
         group_start = next_group(group_start, capacity_);
     }
+    observe_probe(capacity_ / kSwissGroupSize);
     return fail(ErrorCode::corrupted_data, "swiss table probe sequence exhausted without insert slot");
 }
 
@@ -266,16 +292,24 @@ void SwissTableIndex::clear_slot(const std::size_t index) {
     }
     control_[index] = kSwissDeleted;
     slots_[index] = Slot{};
+    ++deleted_count_;
 }
 
 auto SwissTableIndex::grow_if_needed() -> Status {
     if (capacity_ == 0) {
         return {};
     }
-    const auto projected = size_ + 1;
-    const auto maximum_size = capacity_ - capacity_ / 8U;
-    if (projected <= maximum_size) {
+    if (size_ > capacity_ || deleted_count_ > capacity_ - size_) {
+        return fail(ErrorCode::corrupted_data, "swiss table occupancy counters exceed capacity");
+    }
+    if (tombstone_rebuild_beneficial()) {
+        return rehash(capacity_, true);
+    }
+    if (effective_occupancy() < maximum_occupancy()) {
         return {};
+    }
+    if (size_ < maximum_occupancy() && deleted_count_ != 0) {
+        return rehash(capacity_, true);
     }
     if (capacity_ > std::numeric_limits<std::size_t>::max() / 2U) {
         return fail(ErrorCode::arithmetic_overflow, "swiss table growth overflow");
@@ -283,55 +317,58 @@ auto SwissTableIndex::grow_if_needed() -> Status {
     return rehash(capacity_ << 1U);
 }
 
-auto SwissTableIndex::rehash(const std::size_t new_capacity) -> Status {
+auto SwissTableIndex::rehash(const std::size_t new_capacity, const bool force_same_capacity) -> Status {
     auto normalized = normalize_capacity(new_capacity);
     if (!normalized) {
         return unexpected(normalized.error());
     }
-    if (*normalized == capacity_) {
+    if (*normalized == capacity_ && !force_same_capacity) {
         return {};
     }
+    if (size_ > *normalized - *normalized / 8U) {
+        return fail(ErrorCode::invalid_argument, "swiss table rehash capacity cannot hold live entries");
+    }
 
-    std::vector<std::uint8_t> new_control(*normalized, kSwissEmpty);
-    std::vector<Slot> new_slots(*normalized);
-    std::vector<std::size_t> targets(capacity_, std::numeric_limits<std::size_t>::max());
-
+    // Build complete independent state so any vector or key-arena allocation
+    // failure leaves this table byte-for-byte authoritative.
+    SwissTableIndex rebuilt;
+    rebuilt.seed_ = seed_;
+    rebuilt.capacity_ = *normalized;
+    rebuilt.size_ = 0;
+    rebuilt.deleted_count_ = 0;
+    rebuilt.control_.assign(*normalized, kSwissEmpty);
+    rebuilt.slots_.clear();
+    rebuilt.slots_.resize(*normalized);
+    if (auto reserved = rebuilt.heap_keys_.reserve(heap_live_bytes_); !reserved) {
+        return reserved;
+    }
     for (std::size_t index = 0; index < capacity_; ++index) {
         if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
             continue;
         }
-        const auto hash = mix_hash(hash_key(slot_key(slots_[index])));
-        auto group_start = ((hash >> 7U) & ((*normalized / kSwissGroupSize) - 1U)) * kSwissGroupSize;
-        bool placed{};
-        for (std::size_t probe = 0; probe < *normalized && !placed; probe += kSwissGroupSize) {
-            const auto control_word = detail::load_control_group64(&new_control[group_start]);
-            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
-                if (detail::control_byte_at(control_word, offset) != kSwissEmpty) {
-                    continue;
-                }
-                const auto target = group_start + offset;
-                new_control[target] = control_[index];
-                targets[index] = target;
-                placed = true;
-                break;
-            }
-            group_start = next_group(group_start, *normalized);
+        const auto key = slot_key(slots_[index]);
+        auto inserted = rebuilt.insert_or_assign(HashedKey{key, hash_key(key)}, slots_[index].ref);
+        if (!inserted) {
+            return unexpected(inserted.error());
         }
-        if (!placed) {
-            return fail(ErrorCode::corrupted_data, "swiss table rehash could not place an entry");
+        if (!inserted->inserted) {
+            return fail(ErrorCode::corrupted_data, "swiss table rebuild encountered a duplicate key");
         }
     }
-    for (std::size_t index = 0; index < capacity_; ++index) {
-        if (targets[index] != std::numeric_limits<std::size_t>::max()) {
-            new_slots[targets[index]] = std::move(slots_[index]);
-        }
-    }
-    if (auto compacted = compact_heap_keys(new_slots, new_control); !compacted) {
-        return compacted;
-    }
+    const auto same_capacity = *normalized == capacity_;
     capacity_ = *normalized;
-    control_ = std::move(new_control);
-    slots_ = std::move(new_slots);
+    size_ = rebuilt.size_;
+    deleted_count_ = 0;
+    heap_live_bytes_ = rebuilt.heap_live_bytes_;
+    heap_dead_bytes_ = 0;
+    control_ = std::move(rebuilt.control_);
+    slots_ = std::move(rebuilt.slots_);
+    heap_keys_ = std::move(rebuilt.heap_keys_);
+    maximum_probe_groups_ = std::max(maximum_probe_groups_, rebuilt.maximum_probe_groups_);
+    ++rehash_count_;
+    if (same_capacity) {
+        ++tombstone_rebuild_count_;
+    }
     return {};
 }
 
@@ -365,12 +402,14 @@ auto SwissTableIndex::insert_or_assign(const HashedKey& key, RecordRef ref) -> R
     const auto fingerprint = h2(mixed_hash);
     if (control_[index] == kSwissEmpty || control_[index] == kSwissDeleted) {
         const auto previous_control = control_[index];
-        control_[index] = fingerprint;
         if (auto key_set = set_key(slots_[index], key.key, key.hash); !key_set) {
-            control_[index] = previous_control;
             return unexpected(key_set.error());
         }
         slots_[index].ref = ref;
+        control_[index] = fingerprint;
+        if (previous_control == kSwissDeleted) {
+            --deleted_count_;
+        }
         ++size_;
         return IndexMutationResult{.inserted = true, .previous = std::nullopt};
     }
@@ -412,7 +451,7 @@ auto SwissTableIndex::prepare_insert(const HashedKey& key) -> Status {
     if (size_ == std::numeric_limits<std::size_t>::max()) {
         return fail(ErrorCode::arithmetic_overflow, "swiss table size overflow");
     }
-    if (auto prepared = reserve(size_ + 1U); !prepared) {
+    if (auto prepared = grow_if_needed(); !prepared) {
         return prepared;
     }
     if (key.key.size() > kSwissInlineKeyBytes) {
@@ -433,6 +472,9 @@ auto SwissTableIndex::prepare_batch_insert(const std::size_t additional_entries,
 }
 
 auto SwissTableIndex::reserve(const std::size_t count) -> Status {
+    if (size_ > capacity_ || deleted_count_ > capacity_ - size_) {
+        return fail(ErrorCode::corrupted_data, "swiss table occupancy counters exceed capacity");
+    }
     const auto extra = count / 7U + (count % 7U == 0 ? 0U : 1U);
     if (extra > std::numeric_limits<std::size_t>::max() - count) {
         return fail(ErrorCode::arithmetic_overflow, "swiss table reserve overflow");
@@ -455,6 +497,15 @@ auto SwissTableIndex::reserve(const std::size_t count) -> Status {
     if (*needed > capacity_) {
         return rehash(*needed);
     }
+    if (count > size_) {
+        const auto additional = count - size_;
+        const auto occupancy = effective_occupancy();
+        const bool may_exhaust_empty =
+            occupancy > maximum_occupancy() || additional > maximum_occupancy() - occupancy;
+        if (may_exhaust_empty || tombstone_rebuild_beneficial()) {
+            return rehash(capacity_, true);
+        }
+    }
     return {};
 }
 
@@ -474,11 +525,16 @@ auto SwissTableIndex::entries() const -> std::vector<IndexEntry> {
 auto SwissTableIndex::stats() const noexcept -> IndexStats {
     return {size_,
             capacity_,
+            deleted_count_,
             capacity_ == 0 ? 0.0F : static_cast<float>(size_) / static_cast<float>(capacity_),
+            capacity_ == 0 ? 0.0F : static_cast<float>(effective_occupancy()) / static_cast<float>(capacity_),
             heap_keys_.allocated_bytes(),
             heap_live_bytes_,
             sizeof(Slot),
-            slots_.capacity() * sizeof(Slot) + control_.capacity() * sizeof(std::uint8_t)};
+            slots_.capacity() * sizeof(Slot) + control_.capacity() * sizeof(std::uint8_t),
+            maximum_probe_groups_,
+            rehash_count_,
+            tombstone_rebuild_count_};
 }
 
 auto SwissTableIndex::clone_empty() const -> SwissTableIndex {

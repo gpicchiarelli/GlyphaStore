@@ -85,7 +85,9 @@ Deleted controls do not terminate lookup. SIMD may produce the fingerprint and e
 
 ## 7. Insert or assign
 
-Before inserting a new key, capacity is ensured such that projected occupied count does not exceed 7/8. The key hash and mixed hash are computed once per insertion attempt.
+Before inserting a new key, capacity is ensured such that projected effective occupancy does not
+exceed 7/8. Effective occupancy is `live + deleted`, because both states extend a probe chain. The
+key hash and mixed hash are computed once per insertion attempt.
 
 Probe groups as for lookup while retaining the first deleted slot encountered:
 
@@ -108,15 +110,29 @@ Erase does not backward-shift following entries. The deleted marker preserves th
 
 ## 9. Resize and rehash
 
-Insertion grows the table when:
+Insertion grows or cleans the table when:
 
 ```text
-projected_occupied > capacity - capacity/8
+projected_effective_occupancy > capacity - capacity/8
 ```
 
-Growth doubles capacity. `reserve(n)` selects a power-of-two capacity large enough that `n` entries remain within the 7/8 limit; equivalently it allows at least `n + ceil(n/7)` slots, normalized to valid group capacity.
+If live entries alone require the space, growth doubles capacity. If deleted controls cause the
+threshold, the table rebuilds at the same capacity. It may rebuild earlier when deleted controls are
+at least `max(8, capacity/4)` and outnumber live entries; this geometric condition avoids repeated
+rebuilds during an erase sweep. `erase_no_compact()` only updates counters and controls and never
+allocates, preserving durable post-commit publication. A later prepared insertion performs any
+required cleanup before persistent I/O.
 
-Rehash allocates a fresh control/slot array, reconstructs each stable full hash from the owned key bytes, and reinserts occupied entries. It eliminates deleted controls and may rebuild `KeyArena` with only live long-key bytes. The logical mapping must remain unchanged if rehash succeeds. A failed preparatory allocation must leave the original Index valid.
+`reserve(n)` selects a power-of-two capacity large enough that `n` entries remain within the 7/8
+limit; equivalently it allows at least `n + ceil(n/7)` slots, normalized to valid group capacity. A
+batch reserve also accounts for the worst case in which its inserts encounter empty slots before
+unrelated tombstones, so batch publication cannot trigger a post-commit rehash.
+
+Rehash builds a completely independent table and key arena, reconstructs each stable full hash from
+the owned key bytes, and reinserts occupied entries. Only after every allocation and insertion
+succeeds are the new arrays installed. It eliminates deleted controls and retains only live long-key
+bytes. A failed allocation leaves live mappings, controls, counters, capacity, and arena ownership
+in the original Index.
 
 ## 10. Arena compaction
 
@@ -132,6 +148,10 @@ Compaction copies only live long keys into a new arena and updates their offsets
 Expected lookup, insertion, and erase are constant time under a well-distributed hash. Worst-case time is linear in capacity. Memory is proportional to capacity plus live and not-yet-compacted long-key bytes.
 
 No operation may probe forever: capacity always contains at least one empty slot under the maximum-load invariant.
+
+Statistics expose live size, deleted count, effective load, slot/table/arena bytes, lifetime maximum
+probe groups, successful rehashes, and same-capacity tombstone rebuilds. Probe loops remain bounded
+to exactly `capacity / 8` groups even if corruption defeats the normal empty-slot invariant.
 
 ## 12. Verification invariants
 

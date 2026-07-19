@@ -416,6 +416,42 @@ template <typename SetupFn, typename BodyFn>
         });
 }
 
+[[nodiscard]] auto run_index_churn_miss(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    const auto miss_material = make_miss_key_material(config);
+    return benchmark_collect_timed(
+        settings, config.operations, config, "index_churn_miss", config.operations,
+        [&]() -> std::unique_ptr<Index> {
+            auto index = make_reserved_index(config.operations);
+            if (index == nullptr || !populate_index(*index, material)) {
+                return nullptr;
+            }
+            const auto erase_count = config.operations - config.operations / 4U;
+            for (std::size_t position = 0; position < erase_count; ++position) {
+                const auto key_index = material.order[position];
+                const auto& key = material.keys[key_index];
+                if (!index->erase_no_compact(HashedKey{key, hash_key(key)}).previous) {
+                    return nullptr;
+                }
+            }
+            const std::string_view preparation_key{"churn-maintenance-probe"};
+            if (!index->prepare_insert(HashedKey{preparation_key, hash_key(preparation_key)})) {
+                return nullptr;
+            }
+            return index;
+        },
+        [&](std::unique_ptr<Index>& index) -> std::size_t {
+            if (index == nullptr) {
+                return 0;
+            }
+            std::size_t misses = 0;
+            for (const auto index_in_order : miss_material.order) {
+                misses += index->find(miss_material.keys[index_in_order]).has_value() ? 0U : 1U;
+            }
+            return misses;
+        });
+}
+
 [[nodiscard]] auto run_index_erase(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
@@ -979,6 +1015,8 @@ template <typename SetupFn, typename BodyFn>
         return run_index_find_hit(config, settings);
     case BenchmarkKind::index_find_miss:
         return run_index_find_miss(config, settings);
+    case BenchmarkKind::index_churn_miss:
+        return run_index_churn_miss(config, settings);
     case BenchmarkKind::index_erase:
         return run_index_erase(config, settings);
     case BenchmarkKind::index_insert_find:
@@ -1116,8 +1154,8 @@ template <typename SetupFn, typename BodyFn>
 }
 
 [[nodiscard]] auto index_benchmark_kinds() -> std::vector<BenchmarkKind> {
-    return {BenchmarkKind::index_insert, BenchmarkKind::index_replace, BenchmarkKind::index_find_hit,
-            BenchmarkKind::index_find_miss, BenchmarkKind::index_erase};
+    return {BenchmarkKind::index_insert,    BenchmarkKind::index_replace,    BenchmarkKind::index_find_hit,
+            BenchmarkKind::index_find_miss, BenchmarkKind::index_churn_miss, BenchmarkKind::index_erase};
 }
 
 [[nodiscard]] auto all_benchmark_kinds() -> std::vector<BenchmarkKind> {

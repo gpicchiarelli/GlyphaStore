@@ -38,6 +38,7 @@ Every sample validates operation counts, hits/misses, response IDs, status, and 
 | Family | Question | Timed region |
 |---|---|---|
 | `index_insert_find` and Index subfilters | cost of the in-memory mapping | named Index operations only |
+| `index_churn_miss` | miss stability after deleting 75% of a populated table | maintenance outside timed region; misses only |
 | `store_put` | mutation path | puts; construction excluded |
 | `store_get` | visible read path | preload excluded; gets only |
 | `store_put_get` | phase-composed Store work | documented put phase plus get phase |

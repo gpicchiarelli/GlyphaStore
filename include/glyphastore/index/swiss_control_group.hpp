@@ -26,6 +26,18 @@ namespace glyphastore::detail {
     return static_cast<std::uint8_t>((control >> (offset * 8U)) & 0xFFU);
 }
 
+[[nodiscard]] inline auto equal_byte_mask_scalar(const std::uint8_t* control,
+                                                 const std::uint8_t byte) noexcept -> std::uint64_t {
+    const auto word = load_control_group64(control);
+    std::uint64_t mask = 0;
+    for (std::size_t index = 0; index < kSwissGroupSize; ++index) {
+        if (control_byte_at(word, index) == byte) {
+            mask |= 1ULL << index;
+        }
+    }
+    return mask;
+}
+
 [[nodiscard]] inline auto equal_byte_mask(const std::uint8_t* control, const std::uint8_t byte) noexcept
     -> std::uint64_t {
 #if defined(__SSE2__)
@@ -37,41 +49,18 @@ namespace glyphastore::detail {
     return static_cast<std::uint64_t>(movemask) & ((1ULL << kSwissGroupSize) - 1ULL);
 #elif defined(__ARM_NEON) || defined(__aarch64__)
     const uint8x8_t compared = vceq_u8(vld1_u8(control), vdup_n_u8(byte));
-    std::uint64_t mask = 0;
-    if (vget_lane_u8(compared, 0) != 0) {
-        mask |= 1ULL << 0;
-    }
-    if (vget_lane_u8(compared, 1) != 0) {
-        mask |= 1ULL << 1;
-    }
-    if (vget_lane_u8(compared, 2) != 0) {
-        mask |= 1ULL << 2;
-    }
-    if (vget_lane_u8(compared, 3) != 0) {
-        mask |= 1ULL << 3;
-    }
-    if (vget_lane_u8(compared, 4) != 0) {
-        mask |= 1ULL << 4;
-    }
-    if (vget_lane_u8(compared, 5) != 0) {
-        mask |= 1ULL << 5;
-    }
-    if (vget_lane_u8(compared, 6) != 0) {
-        mask |= 1ULL << 6;
-    }
-    if (vget_lane_u8(compared, 7) != 0) {
-        mask |= 1ULL << 7;
-    }
-    return mask;
+    const uint8x8_t weights = {1U, 2U, 4U, 8U, 16U, 32U, 64U, 128U};
+    auto weighted = vand_u8(compared, weights);
+#if defined(__aarch64__)
+    return static_cast<std::uint64_t>(vaddv_u8(weighted));
 #else
-    const auto word = load_control_group64(control);
-    std::uint64_t mask = 0;
-    for (std::size_t index = 0; index < kSwissGroupSize; ++index) {
-        if (control_byte_at(word, index) == byte) {
-            mask |= 1ULL << index;
-        }
-    }
-    return mask;
+    weighted = vpadd_u8(weighted, weighted);
+    weighted = vpadd_u8(weighted, weighted);
+    weighted = vpadd_u8(weighted, weighted);
+    return static_cast<std::uint64_t>(vget_lane_u8(weighted, 0));
+#endif
+#else
+    return equal_byte_mask_scalar(control, byte);
 #endif
 }
 

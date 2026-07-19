@@ -1,3 +1,4 @@
+#include "glyphastore/index/index.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
@@ -787,6 +788,61 @@ void run_volatile_vacuum_publication_allocation_failures() {
     require(completed, "vacuum publication exceeded its allocation bound");
 }
 
+void run_index_tombstone_rebuild_allocation_failures() {
+    bool completed{};
+    for (std::size_t fail_at = 0; fail_at < 128; ++fail_at) {
+        glyphastore::Index index;
+        std::vector<std::string> keys;
+        keys.reserve(80);
+        for (std::uint64_t value = 0; value < 80; ++value) {
+            auto key = std::string(64, 't');
+            key.replace(key.size() - std::to_string(value).size(), std::to_string(value).size(),
+                        std::to_string(value));
+            const glyphastore::RecordRef ref{
+                glyphastore::SegmentId{1}, glyphastore::RecordOffset{4096}, glyphastore::RecordSize{64},
+                glyphastore::SequenceNumber{value + 1}, glyphastore::GenerationId{1}};
+            require(index.insert_or_assign(key, ref).has_value(), "failed to seed tombstone rebuild");
+            keys.push_back(std::move(key));
+        }
+        for (std::size_t value = 0; value < 60; ++value) {
+            const glyphastore::HashedKey key{keys[value], glyphastore::hash_key(keys[value])};
+            require(index.erase_no_compact(key).previous.has_value(), "failed to seed deleted slot");
+        }
+        const auto before = index.stats();
+        const glyphastore::HashedKey next{"inline-next", glyphastore::hash_key("inline-next")};
+
+        bool threw{};
+        glyphastore::Status prepared;
+        allocation_fault::arm(fail_at);
+        try {
+            prepared = index.prepare_insert(next);
+        } catch (const std::bad_alloc&) {
+            threw = true;
+        }
+        const auto allocation = allocation_fault::disarm();
+        if (allocation.fired) {
+            require(threw, "tombstone rebuild swallowed an injected allocation failure");
+            const auto after = index.stats();
+            require(after.size == before.size && after.deleted_count == before.deleted_count &&
+                        after.bucket_count == before.bucket_count &&
+                        after.arena_allocated_bytes == before.arena_allocated_bytes &&
+                        after.arena_live_bytes == before.arena_live_bytes,
+                    "failed tombstone rebuild changed authoritative table state");
+            for (std::size_t value = 60; value < keys.size(); ++value) {
+                require(index.find(keys[value]).has_value(), "failed tombstone rebuild lost a live key");
+            }
+            continue;
+        }
+        require(!threw && prepared.has_value(), "tombstone rebuild baseline failed");
+        require(fail_at == allocation.observed,
+                "tombstone rebuild allocation enumeration changed unexpectedly");
+        require(index.stats().deleted_count == 0, "successful tombstone rebuild retained deleted slots");
+        completed = true;
+        break;
+    }
+    require(completed, "tombstone rebuild exceeded its allocation bound");
+}
+
 void run_all_tests() {
     const glyphastore::DurableRuntimeOptions synchronous{};
     const glyphastore::DurableRuntimeOptions strict_group{
@@ -818,6 +874,7 @@ void run_all_tests() {
     run_exhaustive_compaction_allocation_failures();
     run_volatile_rotation_allocation_failures();
     run_volatile_vacuum_publication_allocation_failures();
+    run_index_tombstone_rebuild_allocation_failures();
 }
 
 } // namespace
