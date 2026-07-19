@@ -1,5 +1,5 @@
 Status: normative for official GlyphaStore TCP clients
-Applies to: wire protocol v2 clients (C++, Python, Perl, and future official SDKs)
+Applies to: wire protocol v2 clients (C++, Python, Perl, Go)
 Owner: networking maintainers
 Last reviewed: 2026-07-19
 

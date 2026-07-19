@@ -1,5 +1,5 @@
 Status: roadmap
-Applies to: native SDKs (C++, Python, Perl) and shared wire contract; Go is planned
+Applies to: native SDKs (C++, Python, Perl, Go) and shared wire contract
 Owner: maintainer
 Last reviewed: 2026-07-19
 
@@ -23,7 +23,7 @@ Related: [production readiness](../production-readiness.md),
 | C++ | Effectively complete for alpha |
 | Python | Effectively complete, including async |
 | Perl | Complete as a synchronous client; a few hardening details remain |
-| Go | Useful next language, but **not** more urgent than freezing the shared contract |
+| Go | Complete as a synchronous client (protocol + client + interop + CI) |
 
 Do not multiply languages before clients are demonstrably equivalent, release-compatible, and
 safe to operate. The server must still be treated as loopback / tightly controlled private network /
@@ -34,7 +34,7 @@ sidecar / development only until authentication and TLS exist.
 ### 1. Cross-SDK interoperability suite (highest SDK gap) — **done for alpha matrix**
 
 `scripts/test-sdk-interop.sh` starts a volatile `glyphastored` and proves PUT→GET across
-C++ / Python / Perl (and same-SDK) for binary keys, empty values, per-SDK pipelines, and short
+C++ / Python / Perl / Go (and same-SDK) for binary keys, empty values, per-SDK pipelines, and short
 TTL expiry on Workers 1 / 2 / 4. Wire golden fixtures are verified and compared to vendored SDK
 copies in the same script and in CI.
 
@@ -102,10 +102,11 @@ Deadlines use `clock_gettime(CLOCK_MONOTONIC)` via `Time::HiRes`, not civil `tim
 README and Client POD state: not shareable across ithreads; do not reuse pre-`fork` sockets; one
 client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
 
-### 10. Go client (after fixtures + cross-language tests)
+### 10. Go client — **done for alpha**
 
-Strategic for microservices, Kubernetes, cloud, agents, and concurrent backends. Add **after**
-golden vectors and cross-SDK tests so a fourth codec does not freeze an unfinished contract.
+`sdk/go` provides a production-oriented synchronous client (`protocol` + `client`), golden fixture
+tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), and CI coverage
+via `scripts/test-go-client.sh` and the cross-SDK matrix.
 
 ## Product blockers (not “more languages”)
 
@@ -130,7 +131,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 3. Perl monotonic clock + thread/fork contract docs. **(done)**
 4. Normative errors, retry, and timeout specification. **([client semantics v1](../spec/client-semantics-v1.md), [ADR 0019](../adr/0019-client-error-retry-timeout.md))**
 5. Multi-Worker `batch` API on every official client.
-6. Go client.
+6. Go client. **(`sdk/go`, interop + CI)**
 7. Authentication and TLS.
 8. Metrics, health, and diagnostics.
 9. Backup/restore and operational procedures.

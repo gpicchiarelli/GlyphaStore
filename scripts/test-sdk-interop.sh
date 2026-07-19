@@ -46,6 +46,12 @@ export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 py_helper="$root/scripts/sdk_interop_py.py"
 pl_helper="$root/scripts/sdk_interop_perl.pl"
+go_helper="${GLYPHASTORE_GO_INTEROP:-}"
+if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
+  mkdir -p "$root/sdk/go/bin"
+  (cd "$root/sdk/go" && "${GO:-go}" build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
+  go_helper="$root/sdk/go/bin/glyphastore-interop"
+fi
 chmod +x "$py_helper" "$pl_helper" 2>/dev/null || true
 
 echo "== wire golden fixtures =="
@@ -57,6 +63,10 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
   fi
   if ! cmp -s "$root/tests/fixtures/$fixture" "$root/sdk/perl/t/fixtures/$fixture"; then
     echo "Perl vendored fixture drift: $fixture (run scripts/sync-sdk-fixtures.sh)" >&2
+    exit 1
+  fi
+  if ! cmp -s "$root/tests/fixtures/$fixture" "$root/sdk/go/testdata/$fixture"; then
+    echo "Go vendored fixture drift: $fixture (run scripts/sync-sdk-fixtures.sh)" >&2
     exit 1
   fi
 done
@@ -83,6 +93,9 @@ put_sdk() {
     perl)
       "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
+    go)
+      "$go_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      ;;
     *)
       echo "unknown sdk $sdk" >&2
       return 1
@@ -96,6 +109,7 @@ get_sdk() {
     cpp) "$cpp_client" --port "$port" get --key-hex "$key_hex" ;;
     python) "$python" "$py_helper" --port "$port" get --key-hex "$key_hex" ;;
     perl) "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" get ;;
+    go) "$go_helper" --port "$port" --key-hex "$key_hex" get ;;
     *) return 1 ;;
   esac
 }
@@ -106,6 +120,7 @@ pipeline_sdk() {
     cpp) "$cpp_client" --port "$port" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
     python) "$python" "$py_helper" --port "$port" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
     perl) "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    go) "$go_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     *) return 1 ;;
   esac
 }
@@ -176,8 +191,8 @@ run_matrix_for_workers() {
   local port
   port="$(cat "$port_file")"
 
-  local writers=(cpp python perl)
-  local readers=(cpp python perl)
+  local writers=(cpp python perl go)
+  local readers=(cpp python perl go)
   local case_id=0
 
   # Binary key/value cross-language PUT→GET.
@@ -196,13 +211,14 @@ run_matrix_for_workers() {
   # Empty value.
   local empty_key
   empty_key="$(printf 'empty-w%d' "$workers" | to_hex)"
-  echo "  python PUT empty value → cpp/perl GET"
+  echo "  python PUT empty value → cpp/perl/go GET"
   put_sdk python "$port" "$empty_key" ""
   expect_get cpp "$port" "$empty_key" ""
   expect_get perl "$port" "$empty_key" ""
+  expect_get go "$port" "$empty_key" ""
 
   # Pipeline put/get within each SDK.
-  for sdk in cpp python perl; do
+  for sdk in cpp python perl go; do
     local pkey pval
     pkey="$(printf 'pipe-%s-w%d' "$sdk" "$workers" | to_hex)"
     pval="$(printf 'pipe-val-\xff' | to_hex)"
@@ -226,9 +242,9 @@ import time
 print(int((time.time() + 0.4) * 1_000_000_000))
 PY
 )"
-  echo "  cpp PUT with expiry → python GET then miss"
+  echo "  cpp PUT with expiry → go GET then miss"
   put_sdk cpp "$port" "$exp_key" "$exp_val" "$expire_at"
-  expect_get python "$port" "$exp_key" "$exp_val"
+  expect_get go "$port" "$exp_key" "$exp_val"
   sleep 0.6
   expect_missing perl "$port" "$exp_key"
 

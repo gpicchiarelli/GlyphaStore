@@ -84,6 +84,10 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
       - name: Install Perl::Critic and build tools
         run: |
           sudo apt-get update
@@ -95,11 +99,14 @@ jobs:
           for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
             cmp -s "tests/fixtures/$fixture" "sdk/python/tests/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/go/testdata/$fixture"
           done
       - name: Test Python client
         run: ./scripts/test-python-client.sh
       - name: Test Perl client
         run: ./scripts/test-perl-client.sh
+      - name: Test Go client
+        run: ./scripts/test-go-client.sh
       - name: Package and verify Python client
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client
@@ -111,10 +118,13 @@ jobs:
         run: |
           cmake --preset unix-release
           cmake --build --preset unix-release --target glyphastored glyphastore_interop_client
+          mkdir -p sdk/go/bin
+          (cd sdk/go && go build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
       - name: Cross-SDK interoperability matrix
         env:
           GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
           GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
         run: ./scripts/test-sdk-interop.sh
 
   install-consumer:
