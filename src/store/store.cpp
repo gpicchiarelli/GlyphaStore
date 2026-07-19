@@ -862,6 +862,11 @@ auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
     return store.impl_->durable_runtime != nullptr;
 }
 
+auto detail::StoreAccess::batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats> {
+    return store.impl_->durable_runtime ? store.impl_->durable_runtime->batch_stats()
+                                        : std::vector<DurableBatchWorkerStats>{};
+}
+
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {
     if (!store.impl_->volatile_runtime) {
         std::terminate();

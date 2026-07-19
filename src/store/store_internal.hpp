@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment.hpp"
 #include "glyphastore/store/prepared_read.hpp"
@@ -39,6 +40,7 @@ class StoreAccess final {
                                   std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] static auto erase(Store& store, std::size_t worker_index, const HashedKey& key) -> Status;
     [[nodiscard]] static auto is_durable(const Store& store) noexcept -> bool;
+    [[nodiscard]] static auto batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats>;
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;
     [[nodiscard]] static auto segments(const Store& store) -> std::vector<SegmentPtr>;

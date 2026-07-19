@@ -96,6 +96,13 @@ The first Record still schedules one absolute batch deadline, and explicit `flus
 to and completed by the same coordinator thread. A multi-Worker Store retains independent
 Worker-local batches and commit domains.
 
+Batch observability is maintained in a cache-line-aligned Worker-local block and read without taking
+the Worker or catalog mutex. It reports pending records/bytes, current adaptive target, flush
+attempts/failures, committed occupancy and maxima, close reasons, and total/maximum
+`flush_pending_commit` duration. In strict group mode that duration covers the synchronized v1 batch
+commit boundary. In periodic/deferred mode it measures deferred commit publication only; the later
+whole-store dirty flush is a distinct operation and must not be interpreted as included sync time.
+
 ## Observable shutdown
 
 `Store::close()` first changes the public admission state from open to closing. Calls that already

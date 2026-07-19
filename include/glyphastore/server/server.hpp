@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/reactor.hpp"
 #include "glyphastore/server/thread_affinity.hpp"
@@ -42,6 +43,7 @@ class Server final {
     [[nodiscard]] auto active_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
     [[nodiscard]] auto durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats>;
+    [[nodiscard]] auto durable_batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
     }

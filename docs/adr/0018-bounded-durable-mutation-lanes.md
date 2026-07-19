@@ -63,6 +63,9 @@ their Reactor rings even when Reactors no longer consume them.
 - Per-Worker snapshots expose current/peak queue records and bytes, admitted/rejected/expired/completed
   counts, and total/maximum queue-wait and Store-service nanoseconds. Snapshotting locks only one
   lane queue at a time and never waits on its storage call.
+- The server also exposes lock-free durable-kernel batch snapshots: real committed occupancy,
+  adaptive close reason, failures, and `flush_pending_commit` duration. This separates queueing,
+  complete Store service, and the batch persistence boundary.
 - Sync/periodic modes add one storage thread per Worker. Group mode adds a bounded producer set per
   Worker, with a hard process-wide thread limit; concurrency and NUMA placement require measured
   platform tuning before very high Worker counts are certified.

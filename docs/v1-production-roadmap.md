@@ -72,8 +72,10 @@ queue-wait expiry before Store entry, per-lane queue/service metrics, and drain-
 shutdown. Strict-group mode retains bounded concurrent producers so daemon batching does not collapse
 to occupancy one. Tests suspend real sync calls and prove Reactor responsiveness, independent queue
 admission, bounded overload, non-commit of expired queued work, multi-record group sync, and recovery
-of a mutation admitted during shutdown. Exact batch occupancy/sync histograms, remaining resource CLI
-controls, real-daemon process-kill coverage, and bounded shutdown deadlines remain open.
+of a mutation admitted during shutdown. Lock-free Worker-local kernel counters now expose exact batch
+occupancy, close reasons, failures, and commit duration; histogram export remains an observability
+surface task. Remaining resource CLI controls, real-daemon process-kill coverage, and bounded
+shutdown deadlines remain open.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

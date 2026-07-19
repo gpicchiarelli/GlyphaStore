@@ -60,6 +60,32 @@ auto mutation_failure(const DurableMutationOutcome outcome, Error error) -> Dura
     return {.outcome = outcome, .sequence = std::nullopt, .error = std::move(error)};
 }
 
+void atomic_saturating_add(std::atomic_uint64_t& destination, const std::uint64_t value) noexcept {
+    auto current = destination.load(std::memory_order_relaxed);
+    while (true) {
+        const auto next = value > std::numeric_limits<std::uint64_t>::max() - current
+                              ? std::numeric_limits<std::uint64_t>::max()
+                              : current + value;
+        if (destination.compare_exchange_weak(current, next, std::memory_order_relaxed)) {
+            return;
+        }
+    }
+}
+
+template <typename T> void atomic_observe_max(std::atomic<T>& destination, const T value) noexcept {
+    auto current = destination.load(std::memory_order_relaxed);
+    while (current < value && !destination.compare_exchange_weak(current, value, std::memory_order_relaxed)) {
+    }
+}
+
+[[nodiscard]] auto steady_elapsed_ns(const std::chrono::steady_clock::time_point start) noexcept
+    -> std::uint64_t {
+    const auto count =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+            .count();
+    return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
+}
+
 struct HotRecordEntry {
     RecordRef reference{};
     std::shared_ptr<const std::byte[]> value_bytes;
@@ -103,8 +129,8 @@ using HotRecordMap =
 class PreparedHotRecord final {
   public:
     PreparedHotRecord() = default;
-    PreparedHotRecord(HotRecordMap::node_type node, std::uint64_t* staged_bytes,
-                      std::size_t* staged_entries, const std::uint64_t staged_charge) noexcept
+    PreparedHotRecord(HotRecordMap::node_type node, std::uint64_t* staged_bytes, std::size_t* staged_entries,
+                      const std::uint64_t staged_charge) noexcept
         : node_(std::move(node)), staged_bytes_(staged_bytes), staged_entries_(staged_entries),
           staged_charge_(staged_charge) {}
     ~PreparedHotRecord() {
@@ -171,11 +197,9 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
     return static_cast<std::uint64_t>(buckets) * bytes_per_bucket;
 }
 
-[[nodiscard]] auto hot_record_accounted_bytes(const std::size_t key_bytes,
-                                              const std::size_t value_bytes)
+[[nodiscard]] auto hot_record_accounted_bytes(const std::size_t key_bytes, const std::size_t value_bytes)
     -> Result<std::uint64_t> {
-    constexpr auto fixed =
-        static_cast<std::uint64_t>(sizeof(HotRecordMap::value_type) + 4U * sizeof(void*));
+    constexpr auto fixed = static_cast<std::uint64_t>(sizeof(HotRecordMap::value_type) + 4U * sizeof(void*));
     if (key_bytes > std::numeric_limits<std::uint64_t>::max() - fixed) {
         return fail(ErrorCode::arithmetic_overflow, "hot-cache key accounting overflow");
     }
@@ -186,10 +210,8 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
     return with_key + static_cast<std::uint64_t>(value_bytes);
 }
 
-[[nodiscard]] auto hot_cache_worker_budget(const std::size_t worker_index,
-                                           const std::size_t worker_count,
-                                           const DurableResourceLimits& limits) noexcept
-    -> std::uint64_t {
+[[nodiscard]] auto hot_cache_worker_budget(const std::size_t worker_index, const std::size_t worker_count,
+                                           const DurableResourceLimits& limits) noexcept -> std::uint64_t {
     if (worker_count == 0) {
         return 0;
     }
@@ -502,6 +524,25 @@ struct DurableRuntimeCatalog::RuntimeSegmentGeneration {
 };
 
 struct DurableRuntimeCatalog::RuntimeWorker {
+    struct alignas(64) BatchMetrics final {
+        std::atomic_size_t pending_records{};
+        std::atomic_uint64_t pending_bytes{};
+        std::atomic_size_t current_record_target{1};
+        std::atomic_uint64_t flush_attempts{};
+        std::atomic_uint64_t committed_batches{};
+        std::atomic_uint64_t failed_batches{};
+        std::atomic_uint64_t committed_records{};
+        std::atomic_uint64_t committed_bytes{};
+        std::atomic_size_t maximum_batch_records{};
+        std::atomic_uint64_t maximum_batch_bytes{};
+        std::atomic_uint64_t total_commit_duration_ns{};
+        std::atomic_uint64_t maximum_commit_duration_ns{};
+        std::atomic_uint64_t record_limit_closes{};
+        std::atomic_uint64_t byte_limit_closes{};
+        std::atomic_uint64_t adaptive_target_closes{};
+        std::atomic_uint64_t deadline_closes{};
+    };
+
     explicit RuntimeWorker(RecoveredWorkerState recovered)
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
           next_sequence(recovered.next_sequence), active_segment(recovered.active_segment) {}
@@ -528,6 +569,7 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::chrono::steady_clock::time_point batch_started{};
     std::atomic_size_t active_group_mutations{};
     detail::AdaptiveBatchSizer batch_sizer;
+    BatchMetrics batch_metrics;
     bool batch_closing{};
     std::condition_variable batch_closed;
     bool compaction_commit_active{};
@@ -548,10 +590,10 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     -> std::uint64_t {
     const auto buckets = hot_cache_bucket_bytes(hot_records.bucket_count());
     const auto staging_buckets = hot_cache_bucket_bytes(hot_record_staging.bucket_count());
-    const auto first = hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() -
-                                                       hot_record_staged_bytes
-                           ? std::numeric_limits<std::uint64_t>::max()
-                           : hot_record_resident_bytes + hot_record_staged_bytes;
+    const auto first =
+        hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
+            ? std::numeric_limits<std::uint64_t>::max()
+            : hot_record_resident_bytes + hot_record_staged_bytes;
     const auto second = first > std::numeric_limits<std::uint64_t>::max() - buckets
                             ? std::numeric_limits<std::uint64_t>::max()
                             : first + buckets;
@@ -570,11 +612,9 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
 }
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::prepare_hot_record(
-    const std::size_t worker_index, const std::size_t worker_count,
-    const DurableResourceLimits& limits, const std::string_view key,
-    const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
-    const std::uint64_t publication_staging_bytes)
-    -> Result<PreparedHotRecord> {
+    const std::size_t worker_index, const std::size_t worker_count, const DurableResourceLimits& limits,
+    const std::string_view key, const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
+    const std::uint64_t publication_staging_bytes) -> Result<PreparedHotRecord> {
     auto charge = hot_record_accounted_bytes(key.size(), value.size());
     if (!charge) {
         return unexpected(charge.error());
@@ -590,11 +630,10 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
     const auto projected_entries = hot_records.size() + hot_record_staged_entries;
     const bool entry_exhausted = limits.max_hot_cache_entries_per_worker == 0 ||
                                  projected_entries >= limits.max_hot_cache_entries_per_worker;
-    const bool staging_exhausted = limits.max_hot_cache_staging_bytes_per_worker == 0 ||
-                                   hot_record_staged_bytes >
-                                       limits.max_hot_cache_staging_bytes_per_worker ||
-                                   staged_charge > limits.max_hot_cache_staging_bytes_per_worker -
-                                                       hot_record_staged_bytes;
+    const bool staging_exhausted =
+        limits.max_hot_cache_staging_bytes_per_worker == 0 ||
+        hot_record_staged_bytes > limits.max_hot_cache_staging_bytes_per_worker ||
+        staged_charge > limits.max_hot_cache_staging_bytes_per_worker - hot_record_staged_bytes;
     if (budget == 0 || entry_exhausted || staging_exhausted) {
         ++hot_record_admission_bypasses;
         return PreparedHotRecord{};
@@ -613,10 +652,10 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
         std::max(hot_record_staging.bucket_count(), kHotCacheStagingBucketFloor);
     const auto projected_buckets = hot_cache_bucket_bytes(projected_bucket_count);
     const auto projected_staging = hot_cache_bucket_bytes(projected_staging_buckets);
-    const auto fixed = hot_record_resident_bytes >
-                               std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
-                           ? std::numeric_limits<std::uint64_t>::max()
-                           : hot_record_resident_bytes + hot_record_staged_bytes;
+    const auto fixed =
+        hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
+            ? std::numeric_limits<std::uint64_t>::max()
+            : hot_record_resident_bytes + hot_record_staged_bytes;
     const auto available = fixed >= budget ? 0 : budget - fixed;
     if (projected_buckets > available || projected_staging > available - projected_buckets ||
         staged_charge > available - projected_buckets - projected_staging) {
@@ -644,11 +683,11 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
         std::copy(value.begin(), value.end(), mutable_value.get());
         immutable_value = std::move(mutable_value);
     }
-    const auto staged = hot_record_staging.emplace(
-        std::string{key}, HotRecordEntry{.value_bytes = std::move(immutable_value),
-                                        .value_size = value.size(),
-                                        .expire_at_ns = expire_at_ns,
-                                        .accounted_bytes = *charge});
+    const auto staged =
+        hot_record_staging.emplace(std::string{key}, HotRecordEntry{.value_bytes = std::move(immutable_value),
+                                                                    .value_size = value.size(),
+                                                                    .expire_at_ns = expire_at_ns,
+                                                                    .accounted_bytes = *charge});
     if (!staged.second) {
         return fail(ErrorCode::corrupted_data, "hot Record staging map was not empty");
     }
@@ -666,12 +705,14 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
     }
     hot_record_staged_bytes += staged_charge;
     ++hot_record_staged_entries;
-    return PreparedHotRecord{std::move(node), &hot_record_staged_bytes,
-                             &hot_record_staged_entries, staged_charge};
+    return PreparedHotRecord{std::move(node), &hot_record_staged_bytes, &hot_record_staged_entries,
+                             staged_charge};
 }
 
-[[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::publish_hot_record(
-    PreparedHotRecord& prepared, const RecordRef& reference, const SequenceNumber sequence) -> Status {
+[[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::publish_hot_record(PreparedHotRecord& prepared,
+                                                                            const RecordRef& reference,
+                                                                            const SequenceNumber sequence)
+    -> Status {
     if (prepared.empty()) {
         return {};
     }
@@ -703,6 +744,8 @@ DurableRuntimeCatalog::DurableRuntimeCatalog(DataDirectory directory, DurableRec
         auto runtime_worker = std::make_unique<RuntimeWorker>(std::move(worker));
         if (options_.batch) {
             runtime_worker->batch_sizer.reset(options_.batch->min_records, options_.batch->max_records);
+            runtime_worker->batch_metrics.current_record_target.store(runtime_worker->batch_sizer.target(),
+                                                                      std::memory_order_relaxed);
         }
         workers_.push_back(std::move(runtime_worker));
     }
@@ -759,9 +802,11 @@ auto DurableRuntimeCatalog::should_flush_batch(RuntimeWorker& worker) const noex
     const auto& config = *options_.batch;
     const auto pending_records = worker.cached_file->pending_record_count();
     if (pending_records >= config.max_records) {
+        atomic_saturating_add(worker.batch_metrics.record_limit_closes, 1U);
         return true;
     }
     if (worker.cached_file->pending_bytes() >= config.max_bytes) {
+        atomic_saturating_add(worker.batch_metrics.byte_limit_closes, 1U);
         return true;
     }
     const auto record_target = worker.batch_sizer.target();
@@ -771,6 +816,9 @@ auto DurableRuntimeCatalog::should_flush_batch(RuntimeWorker& worker) const noex
         // this is a tuning hint and never affects acknowledgement correctness.
         const auto admissions = worker.active_group_mutations.load(std::memory_order_relaxed);
         worker.batch_sizer.observe_target_reached(pending_records, admissions);
+        worker.batch_metrics.current_record_target.store(worker.batch_sizer.target(),
+                                                         std::memory_order_relaxed);
+        atomic_saturating_add(worker.batch_metrics.adaptive_target_closes, 1U);
         return true;
     }
     if (worker.batch_started != std::chrono::steady_clock::time_point{}) {
@@ -781,7 +829,10 @@ auto DurableRuntimeCatalog::should_flush_batch(RuntimeWorker& worker) const noex
             // achieved, within the caller's explicit bounds.
             if (options_.strict_ack) {
                 worker.batch_sizer.observe_deadline(pending_records);
+                worker.batch_metrics.current_record_target.store(worker.batch_sizer.target(),
+                                                                 std::memory_order_relaxed);
             }
+            atomic_saturating_add(worker.batch_metrics.deadline_closes, 1U);
             return true;
         }
     }
@@ -813,8 +864,16 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
     if (!worker.cached_file || !worker.cached_writable || !worker.cached_file->has_pending_commit()) {
         return {};
     }
+    const auto pending_records = worker.cached_file->pending_record_count();
+    const auto pending_bytes = worker.cached_file->pending_bytes();
+    atomic_saturating_add(worker.batch_metrics.flush_attempts, 1U);
+    const auto commit_started = std::chrono::steady_clock::now();
     const auto flushed = worker.cached_file->flush_pending_commit(sync);
+    const auto commit_duration_ns = steady_elapsed_ns(commit_started);
+    atomic_saturating_add(worker.batch_metrics.total_commit_duration_ns, commit_duration_ns);
+    atomic_observe_max(worker.batch_metrics.maximum_commit_duration_ns, commit_duration_ns);
     if (!flushed.committed()) {
+        atomic_saturating_add(worker.batch_metrics.failed_batches, 1U);
         healthy_.store(false, std::memory_order_release);
         for (auto* mutation : worker.pending_group_mutations) {
             mutation->completed = true;
@@ -826,6 +885,13 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
         worker.batch_closed.notify_all();
         return unexpected(flushed.error.value_or(Error{ErrorCode::io_error, "batch flush failed"}));
     }
+    atomic_saturating_add(worker.batch_metrics.committed_batches, 1U);
+    atomic_saturating_add(worker.batch_metrics.committed_records, pending_records);
+    atomic_saturating_add(worker.batch_metrics.committed_bytes, pending_bytes);
+    atomic_observe_max(worker.batch_metrics.maximum_batch_records, static_cast<std::size_t>(pending_records));
+    atomic_observe_max(worker.batch_metrics.maximum_batch_bytes, pending_bytes);
+    worker.batch_metrics.pending_records.store(0, std::memory_order_relaxed);
+    worker.batch_metrics.pending_bytes.store(0, std::memory_order_relaxed);
     const auto& identity = worker.cached_file->identity();
     const auto position =
         std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), identity.segment_id,
@@ -1529,14 +1595,13 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                 static_cast<std::uint64_t>(sizeof(PendingGroupMutation) + sizeof(PendingGroupMutation*));
             const auto publication_staging_bytes =
                 strict_batch
-                    ? (key.size() > std::numeric_limits<std::uint64_t>::max() -
-                                            group_publication_fixed_bytes
+                    ? (key.size() > std::numeric_limits<std::uint64_t>::max() - group_publication_fixed_bytes
                            ? std::numeric_limits<std::uint64_t>::max()
                            : group_publication_fixed_bytes + static_cast<std::uint64_t>(key.size()))
                     : 0U;
-            auto prepared = worker.prepare_hot_record(worker_index, workers_.size(), options_.limits,
-                                                      hashed.key, value, expire_at_ns,
-                                                      publication_staging_bytes);
+            auto prepared =
+                worker.prepare_hot_record(worker_index, workers_.size(), options_.limits, hashed.key, value,
+                                          expire_at_ns, publication_staging_bytes);
             if (!prepared) {
                 return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }
@@ -1669,6 +1734,11 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             }
 
             if (batch_enabled) {
+                worker.batch_metrics.pending_records.store(
+                    static_cast<std::size_t>(worker.cached_file->pending_record_count()),
+                    std::memory_order_relaxed);
+                worker.batch_metrics.pending_bytes.store(worker.cached_file->pending_bytes(),
+                                                         std::memory_order_relaxed);
                 if (worker.batch_started == std::chrono::steady_clock::time_point{}) {
                     worker.batch_started = std::chrono::steady_clock::now();
                     if (dedicated_commit_executor_ && flusher_) {
@@ -1812,6 +1882,35 @@ auto DurableRuntimeCatalog::hot_cache_stats() const -> std::vector<DurableHotCac
             .hits = worker.hot_record_hits,
             .misses = worker.hot_record_misses,
             .admission_bypasses = worker.hot_record_admission_bypasses,
+        });
+    }
+    return result;
+}
+
+auto DurableRuntimeCatalog::batch_stats() const -> std::vector<DurableBatchWorkerStats> {
+    std::vector<DurableBatchWorkerStats> result;
+    result.reserve(workers_.size());
+    for (const auto& worker : workers_) {
+        const auto& metrics = worker->batch_metrics;
+        result.push_back({
+            .worker_id = worker->worker_id,
+            .enabled = options_.batch.has_value(),
+            .pending_records = metrics.pending_records.load(std::memory_order_relaxed),
+            .pending_bytes = metrics.pending_bytes.load(std::memory_order_relaxed),
+            .current_record_target = metrics.current_record_target.load(std::memory_order_relaxed),
+            .flush_attempts = metrics.flush_attempts.load(std::memory_order_relaxed),
+            .committed_batches = metrics.committed_batches.load(std::memory_order_relaxed),
+            .failed_batches = metrics.failed_batches.load(std::memory_order_relaxed),
+            .committed_records = metrics.committed_records.load(std::memory_order_relaxed),
+            .committed_bytes = metrics.committed_bytes.load(std::memory_order_relaxed),
+            .maximum_batch_records = metrics.maximum_batch_records.load(std::memory_order_relaxed),
+            .maximum_batch_bytes = metrics.maximum_batch_bytes.load(std::memory_order_relaxed),
+            .total_commit_duration_ns = metrics.total_commit_duration_ns.load(std::memory_order_relaxed),
+            .maximum_commit_duration_ns = metrics.maximum_commit_duration_ns.load(std::memory_order_relaxed),
+            .record_limit_closes = metrics.record_limit_closes.load(std::memory_order_relaxed),
+            .byte_limit_closes = metrics.byte_limit_closes.load(std::memory_order_relaxed),
+            .adaptive_target_closes = metrics.adaptive_target_closes.load(std::memory_order_relaxed),
+            .deadline_closes = metrics.deadline_closes.load(std::memory_order_relaxed),
         });
     }
     return result;

@@ -83,6 +83,27 @@ struct DurableHotCacheWorkerStats {
     std::uint64_t admission_bypasses{};
 };
 
+struct DurableBatchWorkerStats {
+    WorkerId worker_id{};
+    bool enabled{};
+    std::size_t pending_records{};
+    std::uint64_t pending_bytes{};
+    std::size_t current_record_target{};
+    std::uint64_t flush_attempts{};
+    std::uint64_t committed_batches{};
+    std::uint64_t failed_batches{};
+    std::uint64_t committed_records{};
+    std::uint64_t committed_bytes{};
+    std::size_t maximum_batch_records{};
+    std::uint64_t maximum_batch_bytes{};
+    std::uint64_t total_commit_duration_ns{};
+    std::uint64_t maximum_commit_duration_ns{};
+    std::uint64_t record_limit_closes{};
+    std::uint64_t byte_limit_closes{};
+    std::uint64_t adaptive_target_closes{};
+    std::uint64_t deadline_closes{};
+};
+
 // Internal materialization of one recovered durable Store. It keeps the
 // directory lock for its complete lifetime. Mutable Segment handles remain
 // Worker-owned; immutable generation pins keep cold-read handles alive across
@@ -153,6 +174,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto namespace_audit() const -> NamespaceAuditReport;
     [[nodiscard]] auto recovery_stats() const noexcept -> const DurableRecoveryStats&;
     [[nodiscard]] auto hot_cache_stats() const -> std::vector<DurableHotCacheWorkerStats>;
+    [[nodiscard]] auto batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const

@@ -2,6 +2,7 @@
 
 #include "glyphastore/server/disk_read_executor.hpp"
 #include "glyphastore/server/socket.hpp"
+#include "store/store_internal.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -211,6 +212,10 @@ auto Server::executor_affinity_results() const -> std::vector<ExecutorAffinityRe
 
 auto Server::durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats> {
     return durable_mutations_ ? durable_mutations_->stats() : std::vector<DurableMutationWorkerStats>{};
+}
+
+auto Server::durable_batch_stats() const -> std::vector<DurableBatchWorkerStats> {
+    return detail::StoreAccess::batch_stats(*store_);
 }
 
 void Server::run(const std::size_t executor_id) noexcept {

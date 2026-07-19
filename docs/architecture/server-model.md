@@ -124,6 +124,11 @@ Per-Worker snapshots report current/peak queue records and owned bytes, producer
 admitted/rejected/expired/completed counts, queue-wait time, and total Store service time. Metrics use
 only the lane's short queue mutex and cannot wait for its filesystem operation.
 
+`Server::durable_batch_stats()` exposes the Store kernel's lock-free Worker-local batch snapshot:
+pending and committed occupancy, adaptive target, close reasons, failures, and exact duration of the
+Segment batch commit operation. These counters complement lane queue/service time instead of
+conflating scheduling delay with persistence work.
+
 ## Current scope
 
 The daemon supports the Store's volatile and durable modes. Executor threads are not yet guaranteed

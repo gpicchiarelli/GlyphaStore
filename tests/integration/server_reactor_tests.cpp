@@ -662,6 +662,7 @@ GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store cl
 GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane producers") {
     ServerTemporaryDirectory temporary;
     GroupBatchObserver observer;
+    BlockingFileSync blocker;
     auto opened = glyphastore::server::Server::create(
         {.port = 0,
          .maximum_connections = 2,
@@ -671,9 +672,12 @@ GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane pr
          .data_directory = temporary.store_path(),
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
          .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'000, .min_records = 2},
-         .filesystem_hooks = {.context = &observer, .before = &GroupBatchObserver::before}});
+         .filesystem_hooks = {.context = &observer,
+                              .before = &GroupBatchObserver::before,
+                              .file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
     GLYPHA_REQUIRE(server.start().has_value());
 
     const auto first_socket = connect_to(server.port());
@@ -696,8 +700,16 @@ GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane pr
     });
     GLYPHA_REQUIRE(first.has_value());
     GLYPHA_REQUIRE(second.has_value());
+    blocker.arm();
     GLYPHA_REQUIRE(send_all(first_socket, *first));
     GLYPHA_REQUIRE(send_all(second_socket, *second));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    const auto in_flight_batch_stats = server.durable_batch_stats();
+    GLYPHA_REQUIRE(in_flight_batch_stats.size() == 1);
+    GLYPHA_REQUIRE(in_flight_batch_stats[0].pending_records == 2);
+    GLYPHA_REQUIRE(in_flight_batch_stats[0].flush_attempts == 1);
+    GLYPHA_REQUIRE(in_flight_batch_stats[0].committed_batches == 0);
+    blocker.release();
 
     const auto first_frame = receive_response(first_socket);
     const auto second_frame = receive_response(second_socket);
@@ -709,6 +721,22 @@ GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane pr
     GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(observer.maximum_writes_before_sync() == 2);
     GLYPHA_REQUIRE(observer.sync_count() == 1);
+    const auto batch_stats = server.durable_batch_stats();
+    GLYPHA_REQUIRE(batch_stats.size() == 1);
+    GLYPHA_REQUIRE(batch_stats[0].enabled);
+    GLYPHA_REQUIRE(batch_stats[0].pending_records == 0);
+    GLYPHA_REQUIRE(batch_stats[0].pending_bytes == 0);
+    GLYPHA_REQUIRE(batch_stats[0].current_record_target == 2);
+    GLYPHA_REQUIRE(batch_stats[0].flush_attempts == 1);
+    GLYPHA_REQUIRE(batch_stats[0].committed_batches == 1);
+    GLYPHA_REQUIRE(batch_stats[0].failed_batches == 0);
+    GLYPHA_REQUIRE(batch_stats[0].committed_records == 2);
+    GLYPHA_REQUIRE(batch_stats[0].committed_bytes > 0);
+    GLYPHA_REQUIRE(batch_stats[0].maximum_batch_records == 2);
+    GLYPHA_REQUIRE(batch_stats[0].maximum_batch_bytes == batch_stats[0].committed_bytes);
+    GLYPHA_REQUIRE(batch_stats[0].total_commit_duration_ns > 0);
+    GLYPHA_REQUIRE(batch_stats[0].maximum_commit_duration_ns == batch_stats[0].total_commit_duration_ns);
+    GLYPHA_REQUIRE(batch_stats[0].record_limit_closes >= 1);
 
     static_cast<void>(::close(first_socket));
     static_cast<void>(::close(second_socket));
