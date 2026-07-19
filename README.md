@@ -310,6 +310,19 @@ with:
   --workers 4 --clients 4 --executor-affinity --warmup 1 --repeats 5
 ```
 
+The first native Python SDK is under `sdk/python` and uses no runtime dependency outside the Python
+standard library:
+
+```python
+from glyphastore import Client
+
+with Client.connect() as cache:
+    if cache.put(b"key", b"value").committed:
+        assert cache.get(b"key") == b"value"
+```
+
+Run its canonical wire-fixture and TCP behavior tests with `./scripts/test-python-client.sh`.
+
 ```bash
 ./scripts/dev.sh build
 ./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379

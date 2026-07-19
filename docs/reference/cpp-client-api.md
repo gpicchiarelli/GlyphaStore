@@ -138,7 +138,7 @@ retains its normal cancellation, scheduling, packaging, and binary-data conventi
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|
 | C++ | Implemented reference client | synchronous, thread-safe, one connection per Worker |
-| Python | Native package with sync API first, then `asyncio` | one ordered connection task per Worker |
+| Python | Native synchronous package implemented under `sdk/python`; `asyncio` next | one locked connection per Worker |
 | Perl | Native module using byte strings | synchronous handles, optional event-loop adapter later |
 | Erlang | Native OTP application | supervised Worker-connection processes |
 
