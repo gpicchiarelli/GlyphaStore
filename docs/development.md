@@ -35,6 +35,23 @@ python3 scripts/benchmark_report.py benchmark-results/*.txt \
   --markdown benchmark-results/summary.md
 ```
 
+The durable TCP audit matrix runs v1 sync, strict group, and periodic policies at pipeline depths
+1, 8, and 32. It includes both 1/2/4 client-to-Worker scaling and four clients per Worker at each
+scale, because strict group commit cannot form multi-record batches with only one outstanding
+mutation producer per Worker. It records raw output, exact queue/Store/batch metrics, environment
+metadata, JSON, and Markdown below an ignored timestamped directory:
+
+```bash
+./scripts/benchmark_durable_server.sh
+# Override duration without changing the matrix contract:
+BENCHMARK_OPS=1000 BENCHMARK_REPEATS=5 ./scripts/benchmark_durable_server.sh
+```
+
+Throughput and latency runs are separate so steady-clock sampling does not contaminate the throughput
+baseline. `durable-periodic` measures its relaxed acknowledgement contract; its later store-wide sync
+must not be compared as though it were included in response latency. Unbatched `durable-sync` reports
+zero for the batch-commit metric; its complete filesystem cost remains included in Store service time.
+
 Hosted-runner measurements are deliberately informational because runner allocation, contention,
 and CPU models can change. Use a controlled, thermally stable runner before turning changes into
 hard regression gates or publishing absolute throughput claims.

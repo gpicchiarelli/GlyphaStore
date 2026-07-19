@@ -15,9 +15,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <iterator>
 #include <latch>
+#include <limits>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <span>
@@ -36,6 +38,8 @@ using glyphastore::bench::ParallelDistribution;
 using glyphastore::bench::Result;
 using glyphastore::bench::RunSettings;
 
+enum class StorageProfile : std::uint8_t { volatile_memory, durable_sync, durable_group, durable_periodic };
+
 struct Options {
     Config config{.workers = 1, .threads = 1, .distribution = ParallelDistribution::owner_bound};
     RunSettings settings{};
@@ -44,6 +48,38 @@ struct Options {
     bool executor_affinity{};
     bool latency{};
     bool client_api{};
+    StorageProfile storage{StorageProfile::volatile_memory};
+    std::uint32_t group_max_records{32};
+    std::uint32_t group_max_bytes{65'536};
+    std::uint32_t group_max_wait_ms{10};
+    std::size_t durable_group_concurrency{4};
+    std::uint32_t periodic_sync_ms{1'000};
+};
+
+struct DurableProfileSample {
+    double average_queue_wait_ns{};
+    double maximum_queue_wait_ns{};
+    double average_service_ns{};
+    double maximum_service_ns{};
+    double average_commit_ns{};
+    double maximum_commit_ns{};
+    double average_batch_records{};
+    double maximum_batch_records{};
+    std::uint64_t completed{};
+    std::uint64_t rejected{};
+    std::uint64_t expired{};
+    std::uint64_t committed_batches{};
+    std::uint64_t committed_records{};
+    std::uint64_t committed_bytes{};
+    std::uint64_t failed_batches{};
+    std::uint64_t maximum_queue_depth{};
+    std::uint64_t maximum_queued_bytes{};
+    std::uint64_t pending_records{};
+    std::uint64_t pending_bytes{};
+    std::uint64_t record_limit_closes{};
+    std::uint64_t byte_limit_closes{};
+    std::uint64_t adaptive_target_closes{};
+    std::uint64_t deadline_closes{};
 };
 
 struct ClientWork {
@@ -57,6 +93,7 @@ struct Sample {
     glyphastore::bench::ResourceSample resources{};
     std::vector<double> latency_ns;
     bool valid{};
+    DurableProfileSample durable;
 };
 
 struct ClientResult {
@@ -74,6 +111,169 @@ struct ClientResult {
         std::exit(2);
     }
     return parsed;
+}
+
+[[nodiscard]] auto parse_u32(const std::string_view value, const char* flag) -> std::uint32_t {
+    const auto parsed = parse_size(value, flag);
+    if (parsed > std::numeric_limits<std::uint32_t>::max()) {
+        std::cerr << "value for " << flag << " exceeds uint32: " << value << '\n';
+        std::exit(2);
+    }
+    return static_cast<std::uint32_t>(parsed);
+}
+
+[[nodiscard]] auto parse_storage(const std::string_view value) -> StorageProfile {
+    if (value == "volatile") {
+        return StorageProfile::volatile_memory;
+    }
+    if (value == "durable-sync") {
+        return StorageProfile::durable_sync;
+    }
+    if (value == "durable-group") {
+        return StorageProfile::durable_group;
+    }
+    if (value == "durable-periodic") {
+        return StorageProfile::durable_periodic;
+    }
+    std::cerr << "invalid value for --storage-mode: " << value << '\n';
+    std::exit(2);
+}
+
+[[nodiscard]] auto storage_name(const StorageProfile profile) noexcept -> std::string_view {
+    switch (profile) {
+    case StorageProfile::volatile_memory:
+        return "volatile";
+    case StorageProfile::durable_sync:
+        return "durable-sync";
+    case StorageProfile::durable_group:
+        return "durable-group";
+    case StorageProfile::durable_periodic:
+        return "durable-periodic";
+    }
+    return "unknown";
+}
+
+class BenchmarkDataDirectory final {
+  public:
+    explicit BenchmarkDataDirectory(const StorageProfile storage) {
+        if (storage == StorageProfile::volatile_memory) {
+            return;
+        }
+        static std::atomic_uint64_t counter{};
+        path_ = std::filesystem::temp_directory_path() /
+                ("glyphastore-server-bench-" + std::to_string(static_cast<unsigned long>(::getpid())) + '-' +
+                 std::to_string(counter.fetch_add(1U, std::memory_order_relaxed)));
+    }
+
+    ~BenchmarkDataDirectory() {
+        if (!path_.empty()) {
+            std::error_code ignored;
+            std::filesystem::remove_all(path_, ignored);
+        }
+    }
+
+    BenchmarkDataDirectory(const BenchmarkDataDirectory&) = delete;
+    auto operator=(const BenchmarkDataDirectory&) -> BenchmarkDataDirectory& = delete;
+
+    [[nodiscard]] auto path() const noexcept -> const std::filesystem::path& {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
+[[nodiscard]] auto store_config(const Options& options, const BenchmarkDataDirectory& directory)
+    -> glyphastore::StoreConfig {
+    glyphastore::StoreConfig config{.worker_config = {.explicit_count = options.config.workers}};
+    switch (options.storage) {
+    case StorageProfile::volatile_memory:
+        return config;
+    case StorageProfile::durable_sync:
+        config.storage_mode = glyphastore::StorageMode::durable_sync;
+        break;
+    case StorageProfile::durable_group:
+        config.storage_mode = glyphastore::StorageMode::durable_group;
+        break;
+    case StorageProfile::durable_periodic:
+        config.storage_mode = glyphastore::StorageMode::durable_periodic;
+        break;
+    }
+    config.data_directory = directory.path();
+    config.durable_open_mode = glyphastore::DurableOpenMode::create_new;
+    config.durable_group = {.max_records = options.group_max_records,
+                            .max_bytes = options.group_max_bytes,
+                            .max_wait_ms = options.group_max_wait_ms,
+                            .min_records = 1};
+    config.durable_periodic = {
+        .sync_interval_ms = options.periodic_sync_ms,
+        .batch = glyphastore::DurableGroupConfig{.max_records = options.group_max_records,
+                                                 .max_bytes = options.group_max_bytes,
+                                                 .max_wait_ms = options.group_max_wait_ms,
+                                                 .min_records = 1}};
+    return config;
+}
+
+[[nodiscard]] auto reactor_config(const Options& options) -> glyphastore::server::ReactorConfig {
+    return {.port = 0,
+            .maximum_connections = std::max(std::size_t{16}, options.config.threads * 2U),
+            .worker_count = options.config.workers,
+            .executor_affinity = options.executor_affinity,
+            .durable_group_mutation_concurrency = options.durable_group_concurrency,
+            .durable_mutation_queue_wait_ms = 0};
+}
+
+[[nodiscard]] auto durable_profile(const glyphastore::server::Server& server) -> DurableProfileSample {
+    DurableProfileSample result;
+    std::uint64_t queue_wait_ns{};
+    std::uint64_t service_ns{};
+    for (const auto& worker : server.durable_mutation_stats()) {
+        result.completed += worker.completed;
+        result.rejected += worker.rejected;
+        result.expired += worker.expired_before_store;
+        result.maximum_queue_depth = std::max(result.maximum_queue_depth,
+                                              static_cast<std::uint64_t>(worker.maximum_queue_depth));
+        result.maximum_queued_bytes = std::max(result.maximum_queued_bytes,
+                                               static_cast<std::uint64_t>(worker.maximum_queued_bytes));
+        queue_wait_ns += worker.total_queue_wait_ns;
+        service_ns += worker.total_service_ns;
+        result.maximum_queue_wait_ns = std::max(result.maximum_queue_wait_ns,
+                                                static_cast<double>(worker.maximum_queue_wait_ns));
+        result.maximum_service_ns =
+            std::max(result.maximum_service_ns, static_cast<double>(worker.maximum_service_ns));
+    }
+    result.average_queue_wait_ns =
+        result.completed == 0 ? 0.0 : static_cast<double>(queue_wait_ns) / static_cast<double>(result.completed);
+    const auto serviced = result.completed - std::min(result.completed, result.expired);
+    result.average_service_ns =
+        serviced == 0 ? 0.0 : static_cast<double>(service_ns) / static_cast<double>(serviced);
+
+    std::uint64_t commit_ns{};
+    for (const auto& worker : server.durable_batch_stats()) {
+        result.committed_batches += worker.committed_batches;
+        result.committed_records += worker.committed_records;
+        result.committed_bytes += worker.committed_bytes;
+        result.failed_batches += worker.failed_batches;
+        result.pending_records += worker.pending_records;
+        result.pending_bytes += worker.pending_bytes;
+        result.record_limit_closes += worker.record_limit_closes;
+        result.byte_limit_closes += worker.byte_limit_closes;
+        result.adaptive_target_closes += worker.adaptive_target_closes;
+        result.deadline_closes += worker.deadline_closes;
+        commit_ns += worker.total_commit_duration_ns;
+        result.maximum_commit_ns =
+            std::max(result.maximum_commit_ns, static_cast<double>(worker.maximum_commit_duration_ns));
+        result.maximum_batch_records =
+            std::max(result.maximum_batch_records, static_cast<double>(worker.maximum_batch_records));
+    }
+    result.average_commit_ns = result.committed_batches == 0
+                                   ? 0.0
+                                   : static_cast<double>(commit_ns) / static_cast<double>(result.committed_batches);
+    result.average_batch_records =
+        result.committed_batches == 0
+            ? 0.0
+            : static_cast<double>(result.committed_records) / static_cast<double>(result.committed_batches);
+    return result;
 }
 
 [[nodiscard]] auto options(const int argc, char** argv) -> Options {
@@ -112,10 +312,46 @@ struct ClientResult {
             result.latency = true;
         } else if (argument == "--client-api") {
             result.client_api = true;
+        } else if (argument == "--storage-mode") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --storage-mode\n";
+                std::exit(2);
+            }
+            result.storage = parse_storage(argv[++index]);
+        } else if (argument == "--group-max-records") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --group-max-records\n";
+                std::exit(2);
+            }
+            result.group_max_records = parse_u32(argv[++index], "--group-max-records");
+        } else if (argument == "--group-max-bytes") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --group-max-bytes\n";
+                std::exit(2);
+            }
+            result.group_max_bytes = parse_u32(argv[++index], "--group-max-bytes");
+        } else if (argument == "--group-max-wait-ms") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --group-max-wait-ms\n";
+                std::exit(2);
+            }
+            result.group_max_wait_ms = parse_u32(argv[++index], "--group-max-wait-ms");
+        } else if (argument == "--durable-group-concurrency") {
+            result.durable_group_concurrency = next_size("--durable-group-concurrency");
+        } else if (argument == "--periodic-sync-ms") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --periodic-sync-ms\n";
+                std::exit(2);
+            }
+            result.periodic_sync_ms = parse_u32(argv[++index], "--periodic-sync-ms");
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
                          " [--executor-affinity] [--latency] [--client-api] [--client-pipeline N]"
+                         " [--storage-mode volatile|durable-sync|durable-group|durable-periodic]"
+                         " [--group-max-records N] [--group-max-bytes N] [--group-max-wait-ms N]"
+                         " [--durable-group-concurrency N]"
+                         " [--periodic-sync-ms N]"
                          " [--warmup N] [--repeats N]\n";
             std::exit(0);
         } else {
@@ -338,12 +574,8 @@ class BufferedResponseReader final {
 
 [[nodiscard]] auto run_sample(const Options& options, const glyphastore::bench::KeyMaterial& material,
                               const std::vector<ClientWork>& work) -> Sample {
-    auto server = glyphastore::server::Server::create({
-        .port = 0,
-        .maximum_connections = std::max(std::size_t{16}, options.config.threads * 2U),
-        .worker_count = options.config.workers,
-        .executor_affinity = options.executor_affinity,
-    });
+    BenchmarkDataDirectory directory{options.storage};
+    auto server = glyphastore::server::Server::create(reactor_config(options), store_config(options, directory));
     if (!server || !(*server)->start()) {
         return {};
     }
@@ -436,23 +668,21 @@ class BufferedResponseReader final {
     for (const auto descriptor : descriptors) {
         static_cast<void>(::close(descriptor));
     }
+    const auto profile = durable_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
     return {.hits = hits,
             .seconds = elapsed,
             .resources = resources,
             .latency_ns = std::move(latency_ns),
-            .valid = stopped.has_value() && hits == expected};
+            .valid = stopped.has_value() && hits == expected,
+            .durable = profile};
 }
 
 [[nodiscard]] auto run_client_api_sample(const Options& options,
                                          const glyphastore::bench::KeyMaterial& material) -> Sample {
-    auto server = glyphastore::server::Server::create({
-        .port = 0,
-        .maximum_connections = std::max(std::size_t{16}, options.config.workers * 2U),
-        .worker_count = options.config.workers,
-        .executor_affinity = options.executor_affinity,
-    });
+    BenchmarkDataDirectory directory{options.storage};
+    auto server = glyphastore::server::Server::create(reactor_config(options), store_config(options, directory));
     if (!server || !(*server)->start()) {
         return {};
     }
@@ -594,6 +824,7 @@ class BufferedResponseReader final {
                           std::make_move_iterator(result.latency_ns.end()));
     }
     client.close();
+    const auto profile = durable_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
     const auto expected = options.config.operations * 2U;
@@ -601,7 +832,8 @@ class BufferedResponseReader final {
             .seconds = elapsed,
             .resources = resources,
             .latency_ns = std::move(latency_ns),
-            .valid = stopped.has_value() && hits == expected};
+            .valid = stopped.has_value() && hits == expected,
+            .durable = profile};
 }
 
 [[nodiscard]] auto percentile(const std::vector<double>& sorted, const double quantile) -> double {
@@ -631,8 +863,10 @@ class BufferedResponseReader final {
     std::vector<double> seconds;
     std::vector<glyphastore::bench::ResourceSample> resources;
     std::vector<double> latency_ns;
+    std::vector<DurableProfileSample> durable_profiles;
     seconds.reserve(options.settings.measured_iterations);
     resources.reserve(options.settings.measured_iterations);
+    durable_profiles.reserve(options.settings.measured_iterations);
     std::size_t hits{};
     for (std::size_t iteration = 0; iteration < options.settings.measured_iterations; ++iteration) {
         auto measured = sample();
@@ -642,12 +876,14 @@ class BufferedResponseReader final {
         hits = measured.hits;
         seconds.push_back(measured.seconds);
         resources.push_back(measured.resources);
+        durable_profiles.push_back(measured.durable);
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
                           std::make_move_iterator(measured.latency_ns.end()));
     }
-    const auto benchmark_name = options.client_pipeline != 0 ? "cpp_client_pipeline_read_after_write"
-                                : options.client_api         ? "cpp_client_read_after_write"
-                                                             : "server_tcp_read_after_write";
+    const auto client_name = options.client_pipeline != 0 ? "cpp_client_pipeline_read_after_write"
+                           : options.client_api         ? "cpp_client_read_after_write"
+                                                        : "server_tcp_read_after_write";
+    const auto benchmark_name = std::string{client_name} + '_' + std::string{storage_name(options.storage)};
     auto result = glyphastore::bench::finalize_result(benchmark_name, options.config, options.settings,
                                                       options.config.operations * 2U, hits,
                                                       std::move(seconds), std::move(resources));
@@ -659,6 +895,57 @@ class BufferedResponseReader final {
         result.p99_latency_ns = percentile(latency_ns, 0.99);
         result.p999_latency_ns = percentile(latency_ns, 0.999);
     }
+    const auto median_profile = [&](auto member) {
+        std::vector<double> values;
+        values.reserve(durable_profiles.size());
+        for (const auto& profile : durable_profiles) {
+            values.push_back(static_cast<double>(profile.*member));
+        }
+        return glyphastore::bench::median(std::move(values));
+    };
+    const auto maximum_profile = [&](auto member) {
+        double maximum{};
+        for (const auto& profile : durable_profiles) {
+            maximum = std::max(maximum, static_cast<double>(profile.*member));
+        }
+        return maximum;
+    };
+    result.median_durable_queue_wait_ns = median_profile(&DurableProfileSample::average_queue_wait_ns);
+    result.maximum_durable_queue_wait_ns = maximum_profile(&DurableProfileSample::maximum_queue_wait_ns);
+    result.median_durable_service_ns = median_profile(&DurableProfileSample::average_service_ns);
+    result.maximum_durable_service_ns = maximum_profile(&DurableProfileSample::maximum_service_ns);
+    result.median_durable_commit_ns = median_profile(&DurableProfileSample::average_commit_ns);
+    result.maximum_durable_commit_ns = maximum_profile(&DurableProfileSample::maximum_commit_ns);
+    result.median_durable_batch_records = median_profile(&DurableProfileSample::average_batch_records);
+    result.maximum_durable_batch_records = maximum_profile(&DurableProfileSample::maximum_batch_records);
+    result.durable_completed =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::completed));
+    result.durable_rejected = static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::rejected));
+    result.durable_expired = static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::expired));
+    result.durable_committed_batches =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::committed_batches));
+    result.durable_committed_records =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::committed_records));
+    result.durable_committed_bytes =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::committed_bytes));
+    result.durable_failed_batches =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::failed_batches));
+    result.durable_maximum_queue_depth =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::maximum_queue_depth));
+    result.durable_maximum_queued_bytes =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::maximum_queued_bytes));
+    result.durable_pending_records =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::pending_records));
+    result.durable_pending_bytes =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::pending_bytes));
+    result.durable_record_limit_closes =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::record_limit_closes));
+    result.durable_byte_limit_closes =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::byte_limit_closes));
+    result.durable_adaptive_target_closes =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::adaptive_target_closes));
+    result.durable_deadline_closes =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::deadline_closes));
     return result;
 }
 
@@ -668,7 +955,10 @@ int main(int argc, char** argv) {
     const auto parsed = options(argc, argv);
     if (!glyphastore::bench::validate_run_settings(parsed.settings, parsed.config) || parsed.pipeline == 0 ||
         (parsed.client_api && parsed.client_pipeline > parsed.config.operations) ||
-        parsed.client_pipeline > glyphastore::client::ClientConfig{}.maximum_pipeline_requests / 2U) {
+        parsed.client_pipeline > glyphastore::client::ClientConfig{}.maximum_pipeline_requests / 2U ||
+        parsed.group_max_records == 0 || parsed.group_max_bytes == 0 || parsed.group_max_wait_ms == 0 ||
+        parsed.periodic_sync_ms == 0 || parsed.durable_group_concurrency == 0 ||
+        parsed.durable_group_concurrency > 32) {
         return 2;
     }
     std::cout << "# glyphastore TCP server benchmark\n";
@@ -686,6 +976,15 @@ int main(int argc, char** argv) {
     std::cout << "# routing=owner-bound-connections\n";
     std::cout << "# traffic_scope=timed-protocol-frames-excluding-init-bind\n";
     std::cout << "# memory_scope=whole-benchmark-process-rss\n";
+    std::cout << "# storage_mode=" << storage_name(parsed.storage) << '\n';
+    std::cout << "# durable_profile_scope=median-per-sample-averages-and-cross-sample-maxima\n";
+    std::cout << "# durable_commit_metric=batch-commit-boundary;unbatched-sync-reports-zero\n";
+    std::cout << "# group_max_records=" << parsed.group_max_records << '\n';
+    std::cout << "# group_max_bytes=" << parsed.group_max_bytes << '\n';
+    std::cout << "# group_max_wait_ms=" << parsed.group_max_wait_ms << '\n';
+    std::cout << "# durable_group_concurrency=" << parsed.durable_group_concurrency << '\n';
+    std::cout << "# periodic_sync_ms=" << parsed.periodic_sync_ms << '\n';
+    std::cout << "# durable_mutation_queue_wait_ms=0\n";
     std::cout << "# executor_affinity_requested=" << (parsed.executor_affinity ? 1 : 0) << '\n';
     std::cout << "# latency_measurement="
               << (parsed.latency ? (parsed.client_pipeline != 0 ? "pipeline-batch-completion"

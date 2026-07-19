@@ -194,6 +194,29 @@ struct Result {
     double p95_latency_ns{};
     double p99_latency_ns{};
     double p999_latency_ns{};
+    double median_durable_queue_wait_ns{};
+    double maximum_durable_queue_wait_ns{};
+    double median_durable_service_ns{};
+    double maximum_durable_service_ns{};
+    double median_durable_commit_ns{};
+    double maximum_durable_commit_ns{};
+    double median_durable_batch_records{};
+    double maximum_durable_batch_records{};
+    std::uint64_t durable_completed{};
+    std::uint64_t durable_rejected{};
+    std::uint64_t durable_expired{};
+    std::uint64_t durable_committed_batches{};
+    std::uint64_t durable_committed_records{};
+    std::uint64_t durable_committed_bytes{};
+    std::uint64_t durable_failed_batches{};
+    std::uint64_t durable_maximum_queue_depth{};
+    std::uint64_t durable_maximum_queued_bytes{};
+    std::uint64_t durable_pending_records{};
+    std::uint64_t durable_pending_bytes{};
+    std::uint64_t durable_record_limit_closes{};
+    std::uint64_t durable_byte_limit_closes{};
+    std::uint64_t durable_adaptive_target_closes{};
+    std::uint64_t durable_deadline_closes{};
 };
 
 struct KeyMaterial {
@@ -516,6 +539,29 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "latency_samples=" << result.latency_samples << ' ' << "p50_latency_ns=" << result.p50_latency_ns
         << ' ' << "p95_latency_ns=" << result.p95_latency_ns << ' '
         << "p99_latency_ns=" << result.p99_latency_ns << ' ' << "p999_latency_ns=" << result.p999_latency_ns
+        << ' ' << "median_durable_queue_wait_ns=" << result.median_durable_queue_wait_ns << ' '
+        << "maximum_durable_queue_wait_ns=" << result.maximum_durable_queue_wait_ns << ' '
+        << "median_durable_service_ns=" << result.median_durable_service_ns << ' '
+        << "maximum_durable_service_ns=" << result.maximum_durable_service_ns << ' '
+        << "median_durable_commit_ns=" << result.median_durable_commit_ns << ' '
+        << "maximum_durable_commit_ns=" << result.maximum_durable_commit_ns << ' '
+        << "median_durable_batch_records=" << result.median_durable_batch_records << ' '
+        << "maximum_durable_batch_records=" << result.maximum_durable_batch_records << ' '
+        << "durable_completed=" << result.durable_completed << ' '
+        << "durable_rejected=" << result.durable_rejected << ' '
+        << "durable_expired=" << result.durable_expired << ' '
+        << "durable_committed_batches=" << result.durable_committed_batches << ' '
+        << "durable_committed_records=" << result.durable_committed_records << ' '
+        << "durable_committed_bytes=" << result.durable_committed_bytes << ' '
+        << "durable_failed_batches=" << result.durable_failed_batches << ' '
+        << "durable_maximum_queue_depth=" << result.durable_maximum_queue_depth << ' '
+        << "durable_maximum_queued_bytes=" << result.durable_maximum_queued_bytes << ' '
+        << "durable_pending_records=" << result.durable_pending_records << ' '
+        << "durable_pending_bytes=" << result.durable_pending_bytes << ' '
+        << "durable_record_limit_closes=" << result.durable_record_limit_closes << ' '
+        << "durable_byte_limit_closes=" << result.durable_byte_limit_closes << ' '
+        << "durable_adaptive_target_closes=" << result.durable_adaptive_target_closes << ' '
+        << "durable_deadline_closes=" << result.durable_deadline_closes
         << '\n';
 }
 

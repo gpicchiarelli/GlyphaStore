@@ -463,6 +463,22 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                 --warmup 0
                 --repeats 1
         )
+        add_test(
+            NAME glyphastore_benchmark_server_tcp_durable_group
+            COMMAND glyphastore_server_benchmarks
+                --ops 32
+                --workers 1
+                --clients 4
+                --pipeline 8
+                --storage-mode durable-group
+                --group-max-records 4
+                --group-max-wait-ms 20
+                --warmup 0
+                --repeats 1
+        )
+        set_tests_properties(glyphastore_benchmark_server_tcp_durable_group PROPERTIES
+            PASS_REGULAR_EXPRESSION "median_durable_batch_records=4"
+        )
     endif()
 endif()
 

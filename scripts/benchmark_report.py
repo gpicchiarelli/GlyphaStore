@@ -217,6 +217,56 @@ def render_markdown(
             + " |"
         )
     lines.append("")
+
+    durable_results = [
+        (Path(run["source"]).stem, result)
+        for run in runs
+        for result in run["results"]
+        if number(result.get("durable_completed", 0)) > 0
+    ]
+    if durable_results:
+        lines.extend(
+            [
+                "## Durable pipeline profile",
+                "",
+                "Queue and service values are per-sample averages; maxima are the worst observed "
+                "operation across all measured samples. Commit timing is the v1 batch publication "
+                "boundary and is not available for unbatched durable-sync.",
+                "",
+                "| Suite | Queue avg/max | Queue peak | Store avg/max | Commit avg/max | Batch avg/max | Pending | Closes r/b/a/d | Rejected/expired/failed |",
+                "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for suite, result in durable_results:
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        escape(suite),
+                        f"{latency(result.get('median_durable_queue_wait_ns', 0))} / "
+                        f"{latency(result.get('maximum_durable_queue_wait_ns', 0))}",
+                        f"{escape(result.get('durable_maximum_queue_depth', 0))} rec / "
+                        f"{escape(result.get('durable_maximum_queued_bytes', 0))} B",
+                        f"{latency(result.get('median_durable_service_ns', 0))} / "
+                        f"{latency(result.get('maximum_durable_service_ns', 0))}",
+                        f"{latency(result.get('median_durable_commit_ns', 0))} / "
+                        f"{latency(result.get('maximum_durable_commit_ns', 0))}",
+                        f"{decimal(result.get('median_durable_batch_records', 0))} / "
+                        f"{decimal(result.get('maximum_durable_batch_records', 0))}",
+                        f"{escape(result.get('durable_pending_records', 0))} rec / "
+                        f"{escape(result.get('durable_pending_bytes', 0))} B",
+                        f"{escape(result.get('durable_record_limit_closes', 0))}/"
+                        f"{escape(result.get('durable_byte_limit_closes', 0))}/"
+                        f"{escape(result.get('durable_adaptive_target_closes', 0))}/"
+                        f"{escape(result.get('durable_deadline_closes', 0))}",
+                        f"{escape(result.get('durable_rejected', 0))}/"
+                        f"{escape(result.get('durable_expired', 0))}/"
+                        f"{escape(result.get('durable_failed_batches', 0))}",
+                    ]
+                )
+                + " |"
+            )
+        lines.append("")
     return "\n".join(lines)
 
 
