@@ -53,10 +53,10 @@ I/O disagreement on a still-current pin makes later operations return `unavailab
 
 After a validated expiration (hot-cache hit or cold Record visit), the runtime lazily removes the
 Index entry with allocation-free `erase_no_compact` and drops any matching hot-cache row. This is
-Index-only reclaim: it does not append a durable erase tombstone. Compaction remains the durable
-TTL cleanup path. Concurrent mutations that moved the Index away from the validated `RecordRef`
-skip reclaim. Repeated GETs of an already-reclaimed expired key are Index misses and perform no
-Segment I/O.
+Index-only reclaim: it does not append a durable erase tombstone. Sealed compaction remains the
+physical TTL cleanup path (`expired_records_dropped`). Concurrent mutations that moved the Index
+away from the validated `RecordRef` skip reclaim. Repeated GETs of an already-reclaimed expired key
+are Index misses and perform no Segment I/O.
 
 The per-Worker active-Record hot cache is bounded by deterministic shares of a global byte budget,
 a per-Worker byte cap, a staging-byte cap, and an entry cap. Admission allocates the immutable value

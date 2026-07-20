@@ -352,8 +352,11 @@ post-compaction no-gain detection.
   boundary before cached values can be safely evicted.
 - Validated GET expiry now lazily removes the Index entry (`erase_no_compact`) and matching hot-cache
   row on both hot and cold paths, freeing live-key budget without a durable tombstone. Repeated GETs
-  of a reclaimed expired key are Index misses. Compaction remains the durable TTL cleanup path; make
-  durable TTL reclamation during compaction an explicit, measured part of the reclaim story.
+  of a reclaimed expired key are Index misses. Sealed durable compaction drops Index-resident expired
+  puts (`expired_records_dropped` on `CompactionResult` / `MaintenanceSnapshot`); active-Segment
+  expired Index entries remain until GET reclaim or recovery. Physical TTL cleanup of sealed history
+  is therefore measured; remaining open work is production reclaim benches and multi-output crash
+  evidence under P0-08.
 
 ### Offline verification, backup, restore, and repair
 

@@ -83,13 +83,21 @@ It is durable before any unlisted replacement name can appear.
 
 Before publishing that intent, the builder verifies the manifest is still authoritative, validates
 every snapshot Index reference against its catalog identity and routed source Record, drops expired
-source puts at the supplied Store time, and constructs the complete replacement Index. Source
+sealed source puts at the supplied Store time (counted in `expired_records_dropped`), and constructs
+the complete replacement Index. Active-Segment Index entries are preserved by identity without a TTL
+visit; those expired keys remain until lazy GET reclaim or the next recovery rebuild. Source
 entries are ordered by their preserved sequence; one reusable Record buffer avoids per-read
 allocation. After publication, encoded v1 Record bytes are copied exactly, batched into the planned
 Segment boundaries, sealed, reopened, checksum-compared to their sources, and checked against exact
 record-count, extent, and sequence metadata. Thus success requires no Index allocation after the
 future manifest commit. A post-intent failure is explicitly `recovery_required` and restart rolls
 the partial outputs back under the old authority.
+
+TTL reclaim has three cooperating paths: recovery omits expired latest puts from the rebuilt Index;
+validated GET lazily removes Index/hot entries without a durable tombstone; sealed compaction drops
+Index-resident expired puts from the replacement catalog and physically omits them from replacement
+Segments. `Store::compact()` / `MaintenanceSnapshot` expose `expired_records_dropped` so operators
+can measure sealed TTL reclaim independently of bytes/records copied.
 
 The implemented intent codec stores the complete old and next v1 manifests under a fixed header
 containing Store ID, Worker, both generations, exact payload lengths, format version, reserved-zero

@@ -693,3 +693,52 @@ GLYPHA_TEST("join after stop leaves mutations_rejected cleared") {
     GLYPHA_REQUIRE(!(**store).maintenance_snapshot().mutations_rejected);
     GLYPHA_REQUIRE(!(**store).maintenance_snapshot().thread_running);
 }
+
+GLYPHA_TEST("maintenance snapshot records expired_records_dropped from compact") {
+    glyphastore::StoreConfig config{};
+    config.worker_config.explicit_count = 1;
+    config.maintenance.mode = glyphastore::MaintenanceMode::background;
+    config.maintenance.min_eval_interval_ms = 60'000;
+    config.maintenance.max_eval_interval_ms = 60'000;
+
+    auto store = glyphastore::Store::open(config);
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+
+    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 10,
+            .sealed_segment_count = 2,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller->bind_compact([]() -> glyphastore::Result<glyphastore::CompactionResult> {
+        return glyphastore::CompactionResult{
+            .compacted = true,
+            .worker_index = 0,
+            .source_records_verified = 3,
+            .records_copied = 2,
+            .bytes_copied = 4'096,
+            .expired_records_dropped = 7,
+        };
+    });
+    controller->request_evaluate();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snap = (**store).maintenance_snapshot();
+        if (snap.useful_compactions > 0) {
+            GLYPHA_REQUIRE(snap.last_expired_records_dropped == 7);
+            GLYPHA_REQUIRE(snap.total_expired_records_dropped == 7);
+            GLYPHA_REQUIRE(snap.last_records_copied == 2);
+            GLYPHA_REQUIRE((**store).close().has_value());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}

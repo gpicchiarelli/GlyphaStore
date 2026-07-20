@@ -52,7 +52,8 @@ In `background`, the controller:
    manifest), matching `rotate_active` headroom.
 
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
-eval/compact durations, bytes/records copied, suspend count, and time since last useful compaction.
+eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
+count, and time since last useful compaction.
 
 Wire note: the Reactor maps `storage_exhausted` to `ResponseStatus::overloaded` (existing
 many-to-one collapse with admission limits). Official clients advertise `retryability=never` for

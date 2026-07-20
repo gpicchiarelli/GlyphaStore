@@ -6,8 +6,10 @@
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
+#include <atomic>
 #include <cstdlib>
 #include <filesystem>
+#include <memory>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -18,6 +20,22 @@
 #include <vector>
 
 namespace {
+
+class ManualStoreClock final : public glyphastore::StoreClock {
+  public:
+    explicit ManualStoreClock(const std::uint64_t initial_now_ns) : now_ns_(initial_now_ns) {}
+
+    [[nodiscard]] auto now_ns() const noexcept -> std::uint64_t override {
+        return now_ns_.load(std::memory_order_acquire);
+    }
+
+    void set(const std::uint64_t now_ns) noexcept {
+        now_ns_.store(now_ns, std::memory_order_release);
+    }
+
+  private:
+    std::atomic_uint64_t now_ns_;
+};
 
 class CompactionBuildDirectory final {
   public:
@@ -467,6 +485,56 @@ GLYPHA_TEST("online compaction preserves another Worker's cached Segment after c
     GLYPHA_REQUIRE(skipped.error->code == glyphastore::ErrorCode::not_found);
     GLYPHA_REQUIRE((*runtime)->healthy());
     GLYPHA_REQUIRE(text(*(*runtime)->get(other_key, 100)) == "other");
+}
+
+GLYPHA_TEST("public Store compact drops sealed Index-resident expired puts") {
+    CompactionBuildDirectory temporary;
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    // Recover before expiry so the Index still names the sealed expired put.
+    const auto clock = std::make_shared<ManualStoreClock>(40);
+    auto store = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .clock = clock,
+    });
+    GLYPHA_REQUIRE(store.has_value());
+    GLYPHA_REQUIRE((*store)->get("expired").has_value());
+
+    // Advance time without a GET reclaim so sealed compaction owns the TTL drop.
+    clock->set(100);
+    const auto compacted = (*store)->compact();
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(compacted->compacted);
+    GLYPHA_REQUIRE(compacted->worker_index == 0);
+    GLYPHA_REQUIRE(compacted->source_records_verified == 3);
+    GLYPHA_REQUIRE(compacted->records_copied == 2);
+    GLYPHA_REQUIRE(compacted->expired_records_dropped == 1);
+    GLYPHA_REQUIRE(text(*(*store)->get("live-a")) == "alpha");
+    GLYPHA_REQUIRE(text(*(*store)->get("replacement")) == "new");
+    GLYPHA_REQUIRE(text(*(*store)->get("active")) == "current");
+    const auto expired = (*store)->get("expired");
+    GLYPHA_REQUIRE(!expired.has_value());
+    GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*store)->verify_index().has_value());
+    GLYPHA_REQUIRE((*store)->close().has_value());
+
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .clock = clock,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(text(*(*reopened)->get("live-a")) == "alpha");
+    GLYPHA_REQUIRE(!(*reopened)->get("expired").has_value());
 }
 
 GLYPHA_TEST("public Store compacts one scheduled Worker and preserves restart visibility") {

@@ -236,6 +236,8 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .total_bytes_copied = total_bytes_copied_,
         .last_bytes_copied = last_bytes_copied_,
         .last_records_copied = last_records_copied_,
+        .last_expired_records_dropped = last_expired_records_dropped_,
+        .total_expired_records_dropped = total_expired_records_dropped_,
         .last_eval_duration_ns = last_eval_duration_ns_,
         .last_compact_duration_ns = last_compact_duration_ns_,
         .ns_since_last_useful_compaction = since_useful,
@@ -455,6 +457,7 @@ void MaintenanceController::evaluate_once() {
         }
         last_bytes_copied_ = result->bytes_copied;
         last_records_copied_ = result->records_copied;
+        last_expired_records_dropped_ = result->expired_records_dropped;
         if (!result->compacted) {
             ++consecutive_no_gain_;
             record_skip(MaintenanceSkipReason::no_gain, MaintenanceState::idle, activation);
@@ -465,6 +468,7 @@ void MaintenanceController::evaluate_once() {
         consecutive_no_gain_ = 0;
         bytes_copied_window_ += result->bytes_copied;
         total_bytes_copied_ += result->bytes_copied;
+        total_expired_records_dropped_ += result->expired_records_dropped;
         last_useful_at_ = std::chrono::steady_clock::now();
         last_skip_reason_ = MaintenanceSkipReason::none;
         last_error_.reset();
