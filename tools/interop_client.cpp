@@ -65,10 +65,11 @@ namespace {
 void usage(const char* program) {
     std::cerr
         << "Usage:\n  " << program
-        << " --port PORT [--host HOST] put --key-hex HEX --value-hex HEX [--expire-at-ns N]\n  "
-        << program << " --port PORT [--host HOST] get --key-hex HEX\n  " << program
-        << " --port PORT [--host HOST] erase --key-hex HEX\n  " << program
-        << " --port PORT [--host HOST] pipeline-put-get --key-hex HEX --value-hex HEX\n";
+        << " --port PORT [--host HOST] [--tls] [--tls-ca PATH] [--tls-cert PATH] [--tls-key PATH] "
+           "[--server-name NAME] [--insecure-skip-verify]\n"
+        << "    put --key-hex HEX --value-hex HEX [--expire-at-ns N]\n  " << program
+        << " ... get --key-hex HEX\n  " << program << " ... erase --key-hex HEX\n  " << program
+        << " ... pipeline-put-get --key-hex HEX --value-hex HEX\n";
 }
 
 [[nodiscard]] auto require_flag(const int argc, char** argv, int& index, const char* name)
@@ -93,6 +94,7 @@ int main(int argc, char** argv) try {
     std::string key_hex;
     std::string value_hex;
     std::uint64_t expire_at_ns = 0;
+    glyphastore::client::TlsOptions tls{};
 
     for (int index = 1; index < argc; ++index) {
         const std::string_view arg = argv[index];
@@ -111,6 +113,18 @@ int main(int argc, char** argv) try {
             value_hex = std::string{require_flag(argc, argv, index, "--value-hex")};
         } else if (arg == "--expire-at-ns") {
             expire_at_ns = std::stoull(std::string{require_flag(argc, argv, index, "--expire-at-ns")});
+        } else if (arg == "--tls") {
+            tls.enable = true;
+        } else if (arg == "--tls-ca") {
+            tls.ca_file = std::string{require_flag(argc, argv, index, "--tls-ca")};
+        } else if (arg == "--tls-cert") {
+            tls.cert_file = std::string{require_flag(argc, argv, index, "--tls-cert")};
+        } else if (arg == "--tls-key") {
+            tls.key_file = std::string{require_flag(argc, argv, index, "--tls-key")};
+        } else if (arg == "--server-name") {
+            tls.server_name = std::string{require_flag(argc, argv, index, "--server-name")};
+        } else if (arg == "--insecure-skip-verify") {
+            tls.insecure_skip_verify = true;
         } else if (arg == "put" || arg == "get" || arg == "erase" || arg == "pipeline-put-get") {
             command = std::string{arg};
         } else {
@@ -125,7 +139,8 @@ int main(int argc, char** argv) try {
         return 2;
     }
 
-    auto client = glyphastore::client::Client::connect({.host = host, .port = port});
+    auto client = glyphastore::client::Client::connect(
+        {.host = host, .port = port, .tls = std::move(tls)});
     if (!client) {
         std::cerr << "connect failed: " << client.error().message << '\n';
         return 1;

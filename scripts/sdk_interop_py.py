@@ -39,11 +39,31 @@ def main() -> int:
     parser.add_argument("--key-hex", default="")
     parser.add_argument("--value-hex", default="")
     parser.add_argument("--expire-at-ns", type=int, default=0)
+    parser.add_argument("--tls", action="store_true", help="opt-in TLS 1.3")
+    parser.add_argument("--tls-ca", default=None, help="PEM CA / trust anchor")
+    parser.add_argument("--tls-cert", default=None, help="client cert for mTLS")
+    parser.add_argument("--tls-key", default=None, help="client key for mTLS")
+    parser.add_argument("--server-name", default=None, help="SNI / hostname verify")
+    parser.add_argument(
+        "--insecure-skip-verify",
+        action="store_true",
+        help="lab escape only; disable cert/hostname verify",
+    )
     args = parser.parse_args()
 
     key = parse_hex(args.key_hex)
     value = parse_hex(args.value_hex)
-    with Client.connect(ClientConfig(host=args.host, port=args.port)) as client:
+    config = ClientConfig(
+        host=args.host,
+        port=args.port,
+        tls=args.tls,
+        tls_ca=args.tls_ca,
+        cert_file=args.tls_cert,
+        key_file=args.tls_key,
+        server_name=args.server_name,
+        insecure_skip_verify=args.insecure_skip_verify,
+    )
+    with Client.connect(config) as client:
         if args.command == "put":
             result = client.put(key, value, expire_at_ns=args.expire_at_ns)
             if not result.committed:

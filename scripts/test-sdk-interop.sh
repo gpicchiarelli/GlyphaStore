@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Cross-SDK interoperability matrix against a real volatile glyphastored.
+# Runs cleartext by default, then an opt-in TLS 1.3 matrix (Phase 2.4) when the
+# daemon was built with TLS and openssl is available. Ruby is cleartext-only until
+# its Phase 3 TLS train lands.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,9 +12,9 @@ daemon="${GLYPHASTORED:-}"
 cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
 
 prefer_bins=(
-  "$root/build/macos-native-release"
-  "$root/build/macos-release"
   "$root/build/macos-debug"
+  "$root/build/macos-release"
+  "$root/build/macos-native-release"
   "$root/build/unix-release"
   "$root/build/unix-debug"
 )
@@ -24,13 +27,28 @@ if [[ -z "$daemon" ]]; then
     fi
   done
 fi
-if [[ -z "$cpp_client" ]]; then
+# Prefer a TLS-capable glyphastored when available (Phase 2.4 matrix).
+if [[ -z "${GLYPHASTORED:-}" ]]; then
   for dir in "${prefer_bins[@]}"; do
-    if [[ -x "$dir/glyphastore_interop_client" ]]; then
-      cpp_client="$dir/glyphastore_interop_client"
+    if [[ -x "$dir/glyphastored" ]] && "$dir/glyphastored" --help 2>&1 | grep -q -- '--tls-cert'; then
+      daemon="$dir/glyphastored"
       break
     fi
   done
+fi
+if [[ -z "$cpp_client" ]]; then
+  # Prefer interop client from the same build tree as the chosen daemon when possible.
+  daemon_dir="$(dirname "$daemon")"
+  if [[ -x "$daemon_dir/glyphastore_interop_client" ]]; then
+    cpp_client="$daemon_dir/glyphastore_interop_client"
+  else
+    for dir in "${prefer_bins[@]}"; do
+      if [[ -x "$dir/glyphastore_interop_client" ]]; then
+        cpp_client="$dir/glyphastore_interop_client"
+        break
+      fi
+    done
+  fi
 fi
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
@@ -67,6 +85,9 @@ export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
 chmod +x "$ruby_helper" 2>/dev/null || true
 chmod +x "$py_helper" "$pl_helper" 2>/dev/null || true
 
+# Optional TLS client flags populated by run_matrix_for_workers when mode=tls.
+tls_args=()
+
 echo "== wire golden fixtures =="
 "$python" "$root/scripts/generate_wire_fixtures.py" --verify "$root/tests/fixtures"
 for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
@@ -90,7 +111,6 @@ done
 echo "wire fixtures OK"
 
 to_hex() {
-  # stdin bytes -> hex; empty input -> empty string
   if command -v xxd >/dev/null 2>&1; then
     xxd -p -c 256 | tr -d '\n'
   else
@@ -100,18 +120,22 @@ to_hex() {
 
 put_sdk() {
   local sdk="$1" port="$2" key_hex="$3" value_hex="$4" expire="${5:-0}"
+  local extra=()
+  if [[ ${#tls_args[@]} -gt 0 ]]; then
+    extra=("${tls_args[@]}")
+  fi
   case "$sdk" in
     cpp)
-      "$cpp_client" --port "$port" put --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire"
+      "$cpp_client" --port "$port" "${extra[@]+"${extra[@]}"}" put --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire"
       ;;
     python)
-      "$python" "$py_helper" --port "$port" put --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire"
+      "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" put --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire"
       ;;
     perl)
-      "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     go)
-      "$go_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     ruby)
       "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
@@ -125,11 +149,15 @@ put_sdk() {
 
 get_sdk() {
   local sdk="$1" port="$2" key_hex="$3"
+  local extra=()
+  if [[ ${#tls_args[@]} -gt 0 ]]; then
+    extra=("${tls_args[@]}")
+  fi
   case "$sdk" in
-    cpp) "$cpp_client" --port "$port" get --key-hex "$key_hex" ;;
-    python) "$python" "$py_helper" --port "$port" get --key-hex "$key_hex" ;;
-    perl) "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" get ;;
-    go) "$go_helper" --port "$port" --key-hex "$key_hex" get ;;
+    cpp) "$cpp_client" --port "$port" "${extra[@]+"${extra[@]}"}" get --key-hex "$key_hex" ;;
+    python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" get --key-hex "$key_hex" ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
+    go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" get ;;
     *) return 1 ;;
   esac
@@ -137,11 +165,15 @@ get_sdk() {
 
 pipeline_sdk() {
   local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  local extra=()
+  if [[ ${#tls_args[@]} -gt 0 ]]; then
+    extra=("${tls_args[@]}")
+  fi
   case "$sdk" in
-    cpp) "$cpp_client" --port "$port" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
-    python) "$python" "$py_helper" --port "$port" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
-    perl) "$perl" "$pl_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
-    go) "$go_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    cpp) "$cpp_client" --port "$port" "${extra[@]+"${extra[@]}"}" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
+    python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     *) return 1 ;;
   esac
@@ -165,12 +197,39 @@ expect_missing() {
   fi
 }
 
+make_tls_material() {
+  local directory="$1"
+  local key="$directory/server.key"
+  local cert="$directory/server.crt"
+  if ! command -v openssl >/dev/null 2>&1; then
+    return 1
+  fi
+  # SAN covers loopback IP + localhost SNI used by clients.
+  if openssl req -x509 -newkey rsa:2048 -nodes \
+      -keyout "$key" -out "$cert" -days 1 \
+      -subj "/CN=localhost" \
+      -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" \
+      >/dev/null 2>&1; then
+    return 0
+  fi
+  # LibreSSL / older openssl without -addext.
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$key" -out "$cert" -days 1 \
+    -subj "/CN=localhost" >/dev/null 2>&1
+}
+
+daemon_supports_tls() {
+  "$daemon" --help 2>&1 | grep -q -- '--tls-cert'
+}
+
 start_server() {
   local workers="$1"
   local port_file="$2"
   local log_file="$3"
+  shift 3
   "$daemon" --bind 127.0.0.1 --port 0 --workers "$workers" \
     --storage-mode volatile --executor-affinity --quiet \
+    "$@" \
     >"$log_file" 2>&1 &
   local pid=$!
   echo "$pid" >"${port_file}.pid"
@@ -204,46 +263,70 @@ stop_server() {
 
 run_matrix_for_workers() {
   local workers="$1"
+  local mode="${2:-cleartext}" # cleartext | tls
   local work
   work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-interop.XXXXXX")"
   local port_file="$work/port"
   local log_file="$work/server.log"
-  echo "== interop workers=$workers =="
-  start_server "$workers" "$port_file" "$log_file"
+  local server_extra=()
+  tls_args=()
+
+  local writers=(cpp python perl go)
+  local readers=(cpp python perl go)
+  if [[ "$mode" == "cleartext" ]]; then
+    writers+=(ruby)
+    readers+=(ruby)
+  fi
+
+  echo "== interop mode=$mode workers=$workers =="
+  if [[ "$mode" == "tls" ]]; then
+    if ! make_tls_material "$work"; then
+      echo "skipping TLS interop: openssl could not mint a test certificate" >&2
+      rm -rf "$work"
+      return 0
+    fi
+    server_extra=(--tls-cert "$work/server.crt" --tls-key "$work/server.key")
+    tls_args=(--tls --tls-ca "$work/server.crt" --server-name localhost)
+    if ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
+      echo "  note: Perl without IO::Socket::SSL — excluding perl from TLS matrix"
+      writers=(cpp python go)
+      readers=(cpp python go)
+    fi
+  fi
+
+  if [[ ${#server_extra[@]} -gt 0 ]]; then
+    start_server "$workers" "$port_file" "$log_file" "${server_extra[@]}"
+  else
+    start_server "$workers" "$port_file" "$log_file"
+  fi
   local port
   port="$(cat "$port_file")"
 
-  local writers=(cpp python perl go ruby)
-  local readers=(cpp python perl go ruby)
   local case_id=0
-
-  # Binary key/value cross-language PUT→GET.
   for writer in "${writers[@]}"; do
     for reader in "${readers[@]}"; do
       case_id=$((case_id + 1))
       local key_hex value_hex
-      key_hex="$(printf 'interop-%02d-w%d\x00\xff' "$case_id" "$workers" | to_hex)"
-      value_hex="$(printf 'val-%s-%s-\x00\xff' "$writer" "$reader" | to_hex)"
+      key_hex="$(printf 'interop-%s-%02d-w%d\x00\xff' "$mode" "$case_id" "$workers" | to_hex)"
+      value_hex="$(printf 'val-%s-%s-%s-\x00\xff' "$mode" "$writer" "$reader" | to_hex)"
       echo "  $writer PUT → $reader GET (binary)"
       put_sdk "$writer" "$port" "$key_hex" "$value_hex"
       expect_get "$reader" "$port" "$key_hex" "$value_hex"
     done
   done
 
-  # Empty value.
   local empty_key
-  empty_key="$(printf 'empty-w%d' "$workers" | to_hex)"
-  echo "  python PUT empty value → cpp/perl/go/ruby GET"
+  empty_key="$(printf 'empty-%s-w%d' "$mode" "$workers" | to_hex)"
+  echo "  python PUT empty value → cross-SDK GET"
   put_sdk python "$port" "$empty_key" ""
-  expect_get cpp "$port" "$empty_key" ""
-  expect_get perl "$port" "$empty_key" ""
-  expect_get go "$port" "$empty_key" ""
-  expect_get ruby "$port" "$empty_key" ""
+  for sdk in "${readers[@]}"; do
+    [[ "$sdk" == python ]] && continue
+    expect_get "$sdk" "$port" "$empty_key" ""
+  done
 
-  # Pipeline put/get within each SDK.
-  for sdk in cpp python perl go ruby; do
+  for sdk in "${writers[@]}"; do
     local pkey pval
-    pkey="$(printf 'pipe-%s-w%d' "$sdk" "$workers" | to_hex)"
+    pkey="$(printf 'pipe-%s-%s-w%d' "$mode" "$sdk" "$workers" | to_hex)"
     pval="$(printf 'pipe-val-\xff' | to_hex)"
     echo "  $sdk pipeline PUT/GET"
     local got
@@ -256,24 +339,25 @@ run_matrix_for_workers() {
     fi
   done
 
-  # Short expiry (Unix ns). Volatile Store must hide expired keys.
-  local exp_key exp_val expire_at
-  exp_key="$(printf 'exp-w%d' "$workers" | to_hex)"
-  exp_val="$(printf 'soon' | to_hex)"
-  expire_at="$("$python" - <<'PY'
+  if [[ "$mode" == "cleartext" ]]; then
+    local exp_key exp_val expire_at
+    exp_key="$(printf 'exp-w%d' "$workers" | to_hex)"
+    exp_val="$(printf 'soon' | to_hex)"
+    expire_at="$("$python" - <<'PY'
 import time
 print(int((time.time() + 0.4) * 1_000_000_000))
 PY
 )"
-  echo "  cpp PUT with expiry → go GET then miss"
-  put_sdk cpp "$port" "$exp_key" "$exp_val" "$expire_at"
-  expect_get go "$port" "$exp_key" "$exp_val"
-  sleep 0.6
-  expect_missing perl "$port" "$exp_key"
+    echo "  cpp PUT with expiry → go GET then miss"
+    put_sdk cpp "$port" "$exp_key" "$exp_val" "$expire_at"
+    expect_get go "$port" "$exp_key" "$exp_val"
+    sleep 0.6
+    expect_missing perl "$port" "$exp_key"
+  fi
 
   stop_server "$port_file"
   rm -rf "$work"
-  echo "workers=$workers OK"
+  echo "mode=$mode workers=$workers OK"
 }
 
 workers_list=(1 2 4)
@@ -283,7 +367,23 @@ if [[ "${INTEROP_WORKERS:-}" != "" ]]; then
 fi
 
 for w in "${workers_list[@]}"; do
-  run_matrix_for_workers "$w"
+  run_matrix_for_workers "$w" cleartext
 done
+
+if [[ "${INTEROP_SKIP_TLS:-0}" == "1" ]]; then
+  echo "TLS interop skipped (INTEROP_SKIP_TLS=1)"
+elif ! daemon_supports_tls; then
+  echo "TLS interop skipped (daemon built without --tls-cert)"
+else
+  # Keep TLS matrix smaller by default; INTEROP_TLS_WORKERS overrides.
+  tls_workers=(1 2)
+  if [[ "${INTEROP_TLS_WORKERS:-}" != "" ]]; then
+    # shellcheck disable=SC2206
+    tls_workers=(${INTEROP_TLS_WORKERS})
+  fi
+  for w in "${tls_workers[@]}"; do
+    run_matrix_for_workers "$w" tls
+  done
+fi
 
 echo "SDK interoperability matrix PASSED"

@@ -17,9 +17,15 @@ func main() {
 	keyHex := flag.String("key-hex", "", "key as hex")
 	valueHex := flag.String("value-hex", "", "value as hex")
 	expireAtNs := flag.Uint64("expire-at-ns", 0, "absolute expire_at_ns")
+	tlsEnable := flag.Bool("tls", false, "opt-in TLS 1.3")
+	tlsCA := flag.String("tls-ca", "", "PEM CA / trust anchor")
+	tlsCert := flag.String("tls-cert", "", "client certificate for mTLS")
+	tlsKey := flag.String("tls-key", "", "client private key for mTLS")
+	serverName := flag.String("server-name", "", "SNI / hostname verification name")
+	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
 	flag.Parse()
 	if *port == 0 || flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get> [--key-hex ...] [--value-hex ...] [--expire-at-ns N]")
+		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get> [tls flags...]")
 		os.Exit(2)
 	}
 	command := flag.Arg(0)
@@ -32,7 +38,19 @@ func main() {
 		fail(err)
 	}
 
-	c, err := client.Connect(client.Config{Host: *host, Port: *port})
+	cfg := client.Config{
+		Host: *host,
+		Port: *port,
+		TLS: client.TLSConfig{
+			Enable:             *tlsEnable,
+			CAFile:             *tlsCA,
+			CertFile:           *tlsCert,
+			KeyFile:            *tlsKey,
+			ServerName:         *serverName,
+			InsecureSkipVerify: *insecure,
+		},
+	}
+	c, err := client.Connect(cfg)
 	if err != nil {
 		fail(err)
 	}
