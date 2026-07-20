@@ -190,7 +190,7 @@ Product blockers such as TLS and metrics are listed there and in
 | Python | Native package under `sdk/python` (`Client` + `AsyncClient`) | sync: one locked connection per Worker; async: one `asyncio.Lock` per Worker |
 | Perl | Native module under `sdk/perl` using byte strings | synchronous handles; one client per process/thread (event-loop adapter later) |
 | Go | Native module under `sdk/go` (`client` + `protocol`) | synchronous, goroutine-safe, one connection per Worker; `ExecuteBatch` fans out per Worker |
-| Ruby | Implemented under `sdk/ruby` (`GlyphaStore::Client`) | sync: per-Worker mutex; AsyncClient (Fiber) planned; one client per forked worker process |
+| Ruby | Implemented under `sdk/ruby` (`Client` + optional `AsyncClient`) | sync: per-Worker mutex; async: Fiber + `async` gem; one client per forked worker process |
 | Erlang | Native OTP application | supervised Worker-connection processes |
 
 Every SDK must consume the canonical request/response corpus under `tests/fixtures/`, use unsigned

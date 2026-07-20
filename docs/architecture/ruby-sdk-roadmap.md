@@ -125,20 +125,17 @@ Order is intentional: codec → errors → session → CRUD → pipeline → bat
 **Exit (Phase 1):** green `test-ruby-client.sh`, green interop row including Ruby, semantics coverage
 for CRUD / pipeline / batch / structured errors / deadlines.
 
-### Phase 2 — Performance hardening + async
+### Phase 2 — Performance hardening + async — **in progress**
 
-| Step | Deliverable | Notes |
+| Step | Deliverable | Status |
 | ---: | --- | --- |
-| 2.1 | Hot-path encode into pre-sized `String` buffers; reuse read buffer | Mirror Go/Python techniques |
-| 2.2 | `execute_batch` overlap without excess allocations | Prefer one wait set / thread pool policy documented in README |
-| 2.3 | Published benchmark suite (`benchmark_ruby_client.sh`) | Same OPS/pipeline/Workers matrix; sequential + concurrent |
-| 2.4 | Analysis vs Python/Go/Perl on same host | Document MRI ceiling; prefer deep pipelines |
-| 2.5 | `AsyncClient` (Fiber scheduler / `async` gem as needed) | §6.3 cancel → poison connection; isomorphic ops |
-| 2.6 | Optional C extension **only** for FNV + frame pack/unpack | Gate: measured ≥15–20% on deep pipeline median; keep pure-Ruby fallback |
-| 2.7 | Puma/Unicorn/Falcon guidance | One client per worker process; no sharing across `fork` |
-
-**Exit:** published bench folder; AsyncClient passes cancel/poison tests; optional C ext behind
-feature flag or separate gem variant if packaging requires it.
+| 2.1 | Hot-path encode scratch reuse; safer send/recv | done |
+| 2.2 | `execute_batch` overlap (threads sync / Barrier async) | done |
+| 2.3 | Published benchmark suite (`benchmark_ruby_client.sh`) | done (`benchmark-results-ruby-0.1.0-20260720-175511`) |
+| 2.4 | Analysis vs Python/Go/Perl | done (see that folder’s `analysis.md`) |
+| 2.5 | `AsyncClient` (`async` gem, optional require) | done |
+| 2.6 | Optional C extension for FNV/framing | open (data-gated) |
+| 2.7 | Puma/Unicorn/Falcon guidance | README done |
 
 ### Phase 3 — Security alignment (tracks server)
 

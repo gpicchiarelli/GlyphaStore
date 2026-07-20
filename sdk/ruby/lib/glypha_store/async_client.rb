@@ -1,39 +1,45 @@
 # frozen_string_literal: true
 
+begin
+  require "async"
+  require "async/barrier"
+  require "async/semaphore"
+rescue LoadError
+  raise LoadError, "GlyphaStore::AsyncClient requires the async gem (gem install async)"
+end
+
 require "socket"
 require "timeout"
+require_relative "error"
+require_relative "protocol"
+require_relative "client"
 
 module GlyphaStore
-  # Synchronous GlyphaStore TCP client (wire v2 + client-semantics v1).
+  # Fiber-aware async client (wire v2 + client-semantics v1).
   #
-  # One bound connection per Worker with a mutex. Safe to share across MRI threads.
-  # Do not reuse across +fork+ — construct a new client in the child.
-  # Cleartext TCP: private network / sidecar / loopback until TLS exists.
-  class Client
-    class SendFailure < StandardError
-      attr_reader :error, :bytes_sent
-
-      def initialize(error:, bytes_sent:)
-        @error = error
-        @bytes_sent = bytes_sent
-        super(error.message)
-      end
-    end
-
+  # Must be used inside an +Async+ reactor. Cancellation / task stop poisons the
+  # in-flight Worker connection (§6.3). Optional dependency: +async+ gem.
+  #
+  #   require "glypha_store/async_client"
+  #   Async do
+  #     client = GlyphaStore::AsyncClient.connect(config)
+  #     client.get("key".b)
+  #     client.close
+  #   end
+  class AsyncClient
     class Connection
       attr_reader :worker
       attr_accessor :socket, :input
 
       def initialize(worker)
         @worker = worker
-        @mutex = Mutex.new
+        @mutex = Async::Semaphore.new(1)
         @socket = nil
         @input = "".b
-        @encode = "".b
       end
 
       def synchronize(&block)
-        @mutex.synchronize(&block)
+        @mutex.acquire(&block)
       end
 
       def reset!
@@ -46,21 +52,14 @@ module GlyphaStore
         end
         @socket = nil
         @input = "".b
-        # Keep @encode capacity; callers may still read bytesize after reset.
-      end
-
-      # Scratch buffer for outbound frames (MRI keeps capacity after clear).
-      def encode_scratch(_size = 0)
-        @encode.clear
-        @encode
       end
     end
 
     attr_reader :worker_count, :routing_epoch
 
     def self.connect(config = ClientConfig.defaults)
-      config = merge_config(config)
-      validate_config!(config)
+      config = Client.send(:merge_config, config)
+      Client.send(:validate_config!, config)
       client = new(config)
       client.send(:bootstrap_all!)
       client
@@ -72,13 +71,12 @@ module GlyphaStore
       @worker_count = 0
       @routing_epoch = 0
       @request_id = 1
-      @request_id_mutex = Mutex.new
+      @request_id_mutex = Async::Semaphore.new(1)
       @healthy = true
-      @healthy_mutex = Mutex.new
     end
 
     def healthy?
-      @healthy_mutex.synchronize { @healthy }
+      @healthy
     end
 
     def worker_for(key)
@@ -131,73 +129,46 @@ module GlyphaStore
       responses = Array.new(requests.length) { PipelineResponse.new(outcome: PipelineOutcome::FAILED) }
       if groups.length == 1
         groups.each_value do |items|
-          apply_group!(responses, items, deadline)
+          reqs = items.map { |(_, r)| r }
+          resps = execute_pipeline_deadline(reqs, deadline)
+          items.each_with_index { |(index, _), i| responses[index] = resps[i] }
         end
         return responses
       end
 
-      threads = []
+      barrier = Async::Barrier.new
       first_error = nil
-      error_mutex = Mutex.new
-      result_mutex = Mutex.new
+      error_mutex = Async::Semaphore.new(1)
       groups.each_value do |items|
-        threads << Thread.new do
+        barrier.async do
+          reqs = items.map { |(_, r)| r }
+          resps = execute_pipeline_deadline(reqs, deadline)
+          items.each_with_index { |(index, _), i| responses[index] = resps[i] }
+        rescue Error => e
+          error_mutex.acquire
           begin
-            local = Array.new(requests.length)
-            apply_group!(local, items, deadline, sparse: true)
-            result_mutex.synchronize do
-              items.each_with_index do |(index, _), i|
-                responses[index] = local[i]
-              end
-            end
-          rescue Error => e
-            error_mutex.synchronize { first_error ||= e }
+            first_error ||= e
+          ensure
+            error_mutex.release
           end
         end
       end
-      threads.each(&:join)
+      begin
+        barrier.wait
+      ensure
+        barrier.stop
+      end
       raise first_error if first_error
 
       responses
     end
 
     def close
-      @healthy_mutex.synchronize { @healthy = false }
-      @connections.each do |conn|
-        conn.synchronize { conn.reset! }
-      end
+      @healthy = false
+      @connections.each(&:reset!)
     end
 
     private
-
-    def self.merge_config(config)
-      defaults = ClientConfig.defaults
-      config = ClientConfig.defaults if config.nil?
-      ClientConfig.new(
-        host: config.host.nil? || config.host.empty? ? defaults.host : config.host,
-        port: config.port.nil? || config.port.zero? ? defaults.port : config.port,
-        connect_timeout: config.connect_timeout.nil? || config.connect_timeout.zero? ? defaults.connect_timeout : config.connect_timeout,
-        request_timeout: config.request_timeout.nil? || config.request_timeout.zero? ? defaults.request_timeout : config.request_timeout,
-        maximum_frame_bytes: config.maximum_frame_bytes.nil? || config.maximum_frame_bytes.zero? ? defaults.maximum_frame_bytes : config.maximum_frame_bytes,
-        maximum_pipeline_requests: config.maximum_pipeline_requests.nil? || config.maximum_pipeline_requests.zero? ? defaults.maximum_pipeline_requests : config.maximum_pipeline_requests,
-        maximum_pipeline_bytes: config.maximum_pipeline_bytes.nil? || config.maximum_pipeline_bytes.zero? ? defaults.maximum_pipeline_bytes : config.maximum_pipeline_bytes
-      )
-    end
-    private_class_method :merge_config
-
-    def self.validate_config!(config)
-      if config.host.nil? || config.host.empty? ||
-         config.port <= 0 || config.port > 65_535 ||
-         config.connect_timeout <= 0 ||
-         config.request_timeout <= 0 ||
-         config.maximum_frame_bytes < Protocol::RESPONSE_HEADER_BYTES ||
-         config.maximum_frame_bytes > Protocol::MAX_FRAME_BYTES ||
-         config.maximum_pipeline_requests <= 0 ||
-         config.maximum_pipeline_bytes < 40
-        raise Error.invalid_argument("client configuration is outside protocol limits")
-      end
-    end
-    private_class_method :validate_config!
 
     def bootstrap_all!
       first = Connection.new(0)
@@ -214,18 +185,6 @@ module GlyphaStore
     rescue StandardError
       close
       raise
-    end
-
-    def apply_group!(responses, items, deadline, sparse: false)
-      reqs = items.map { |(_, request)| request }
-      resps = execute_pipeline_deadline(reqs, deadline)
-      items.each_with_index do |(index, _), i|
-        if sparse
-          responses[i] = resps[i]
-        else
-          responses[index] = resps[i]
-        end
-      end
     end
 
     def resolve_deadline(timeout)
@@ -248,7 +207,7 @@ module GlyphaStore
     end
 
     def next_request_id
-      @request_id_mutex.synchronize do
+      @request_id_mutex.acquire do
         current = @request_id
         @request_id = current == 0xFFFF_FFFF_FFFF_FFFF ? 1 : current + 1
         current
@@ -256,7 +215,7 @@ module GlyphaStore
     end
 
     def mark_unhealthy!
-      @healthy_mutex.synchronize { @healthy = false }
+      @healthy = false
     end
 
     def dial!
@@ -280,7 +239,6 @@ module GlyphaStore
       conn.reset!
       conn.socket = dial!
       deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + @config.request_timeout
-
       init_id = next_request_id
       frame = Protocol.encode_request(Protocol::Opcode::INIT, init_id)
       response = exchange!(conn, frame, deadline)
@@ -296,7 +254,6 @@ module GlyphaStore
         conn.reset!
         raise Error.unavailable("server routing metadata changed during bootstrap")
       end
-
       bind_id = next_request_id
       bind_frame = Protocol.encode_request(
         Protocol::Opcode::BIND_WORKER, bind_id, target_worker: conn.worker
@@ -311,7 +268,7 @@ module GlyphaStore
         raise Error.protocol("server BIND_WORKER response is inconsistent")
       end
       [response.worker_count, response.routing_epoch]
-    rescue SendFailure => e
+    rescue Client::SendFailure => e
       conn.reset!
       raise Error.unavailable(e.error.message)
     rescue Error => e
@@ -327,6 +284,14 @@ module GlyphaStore
       bootstrap!(conn, [@worker_count, @routing_epoch])
     end
 
+    def wait_readable!(socket, timeout)
+      raise Error.transport("request deadline expired") unless socket.wait_readable(timeout)
+    end
+
+    def wait_writable!(socket, timeout)
+      raise Error.transport("request deadline expired") unless socket.wait_writable(timeout)
+    end
+
     def send!(conn, frame, deadline)
       sent = 0
       begin
@@ -334,21 +299,20 @@ module GlyphaStore
           timeout = remaining_timeout(deadline)
           n = conn.socket.write_nonblock(frame.byteslice(sent, frame.bytesize - sent), exception: false)
           if n == :wait_writable
-            raise Error.transport("request deadline expired") unless IO.select(nil, [conn.socket], nil, timeout)
-
+            wait_writable!(conn.socket, timeout)
             next
           end
           if n.nil? || n.zero?
-            raise SendFailure.new(error: Error.transport("socket closed during send"), bytes_sent: sent)
+            raise Client::SendFailure.new(error: Error.transport("socket closed during send"), bytes_sent: sent)
           end
 
           sent += n
         end
       rescue Error => e
-        raise SendFailure.new(error: e, bytes_sent: sent)
+        raise Client::SendFailure.new(error: e, bytes_sent: sent)
       rescue SystemCallError, IOError => e
         msg = e.is_a?(Errno::ETIMEDOUT) ? "request deadline expired" : "request send failed: #{e.message}"
-        raise SendFailure.new(error: Error.transport(msg), bytes_sent: sent)
+        raise Client::SendFailure.new(error: Error.transport(msg), bytes_sent: sent)
       end
       nil
     end
@@ -373,26 +337,34 @@ module GlyphaStore
         end
 
         timeout = remaining_timeout(deadline)
-        begin
-          chunk = conn.socket.read_nonblock(64 * 1024)
-          conn.input << chunk.b
-        rescue IO::WaitReadable
-          raise Error.transport("request deadline expired") unless IO.select([conn.socket], nil, nil, timeout)
-
-          retry
-        rescue EOFError
-          raise Error.transport("server closed the connection")
-        rescue SystemCallError, IOError => e
-          raise Error.transport("request deadline expired") if e.is_a?(Errno::ETIMEDOUT)
-
-          raise Error.transport("response receive failed: #{e.message}")
+        chunk = conn.socket.read_nonblock(64 * 1024, exception: false)
+        if chunk == :wait_readable
+          wait_readable!(conn.socket, timeout)
+          next
         end
+        raise Error.transport("server closed the connection") if chunk.nil? || chunk.empty?
+
+        conn.input << chunk.b
+      rescue EOFError
+        raise Error.transport("server closed the connection")
+      rescue SystemCallError, IOError => e
+        raise Error.transport("request deadline expired") if e.is_a?(Errno::ETIMEDOUT)
+
+        raise Error.transport("response receive failed: #{e.message}")
       end
     end
 
     def exchange!(conn, frame, deadline)
-      send!(conn, frame, deadline)
-      receive_response!(conn, deadline)
+      completed = false
+      begin
+        send!(conn, frame, deadline)
+        response = receive_response!(conn, deadline)
+        completed = true
+        response
+      ensure
+        # Poison on cancel / interrupt mid-exchange so a late frame cannot attach.
+        conn.reset! unless completed
+      end
     end
 
     def validate_response!(response, request_id, worker)
@@ -455,12 +427,9 @@ module GlyphaStore
           rescue ArgumentError => e
             raise Error.invalid_argument(e.message)
           end
-          if frame.bytesize > @config.maximum_frame_bytes
-            raise Error.invalid_argument("request exceeds the configured frame limit")
-          end
           begin
             response = exchange!(conn, frame, deadline)
-          rescue SendFailure => e
+          rescue Client::SendFailure => e
             last = promote_send_failure(e, op, request_id, worker, mutation: false)
             conn.reset!
             raise last if last.category == Category::UNAVAILABLE && !healthy?
@@ -545,17 +514,9 @@ module GlyphaStore
                         routing_epoch: @routing_epoch, mutation_outcome: MutationOutcome::REJECTED)
             )
           end
-          if frame.bytesize > @config.maximum_frame_bytes
-            return MutationResult.new(
-              outcome: MutationOutcome::REJECTED,
-              error: Error.invalid_argument("request exceeds the configured frame limit")
-                .enrich(operation: op, request_id: request_id, worker: worker,
-                        routing_epoch: @routing_epoch, mutation_outcome: MutationOutcome::REJECTED)
-            )
-          end
           begin
             response = exchange!(conn, frame, deadline)
-          rescue SendFailure => e
+          rescue Client::SendFailure => e
             conn.reset!
             promoted = promote_send_failure(e, op, request_id, worker, mutation: true)
             if e.bytes_sent.zero?
@@ -654,7 +615,7 @@ module GlyphaStore
         raise Error.unavailable("client closed before pipeline admission") unless healthy?
 
         ensure_connected!(conn)
-        output = conn.encode_scratch(needed)
+        output = "".b
         metadata = []
         requests.each do |request|
           request_id = next_request_id
@@ -683,59 +644,68 @@ module GlyphaStore
           end
         end
 
+        completed = false
         begin
-          send!(conn, output, deadline)
-        rescue SendFailure => e
-          conn.reset!
-          mark_unresolved.call(0, e.error, e.bytes_sent)
-          return responses
-        rescue Error => e
-          conn.reset!
-          mark_unresolved.call(0, e, 0)
-          return responses
-        end
+          begin
+            send!(conn, output, deadline)
+          rescue Client::SendFailure => e
+            conn.reset!
+            mark_unresolved.call(0, e.error, e.bytes_sent)
+            completed = true
+            return responses
+          rescue Error => e
+            conn.reset!
+            mark_unresolved.call(0, e, 0)
+            completed = true
+            return responses
+          end
 
-        metadata.each_with_index do |item, index|
-          begin
-            response = receive_response!(conn, deadline)
-          rescue Error => e
-            sent_bytes = output.bytesize
-            conn.reset!
-            mark_unresolved.call(index, e, sent_bytes)
-            return responses
-          end
-          begin
-            validate_response!(response, item[:request_id], worker)
-          rescue Error => e
-            sent_bytes = output.bytesize
-            conn.reset!
-            mark_unresolved.call(index, e, sent_bytes)
-            return responses
-          end
-          if response.status == Protocol::Status::OK
-            if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) && !response.value.empty?
+          metadata.each_with_index do |item, index|
+            begin
+              response = receive_response!(conn, deadline)
+            rescue Error => e
               sent_bytes = output.bytesize
               conn.reset!
-              mark_unresolved.call(
-                index,
-                Error.protocol("mutation response value must be empty"),
-                sent_bytes
-              )
+              mark_unresolved.call(index, e, sent_bytes)
+              completed = true
               return responses
             end
-            responses[index] = PipelineResponse.new(outcome: PipelineOutcome::SUCCEEDED, value: response.value)
-            next
+            begin
+              validate_response!(response, item[:request_id], worker)
+            rescue Error => e
+              sent_bytes = output.bytesize
+              conn.reset!
+              mark_unresolved.call(index, e, sent_bytes)
+              completed = true
+              return responses
+            end
+            if response.status == Protocol::Status::OK
+              if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) && !response.value.empty?
+                sent_bytes = output.bytesize
+                conn.reset!
+                mark_unresolved.call(
+                  index, Error.protocol("mutation response value must be empty"), sent_bytes
+                )
+                completed = true
+                return responses
+              end
+              responses[index] = PipelineResponse.new(outcome: PipelineOutcome::SUCCEEDED, value: response.value)
+              next
+            end
+            err = Error.from_status(response.status)
+            outcome = PipelineOutcome::FAILED
+            if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) &&
+               response.status == Protocol::Status::INTERNAL_ERROR
+              outcome = PipelineOutcome::INDETERMINATE
+            end
+            responses[index] = PipelineResponse.new(outcome: outcome, error: err)
+            mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
           end
-          err = Error.from_status(response.status)
-          outcome = PipelineOutcome::FAILED
-          if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) &&
-             response.status == Protocol::Status::INTERNAL_ERROR
-            outcome = PipelineOutcome::INDETERMINATE
-          end
-          responses[index] = PipelineResponse.new(outcome: outcome, error: err)
-          mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
+          completed = true
+          responses
+        ensure
+          conn.reset! unless completed
         end
-        responses
       end
     end
   end

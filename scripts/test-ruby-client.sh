@@ -24,5 +24,5 @@ fi
 
 export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
 cd "$root/sdk/ruby"
-"$ruby_bin" -Ilib:test -e 'Dir["test/test_*.rb"].each { |f| require "./#{f}" }'
+"$ruby_bin" -Ilib:test -e 'Dir["test/test_*.rb"].sort.each { |f| require "./#{f}" }'
 echo "Ruby SDK tests PASSED ($version)"

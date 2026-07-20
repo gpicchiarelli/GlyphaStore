@@ -113,7 +113,9 @@ jobs:
       - name: Test Go client
         run: ./scripts/test-go-client.sh
       - name: Test Ruby client
-        run: ./scripts/test-ruby-client.sh
+        run: |
+          gem install async --no-document
+          ./scripts/test-ruby-client.sh
       - name: Package and verify Python client
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client

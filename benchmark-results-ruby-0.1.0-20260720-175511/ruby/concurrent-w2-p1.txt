@@ -1,0 +1,3 @@
+# glyphastore Ruby client benchmark
+# sdk_version=0.1.0 runtime=sync execution=single-process-worker-concurrent workers=2 pipeline_pairs=1 operations=200000
+name=ruby_client_pipeline_read_after_write sdk_version=0.1.0 runtime=sync execution=single-process-worker-concurrent workers=2 pipeline_pairs=1 operations=200000 samples=7 median_seconds=15.144089000 min_seconds=14.486039000 max_seconds=18.044832000 median_ops_per_second=13206.473 min_ops_per_second=11083.506 max_ops_per_second=13806.397

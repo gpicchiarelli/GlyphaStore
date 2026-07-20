@@ -26,13 +26,28 @@ value = client.get("session\x0042".b)
 client.close
 ```
 
+## Async (optional)
+
+```ruby
+# gem install async
+require "glypha_store/async_client"
+
+Async do
+  client = GlyphaStore::AsyncClient.connect(config)
+  client.get("key".b)
+  client.close
+end
+```
+
+Cancellation / task stop poisons the in-flight Worker connection (client-semantics §6.3).
+
 ## Concurrency
 
 | Environment | Rule |
 | --- | --- |
-| MRI threads | One `Client` may be shared; each Worker connection is mutex-protected. |
+| MRI threads | One sync `Client` may be shared; each Worker connection is mutex-protected. |
 | `fork` (Puma clustered, Unicorn) | Construct a **new** client in the child. Never reuse parent sockets. |
-| Async / Fiber | Sync `Client` blocks the scheduler; `AsyncClient` is Phase 2 of the roadmap. |
+| Async / Fiber | Use `GlyphaStore::AsyncClient` inside an `Async` reactor (`async` gem). |
 
 ## Install (from this tree)
 
@@ -55,4 +70,10 @@ ruby -Ilib -e 'require "glypha_store"; puts GlyphaStore::VERSION'
 ## Performance
 
 Prefer deep pipelines and `execute_batch` so Workers overlap. Scale out with one client per
-prefork worker process. Optional C extension for framing is roadmap Phase 2 (measure first).
+prefork worker process. Publish loopback numbers with:
+
+```bash
+./scripts/benchmark_ruby_client.sh
+```
+
+Optional C extension for framing remains roadmap Phase 2.6 (measure first).

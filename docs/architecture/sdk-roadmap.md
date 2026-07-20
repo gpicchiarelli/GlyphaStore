@@ -25,7 +25,7 @@ Related: [production readiness](../production-readiness.md),
 | Python | Effectively complete, including async |
 | Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
 | Go | Complete as a synchronous client (protocol + client + interop + CI) |
-| Ruby | **Phase 1 sync client landed** (`sdk/ruby`) — interop + CI; AsyncClient / C ext still open |
+| Ruby | **Phase 1+2 sync/async landed** — benches/C-ext/TLS still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
 
 Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
 [client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
@@ -111,13 +111,13 @@ client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
 tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), and CI coverage
 via `scripts/test-go-client.sh` and the cross-SDK matrix.
 
-### 11. Ruby client — **Phase 1 sync done; Phase 2+ open**
+### 11. Ruby client — **Phase 1 done; Phase 2 largely done**
 
 `sdk/ruby` gem (`glyphastore` / `GlyphaStore`): protocol goldens, structured errors, sync client
 (`get`/`put`/`erase`/`ping`, `execute_pipeline`, `execute_batch`), monotonic deadlines, per-call
-`timeout:`, interop CLI, and CI via `scripts/test-ruby-client.sh`. Still open per
-[ruby-sdk-roadmap.md](ruby-sdk-roadmap.md): AsyncClient, optional C framing extension, published
-benches, TLS/auth with the server security train. No FFI wrap of the C++ client.
+`timeout:`, interop CLI, CI, **`AsyncClient`** (optional `async` gem), and
+`scripts/benchmark_ruby_client.sh`. Still open: published bench analysis folder, optional C framing
+extension (data-gated), TLS/auth with the server security train. No FFI wrap of the C++ client.
 
 ## Product blockers (not “more languages”)
 
