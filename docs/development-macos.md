@@ -44,6 +44,7 @@ Select one of these generated schemes:
 - `glyphastore_benchmarks` and `glyphastore_server_benchmarks` for focused Release measurements.
 - `glyphastore_inspect_segment` for read-only durable Segment validation (`--json`, `--no-scan`).
 - `glyphastore_verify_store` for Manifest + catalog Segment validation (exclusive lock).
+- `glyphastore_backup_store` for offline verified backup/restore copies.
 - `glyphastore_rebuild_index` remains a placeholder (Store recovery rebuilds Indexes).
 
 Because GlyphaStore uses a standalone CTest executable rather than XCTest bundles, use the

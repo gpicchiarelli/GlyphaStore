@@ -1,0 +1,140 @@
+#include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/persistence/store_backup.hpp"
+#include "glyphastore/segment/record.hpp"
+#include "glyphastore/store/store.hpp"
+#include "test.hpp"
+
+#include <filesystem>
+#include <string>
+#include <system_error>
+#include <unistd.h>
+#include <vector>
+
+namespace {
+
+class BackupTemporaryDirectory final {
+  public:
+    BackupTemporaryDirectory() {
+        auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-backup-XXXXXX").string();
+        std::vector<char> writable(pattern.begin(), pattern.end());
+        writable.push_back('\0');
+        const auto* created = ::mkdtemp(writable.data());
+        GLYPHA_REQUIRE(created != nullptr);
+        path_ = created;
+    }
+
+    ~BackupTemporaryDirectory() {
+        std::error_code ignored;
+        std::filesystem::remove_all(path_, ignored);
+    }
+
+    [[nodiscard]] auto path() const -> const std::filesystem::path& {
+        return path_;
+    }
+
+  private:
+    std::filesystem::path path_;
+};
+
+auto bytes(std::string_view value) -> std::span<const std::byte> {
+    return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
+}
+
+auto value_string(const glyphastore::OwnedValue& value) -> std::string_view {
+    return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
+}
+
+} // namespace
+
+GLYPHA_TEST("backup_durable_store copies a verified Store and restores committed keys") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+    const auto restored = root.path() / "restored";
+
+    {
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("alpha", bytes("one")).has_value());
+        GLYPHA_REQUIRE((*opened)->put("beta", bytes("two")).has_value());
+        GLYPHA_REQUIRE((*opened)->close().has_value());
+    }
+
+    const auto backed = glyphastore::backup_durable_store(source, backup);
+    GLYPHA_REQUIRE(backed.has_value());
+    GLYPHA_REQUIRE(backed->files_copied >= 2);
+    GLYPHA_REQUIRE(backed->source_verification.segments.size() ==
+                   backed->destination_verification.segments.size());
+
+    const auto restored_copy = glyphastore::restore_durable_store(backup, restored);
+    GLYPHA_REQUIRE(restored_copy.has_value());
+
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("alpha")) == "one");
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("beta")) == "two");
+}
+
+GLYPHA_TEST("backup_durable_store fails closed when the source is locked") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+    {
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("live", bytes("v")).has_value());
+
+        const auto contested = glyphastore::backup_durable_store(source, backup);
+        GLYPHA_REQUIRE(!contested.has_value());
+        GLYPHA_REQUIRE(contested.error().code == glyphastore::ErrorCode::io_error);
+        GLYPHA_REQUIRE((*opened)->close().has_value());
+    }
+}
+
+GLYPHA_TEST("backup_durable_store refuses a non-empty destination") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto destination = root.path() / "destination";
+    {
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        GLYPHA_REQUIRE((*opened)->put("k", bytes("v")).has_value());
+        GLYPHA_REQUIRE((*opened)->close().has_value());
+    }
+    {
+        auto occupied = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = destination,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        });
+        GLYPHA_REQUIRE(occupied.has_value());
+        GLYPHA_REQUIRE((*occupied)->put("other", bytes("x")).has_value());
+        GLYPHA_REQUIRE((*occupied)->close().has_value());
+    }
+
+    const auto refused = glyphastore::backup_durable_store(source, destination);
+    GLYPHA_REQUIRE(!refused.has_value());
+    GLYPHA_REQUIRE(refused.error().code == glyphastore::ErrorCode::sequence_conflict ||
+                   refused.error().code == glyphastore::ErrorCode::invalid_argument);
+}

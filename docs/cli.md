@@ -37,6 +37,7 @@ and advisory on macOS.
 ```bash
 glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
 glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
+glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/destination
 glyphastore_rebuild_index -- segment-<16hex>-<8hex>.glypha
 ```
 
@@ -78,6 +79,18 @@ Default work:
 6. scan each committed Record extent unless `--no-scan`.
 
 Does not rebuild Indexes, check key routing, or repair files. Exit codes match inspect.
+
+### `glyphastore_backup_store`
+
+```bash
+glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/destination
+```
+
+Offline verified copy of a durable data directory. Stop writers first. Takes exclusive locks,
+verifies the source, creates an empty destination, copies catalog Segments then `manifest.glypha`,
+syncs, and verifies the destination. Restore uses the same command with backup as source and a new
+empty destination. See [backup-restore](architecture/backup-restore.md). Live/hot backup is not
+supported.
 
 ### `glyphastore_rebuild_index`
 
