@@ -42,6 +42,14 @@ class ClientTest < Minitest::Test
     server&.join
   end
 
+  def test_overloaded_retryability_is_never
+    err = GlyphaStore::Error.overloaded("server is overloaded")
+    assert_equal GlyphaStore::Category::OVERLOADED, err.category
+    assert_equal GlyphaStore::Retryability::NEVER, err.retryability
+    assert_equal GlyphaStore::Retryability::NEVER,
+                 GlyphaStore::Error.retryability_for(GlyphaStore::Category::OVERLOADED, false, false)
+  end
+
   def test_pipeline_put_get
     server = FakeServer.new
     client = GlyphaStore::Client.connect(

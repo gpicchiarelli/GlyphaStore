@@ -43,6 +43,7 @@ class StoreAccess final {
     [[nodiscard]] static auto is_durable(const Store& store) noexcept -> bool;
     [[nodiscard]] static auto batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] static auto maintenance_controller(Store& store) noexcept -> MaintenanceController*;
+    [[nodiscard]] static auto maintenance_mutations_rejected(const Store& store) noexcept -> bool;
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;
     [[nodiscard]] static auto segments(const Store& store) -> std::vector<SegmentPtr>;

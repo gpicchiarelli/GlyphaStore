@@ -77,7 +77,7 @@ fields must not change category/outcome rules when added.
 | `UNSUPPORTED` | `invalid_argument` | `rejected` | |
 | `INTERNAL_ERROR` | `internal` | `indeterminate` | Server could not complete; mutation may or may not have applied. |
 | `NOT_FOUND` | `not_found` | `rejected` for `ERASE` if returned as failure | Reads raise/return not-found; do not treat as transport failure. |
-| `OVERLOADED` | `overloaded` | `rejected` | Known not committed for that attempt. |
+| `OVERLOADED` | `overloaded` | `rejected` | Known not committed. Wire collapses admission pressure **and** durable capacity exhaustion (including maintenance emergency `storage_exhausted`). Clients must not infer which cause applied. |
 | `WRONG_OWNER` | `protocol` | `rejected` | Mark client **unhealthy**; open a new client (v2 has no online rebalance). |
 | `NOT_BOUND` | `unavailable` | `rejected` | Mark client **unhealthy** if observed on a supposedly bound session. |
 
@@ -88,9 +88,9 @@ for mutations prefer `indeterminate` if any request bytes were written, else `re
 
 | Class | Meaning | Examples |
 | --- | --- | --- |
-| `never` | Retrying the same logical mutation without application reconciliation may duplicate or is pointless | `committed`; local `invalid_argument` before send |
+| `never` | Retrying the same logical mutation without application reconciliation may duplicate or is pointless | `committed`; local `invalid_argument` before send; **`overloaded`** (admission and capacity causes are indistinguishable on the wire) |
 | `same_request` | Automatic client retry of the **same** encoded attempt is allowed under §5 | Read-only transport failure; mutation with `bytes_sent == 0` |
-| `new_attempt` | Application may start a **new** request after fixing inputs or backing off | `overloaded`, `rejected` with server validation |
+| `new_attempt` | Application may start a **new** request after fixing inputs or backing off | `not_found`; `rejected` with server validation (not `overloaded`) |
 | `reconcile_first` | Must not blindly retry a mutation | `indeterminate`; disconnect after `bytes_sent > 0` |
 
 `retryability` reported to applications must be consistent with these classes.

@@ -380,7 +380,12 @@ struct WorkerConnection {
     if (category == "transport" && !mutation_sent) {
         return "same_request";
     }
-    if (category == "overloaded" || category == "not_found") {
+    if (category == "overloaded") {
+        // Wire OVERLOADED collapses admission pressure and durable capacity exhaustion
+        // (including maintenance emergency). Do not advertise success-seeking retry.
+        return "never";
+    }
+    if (category == "not_found") {
         return "new_attempt";
     }
     if (category == "unavailable") {
@@ -409,7 +414,7 @@ struct WorkerConnection {
         error.wire_status = wire_status;
     }
     if (mutation) {
-        error.retryability = retryability_for(error.category, bytes_sent > 0, indeterminate || bytes_sent > 0);
+        error.retryability = retryability_for(error.category, bytes_sent > 0, indeterminate);
         if (bytes_sent > 0 && error.category == "transport") {
             error.retryability = "reconcile_first";
         }

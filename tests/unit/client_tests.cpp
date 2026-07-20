@@ -155,6 +155,84 @@ class DisconnectingPipelineServer final {
     std::thread thread_;
 };
 
+class OverloadedPutServer final {
+  public:
+    OverloadedPutServer() {
+        listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        GLYPHA_REQUIRE(listener_ >= 0);
+        int yes = 1;
+        GLYPHA_REQUIRE(::setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        GLYPHA_REQUIRE(::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        socklen_t length = sizeof(address);
+        GLYPHA_REQUIRE(::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+        port_ = ntohs(address.sin_port);
+        GLYPHA_REQUIRE(::listen(listener_, 1) == 0);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~OverloadedPutServer() {
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        static_cast<void>(::close(listener_));
+    }
+
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t {
+        return port_;
+    }
+
+  private:
+    void run() noexcept {
+        const auto descriptor = ::accept(listener_, nullptr, nullptr);
+        if (descriptor < 0) {
+            return;
+        }
+        const auto reply = [&](const glyphastore::server::ResponseView& response) {
+            auto encoded = glyphastore::server::encode_response(response);
+            return encoded && send_all(descriptor, *encoded);
+        };
+        auto init_frame = receive_request(descriptor);
+        auto init = glyphastore::server::decode_request(init_frame);
+        if (!init || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                             .request_id = init->frame.request_id,
+                             .owner_worker = 0,
+                             .worker_count = 1,
+                             .routing_epoch = 7,
+                             .value = bytes("GlyphaStore/2")})) {
+            static_cast<void>(::close(descriptor));
+            return;
+        }
+        auto bind_frame = receive_request(descriptor);
+        auto bind = glyphastore::server::decode_request(bind_frame);
+        if (!bind || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                             .request_id = bind->frame.request_id,
+                             .owner_worker = 0,
+                             .worker_count = 1,
+                             .routing_epoch = 7})) {
+            static_cast<void>(::close(descriptor));
+            return;
+        }
+        auto put_frame = receive_request(descriptor);
+        auto put = glyphastore::server::decode_request(put_frame);
+        if (put) {
+            static_cast<void>(reply({.status = glyphastore::server::ResponseStatus::overloaded,
+                                     .request_id = put->frame.request_id,
+                                     .owner_worker = 0,
+                                     .worker_count = 1,
+                                     .routing_epoch = 7}));
+        }
+        static_cast<void>(::close(descriptor));
+    }
+
+    int listener_{-1};
+    std::uint16_t port_{};
+    std::thread thread_;
+};
+
 class RunningServer final {
   public:
     explicit RunningServer(const std::size_t workers = 2) {
@@ -244,6 +322,23 @@ GLYPHA_TEST("C++ client bootstraps every worker and handles binary cache operati
     client.close();
     GLYPHA_REQUIRE(!client.healthy());
     GLYPHA_REQUIRE(!client.get("after-close").has_value());
+}
+
+GLYPHA_TEST("C++ client maps OVERLOADED mutations to rejected with retryability never") {
+    OverloadedPutServer server;
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+    const auto put = client.put("k", "v");
+    GLYPHA_REQUIRE(put.outcome == glyphastore::client::MutationOutcome::rejected);
+    GLYPHA_REQUIRE(put.error.has_value());
+    GLYPHA_REQUIRE(put.error->code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(put.error->category == "overloaded");
+    GLYPHA_REQUIRE(put.error->retryability == "never");
+    GLYPHA_REQUIRE(put.error->wire_status.has_value());
+    GLYPHA_REQUIRE(*put.error->wire_status ==
+                   static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::overloaded));
+    client.close();
 }
 
 GLYPHA_TEST("C++ client safely shares worker-bound connections between threads") {

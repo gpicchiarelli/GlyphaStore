@@ -97,7 +97,10 @@ def _retryability_for(category: str, mutation_sent: bool, indeterminate: bool) -
         return "never"
     if category == "transport" and not mutation_sent:
         return "same_request"
-    if category in ("overloaded", "not_found"):
+    if category == "overloaded":
+        # Wire OVERLOADED collapses admission and capacity exhaustion; fail closed.
+        return "never"
+    if category == "not_found":
         return "new_attempt"
     if category == "unavailable":
         return "never"

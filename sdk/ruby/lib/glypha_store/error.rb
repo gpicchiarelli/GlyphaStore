@@ -38,7 +38,8 @@ module GlyphaStore
       return Retryability::RECONCILE_FIRST if indeterminate
       return Retryability::NEVER if category == Category::INVALID_ARGUMENT && !mutation_sent
       return Retryability::SAME_REQUEST if category == Category::TRANSPORT && !mutation_sent
-      return Retryability::NEW_ATTEMPT if category == Category::OVERLOADED || category == Category::NOT_FOUND
+      return Retryability::NEVER if category == Category::OVERLOADED
+    return Retryability::NEW_ATTEMPT if category == Category::NOT_FOUND
       return Retryability::NEVER if category == Category::UNAVAILABLE
       return Retryability::RECONCILE_FIRST if mutation_sent
 
@@ -97,7 +98,7 @@ module GlyphaStore
     end
 
     def self.overloaded(message)
-      new(category: Category::OVERLOADED, message: message, retryability: Retryability::NEW_ATTEMPT)
+      new(category: Category::OVERLOADED, message: message, retryability: Retryability::NEVER)
     end
 
     def self.internal(message)

@@ -1,6 +1,6 @@
 # MaintenanceController
 
-Status: Phase 5 critical fail-closed + lifecycle (ADR 0023)
+Status: Phase 5 critical fail-closed + lifecycle; Phase 6 wire retry honesty (ADR 0023 / 0019)
 Applies to: embedded Store and glyphastored
 Owner: persistence maintainers
 Last reviewed: 2026-07-20
@@ -55,7 +55,9 @@ Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`
 eval/compact durations, bytes/records copied, suspend count, and time since last useful compaction.
 
 Wire note: the Reactor maps `storage_exhausted` to `ResponseStatus::overloaded` (existing
-many-to-one). Clients may retry; that is intentional for v1 wire reuse, not a silent success.
+many-to-one collapse with admission limits). Official clients advertise `retryability=never` for
+`overloaded` because the wire cannot distinguish capacity exhaustion from queue pressure. Applications
+that still want backoff-retry for true admission overload must opt in explicitly.
 
 ## Shutdown
 

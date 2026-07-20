@@ -1,11 +1,12 @@
 # ADR 0019: Client error taxonomy, retry, and timeout contract
 
-- Status: accepted
+- Status: accepted (amended 2026-07-20: `OVERLOADED` retryability fail-closed)
 - Date: 2026-07-19
 - Deciders: networking maintainers
 - Applies to: official TCP clients for wire protocol v2
 - Amends: none
 - Supersedes: none
+- Related: ADR 0023
 
 ## Context
 
@@ -39,6 +40,9 @@ Adopt [Client semantics v1](../spec/client-semantics-v1.md) as normative for off
 - closed portable error categories;
 - wire status → category and mutation outcome tables;
 - retryability classes and exact automatic retry limits;
+- `OVERLOADED` → category `overloaded`, mutation `rejected`, **`retryability=never`** because the
+  wire collapses admission overload with durable capacity exhaustion (including maintenance
+  emergency). Applications may still opt into their own backoff loops;
 - monotonic request deadlines, connection reset on expiry, and late-response rules;
 - unhealthy-client fail-closed behavior for routing metadata faults.
 
@@ -52,9 +56,9 @@ Adopt [Client semantics v1](../spec/client-semantics-v1.md) as normative for off
 
 ## Compatibility and migration
 
-No wire byte change. Existing official clients must not change outcome classification except to
-match gaps called out by the spec (already aligned for the critical mutation cases). Documentation
-and CI interop remain the verification path for release compatibility of client behavior.
+No wire byte change. Official clients change `OVERLOADED` portable `retryability` from `new_attempt`
+to `never` (fail-closed under capacity/admission collapse). Mutation outcome remains `rejected`.
+Applications that previously looped on `new_attempt` for admission backoff must opt in explicitly.
 
 ## Verification
 

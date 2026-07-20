@@ -937,6 +937,10 @@ auto detail::StoreAccess::maintenance_controller(Store& store) noexcept -> Maint
     return store.impl_->maintenance.get();
 }
 
+auto detail::StoreAccess::maintenance_mutations_rejected(const Store& store) noexcept -> bool {
+    return store.impl_->maintenance != nullptr && store.impl_->maintenance->mutations_rejected();
+}
+
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {
     if (!store.impl_->volatile_runtime) {
         std::terminate();

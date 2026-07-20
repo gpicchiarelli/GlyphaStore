@@ -496,6 +496,13 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             if (current == nullptr) {
                 return {};
             }
+            if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
+                if (durable_mutations_) {
+                    durable_mutations_->note_rejected(executor_id_);
+                }
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
             if (durable_mutations_ == nullptr ||
                 durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
                 if (durable_mutations_) {
@@ -560,6 +567,13 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             auto* current = connection(token);
             if (current == nullptr) {
                 return {};
+            }
+            if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
+                if (durable_mutations_) {
+                    durable_mutations_->note_rejected(executor_id_);
+                }
+                response.status = ResponseStatus::overloaded;
+                break;
             }
             if (durable_mutations_ == nullptr ||
                 durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {

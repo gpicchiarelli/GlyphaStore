@@ -146,7 +146,9 @@ either one completed transaction and its copy statistics, or no current physical
 Optional automatic scheduling is governed by `StoreConfig::maintenance` and ADR 0023. The embedded
 default is `cooperative` (no maintenance thread). `background` starts one Store-owned evaluation
 thread that may call `compact()` under Phase 3 normal/pressure/emergency budgets. Under emergency,
-`put`/`erase` return `storage_exhausted` until capacity recovers. `glyphastored` defaults to
+`put`/`erase` return `storage_exhausted` until capacity recovers (embedded Store). On the TCP path the
+Reactor maps that to `OVERLOADED`; official clients report `retryability=never`. `glyphastored`
+defaults to
 `background`. See [maintenance controller](maintenance-controller.md).
 
 ## Compatibility policy

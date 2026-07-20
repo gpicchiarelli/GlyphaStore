@@ -23,12 +23,13 @@ from glyphastore import (  # noqa: E402
     InvalidArgument,
     MutationOutcome,
     NotFound,
+    Overloaded,
     PipelineOpcode,
     PipelineOutcome,
     PipelineRequest,
     TransportError,
 )
-from glyphastore.client import build_ssl_context  # noqa: E402
+from glyphastore.client import _retryability_for, build_ssl_context  # noqa: E402
 from glyphastore.protocol import (  # noqa: E402
     Opcode,
     Status,
@@ -298,6 +299,13 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(result.error.retryability, "reconcile_first")
             self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
+
+    def test_overloaded_retryability_is_never(self) -> None:
+        self.assertEqual(_retryability_for("overloaded", False, False), "never")
+        self.assertEqual(_retryability_for("overloaded", True, False), "never")
+        error = Overloaded("server is overloaded")
+        self.assertEqual(error.category, "overloaded")
+        self.assertEqual(error.retryability, "never")
 
     def test_close_does_not_deadlock_against_inflight_read(self) -> None:
         server = FakeServer()

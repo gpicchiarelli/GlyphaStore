@@ -152,7 +152,10 @@ func retryabilityFor(category Category, mutationSent bool, indeterminate bool) R
 		return RetryNever
 	case category == CategoryTransport && !mutationSent:
 		return RetrySameRequest
-	case category == CategoryOverloaded || category == CategoryNotFound:
+	case category == CategoryOverloaded:
+		// Wire OVERLOADED collapses admission and capacity exhaustion; fail closed.
+		return RetryNever
+	case category == CategoryNotFound:
 		return RetryNewAttempt
 	case category == CategoryUnavailable:
 		return RetryNever
@@ -192,7 +195,7 @@ func notFound(message string) *Error {
 
 func overloaded(message string) *Error {
 	err := newError(CategoryOverloaded, message)
-	err.Retryability = RetryNewAttempt
+	err.Retryability = RetryNever
 	return err
 }
 

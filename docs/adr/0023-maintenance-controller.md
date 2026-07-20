@@ -76,6 +76,8 @@ thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015
 
 Phase 5: emergency reclaim faults must not latch auto-compact off while the mutation gate is armed;
 background start evaluates immediately; free-space emergency matches rotate headroom.
+Phase 6: wire `OVERLOADED` portable retryability is `never`; durable lanes reject before enqueue when
+the emergency gate is armed.
 
 ## References
 

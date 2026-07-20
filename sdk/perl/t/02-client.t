@@ -10,6 +10,7 @@ use Test::More;
 
 use lib "$FindBin::Bin/../lib";
 use GlyphaStore::Client;
+use GlyphaStore::Error;
 use GlyphaStore::Protocol qw(
     OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER
     STATUS_OK STATUS_NOT_FOUND STATUS_NOT_BOUND STATUS_INVALID_REQUEST STATUS_WRONG_OWNER
@@ -448,6 +449,11 @@ SKIP: {
     is($tls_client->ping('tls-ping'), 'tls-ping', 'TLS client ping over IO::Socket::SSL');
     $tls_client->close;
     waitpid($tls_pid, 0);
+}
+
+{
+    my $overloaded = GlyphaStore::Error->new('overloaded', 'server is overloaded');
+    is($overloaded->retryability, 'never', 'overloaded retryability is never');
 }
 
 done_testing;
