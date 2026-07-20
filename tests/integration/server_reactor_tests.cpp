@@ -659,6 +659,97 @@ GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store cl
     GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
+GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 2,
+         .durable_mutation_queue_capacity = 4,
+         .durable_group_mutation_concurrency = 1,
+         .shutdown_drain_ms = 50},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first_socket = connect_to(server.port());
+    const auto second_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(first_socket >= 0);
+    GLYPHA_REQUIRE(second_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(first_socket, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(second_socket, 0, 1));
+    blocker.arm();
+    const auto first = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 200,
+        .key = bytes("drain-committed"),
+        .value = bytes("kept"),
+    });
+    const auto second = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 201,
+        .key = bytes("drain-abandoned"),
+        .value = bytes("dropped"),
+    });
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(send_all(first_socket, *first));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    GLYPHA_REQUIRE(send_all(second_socket, *second));
+    const auto queued_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+    while (std::chrono::steady_clock::now() < queued_deadline) {
+        const auto stats = server.durable_mutation_stats();
+        if (!stats.empty() && stats[0].queue_depth >= 1) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    {
+        const auto stats = server.durable_mutation_stats();
+        GLYPHA_REQUIRE(!stats.empty());
+        GLYPHA_REQUIRE(stats[0].queue_depth >= 1);
+    }
+
+    server.request_stop();
+    std::optional<glyphastore::Status> joined;
+    std::thread joiner{[&] { joined = server.join(); }};
+    // Past shutdown_drain_ms the executor arms expire_remaining_; in-flight Store work is
+    // still blocked until we release the sync hook.
+    std::this_thread::sleep_for(std::chrono::milliseconds{120});
+    blocker.release();
+    joiner.join();
+    GLYPHA_REQUIRE(joined.has_value());
+    GLYPHA_REQUIRE(!joined->has_value());
+    GLYPHA_REQUIRE(joined->error().code == glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(joined->error().message.find("shutdown drain deadline") != std::string::npos);
+    {
+        const auto stats = server.durable_mutation_stats();
+        GLYPHA_REQUIRE(!stats.empty());
+        GLYPHA_REQUIRE(stats[0].expired_before_store >= 1);
+    }
+    static_cast<void>(::close(first_socket));
+    static_cast<void>(::close(second_socket));
+
+    auto recovered = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(recovered.has_value());
+    GLYPHA_REQUIRE((*recovered)->get("drain-committed").has_value());
+    const auto abandoned = (*recovered)->get("drain-abandoned");
+    GLYPHA_REQUIRE(!abandoned.has_value());
+    GLYPHA_REQUIRE(abandoned.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*recovered)->close().has_value());
+}
+
 GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane producers") {
     ServerTemporaryDirectory temporary;
     GroupBatchObserver observer;

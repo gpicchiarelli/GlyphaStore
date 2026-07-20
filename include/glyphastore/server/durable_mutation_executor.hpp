@@ -83,9 +83,10 @@ class DurableMutationExecutor final {
     void note_rejected(std::size_t worker_index) noexcept;
     [[nodiscard]] auto stats() const -> std::vector<DurableMutationWorkerStats>;
     // Stops admission and drains every admitted mutation before returning.
-    // This is required because an admitted mutation may already have crossed
-    // its durable commit point even if its client disconnects.
-    void stop_and_drain() noexcept;
+    // Zero deadline waits unbounded. A positive deadline expires remaining queued
+    // (pre-Store) work as unavailable once it elapses; in-flight Store mutations
+    // are never cancelled. Returns unavailable if the deadline expired.
+    [[nodiscard]] auto stop_and_drain(std::chrono::milliseconds deadline = {}) -> Status;
 
   private:
     struct Lane;
@@ -93,14 +94,18 @@ class DurableMutationExecutor final {
     DurableMutationExecutor(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
                             std::size_t threads_per_worker, std::chrono::milliseconds maximum_queue_wait);
     void run(std::size_t worker_index) noexcept;
+    void note_worker_exit() noexcept;
 
     Store& store_;
     const std::size_t threads_per_worker_;
     const std::chrono::milliseconds maximum_queue_wait_;
     std::vector<std::unique_ptr<Lane>> lanes_;
     std::mutex lifecycle_mutex_;
+    std::condition_variable drained_;
+    std::atomic_size_t active_workers_{};
     std::atomic_bool started_{};
     std::atomic_bool stopping_{};
+    std::atomic_bool expire_remaining_{};
 };
 
 } // namespace glyphastore::server

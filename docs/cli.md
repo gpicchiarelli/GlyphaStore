@@ -22,9 +22,12 @@ glyphastored --port 0 --workers 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
 glyphastored --help
 ```
 
-`SIGINT` and `SIGTERM` request an orderly process stop. The daemon joins its executors before returning;
-the current prototype does not yet promise connection draining. `--quiet` suppresses normal startup and
-shutdown messages, but never suppresses errors.
+`SIGINT` and `SIGTERM` request an orderly process stop. The daemon joins its reactor executors, drains
+admitted durable mutations (bounded by `--shutdown-drain-ms`, default 30s; `0` waits unbounded), then
+closes the Store. Queued mutations that have not entered Store execution when the drain deadline
+expires complete as `unavailable`; in-flight Store work is never cancelled. A timed-out drain makes
+process exit fail closed (`join` returns an error). Connection draining is not yet promised. `--quiet`
+suppresses normal startup and shutdown messages, but never suppresses errors.
 
 Important server controls include bounded connection counts, handoff queues, event batches, and per-connection
 input/output buffers. Unsupported Worker counts and buffers smaller than protocol headers are rejected before

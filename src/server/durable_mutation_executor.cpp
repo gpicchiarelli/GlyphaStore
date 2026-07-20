@@ -4,6 +4,7 @@
 #include "store/store_internal.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <exception>
 #include <limits>
 #include <utility>
@@ -63,7 +64,7 @@ DurableMutationExecutor::DurableMutationExecutor(Store& store, const std::size_t
 }
 
 DurableMutationExecutor::~DurableMutationExecutor() {
-    stop_and_drain();
+    static_cast<void>(stop_and_drain());
 }
 
 auto DurableMutationExecutor::create(Store& store, const std::size_t worker_count,
@@ -97,14 +98,15 @@ auto DurableMutationExecutor::start() -> Status try {
             lanes_[worker]->threads.emplace_back([this, worker] { run(worker); });
         }
     }
+    active_workers_.store(lanes_.size() * threads_per_worker_, std::memory_order_release);
     started_.store(true, std::memory_order_release);
     return {};
 } catch (const std::exception& exception) {
-    stop_and_drain();
+    static_cast<void>(stop_and_drain());
     return fail(ErrorCode::io_error,
                 std::string{"failed to start durable mutation executor: "} + exception.what());
 } catch (...) {
-    stop_and_drain();
+    static_cast<void>(stop_and_drain());
     return fail(ErrorCode::io_error, "failed to start durable mutation executor");
 }
 
@@ -174,11 +176,21 @@ auto DurableMutationExecutor::stats() const -> std::vector<DurableMutationWorker
     return result;
 }
 
-void DurableMutationExecutor::stop_and_drain() noexcept {
+void DurableMutationExecutor::note_worker_exit() noexcept {
+    if (!started_.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (active_workers_.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+        const std::lock_guard lifecycle_lock{lifecycle_mutex_};
+        drained_.notify_all();
+    }
+}
+
+auto DurableMutationExecutor::stop_and_drain(const std::chrono::milliseconds deadline) -> Status {
     {
         const std::lock_guard lifecycle_lock{lifecycle_mutex_};
         if (stopping_.exchange(true, std::memory_order_acq_rel)) {
-            return;
+            return {};
         }
         for (auto& lane : lanes_) {
             {
@@ -188,6 +200,24 @@ void DurableMutationExecutor::stop_and_drain() noexcept {
             lane->available.notify_all();
         }
     }
+
+    bool timed_out = false;
+    if (deadline.count() > 0) {
+        const auto deadline_at = std::chrono::steady_clock::now() + deadline;
+        std::unique_lock lifecycle_lock{lifecycle_mutex_};
+        while (active_workers_.load(std::memory_order_acquire) != 0 &&
+               std::chrono::steady_clock::now() < deadline_at) {
+            drained_.wait_until(lifecycle_lock, deadline_at);
+        }
+        timed_out = active_workers_.load(std::memory_order_acquire) != 0;
+        if (timed_out) {
+            expire_remaining_.store(true, std::memory_order_release);
+            for (auto& lane : lanes_) {
+                lane->available.notify_all();
+            }
+        }
+    }
+
     for (auto& lane : lanes_) {
         for (auto& thread : lane->threads) {
             if (thread.joinable()) {
@@ -195,16 +225,30 @@ void DurableMutationExecutor::stop_and_drain() noexcept {
             }
         }
     }
+    if (timed_out) {
+        return fail(ErrorCode::unavailable, "shutdown drain deadline exceeded");
+    }
+    return {};
 }
 
 void DurableMutationExecutor::run(const std::size_t worker_index) noexcept {
     auto& lane = *lanes_[worker_index];
+    struct ExitGuard final {
+        DurableMutationExecutor& executor;
+        ~ExitGuard() {
+            executor.note_worker_exit();
+        }
+    } exit_guard{*this};
+
     while (true) {
         std::optional<DurableMutationTask> task;
         std::uint64_t queue_wait_ns{};
         {
             std::unique_lock lane_lock{lane.mutex};
-            lane.available.wait(lane_lock, [&lane] { return lane.stopping || lane.size != 0; });
+            lane.available.wait(lane_lock, [&] {
+                return lane.stopping || lane.size != 0 ||
+                       expire_remaining_.load(std::memory_order_acquire);
+            });
             if (lane.size == 0) {
                 return;
             }
@@ -224,15 +268,18 @@ void DurableMutationExecutor::run(const std::size_t worker_index) noexcept {
         DurableMutationCompletion completion{.connection = task->connection,
                                              .request_id = task->request_id,
                                              .admission_bytes = task->admission_bytes};
+        const bool force_expire = expire_remaining_.load(std::memory_order_acquire);
         const bool expired =
-            maximum_queue_wait_.count() != 0 &&
-            queue_wait_ns >=
-                static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::nanoseconds>(maximum_queue_wait_).count());
+            force_expire ||
+            (maximum_queue_wait_.count() != 0 &&
+             queue_wait_ns >=
+                 static_cast<std::uint64_t>(
+                     std::chrono::duration_cast<std::chrono::nanoseconds>(maximum_queue_wait_).count()));
         const auto service_started = std::chrono::steady_clock::now();
         if (expired) {
             completion.error.emplace(ErrorCode::unavailable,
-                                     "durable mutation expired before Store execution");
+                                     force_expire ? "durable mutation abandoned after shutdown drain deadline"
+                                                  : "durable mutation expired before Store execution");
         } else {
             try {
                 const HashedKey key{.key = task->key, .hash = task->key_hash};

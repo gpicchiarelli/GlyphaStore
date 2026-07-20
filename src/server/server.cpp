@@ -195,7 +195,7 @@ auto Server::start() -> Status {
         }
         threads_.clear();
         if (durable_mutations_) {
-            durable_mutations_->stop_and_drain();
+            static_cast<void>(durable_mutations_->stop_and_drain());
         }
         disk_reads_->stop();
         return fail(ErrorCode::io_error, std::string{"failed to start server executor: "} + exception.what());
@@ -214,8 +214,10 @@ auto Server::join() -> Status {
         }
     }
     threads_.clear();
+    Status drained{};
     if (durable_mutations_) {
-        durable_mutations_->stop_and_drain();
+        drained = durable_mutations_->stop_and_drain(
+            std::chrono::milliseconds{config_.shutdown_drain_ms});
     }
     if (disk_reads_) {
         disk_reads_->stop();
@@ -223,6 +225,9 @@ auto Server::join() -> Status {
     auto closed = store_->close();
     if (failure_) {
         return unexpected(*failure_);
+    }
+    if (!drained) {
+        return drained;
     }
     return closed;
 }

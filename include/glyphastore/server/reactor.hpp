@@ -49,6 +49,12 @@ struct ReactorConfig {
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
     std::uint32_t durable_mutation_queue_wait_ms{1000};
+    // Bound how long join() waits for durable mutation lanes to finish after
+    // stop. Zero means wait unbounded. When the deadline expires, remaining
+    // queued (not yet in Store) mutations complete as unavailable; in-flight
+    // Store work is never cancelled and still drains before Store::close().
+    // A timed-out drain makes join() return unavailable (fail-closed).
+    std::uint32_t shutdown_drain_ms{30'000};
     // When tls.requested() and tls_port is unset: TLS-only on `port` (no cleartext).
     // When tls.requested() and tls_port is set: cleartext on `port`, TLS on *tls_port
     // (ADR 0020 dual listeners; never opportunistic TLS on one endpoint).

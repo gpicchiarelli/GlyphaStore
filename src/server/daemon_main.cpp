@@ -39,6 +39,7 @@ enum OptionId : std::size_t {
     durable_mutation_queue_bytes,
     durable_group_mutation_concurrency,
     durable_mutation_queue_wait,
+    shutdown_drain,
     reuse_port,
     no_reuse_port,
     executor_affinity,
@@ -96,6 +97,10 @@ constexpr std::array kOptionSpecs{
     glyphastore::cli::OptionSpec{durable_mutation_queue_wait, "durable-mutation-queue-wait-ms", '\0',
                                  glyphastore::cli::OptionArity::required, "MILLISECONDS",
                                  "Expire queued mutations after this wait; 0 disables (default: 1000)"},
+    glyphastore::cli::OptionSpec{shutdown_drain, "shutdown-drain-ms", '\0',
+                                 glyphastore::cli::OptionArity::required, "MILLISECONDS",
+                                 "Bound durable mutation drain after stop (default: 30000; 0 unbounded). "
+                                 "Queued pre-Store work expires as unavailable on timeout"},
     glyphastore::cli::OptionSpec{reuse_port,
                                  "reuse-port",
                                  '\0',
@@ -332,6 +337,13 @@ struct Options {
         return glyphastore::unexpected(status.error());
     }
     options.server.durable_mutation_queue_wait_ms = static_cast<std::uint32_t>(mutation_queue_wait_ms);
+    std::size_t shutdown_drain_ms = options.server.shutdown_drain_ms;
+    if (auto status = set_size_option(*parsed, shutdown_drain, "--shutdown-drain-ms", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), shutdown_drain_ms);
+        !status) {
+        return glyphastore::unexpected(status.error());
+    }
+    options.server.shutdown_drain_ms = static_cast<std::uint32_t>(shutdown_drain_ms);
     if (parsed->has(reuse_port) && parsed->has(no_reuse_port)) {
         return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
                                  "--reuse-port and --no-reuse-port are mutually exclusive");
