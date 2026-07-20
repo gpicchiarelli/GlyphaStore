@@ -58,6 +58,9 @@ struct MaintenanceObservation {
     std::size_t sealed_segment_count{};
     std::size_t max_segment_count{};
     std::uint64_t reserved_free_bytes{};
+    // Bytes required in addition to reserved_free_bytes to create/rotate one Segment
+    // (typically kSegmentSizeBytes + next manifest size). Zero means "use kSegmentSizeBytes".
+    std::uint64_t rotate_additional_bytes{};
     std::optional<std::uint64_t> available_free_bytes{};
 };
 

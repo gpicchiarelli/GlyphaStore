@@ -3,6 +3,7 @@
 #include "glyphastore/core/types.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <utility>
 
 namespace glyphastore {
@@ -30,6 +31,27 @@ namespace {
     return level == MaintenancePressureLevel::pressure || level == MaintenancePressureLevel::emergency;
 }
 
+[[nodiscard]] auto rotate_additional_bytes_for(const MaintenanceObservation& observation) noexcept
+    -> std::uint64_t {
+    if (observation.rotate_additional_bytes != 0) {
+        return observation.rotate_additional_bytes;
+    }
+    return static_cast<std::uint64_t>(kSegmentSizeBytes);
+}
+
+[[nodiscard]] auto free_space_blocks_rotation(const MaintenanceObservation& observation) noexcept -> bool {
+    if (!observation.available_free_bytes.has_value()) {
+        return false;
+    }
+    const auto available = *observation.available_free_bytes;
+    const auto reserved = observation.reserved_free_bytes;
+    const auto additional = rotate_additional_bytes_for(observation);
+    if (additional > std::numeric_limits<std::uint64_t>::max() - reserved) {
+        return true;
+    }
+    return available < reserved + additional;
+}
+
 } // namespace
 
 auto classify_maintenance_pressure(const MaintenanceObservation& observation,
@@ -42,12 +64,8 @@ auto classify_maintenance_pressure(const MaintenanceObservation& observation,
     if (observation.max_segment_count > 0 && observation.segment_count >= observation.max_segment_count) {
         return MaintenancePressureLevel::emergency;
     }
-    if (observation.available_free_bytes.has_value()) {
-        const auto available = *observation.available_free_bytes;
-        const auto reserved = observation.reserved_free_bytes;
-        if (available <= reserved || available - reserved < static_cast<std::uint64_t>(kSegmentSizeBytes)) {
-            return MaintenancePressureLevel::emergency;
-        }
+    if (free_space_blocks_rotation(observation)) {
+        return MaintenancePressureLevel::emergency;
     }
 
     bool pressure = false;
@@ -124,6 +142,7 @@ void MaintenanceController::start() {
             return;
         }
         stop_requested_ = false;
+        evaluate_requested_ = true; // first observation must not wait a mid-interval
         state_ = MaintenanceState::idle;
     }
     auto thread = std::jthread([this](const std::stop_token stop_token) { run(stop_token); });
@@ -137,6 +156,7 @@ void MaintenanceController::start() {
         }
         worker_ = std::move(thread);
     }
+    wake_.notify_one();
 }
 
 void MaintenanceController::request_stop() noexcept {
@@ -169,6 +189,7 @@ void MaintenanceController::join() {
     }
     {
         const std::lock_guard lock{mutex_};
+        publish_mutations_rejected_locked(false);
         if (state_ != MaintenanceState::faulted) {
             state_ = MaintenanceState::stopped;
         }
@@ -234,6 +255,11 @@ auto MaintenanceController::mutations_rejected() const noexcept -> bool {
 }
 
 void MaintenanceController::publish_mutations_rejected_locked(const bool rejected) noexcept {
+    // Once stop is requested, never re-arm the gate (in-flight eval must not undo request_stop).
+    if (stop_requested_) {
+        mutations_rejected_.store(false, std::memory_order_release);
+        return;
+    }
     mutations_rejected_.store(rejected, std::memory_order_release);
 }
 
@@ -308,11 +334,12 @@ void MaintenanceController::evaluate_once() {
                             MaintenanceActivationReason::none);
                 return;
             }
-            // Keep an already-published emergency gate: reclaim fault must not re-open mutations
-            // while capacity is still exhausted. Recovery is a later non-emergency observation
-            // (evaluate still observes when auto-compact is disabled) or request_stop.
+            // Keep an already-published emergency gate. Do not latch auto-compact off while the
+            // gate is armed: reclaim must keep retrying under emergency.
             state_ = MaintenanceState::faulted;
-            auto_compact_enabled_ = false;
+            if (!mutations_rejected_.load(std::memory_order_relaxed)) {
+                auto_compact_enabled_ = false;
+            }
             return;
         }
         observation = *observed;
@@ -415,9 +442,14 @@ void MaintenanceController::evaluate_once() {
             } else if (result.error().code == ErrorCode::sequence_conflict) {
                 record_skip(MaintenanceSkipReason::sequence_conflict, MaintenanceState::idle, activation);
             } else {
-                // Preserve emergency rejection published from this cycle's observation.
+                // Preserve emergency rejection. While the gate is armed, keep auto-compact enabled
+                // so budgeted reclaim retries continue (critical: do not wedge the Store).
                 state_ = MaintenanceState::faulted;
-                auto_compact_enabled_ = false;
+                const bool gate_armed = mutations_rejected_.load(std::memory_order_relaxed) ||
+                                        pressure_ == MaintenancePressureLevel::emergency;
+                if (!gate_armed) {
+                    auto_compact_enabled_ = false;
+                }
             }
             return;
         }
@@ -463,6 +495,7 @@ void MaintenanceController::run(const std::stop_token stop_token) {
     }
     {
         const std::lock_guard lock{mutex_};
+        publish_mutations_rejected_locked(false);
         if (state_ != MaintenanceState::faulted) {
             state_ = MaintenanceState::stopped;
         }

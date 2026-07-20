@@ -74,6 +74,9 @@ thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015
   then joins; manual `compact()` still works; concurrent compact still returns `sequence_conflict`.
 - Remaining before claiming production automatic reclaim efficacy: production benches (not lifecycle).
 
+Phase 5: emergency reclaim faults must not latch auto-compact off while the mutation gate is armed;
+background start evaluates immediately; free-space emergency matches rotate headroom.
+
 ## References
 
 - [ADR 0015](0015-whole-worker-compaction.md)

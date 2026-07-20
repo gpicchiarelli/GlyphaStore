@@ -1,6 +1,6 @@
 # MaintenanceController
 
-Status: Phase 4 lifecycle + emergency fail-closed (ADR 0023)
+Status: Phase 5 critical fail-closed + lifecycle (ADR 0023)
 Applies to: embedded Store and glyphastored
 Owner: persistence maintainers
 Last reviewed: 2026-07-20
@@ -19,7 +19,7 @@ sole compaction primitives (ADR 0015).
 | `background` | no | yes | one Store-owned `std::jthread` |
 | `disabled` | no | no | none; `compact()` still available |
 
-## Phase 4 behavior (current)
+## Phase 5 behavior (current)
 
 In `background`, the controller:
 
@@ -27,11 +27,12 @@ In `background`, the controller:
    Segments. Observation still runs when auto-compact is disabled so emergency admission stays honest.
 2. Classifies pressure via `classify_maintenance_pressure` (highest severity wins):
    - **emergency** when `segment_count >= max_segment_count`, or when available free bytes cannot
-     cover `reserved_free_bytes + kSegmentSizeBytes` (create/rotate at risk);
+     cover `reserved_free_bytes + rotate_additional_bytes` (create/rotate at risk; catalog sets
+     `rotate_additional_bytes` to Segment + next manifest size);
    - **segment pressure** when `segment_count >= ceil(max_segment_count * segment_count_pressure_pct / 100)`;
-   - **free-space pressure** when `available_free_bytes <= reserved_free_bytes + free_bytes_pressure_margin`.
-     With the default `free_bytes_pressure_margin = 0`, free-space pressure collapses into the
-     emergency free-space rule unless operators raise the margin above `kSegmentSizeBytes`.
+   - **free-space pressure** when `available_free_bytes <= reserved_free_bytes + free_bytes_pressure_margin`
+     and emergency does not already apply. With default margin `0`, free-space pressure is only
+     reachable when margin is raised above rotate headroom.
 3. **Normal** policy: skip `no_candidate`; backoff after `max_no_gain_attempts`; honor
    `max_copy_bytes_per_cycle`; mid eval interval.
 4. **Pressure / emergency** policy: use `min_eval_interval_ms`; continue compact attempts despite
@@ -40,11 +41,15 @@ In `background`, the controller:
 5. **Emergency mutation gate**: publish `mutations_rejected`; `Store::put` / `Store::erase` (and
    exclusive `StoreAccess` paths) return `ErrorCode::storage_exhausted` with a stable message.
    `get`, `flush`, `compact`, and `close` continue. No mutation queue.
-6. **Fail-closed on reclaim fault**: compact/observe faults that disable auto-compact **keep** an
-   already-published emergency gate. `MaintenanceState::faulted` is sticky until a later evaluation
-   recovers or `request_stop` runs. The gate clears only on a later non-emergency observation,
-   `unavailable`/`store_closed`, or `request_stop`.
+6. **Fail-closed on reclaim fault**: compact/observe faults **keep** an already-published emergency
+   gate. While the gate is armed, auto-compact is **not** latched off — reclaim keeps retrying under
+   budget. Non-emergency faults still disable auto-compact. `faulted` remains sticky for telemetry
+   until a later evaluation recovers or `request_stop` runs. The gate clears only on a later
+   non-emergency observation, `unavailable`/`store_closed`, or `request_stop`/`join`.
 7. Still at most one `Store::compact()` in flight (shared try-lock).
+8. Background start requests an immediate first evaluation (no mid-interval blind window).
+9. Free-space emergency uses `rotate_additional_bytes` from catalog observation (Segment + next
+   manifest), matching `rotate_active` headroom.
 
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
 eval/compact durations, bytes/records copied, suspend count, and time since last useful compaction.

@@ -279,8 +279,8 @@ most one transaction per call, and reports copy statistics. The online single-ou
 fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
 syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
 policy, multi-output randomized crash histories, and native power-loss certification remain open.
-Phase 4 of ADR 0023 hardens lifecycle: emergency mutation reject survives reclaim fault, and Store
-close drains an in-flight background compact before joining.
+Phase 5 of ADR 0023 closes critical fail-closed gaps: reclaim faults under emergency keep retrying,
+stop cannot re-arm the mutation gate, and free-space emergency matches rotate headroom.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second

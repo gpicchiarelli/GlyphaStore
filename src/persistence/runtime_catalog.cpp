@@ -1988,6 +1988,17 @@ auto DurableRuntimeCatalog::maintenance_observation() const -> Result<Maintenanc
             ++observation.sealed_segment_count;
         }
     }
+    // Match rotate_active: require_durable_available_space(kSegmentSizeBytes + next_manifest_bytes).
+    const auto next_count = observation.segment_count + 1U;
+    if (auto next_manifest = durable_manifest_bytes(next_count); next_manifest) {
+        if (*next_manifest <= std::numeric_limits<std::uint64_t>::max() - kSegmentSizeBytes) {
+            observation.rotate_additional_bytes = kSegmentSizeBytes + *next_manifest;
+        } else {
+            observation.rotate_additional_bytes = std::numeric_limits<std::uint64_t>::max();
+        }
+    } else {
+        observation.rotate_additional_bytes = std::numeric_limits<std::uint64_t>::max();
+    }
     if (auto free = directory_.available_space_bytes(); free) {
         observation.available_free_bytes = *free;
     } else if (free.error().code != ErrorCode::unavailable && free.error().code != ErrorCode::io_error) {
