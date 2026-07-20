@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -99,6 +100,13 @@ auto public_compaction_result(const std::size_t worker_index, const VacuumStats&
 
 [[nodiscard]] auto closed_store() -> Unexpected {
     return unexpected(Error{ErrorCode::unavailable, {}});
+}
+
+[[nodiscard]] auto reject_if_maintenance_emergency(MaintenanceController* controller) -> Status {
+    if (controller != nullptr && controller->mutations_rejected()) {
+        return fail(ErrorCode::storage_exhausted, std::string{kMaintenanceEmergencyMutationMessage});
+    }
+    return {};
 }
 
 auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOpenMode {
@@ -590,6 +598,9 @@ auto Store::put(const std::string_view key, const std::span<const std::byte> val
     if (!operation) {
         return closed_store();
     }
+    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+        return rejected;
+    }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
     }
@@ -608,6 +619,9 @@ auto Store::put(const std::span<const std::byte> key, const std::span<const std:
     if (!operation) {
         return closed_store();
     }
+    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+        return rejected;
+    }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
     }
@@ -625,6 +639,9 @@ auto Store::erase(const std::string_view key) -> Status try {
     if (!operation) {
         return closed_store();
     }
+    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+        return rejected;
+    }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(hashed));
     }
@@ -641,6 +658,9 @@ auto Store::erase(const std::span<const std::byte> key) -> Status try {
     Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
     if (!operation) {
         return closed_store();
+    }
+    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+        return rejected;
     }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(hashed));
@@ -876,6 +896,9 @@ auto detail::StoreAccess::put(Store& store, const std::size_t worker_index, cons
     if (!operation) {
         return closed_store();
     }
+    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
+        return rejected;
+    }
     if (store.impl_->durable_runtime) {
         return durable_status(store.impl_->durable_runtime->put(key, value, expire_at_ns));
     }
@@ -891,6 +914,9 @@ auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, co
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
         return closed_store();
+    }
+    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
+        return rejected;
     }
     if (store.impl_->durable_runtime) {
         return durable_status(store.impl_->durable_runtime->erase(key));

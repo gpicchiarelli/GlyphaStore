@@ -246,8 +246,8 @@ power-cut automation and pinned native mount rows remain before this P0 item can
 
 **Status:** in progress. Durable compaction is exposed as cooperative `Store::compact()` maintenance
 with an optional Store-owned [MaintenanceController](architecture/maintenance-controller.md)
-(ADR 0023). Automatic reclaim policy (Phase 1+ budgets, pressure/emergency) and the complete online
-crash matrix remain open. A deterministic v1
+(ADR 0023). Automatic reclaim policy through Phase 3 (budgets, pressure, emergency mutation reject)
+is implemented; the complete online crash matrix and production benches remain open. A deterministic v1
 planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
@@ -278,8 +278,8 @@ most one transaction per call, and reports copy statistics. The online single-ou
 fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
 syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
 policy, multi-output randomized crash histories, and native power-loss certification remain open.
-Phase 2 of ADR 0023 adds pressure watermarks (segment count / reserved free space) and expanded
-maintenance telemetry; emergency mutation rejection remains open.
+Phase 3 of ADR 0023 adds emergency capacity classification and rejects `put`/`erase` with
+`ErrorCode::storage_exhausted` while reads, flush, compact, and close continue.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second

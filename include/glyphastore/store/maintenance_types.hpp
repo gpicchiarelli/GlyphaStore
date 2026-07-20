@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <string_view>
 
 namespace glyphastore {
 
@@ -35,7 +36,7 @@ enum class MaintenancePressureLevel : std::uint8_t {
     none,
     normal,
     pressure,
-    // emergency reserved for Phase 3
+    emergency,
 };
 
 enum class MaintenanceActivationReason : std::uint8_t {
@@ -44,6 +45,7 @@ enum class MaintenanceActivationReason : std::uint8_t {
     sealed_history,
     segment_pressure,
     free_space_pressure,
+    emergency_capacity,
     budget_backoff,
     policy_deferred,
     no_candidate,
@@ -65,6 +67,7 @@ struct MaintenanceSnapshot {
     MaintenanceMode mode{MaintenanceMode::cooperative};
     MaintenancePressureLevel pressure{MaintenancePressureLevel::none};
     MaintenanceActivationReason last_activation_reason{MaintenanceActivationReason::none};
+    bool mutations_rejected{};
     std::uint64_t evaluation_cycles{};
     std::uint64_t compact_attempts{};
     std::uint64_t compact_completed{};
@@ -89,5 +92,9 @@ struct MaintenanceSnapshot {
 [[nodiscard]] auto classify_maintenance_pressure(const MaintenanceObservation& observation,
                                                  const MaintenanceConfig& config) noexcept
     -> MaintenancePressureLevel;
+
+// Shared diagnostic text for Store::put/erase rejected under emergency.
+inline constexpr std::string_view kMaintenanceEmergencyMutationMessage =
+    "maintenance emergency: insufficient capacity to create or rotate a Segment";
 
 } // namespace glyphastore

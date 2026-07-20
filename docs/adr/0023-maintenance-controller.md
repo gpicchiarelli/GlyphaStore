@@ -41,22 +41,22 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 4. The controller never mutates Worker Index or Segments directly. Future policy may only observe
    published snapshots/stats and invoke `Store::compact()`, which already serializes on
    `compaction_mutex`.
-5. Phase 2 enables automatic `Store::compact()` under **normal** and **pressure** policies when mode
-   is `background`. Emergency mutation rejection remains deferred.
+5. Phase 3 enables automatic `Store::compact()` under **normal**, **pressure**, and **emergency**
+   policies when mode is `background`. Under emergency, `put`/`erase` are rejected with
+   `ErrorCode::storage_exhausted` while reads, flush, compact, and close continue.
 6. Concurrent manual `compact()` and controller-driven compact share the same try-lock; conflicts
    return `sequence_conflict` without queuing.
 7. `Store::close()` stops maintenance wake, waits for admitted operations (including in-flight
    compact), joins the controller, then proceeds with existing flush/runtime teardown.
-8. Future normal / pressure / emergency policies and mutation rejection under emergency are deferred;
-   they must not introduce unbounded queues.
+8. Policies must not introduce unbounded queues; emergency never buffers rejected mutations.
 
 ## Consequences
 
 Positive: clear lifecycle and config surface; daemon path ready for autosufficient reclaim; no format
-change; compact remains the ground-truth transaction.
+change; compact remains the ground-truth transaction; emergency fails closed on capacity.
 
-Negative / deferred: Phase 0 does not yet reclaim automatically; pressure/emergency and full
-telemetry/benches remain follow-up work. Background mode adds one Store thread when enabled.
+Negative / deferred: full production benches and multi-output randomized crash histories remain
+follow-up. Background mode adds one Store thread when enabled.
 
 ## Compatibility and migration
 
@@ -67,10 +67,10 @@ telemetry/benches remain follow-up work. Background mode adds one Store thread w
 ## Verification
 
 - Unit tests: cooperative starts no thread; background starts and joins on close; invalid intervals
-  rejected; close with background mode is clean.
+  rejected; close with background mode is clean; pressure continues under no-gain budget; emergency
+  rejects put/erase with `storage_exhausted` and recovers when watermarks clear.
 - Integration: manual `compact()` still works; concurrent compact still returns `sequence_conflict`.
-- Phase 1+ requires budget, pressure, emergency, crash/close matrix, and benches before claiming
-  production automatic reclaim.
+- Remaining before claiming production automatic reclaim: crash/close matrix depth and benches.
 
 ## References
 

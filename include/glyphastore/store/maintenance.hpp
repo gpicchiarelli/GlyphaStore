@@ -3,6 +3,7 @@
 #include "glyphastore/store/maintenance_types.hpp"
 #include "glyphastore/store/store.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -14,7 +15,7 @@
 
 namespace glyphastore {
 
-// Store-owned optional scheduler. Phase 2: normal + pressure budgets; emergency deferred.
+// Store-owned optional scheduler. Phase 3: normal + pressure + emergency mutation gate.
 class MaintenanceController final {
   public:
     using CompactCallback = std::function<Result<CompactionResult>()>;
@@ -37,6 +38,8 @@ class MaintenanceController final {
 
     [[nodiscard]] auto snapshot() const -> MaintenanceSnapshot;
     [[nodiscard]] auto thread_running() const noexcept -> bool;
+    // Lock-free admission probe for Store::put/erase (memory_order_acquire).
+    [[nodiscard]] auto mutations_rejected() const noexcept -> bool;
 
   private:
     void run(std::stop_token stop_token);
@@ -44,6 +47,7 @@ class MaintenanceController final {
     void evaluate_once();
     void record_skip(MaintenanceSkipReason reason, MaintenanceState next,
                      MaintenanceActivationReason activation);
+    void publish_mutations_rejected_locked(bool rejected) noexcept;
 
     MaintenanceConfig config_;
     CompactCallback compact_;
@@ -56,6 +60,7 @@ class MaintenanceController final {
     MaintenanceState state_{MaintenanceState::stopped};
     MaintenancePressureLevel pressure_{MaintenancePressureLevel::none};
     MaintenanceActivationReason last_activation_reason_{MaintenanceActivationReason::none};
+    std::atomic<bool> mutations_rejected_{false};
     std::uint64_t evaluation_cycles_{};
     std::uint64_t compact_attempts_{};
     std::uint64_t compact_completed_{};

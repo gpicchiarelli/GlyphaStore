@@ -1,5 +1,7 @@
 #include "glyphastore/store/maintenance.hpp"
 
+#include "glyphastore/core/types.hpp"
+
 #include <algorithm>
 #include <utility>
 
@@ -24,6 +26,10 @@ namespace {
     return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(delta).count());
 }
 
+[[nodiscard]] auto aggressive_pressure(const MaintenancePressureLevel level) noexcept -> bool {
+    return level == MaintenancePressureLevel::pressure || level == MaintenancePressureLevel::emergency;
+}
+
 } // namespace
 
 auto classify_maintenance_pressure(const MaintenanceObservation& observation,
@@ -31,6 +37,19 @@ auto classify_maintenance_pressure(const MaintenanceObservation& observation,
     if (!observation.durable) {
         return MaintenancePressureLevel::normal;
     }
+
+    // Emergency: cannot create/rotate a Segment while preserving reserved free space.
+    if (observation.max_segment_count > 0 && observation.segment_count >= observation.max_segment_count) {
+        return MaintenancePressureLevel::emergency;
+    }
+    if (observation.available_free_bytes.has_value()) {
+        const auto available = *observation.available_free_bytes;
+        const auto reserved = observation.reserved_free_bytes;
+        if (available <= reserved || available - reserved < static_cast<std::uint64_t>(kSegmentSizeBytes)) {
+            return MaintenancePressureLevel::emergency;
+        }
+    }
+
     bool pressure = false;
     if (observation.max_segment_count > 0) {
         const auto threshold =
@@ -131,6 +150,7 @@ void MaintenanceController::request_stop() noexcept {
         }
         compact_ = {};
         observe_ = {};
+        publish_mutations_rejected_locked(false);
     }
     wake_.notify_all();
     if (worker_.joinable()) {
@@ -183,6 +203,7 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .mode = config_.mode,
         .pressure = pressure_,
         .last_activation_reason = last_activation_reason_,
+        .mutations_rejected = mutations_rejected_.load(std::memory_order_relaxed),
         .evaluation_cycles = evaluation_cycles_,
         .compact_attempts = compact_attempts_,
         .compact_completed = compact_completed_,
@@ -208,8 +229,16 @@ auto MaintenanceController::thread_running() const noexcept -> bool {
     return worker_.joinable();
 }
 
+auto MaintenanceController::mutations_rejected() const noexcept -> bool {
+    return mutations_rejected_.load(std::memory_order_acquire);
+}
+
+void MaintenanceController::publish_mutations_rejected_locked(const bool rejected) noexcept {
+    mutations_rejected_.store(rejected, std::memory_order_release);
+}
+
 auto MaintenanceController::eval_interval_locked() const -> std::chrono::milliseconds {
-    const bool under_pressure = pressure_ == MaintenancePressureLevel::pressure;
+    const bool under_pressure = aggressive_pressure(pressure_);
     const bool backoff =
         !under_pressure && consecutive_no_gain_ >= config_.max_no_gain_attempts && config_.max_no_gain_attempts > 0;
     return std::chrono::milliseconds{clamp_interval_ms(config_, under_pressure, backoff)};
@@ -256,58 +285,74 @@ void MaintenanceController::evaluate_once() {
         bytes_copied_window = bytes_copied_window_;
     }
 
-    if (!auto_compact || !compact) {
-        const std::lock_guard lock{mutex_};
-        last_eval_duration_ns_ = elapsed_ns(eval_started);
-        record_skip(MaintenanceSkipReason::policy_deferred, MaintenanceState::idle,
-                    MaintenanceActivationReason::policy_deferred);
-        return;
-    }
-
     MaintenanceObservation observation{};
-    if (observe) {
+    if (!observe) {
+        const std::lock_guard lock{mutex_};
+        pressure_ = MaintenancePressureLevel::normal;
+        publish_mutations_rejected_locked(false);
+        if (!auto_compact || !compact) {
+            last_eval_duration_ns_ = elapsed_ns(eval_started);
+            record_skip(MaintenanceSkipReason::policy_deferred, MaintenanceState::idle,
+                        MaintenanceActivationReason::policy_deferred);
+            return;
+        }
+    } else {
         auto observed = observe();
         if (!observed) {
             const std::lock_guard lock{mutex_};
             last_error_ = observed.error();
             last_eval_duration_ns_ = elapsed_ns(eval_started);
             if (observed.error().code == ErrorCode::unavailable) {
+                publish_mutations_rejected_locked(false);
                 record_skip(MaintenanceSkipReason::store_closed, MaintenanceState::idle,
                             MaintenanceActivationReason::none);
                 return;
             }
+            // Fault: clear reject so the Store is not permanently wedged without recover path.
+            publish_mutations_rejected_locked(false);
             state_ = MaintenanceState::faulted;
             auto_compact_enabled_ = false;
             return;
         }
         observation = *observed;
-        const std::lock_guard lock{mutex_};
-        last_observation_ = observation;
-        pressure_ = classify_maintenance_pressure(observation, config_);
-        if (stop_requested_) {
+        {
+            const std::lock_guard lock{mutex_};
+            last_observation_ = observation;
+            pressure_ = classify_maintenance_pressure(observation, config_);
+            publish_mutations_rejected_locked(pressure_ == MaintenancePressureLevel::emergency);
+            if (stop_requested_) {
+                return;
+            }
+        }
+        if (!auto_compact || !compact) {
+            const std::lock_guard lock{mutex_};
+            last_eval_duration_ns_ = elapsed_ns(eval_started);
+            record_skip(MaintenanceSkipReason::policy_deferred, MaintenanceState::idle,
+                        pressure_ == MaintenancePressureLevel::emergency
+                            ? MaintenanceActivationReason::emergency_capacity
+                            : MaintenanceActivationReason::policy_deferred);
             return;
         }
-    } else {
-        const std::lock_guard lock{mutex_};
-        pressure_ = MaintenancePressureLevel::normal;
     }
 
     const auto pressure = [&] {
         const std::lock_guard lock{mutex_};
         return pressure_;
     }();
-    const bool under_pressure = pressure == MaintenancePressureLevel::pressure;
+    const bool under_pressure = aggressive_pressure(pressure);
 
     if (observation.durable && observation.sealed_segment_count == 0) {
         const std::lock_guard lock{mutex_};
         consecutive_no_gain_ = 0;
         last_eval_duration_ns_ = elapsed_ns(eval_started);
         record_skip(MaintenanceSkipReason::no_candidate, MaintenanceState::idle,
-                    MaintenanceActivationReason::no_candidate);
+                    pressure == MaintenancePressureLevel::emergency
+                        ? MaintenanceActivationReason::emergency_capacity
+                        : MaintenanceActivationReason::no_candidate);
         return;
     }
 
-    // Normal-only backoff. Under pressure, reclaim attempts continue despite no-gain streak.
+    // Normal-only backoff. Under pressure/emergency, reclaim attempts continue despite no-gain streak.
     if (!under_pressure && config.max_no_gain_attempts > 0 && consecutive_no_gain >= config.max_no_gain_attempts) {
         const std::lock_guard lock{mutex_};
         consecutive_no_gain_ = 0;
@@ -328,7 +373,9 @@ void MaintenanceController::evaluate_once() {
     }
 
     MaintenanceActivationReason activation = MaintenanceActivationReason::scheduled;
-    if (under_pressure) {
+    if (pressure == MaintenancePressureLevel::emergency) {
+        activation = MaintenanceActivationReason::emergency_capacity;
+    } else if (pressure == MaintenancePressureLevel::pressure) {
         if (observation.available_free_bytes.has_value() &&
             *observation.available_free_bytes <=
                 observation.reserved_free_bytes + config.free_bytes_pressure_margin) {
@@ -361,11 +408,13 @@ void MaintenanceController::evaluate_once() {
         if (!result) {
             last_error_ = result.error();
             if (result.error().code == ErrorCode::unavailable) {
+                publish_mutations_rejected_locked(false);
                 record_skip(MaintenanceSkipReason::store_closed, MaintenanceState::idle,
                             MaintenanceActivationReason::none);
             } else if (result.error().code == ErrorCode::sequence_conflict) {
                 record_skip(MaintenanceSkipReason::sequence_conflict, MaintenanceState::idle, activation);
             } else {
+                publish_mutations_rejected_locked(false);
                 state_ = MaintenanceState::faulted;
                 auto_compact_enabled_ = false;
             }
