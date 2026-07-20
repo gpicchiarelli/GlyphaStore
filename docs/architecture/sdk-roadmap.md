@@ -86,11 +86,12 @@ Optional per-call request timeout overrides the configured default (same absolut
 automatic retries). See [client semantics §6.5](../spec/client-semantics-v1.md). Surfaces:
 `RequestOptions` (C++), `timeout=` (Python), `timeout =>` (Perl), `CallOptions` (Go).
 
-### 7. Structured errors (uniform across SDKs)
+### 7. Structured errors (uniform across SDKs) — **done**
 
-Expose consistently: category, wire status, request id, Worker, routing epoch, bytes sent,
-retryability, operation, mutation outcome. Perl is still lighter (`category` + `message`) than
-C++/Python and should catch up.
+Official clients expose client-semantics §2.1 fields: category, message, wire status, request id,
+Worker, routing epoch, bytes sent, retryability, operation, mutation outcome. Surfaces: enriched
+`glyphastore::Error` (C++), `GlyphaError` attributes (Python), `GlyphaStore::Error` accessors (Perl),
+`client.Error` (Go).
 
 ### 8. Perl monotonic clock — **done**
 

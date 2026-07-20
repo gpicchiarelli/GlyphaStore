@@ -27,7 +27,7 @@ const (
 	RetryReconcileFirst Retryability = "reconcile_first"
 )
 
-// Error is a structured GlyphaStore client failure.
+// Error is a structured GlyphaStore client failure (§2.1).
 type Error struct {
 	Category        Category
 	Message         string
@@ -55,6 +55,85 @@ func (e *Error) Is(target error) bool {
 		return false
 	}
 	return e.Category == other.Category
+}
+
+func (e *Error) clone() *Error {
+	if e == nil {
+		return nil
+	}
+	out := *e
+	if e.WireStatus != nil {
+		status := *e.WireStatus
+		out.WireStatus = &status
+	}
+	return &out
+}
+
+func (e *Error) withOp(op string) *Error {
+	out := e.clone()
+	out.Operation = op
+	return out
+}
+
+func (e *Error) withRequest(requestID uint64, worker uint32, epoch uint64) *Error {
+	out := e.clone()
+	out.RequestID = requestID
+	out.Worker = worker
+	out.RoutingEpoch = epoch
+	return out
+}
+
+func (e *Error) withBytesSent(n int) *Error {
+	out := e.clone()
+	out.BytesSent = n
+	out.Retryability = retryabilityFor(out.Category, n > 0 && out.hasMutation, out.hasMutation &&
+		(out.MutationOutcome == MutationIndeterminate || n > 0 && out.Category == CategoryTransport))
+	if out.hasMutation && n > 0 && out.Category == CategoryTransport {
+		out.Retryability = RetryReconcileFirst
+	} else if n == 0 && out.Category == CategoryTransport {
+		out.Retryability = RetrySameRequest
+	}
+	return out
+}
+
+func (e *Error) withMutation(outcome MutationOutcome) *Error {
+	out := e.clone()
+	out.MutationOutcome = outcome
+	out.hasMutation = true
+	indeterminate := outcome == MutationIndeterminate
+	out.Retryability = retryabilityFor(out.Category, out.BytesSent > 0, indeterminate)
+	return out
+}
+
+func (e *Error) withSession(worker uint32, epoch uint64) *Error {
+	out := e.clone()
+	out.Worker = worker
+	out.RoutingEpoch = epoch
+	return out
+}
+
+func promoteSendFailure(sf *sendFailure, op string, requestID uint64, worker uint32, epoch uint64, mutation bool) *Error {
+	out := sf.err.clone()
+	out.BytesSent = sf.bytesSent
+	out.Operation = op
+	out.RequestID = requestID
+	out.Worker = worker
+	out.RoutingEpoch = epoch
+	out.hasMutation = mutation
+	if mutation {
+		if sf.bytesSent == 0 {
+			out.MutationOutcome = MutationRejected
+			out.Retryability = RetrySameRequest
+		} else {
+			out.MutationOutcome = MutationIndeterminate
+			out.Retryability = RetryReconcileFirst
+		}
+	} else if sf.bytesSent == 0 {
+		out.Retryability = RetrySameRequest
+	} else {
+		out.Retryability = RetryReconcileFirst
+	}
+	return out
 }
 
 func newError(category Category, message string) *Error {
@@ -140,4 +219,11 @@ func statusError(status protocol.Status) *Error {
 	s := status
 	err.WireStatus = &s
 	return err
+}
+
+func annotate(err *Error, op string, requestID uint64, worker uint32, epoch uint64) *Error {
+	if err == nil {
+		return nil
+	}
+	return err.withOp(op).withRequest(requestID, worker, epoch)
 }

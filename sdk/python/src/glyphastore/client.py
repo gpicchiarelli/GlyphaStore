@@ -26,31 +26,119 @@ _IDENTITY: Final = b"GlyphaStore/2"
 
 
 class GlyphaError(Exception):
-    """Base class for Python client failures."""
+    """Base class for Python client failures with client-semantics v1 fields."""
+
+    category: str = "internal"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        category: str | None = None,
+        wire_status: int | None = None,
+        mutation_outcome: MutationOutcome | None = None,
+        bytes_sent: int = 0,
+        request_id: int | None = None,
+        worker: int | None = None,
+        routing_epoch: int | None = None,
+        retryability: str | None = None,
+        operation: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.message = message
+        if category is not None:
+            self.category = category
+        self.wire_status = wire_status
+        self.mutation_outcome = mutation_outcome
+        self.bytes_sent = bytes_sent
+        self.request_id = request_id
+        self.worker = worker
+        self.routing_epoch = routing_epoch
+        self.operation = operation
+        indeterminate = mutation_outcome is MutationOutcome.INDETERMINATE
+        self.retryability = retryability or _retryability_for(
+            self.category, bytes_sent > 0 and mutation_outcome is not None, indeterminate
+        )
 
 
 class InvalidArgument(GlyphaError):
-    pass
+    category = "invalid_argument"
 
 
 class ProtocolError(GlyphaError):
-    pass
+    category = "protocol"
 
 
 class TransportError(GlyphaError):
-    pass
+    category = "transport"
 
 
 class NotFound(GlyphaError):
-    pass
+    category = "not_found"
 
 
 class Overloaded(GlyphaError):
-    pass
+    category = "overloaded"
 
 
 class Unavailable(GlyphaError):
-    pass
+    category = "unavailable"
+
+
+class InternalError(GlyphaError):
+    category = "internal"
+
+
+def _retryability_for(category: str, mutation_sent: bool, indeterminate: bool) -> str:
+    if indeterminate:
+        return "reconcile_first"
+    if category == "invalid_argument" and not mutation_sent:
+        return "never"
+    if category == "transport" and not mutation_sent:
+        return "same_request"
+    if category in ("overloaded", "not_found"):
+        return "new_attempt"
+    if category == "unavailable":
+        return "never"
+    if mutation_sent:
+        return "reconcile_first"
+    return "new_attempt"
+
+
+def _enrich(
+    error: GlyphaError,
+    *,
+    operation: str | None = None,
+    request_id: int | None = None,
+    worker: int | None = None,
+    routing_epoch: int | None = None,
+    bytes_sent: int | None = None,
+    mutation_outcome: MutationOutcome | None = None,
+    wire_status: int | None = None,
+) -> GlyphaError:
+    if operation is not None:
+        error.operation = operation
+    if request_id is not None:
+        error.request_id = request_id
+    if worker is not None:
+        error.worker = worker
+    if routing_epoch is not None:
+        error.routing_epoch = routing_epoch
+    if bytes_sent is not None:
+        error.bytes_sent = bytes_sent
+    if mutation_outcome is not None:
+        error.mutation_outcome = mutation_outcome
+    if wire_status is not None:
+        error.wire_status = wire_status
+    indeterminate = error.mutation_outcome is MutationOutcome.INDETERMINATE
+    mutation_sent = error.bytes_sent > 0 and error.mutation_outcome is not None
+    if error.mutation_outcome is not None and error.bytes_sent > 0 and error.category == "transport":
+        error.retryability = "reconcile_first"
+    elif error.bytes_sent == 0 and error.category == "transport":
+        error.retryability = "same_request"
+    else:
+        error.retryability = _retryability_for(error.category, mutation_sent, indeterminate)
+    return error
 
 
 class MutationOutcome(Enum):
@@ -590,16 +678,19 @@ class Client:
     @staticmethod
     def _status_error(status: Status) -> GlyphaError:
         if status is Status.NOT_FOUND:
-            return NotFound("key was not found")
-        if status is Status.OVERLOADED:
-            return Overloaded("server is overloaded")
-        if status is Status.NOT_BOUND:
-            return Unavailable("server connection is not bound")
-        if status is Status.WRONG_OWNER:
-            return ProtocolError("server rejected Worker routing")
-        if status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
-            return InvalidArgument("server rejected the request")
-        return GlyphaError("server reported an internal error")
+            error: GlyphaError = NotFound("key was not found")
+        elif status is Status.OVERLOADED:
+            error = Overloaded("server is overloaded")
+        elif status is Status.NOT_BOUND:
+            error = Unavailable("server connection is not bound")
+        elif status is Status.WRONG_OWNER:
+            error = ProtocolError("server rejected Worker routing")
+        elif status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
+            error = InvalidArgument("server rejected the request")
+        else:
+            error = InternalError("server reported an internal error")
+        error.wire_status = int(status)
+        return error
 
     def _request_deadline(self, timeout: float | None) -> float:
         if timeout is not None and timeout <= 0:
@@ -663,28 +754,51 @@ class Client:
         *,
         timeout: float | None = None,
     ) -> MutationResult:
+        op = "put" if opcode is Opcode.PUT else "erase"
         if not self._healthy:
             return MutationResult(
                 MutationOutcome.REJECTED,
-                Unavailable("client is closed or routing metadata changed"),
+                _enrich(
+                    Unavailable("client is closed or routing metadata changed"),
+                    operation=op,
+                    mutation_outcome=MutationOutcome.REJECTED,
+                ),
             )
         try:
             deadline = self._request_deadline(timeout)
         except InvalidArgument as error:
-            return MutationResult(MutationOutcome.REJECTED, error)
+            return MutationResult(
+                MutationOutcome.REJECTED,
+                _enrich(error, operation=op, mutation_outcome=MutationOutcome.REJECTED),
+            )
         worker = self.worker_for(key)
         connection = self._connections[worker]
         with connection.lock:
             if not self._healthy:
                 return MutationResult(
                     MutationOutcome.REJECTED,
-                    Unavailable("client closed before mutation admission"),
+                    _enrich(
+                        Unavailable("client closed before mutation admission"),
+                        operation=op,
+                        worker=worker,
+                        routing_epoch=self._routing_epoch,
+                        mutation_outcome=MutationOutcome.REJECTED,
+                    ),
                 )
             for attempt in range(2):
                 try:
                     self._ensure_connected(connection)
                 except GlyphaError as error:
-                    return MutationResult(MutationOutcome.REJECTED, error)
+                    return MutationResult(
+                        MutationOutcome.REJECTED,
+                        _enrich(
+                            error,
+                            operation=op,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            mutation_outcome=MutationOutcome.REJECTED,
+                        ),
+                    )
                 try:
                     request_id = self._next_request_id()
                     try:
@@ -697,39 +811,105 @@ class Client:
                         )
                     except ValueError as error:
                         return MutationResult(
-                            MutationOutcome.REJECTED, InvalidArgument(str(error))
+                            MutationOutcome.REJECTED,
+                            _enrich(
+                                InvalidArgument(str(error)),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.REJECTED,
+                            ),
                         )
                     if len(frame) > self._config.maximum_frame_bytes:
                         return MutationResult(
                             MutationOutcome.REJECTED,
-                            InvalidArgument("request exceeds the configured frame limit"),
+                            _enrich(
+                                InvalidArgument("request exceeds the configured frame limit"),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.REJECTED,
+                            ),
                         )
                     response = self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)
                 except _SendFailure as error:
                     connection.reset()
+                    outcome = (
+                        MutationOutcome.REJECTED
+                        if error.bytes_sent == 0
+                        else MutationOutcome.INDETERMINATE
+                    )
+                    promoted = _enrich(
+                        error.error,
+                        operation=op,
+                        request_id=request_id,
+                        worker=worker,
+                        routing_epoch=self._routing_epoch,
+                        bytes_sent=error.bytes_sent,
+                        mutation_outcome=outcome,
+                    )
                     if error.bytes_sent == 0:
                         if attempt == 0:
                             continue
-                        return MutationResult(MutationOutcome.REJECTED, error.error)
-                    return MutationResult(MutationOutcome.INDETERMINATE, error.error)
+                        return MutationResult(MutationOutcome.REJECTED, promoted)
+                    return MutationResult(MutationOutcome.INDETERMINATE, promoted)
                 except (TransportError, ProtocolError, Unavailable) as error:
                     connection.reset()
-                    return MutationResult(MutationOutcome.INDETERMINATE, error)
+                    return MutationResult(
+                        MutationOutcome.INDETERMINATE,
+                        _enrich(
+                            error,
+                            operation=op,
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ),
+                    )
                 if response.status is Status.OK:
                     if response.value:
                         connection.reset()
                         return MutationResult(
                             MutationOutcome.INDETERMINATE,
-                            ProtocolError("mutation response value must be empty"),
+                            _enrich(
+                                ProtocolError("mutation response value must be empty"),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.INDETERMINATE,
+                            ),
                         )
                     return MutationResult(MutationOutcome.COMMITTED)
-                error = self._status_error(response.status)
+                error = _enrich(
+                    self._status_error(response.status),
+                    operation=op,
+                    request_id=request_id,
+                    worker=worker,
+                    routing_epoch=self._routing_epoch,
+                    wire_status=int(response.status),
+                )
                 if response.status is Status.INTERNAL_ERROR:
-                    return MutationResult(MutationOutcome.INDETERMINATE, error)
+                    return MutationResult(
+                        MutationOutcome.INDETERMINATE,
+                        _enrich(error, mutation_outcome=MutationOutcome.INDETERMINATE),
+                    )
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                     self._healthy = False
-                return MutationResult(MutationOutcome.REJECTED, error)
+                return MutationResult(
+                    MutationOutcome.REJECTED,
+                    _enrich(error, mutation_outcome=MutationOutcome.REJECTED),
+                )
             return MutationResult(
-                MutationOutcome.REJECTED, Unavailable("could not send mutation")
+                MutationOutcome.REJECTED,
+                _enrich(
+                    Unavailable("could not send mutation"),
+                    operation=op,
+                    worker=worker,
+                    routing_epoch=self._routing_epoch,
+                    mutation_outcome=MutationOutcome.REJECTED,
+                ),
             )

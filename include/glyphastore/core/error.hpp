@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <utility>
@@ -32,6 +34,16 @@ enum class ErrorCode {
 struct Error {
     ErrorCode code{ErrorCode::invalid_argument};
     std::string message;
+    // Portable client-semantics v1 enrichment. Store paths leave these empty;
+    // TCP clients populate them when known (docs/spec/client-semantics-v1.md §2.1).
+    std::string category{};
+    std::optional<std::uint16_t> wire_status{};
+    std::size_t bytes_sent{};
+    std::optional<std::uint64_t> request_id{};
+    std::optional<std::uint32_t> worker{};
+    std::optional<std::uint64_t> routing_epoch{};
+    std::string retryability{};
+    std::string operation{};
 };
 
 struct Unexpected {

@@ -27,8 +27,11 @@ our $VERSION = '0.1.0';
 
 use constant DEFAULT_PORT => 7379;
 
-sub _error { return GlyphaStore::Error->new($_[0], $_[1]) }
-sub _throw { die _error($_[0], $_[1]) }
+sub _error {
+    my ($category, $message, $fields) = @_;
+    return GlyphaStore::Error->new($category, $message, $fields);
+}
+sub _throw { die _error($_[0], $_[1], $_[2]) }
 
 sub _plain_message {
     my ($error) = @_;
@@ -346,13 +349,15 @@ sub _validate_response {
 
 sub _status_error {
     my ($status) = @_;
-    return _error('not_found', 'key was not found') if $status == STATUS_NOT_FOUND;
-    return _error('overloaded', 'server is overloaded') if $status == STATUS_OVERLOADED;
-    return _error('unavailable', 'server connection is not bound') if $status == STATUS_NOT_BOUND;
-    return _error('protocol', 'server rejected Worker routing') if $status == STATUS_WRONG_OWNER;
-    return _error('invalid_argument', 'server rejected the request')
+    my $error;
+    $error = _error('not_found', 'key was not found') if $status == STATUS_NOT_FOUND;
+    $error = _error('overloaded', 'server is overloaded') if $status == STATUS_OVERLOADED;
+    $error = _error('unavailable', 'server connection is not bound') if $status == STATUS_NOT_BOUND;
+    $error = _error('protocol', 'server rejected Worker routing') if $status == STATUS_WRONG_OWNER;
+    $error = _error('invalid_argument', 'server rejected the request')
         if $status == STATUS_INVALID_REQUEST || $status == STATUS_UNSUPPORTED;
-    return _error('internal', 'server reported an internal error');
+    $error //= _error('internal', 'server reported an internal error');
+    return $error->enrich(wire_status => $status);
 }
 
 sub get {
@@ -488,15 +493,44 @@ sub _mutate {
             if (ref($error) eq 'GlyphaStore::SendFailure') {
                 if (!$error->{bytes_sent}) {
                     next if !$attempt;
-                    return { outcome => 'rejected', error => $error->{error} };
+                    return {
+                        outcome => 'rejected',
+                        error   => $error->{error}->enrich(
+                            bytes_sent       => 0,
+                            request_id       => $request_id,
+                            worker           => $worker,
+                            routing_epoch    => $self->{routing_epoch},
+                            mutation_outcome => 'rejected',
+                            operation        => ($opcode == OP_PUT ? 'put' : 'erase'),
+                        ),
+                    };
                 }
-                return { outcome => 'indeterminate', error => $error->{error} };
+                return {
+                    outcome => 'indeterminate',
+                    error   => $error->{error}->enrich(
+                        bytes_sent       => $error->{bytes_sent},
+                        request_id       => $request_id,
+                        worker           => $worker,
+                        routing_epoch    => $self->{routing_epoch},
+                        mutation_outcome => 'indeterminate',
+                        operation        => ($opcode == OP_PUT ? 'put' : 'erase'),
+                    ),
+                };
             }
             return {
                 outcome => 'indeterminate',
-                error   => ref($error) eq 'GlyphaStore::Error'
-                ? $error
-                : _error('transport', _plain_message($error)),
+                error   => (
+                    ref($error) eq 'GlyphaStore::Error'
+                    ? $error
+                    : _error('transport', _plain_message($error))
+                )->enrich(
+                    bytes_sent       => length($frame),
+                    request_id       => $request_id,
+                    worker           => $worker,
+                    routing_epoch    => $self->{routing_epoch},
+                    mutation_outcome => 'indeterminate',
+                    operation        => ($opcode == OP_PUT ? 'put' : 'erase'),
+                ),
             };
         }
         if ($response->{status} == STATUS_OK) {

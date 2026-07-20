@@ -64,8 +64,9 @@ When an error is returned to the application, official clients **must** be able 
 | `retryability` | yes (may be derived) | See §4. |
 | `operation` | recommended | e.g. `get`, `put`, `erase`, `ping`, `pipeline`. |
 
-Perl 0.1.x may expose only `category` + `message` plus mutation outcome hashes; richer fields are a
-documented enrichment target and must not change category/outcome rules when added.
+Perl 0.1.x exposes the full §2.1 field set on `GlyphaStore::Error` (category, message, wire status,
+mutation outcome, bytes sent, request id, Worker, routing epoch, retryability, operation). Richer
+fields must not change category/outcome rules when added.
 
 ## 3. Wire status → category and mutation outcome
 

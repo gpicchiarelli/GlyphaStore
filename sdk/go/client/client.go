@@ -692,7 +692,9 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 		response, err := c.exchange(conn, frame, deadline)
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {
-				last = sf.err
+				last = promoteSendFailure(sf, readOpName(opcode), requestID, worker, c.routingEpoch, false)
+			} else if ge, ok := err.(*Error); ok {
+				last = annotate(ge, readOpName(opcode), requestID, worker, c.routingEpoch)
 			} else {
 				last = err
 			}
@@ -705,16 +707,19 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 		if err := c.validateResponse(response, requestID, worker); err != nil {
 			conn.reset()
 			if ge, ok := err.(*Error); ok {
+				ge = annotate(ge, readOpName(opcode), requestID, worker, c.routingEpoch)
 				if ge.Category == CategoryUnavailable {
 					if !c.healthy.Load() {
-						return nil, err
+						return nil, ge
 					}
-					last = err
+					last = ge
 					continue
 				}
 				if ge.Category == CategoryProtocol {
-					return nil, err
+					return nil, ge
 				}
+				last = ge
+				continue
 			}
 			last = err
 			continue
@@ -723,80 +728,119 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 			if response.Status == protocol.StatusWrongOwner || response.Status == protocol.StatusNotBound {
 				c.healthy.Store(false)
 			}
-			return nil, statusError(response.Status)
+			return nil, annotate(statusError(response.Status), readOpName(opcode), requestID, worker, c.routingEpoch)
 		}
 		return response.Value, nil
 	}
 	return nil, last
 }
 
+func readOpName(opcode protocol.Opcode) string {
+	switch opcode {
+	case protocol.OpcodeGet:
+		return "get"
+	case protocol.OpcodePing:
+		return "ping"
+	default:
+		return "read"
+	}
+}
+
 func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs uint64, opts ...CallOptions) MutationResult {
+	op := mutateOpName(opcode)
 	if !c.healthy.Load() {
-		return MutationResult{Outcome: MutationRejected, Err: unavailable("client is closed or routing metadata changed")}
+		return MutationResult{Outcome: MutationRejected, Err: unavailable("client is closed or routing metadata changed").withOp(op).withMutation(MutationRejected)}
 	}
 	deadline, err := c.resolveDeadline(opts...)
 	if err != nil {
+		if ge, ok := err.(*Error); ok {
+			return MutationResult{Outcome: MutationRejected, Err: ge.withOp(op).withMutation(MutationRejected)}
+		}
 		return MutationResult{Outcome: MutationRejected, Err: err}
 	}
 	worker, err := c.WorkerFor(key)
 	if err != nil {
+		if ge, ok := err.(*Error); ok {
+			return MutationResult{Outcome: MutationRejected, Err: ge.withOp(op).withMutation(MutationRejected)}
+		}
 		return MutationResult{Outcome: MutationRejected, Err: err}
 	}
 	conn := c.connections[worker]
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if !c.healthy.Load() {
-		return MutationResult{Outcome: MutationRejected, Err: unavailable("client closed before mutation admission")}
+		return MutationResult{Outcome: MutationRejected, Err: unavailable("client closed before mutation admission").withOp(op).withSession(worker, c.routingEpoch).withMutation(MutationRejected)}
 	}
 
 	for attempt := 0; attempt < 2; attempt++ {
 		if err := c.ensureConnected(conn); err != nil {
+			if ge, ok := err.(*Error); ok {
+				return MutationResult{Outcome: MutationRejected, Err: ge.withOp(op).withSession(worker, c.routingEpoch).withMutation(MutationRejected)}
+			}
 			return MutationResult{Outcome: MutationRejected, Err: err}
 		}
 		requestID := c.nextRequestID()
 		frame, err := protocol.EncodeRequest(opcode, requestID, key, value, expireAtNs, protocol.NoWorker)
 		if err != nil {
-			return MutationResult{Outcome: MutationRejected, Err: invalidArgument(err.Error())}
+			return MutationResult{Outcome: MutationRejected, Err: invalidArgument(err.Error()).withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationRejected)}
 		}
 		if len(frame) > c.cfg.MaximumFrameBytes {
-			return MutationResult{Outcome: MutationRejected, Err: invalidArgument("request exceeds the configured frame limit")}
+			return MutationResult{Outcome: MutationRejected, Err: invalidArgument("request exceeds the configured frame limit").withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationRejected)}
 		}
 		response, err := c.exchange(conn, frame, deadline)
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {
 				conn.reset()
+				promoted := promoteSendFailure(sf, op, requestID, worker, c.routingEpoch, true)
 				if sf.bytesSent == 0 {
 					if attempt == 0 {
 						continue
 					}
-					return MutationResult{Outcome: MutationRejected, Err: sf.err}
+					return MutationResult{Outcome: MutationRejected, Err: promoted}
 				}
-				return MutationResult{Outcome: MutationIndeterminate, Err: sf.err}
+				return MutationResult{Outcome: MutationIndeterminate, Err: promoted}
 			}
 			conn.reset()
+			if ge, ok := err.(*Error); ok {
+				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
+			}
 			return MutationResult{Outcome: MutationIndeterminate, Err: err}
 		}
 		if err := c.validateResponse(response, requestID, worker); err != nil {
 			conn.reset()
+			if ge, ok := err.(*Error); ok {
+				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
+			}
 			return MutationResult{Outcome: MutationIndeterminate, Err: err}
 		}
 		if response.Status == protocol.StatusOK {
 			if len(response.Value) != 0 {
 				conn.reset()
-				return MutationResult{Outcome: MutationIndeterminate, Err: protocolErr("mutation response value must be empty")}
+				return MutationResult{Outcome: MutationIndeterminate, Err: protocolErr("mutation response value must be empty").withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
 			}
 			return MutationResult{Outcome: MutationCommitted}
 		}
-		statusErr := statusError(response.Status)
+		statusErr := annotate(statusError(response.Status), op, requestID, worker, c.routingEpoch)
 		if response.Status == protocol.StatusInternalError {
-			return MutationResult{Outcome: MutationIndeterminate, Err: statusErr}
+			return MutationResult{Outcome: MutationIndeterminate, Err: statusErr.withMutation(MutationIndeterminate)}
 		}
 		if response.Status == protocol.StatusWrongOwner || response.Status == protocol.StatusNotBound {
 			c.healthy.Store(false)
 		}
-		return MutationResult{Outcome: MutationRejected, Err: statusErr}
+		return MutationResult{Outcome: MutationRejected, Err: statusErr.withMutation(MutationRejected)}
 	}
-	return MutationResult{Outcome: MutationRejected, Err: unavailable("could not send mutation")}
+	return MutationResult{Outcome: MutationRejected, Err: unavailable("could not send mutation").withOp(op).withSession(worker, c.routingEpoch).withMutation(MutationRejected)}
+}
+
+func mutateOpName(opcode protocol.Opcode) string {
+	switch opcode {
+	case protocol.OpcodePut:
+		return "put"
+	case protocol.OpcodeErase:
+		return "erase"
+	default:
+		return "mutate"
+	}
 }
 
 func asSendFailure(err error, target **sendFailure) bool {

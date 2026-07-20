@@ -221,6 +221,8 @@ is($client->erase("binary\x00key")->{outcome}, 'committed', 'ERASE commits');
 my $loaded = eval { $client->get("binary\x00key") };
 ok(!$loaded && ref($@) eq 'GlyphaStore::Error' && $@->category eq 'not_found',
     'missing GET raises categorized error');
+is($@->wire_status, STATUS_NOT_FOUND, 'not_found exposes wire_status');
+is($@->retryability, 'new_attempt', 'not_found retryability');
 $client->close;
 waitpid($pid, 0);
 
@@ -228,6 +230,10 @@ waitpid($pid, 0);
 $client = GlyphaStore::Client->connect(port => $port);
 my $indeterminate = $client->put('key', 'value');
 is($indeterminate->{outcome}, 'indeterminate', 'standalone PUT disconnect is indeterminate');
+ok(ref($indeterminate->{error}) eq 'GlyphaStore::Error', 'disconnect error is structured');
+ok($indeterminate->{error}->bytes_sent > 0, 'disconnect after send exposes bytes_sent');
+is($indeterminate->{error}->operation, 'put', 'disconnect error exposes operation');
+is($indeterminate->{error}->retryability, 'reconcile_first', 'partial send is reconcile_first');
 $client->close;
 waitpid($pid, 0);
 

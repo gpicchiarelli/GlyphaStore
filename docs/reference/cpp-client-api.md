@@ -42,8 +42,9 @@ if (!written.committed()) {
 }
 
 auto value = cache.get("session:42");
-if (!value && value.error().code != glyphastore::ErrorCode::not_found) {
-    // transport, protocol, or resource failure
+if (!value) {
+    // Portable: value.error().category == "not_found"
+    // Also: wire_status, retryability, operation, request_id, worker, …
 }
 ```
 
@@ -52,6 +53,25 @@ encoding conversion. Returned values own their storage.
 
 `PutOptions::expire_at_ns` is an absolute Unix timestamp in nanoseconds; zero disables expiration.
 The client does not compensate for clock skew.
+
+## Structured errors
+
+TCP client failures populate portable fields on `glyphastore::Error` (see
+[client semantics §2.1](../spec/client-semantics-v1.md)):
+
+| Field | Role |
+| --- | --- |
+| `code` | Existing C++ `ErrorCode` |
+| `category` | Cross-language name (`not_found`, `transport`, …) |
+| `message` | Diagnostic text (not a parse API) |
+| `wire_status` | Decoded response status when available |
+| `bytes_sent` | Request bytes written before failure (`0` = known unsent) |
+| `request_id` / `worker` / `routing_epoch` | When known for that attempt |
+| `retryability` | Derived hint (`same_request`, `new_attempt`, `reconcile_first`, `never`) |
+| `operation` | e.g. `get`, `put`, `pipeline` |
+
+Applications that need portability should key off `category` and mutation outcome, not only
+`ErrorCode`.
 
 ## Ordered pipelines
 

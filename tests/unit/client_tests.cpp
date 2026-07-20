@@ -224,12 +224,22 @@ GLYPHA_TEST("C++ client bootstraps every worker and handles binary cache operati
     auto missing = client.get(key);
     GLYPHA_REQUIRE(!missing.has_value());
     GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE(missing.error().category == "not_found");
+    GLYPHA_REQUIRE(missing.error().wire_status.has_value());
+    GLYPHA_REQUIRE(*missing.error().wire_status
+                   == static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::not_found));
+    GLYPHA_REQUIRE(missing.error().retryability == "new_attempt");
+    GLYPHA_REQUIRE(missing.error().operation == "get");
 
     const std::array<std::byte, 32> oversized_value{};
     const auto oversized = client.put(key, oversized_value);
     GLYPHA_REQUIRE(oversized.outcome == glyphastore::client::MutationOutcome::rejected);
     GLYPHA_REQUIRE(oversized.error.has_value());
     GLYPHA_REQUIRE(oversized.error->code == glyphastore::ErrorCode::record_too_large);
+    GLYPHA_REQUIRE(oversized.error->category == "invalid_argument");
+    GLYPHA_REQUIRE(oversized.error->retryability == "never");
+    GLYPHA_REQUIRE(oversized.error->operation == "put");
+    GLYPHA_REQUIRE(oversized.error->bytes_sent == 0);
 
     client.close();
     GLYPHA_REQUIRE(!client.healthy());

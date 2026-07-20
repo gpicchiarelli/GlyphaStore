@@ -11,6 +11,7 @@ from typing import Final
 from .client import (
     ClientConfig,
     GlyphaError,
+    InternalError,
     InvalidArgument,
     MutationOutcome,
     MutationResult,
@@ -23,6 +24,7 @@ from .client import (
     ProtocolError,
     TransportError,
     Unavailable,
+    _enrich,
 )
 from .protocol import (
     MAX_FRAME_BYTES,
@@ -521,16 +523,19 @@ class AsyncClient:
     @staticmethod
     def _status_error(status: Status) -> GlyphaError:
         if status is Status.NOT_FOUND:
-            return NotFound("key was not found")
-        if status is Status.OVERLOADED:
-            return Overloaded("server is overloaded")
-        if status is Status.NOT_BOUND:
-            return Unavailable("server connection is not bound")
-        if status is Status.WRONG_OWNER:
-            return ProtocolError("server rejected Worker routing")
-        if status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
-            return InvalidArgument("server rejected the request")
-        return GlyphaError("server reported an internal error")
+            error: GlyphaError = NotFound("key was not found")
+        elif status is Status.OVERLOADED:
+            error = Overloaded("server is overloaded")
+        elif status is Status.NOT_BOUND:
+            error = Unavailable("server connection is not bound")
+        elif status is Status.WRONG_OWNER:
+            error = ProtocolError("server rejected Worker routing")
+        elif status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
+            error = InvalidArgument("server rejected the request")
+        else:
+            error = InternalError("server reported an internal error")
+        error.wire_status = int(status)
+        return error
 
     def _request_deadline(self, timeout: float | None) -> float:
         if timeout is not None and timeout <= 0:
@@ -600,29 +605,53 @@ class AsyncClient:
         *,
         timeout: float | None = None,
     ) -> MutationResult:
+        op = "put" if opcode is Opcode.PUT else "erase"
         if not self._healthy:
             return MutationResult(
                 MutationOutcome.REJECTED,
-                Unavailable("client is closed or routing metadata changed"),
+                _enrich(
+                    Unavailable("client is closed or routing metadata changed"),
+                    operation=op,
+                    mutation_outcome=MutationOutcome.REJECTED,
+                ),
             )
         try:
             deadline = self._request_deadline(timeout)
         except InvalidArgument as error:
-            return MutationResult(MutationOutcome.REJECTED, error)
+            return MutationResult(
+                MutationOutcome.REJECTED,
+                _enrich(error, operation=op, mutation_outcome=MutationOutcome.REJECTED),
+            )
         worker = self.worker_for(key)
         connection = self._connections[worker]
         async with connection.lock:
             if not self._healthy:
                 return MutationResult(
                     MutationOutcome.REJECTED,
-                    Unavailable("client closed before mutation admission"),
+                    _enrich(
+                        Unavailable("client closed before mutation admission"),
+                        operation=op,
+                        worker=worker,
+                        routing_epoch=self._routing_epoch,
+                        mutation_outcome=MutationOutcome.REJECTED,
+                    ),
                 )
             for attempt in range(2):
                 exchange_started = False
+                request_id = 0
                 try:
                     await self._ensure_connected(connection)
                 except GlyphaError as error:
-                    return MutationResult(MutationOutcome.REJECTED, error)
+                    return MutationResult(
+                        MutationOutcome.REJECTED,
+                        _enrich(
+                            error,
+                            operation=op,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            mutation_outcome=MutationOutcome.REJECTED,
+                        ),
+                    )
                 try:
                     request_id = await self._next_request_id()
                     try:
@@ -635,26 +664,65 @@ class AsyncClient:
                         )
                     except ValueError as error:
                         return MutationResult(
-                            MutationOutcome.REJECTED, InvalidArgument(str(error))
+                            MutationOutcome.REJECTED,
+                            _enrich(
+                                InvalidArgument(str(error)),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.REJECTED,
+                            ),
                         )
                     if len(frame) > self._config.maximum_frame_bytes:
                         return MutationResult(
                             MutationOutcome.REJECTED,
-                            InvalidArgument("request exceeds the configured frame limit"),
+                            _enrich(
+                                InvalidArgument("request exceeds the configured frame limit"),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.REJECTED,
+                            ),
                         )
                     exchange_started = True
                     response = await self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)
                 except _SendFailure as error:
                     await connection.reset()
+                    outcome = (
+                        MutationOutcome.REJECTED
+                        if error.bytes_sent == 0
+                        else MutationOutcome.INDETERMINATE
+                    )
+                    promoted = _enrich(
+                        error.error,
+                        operation=op,
+                        request_id=request_id,
+                        worker=worker,
+                        routing_epoch=self._routing_epoch,
+                        bytes_sent=error.bytes_sent,
+                        mutation_outcome=outcome,
+                    )
                     if error.bytes_sent == 0:
                         if attempt == 0:
                             continue
-                        return MutationResult(MutationOutcome.REJECTED, error.error)
-                    return MutationResult(MutationOutcome.INDETERMINATE, error.error)
+                        return MutationResult(MutationOutcome.REJECTED, promoted)
+                    return MutationResult(MutationOutcome.INDETERMINATE, promoted)
                 except (TransportError, ProtocolError, Unavailable) as error:
                     await connection.reset()
-                    return MutationResult(MutationOutcome.INDETERMINATE, error)
+                    return MutationResult(
+                        MutationOutcome.INDETERMINATE,
+                        _enrich(
+                            error,
+                            operation=op,
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ),
+                    )
                 except BaseException:
                     if exchange_started:
                         await connection.reset()
@@ -664,15 +732,42 @@ class AsyncClient:
                         await connection.reset()
                         return MutationResult(
                             MutationOutcome.INDETERMINATE,
-                            ProtocolError("mutation response value must be empty"),
+                            _enrich(
+                                ProtocolError("mutation response value must be empty"),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                mutation_outcome=MutationOutcome.INDETERMINATE,
+                            ),
                         )
                     return MutationResult(MutationOutcome.COMMITTED)
-                error = self._status_error(response.status)
+                error = _enrich(
+                    self._status_error(response.status),
+                    operation=op,
+                    request_id=request_id,
+                    worker=worker,
+                    routing_epoch=self._routing_epoch,
+                    wire_status=int(response.status),
+                )
                 if response.status is Status.INTERNAL_ERROR:
-                    return MutationResult(MutationOutcome.INDETERMINATE, error)
+                    return MutationResult(
+                        MutationOutcome.INDETERMINATE,
+                        _enrich(error, mutation_outcome=MutationOutcome.INDETERMINATE),
+                    )
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                     self._healthy = False
-                return MutationResult(MutationOutcome.REJECTED, error)
+                return MutationResult(
+                    MutationOutcome.REJECTED,
+                    _enrich(error, mutation_outcome=MutationOutcome.REJECTED),
+                )
             return MutationResult(
-                MutationOutcome.REJECTED, Unavailable("could not send mutation")
+                MutationOutcome.REJECTED,
+                _enrich(
+                    Unavailable("could not send mutation"),
+                    operation=op,
+                    worker=worker,
+                    routing_epoch=self._routing_epoch,
+                    mutation_outcome=MutationOutcome.REJECTED,
+                ),
             )

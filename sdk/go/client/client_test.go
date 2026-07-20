@@ -459,6 +459,44 @@ func TestRejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+func TestStructuredErrorFieldsOnInternalPut(t *testing.T) {
+	server := startFakeServer(t, 1, false, true)
+	defer server.close()
+	c, err := client.Connect(client.Config{
+		Host:           "127.0.0.1",
+		Port:           server.port(),
+		ConnectTimeout: time.Second,
+		RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	result := c.Put([]byte("key"), []byte("value"), 0)
+	if result.Outcome != client.MutationIndeterminate {
+		t.Fatalf("outcome=%v", result.Outcome)
+	}
+	ge, ok := result.Err.(*client.Error)
+	if !ok {
+		t.Fatalf("expected *client.Error, got %T", result.Err)
+	}
+	if ge.Category != client.CategoryInternal {
+		t.Fatalf("category=%v", ge.Category)
+	}
+	if ge.WireStatus == nil || *ge.WireStatus != protocol.StatusInternalError {
+		t.Fatalf("wire_status=%v", ge.WireStatus)
+	}
+	if ge.Operation != "put" {
+		t.Fatalf("operation=%q", ge.Operation)
+	}
+	if ge.Retryability != client.RetryReconcileFirst {
+		t.Fatalf("retryability=%v", ge.Retryability)
+	}
+	if ge.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("mutation_outcome=%v", ge.MutationOutcome)
+	}
+}
+
 func reverse(in []byte) []byte {
 	out := make([]byte, len(in))
 	for i := range in {

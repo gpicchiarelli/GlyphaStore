@@ -265,8 +265,12 @@ class ClientTests(unittest.TestCase):
             rejected = client.put(b"bad-expiry", b"value", expire_at_ns=-1)
             self.assertEqual(rejected.outcome, MutationOutcome.REJECTED)
             self.assertTrue(client.erase(b"binary\x00key").committed)
-            with self.assertRaises(NotFound):
+            with self.assertRaises(NotFound) as raised:
                 client.get(b"binary\x00key")
+            missing = raised.exception
+            self.assertEqual(missing.category, "not_found")
+            self.assertEqual(missing.wire_status, int(Status.NOT_FOUND))
+            self.assertEqual(missing.retryability, "new_attempt")
         server.join()
 
     def test_internal_error_mutation_is_indeterminate(self) -> None:
@@ -274,6 +278,13 @@ class ClientTests(unittest.TestCase):
         with Client.connect(ClientConfig(port=server.port)) as client:
             result = client.put(b"key", b"value")
             self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
+            self.assertIsNotNone(result.error)
+            assert result.error is not None
+            self.assertEqual(result.error.category, "internal")
+            self.assertEqual(result.error.wire_status, int(Status.INTERNAL_ERROR))
+            self.assertEqual(result.error.operation, "put")
+            self.assertEqual(result.error.retryability, "reconcile_first")
+            self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
 
     def test_close_does_not_deadlock_against_inflight_read(self) -> None:
