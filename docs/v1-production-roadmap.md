@@ -362,9 +362,10 @@ post-compaction no-gain detection.
 
 - `glyphastore_inspect_segment` is a v1-aware, bounded, read-only Segment validator (header/commit
   decode, optional committed CRC scan, text/JSON, fail-closed exit codes).
-  `glyphastore_rebuild_index` still refuses offline rewrite; durable Indexes are rebuilt by Store
-  recovery. Next: add `verify-store` across Manifest and all Segments. Keep destructive repair a
-  distinct command requiring an explicit output directory; never rewrite the only copy in place.
+  `glyphastore_verify_store` validates Manifest + namespace + every catalog Segment under an
+  exclusive data-directory lock (optional `--no-scan`). `glyphastore_rebuild_index` still refuses
+  offline rewrite; durable Indexes are rebuilt by Store recovery. Keep destructive repair a distinct
+  command requiring an explicit output directory; never rewrite the only copy in place.
 - Specify a consistent backup/snapshot procedure, including active Segment and manifest ordering,
   then test backup and restore during concurrent writes and after kills.
 - Publish upgrade/downgrade rules for persistence v1 and test artifacts created by every released

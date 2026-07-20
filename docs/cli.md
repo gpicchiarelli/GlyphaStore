@@ -36,6 +36,7 @@ and advisory on macOS.
 
 ```bash
 glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
+glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
 glyphastore_rebuild_index -- segment-<16hex>-<8hex>.glypha
 ```
 
@@ -56,6 +57,27 @@ stdout. Exit codes: `0` validated, `1` validation/I/O failure, `2` usage.
 
 A concurrent writer can make a point-in-time read observe a torn commit slot; that is reported as
 validation failure (fail-closed), not success.
+
+### `glyphastore_verify_store`
+
+```bash
+glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
+```
+
+Read-only structural validation of a durable Store data directory. Takes the exclusive Store lock
+(fail-closed if a daemon or Store already holds it). Stop the daemon before verifying.
+
+Default work:
+
+1. exclusive-lock the data directory;
+2. decode `manifest.glypha` and enforce Manifest resource bounds;
+3. audit the namespace (missing/unlisted/unsafe entries fail; crash temporaries may be reported);
+4. open each catalog Segment read-only against Manifest identity;
+5. check Manifest role ↔ commit lifecycle (sealed-active is OK and counted as
+   `active_requires_rotation`);
+6. scan each committed Record extent unless `--no-scan`.
+
+Does not rebuild Indexes, check key routing, or repair files. Exit codes match inspect.
 
 ### `glyphastore_rebuild_index`
 

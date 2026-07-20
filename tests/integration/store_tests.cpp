@@ -1081,11 +1081,27 @@ GLYPHA_TEST("durable catalog observation enters emergency and rejects put until 
     limits.max_store_bytes = 4ULL * glyphastore::kSegmentSizeBytes;
     limits.max_temporary_compaction_bytes = glyphastore::kSegmentSizeBytes;
 
+    {
+        // Seed under cooperative maintenance so the background first-eval cannot
+        // arm the emergency gate before the put completes (max_segment_count == 1).
+        auto seeded = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = temporary.store_path(),
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .durable_limits = limits,
+            .maintenance = {.mode = glyphastore::MaintenanceMode::cooperative},
+        });
+        GLYPHA_REQUIRE(seeded.has_value());
+        GLYPHA_REQUIRE((*seeded)->put("seed", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*seeded)->close().has_value());
+    }
+
     auto opened = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},
         .storage_mode = glyphastore::StorageMode::durable_sync,
         .data_directory = temporary.store_path(),
-        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
         .durable_limits = limits,
         .maintenance =
             {
@@ -1096,7 +1112,6 @@ GLYPHA_TEST("durable catalog observation enters emergency and rejects put until 
     });
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
-    GLYPHA_REQUIRE(store.put("seed", bytes("value")).has_value());
 
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(store);
     GLYPHA_REQUIRE(controller != nullptr);

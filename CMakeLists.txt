@@ -89,6 +89,7 @@ add_library(glyphastore_core
     src/persistence/resource_limits.cpp
     src/persistence/runtime_catalog.cpp
     src/persistence/segment_file.cpp
+    src/persistence/store_verify.cpp
     src/segment/crc32c.cpp
     src/segment/global_manager.cpp
     src/segment/record.cpp
@@ -258,6 +259,7 @@ if(BUILD_TESTING)
         tests/unit/namespace_audit_tests.cpp
         tests/unit/persistence_filesystem_tests.cpp
         tests/unit/segment_file_tests.cpp
+        tests/unit/store_verify_tests.cpp
         tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
@@ -349,6 +351,17 @@ glyphastore_enable_ipo(glyphastore_inspect_segment)
 set_target_properties(glyphastore_inspect_segment PROPERTIES FOLDER "Tools")
 glyphastore_xcode_scheme(glyphastore_inspect_segment ARGUMENTS --help)
 
+add_executable(glyphastore_verify_store tools/verify_store.cpp)
+target_link_libraries(glyphastore_verify_store
+    PRIVATE GlyphaStore::core glyphastore_cli_support glyphastore_project_options
+)
+target_compile_definitions(glyphastore_verify_store PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
+glyphastore_set_warnings(glyphastore_verify_store)
+glyphastore_enable_hardening(glyphastore_verify_store)
+glyphastore_enable_ipo(glyphastore_verify_store)
+set_target_properties(glyphastore_verify_store PROPERTIES FOLDER "Tools")
+glyphastore_xcode_scheme(glyphastore_verify_store ARGUMENTS --help)
+
 add_executable(glyphastore_interop_client tools/interop_client.cpp)
 target_link_libraries(glyphastore_interop_client
     PRIVATE GlyphaStore::client glyphastore_project_options
@@ -390,6 +403,10 @@ if(BUILD_TESTING)
     add_test(NAME glyphastore_cli_inspect_help COMMAND glyphastore_inspect_segment --help)
     set_tests_properties(glyphastore_cli_inspect_help PROPERTIES
         PASS_REGULAR_EXPRESSION "Inspect a GlyphaStore durable Segment file"
+    )
+    add_test(NAME glyphastore_cli_verify_help COMMAND glyphastore_verify_store --help)
+    set_tests_properties(glyphastore_cli_verify_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "Verify a GlyphaStore durable data directory"
     )
     add_test(NAME glyphastore_cli_rebuild_help COMMAND glyphastore_rebuild_index --help)
     set_tests_properties(glyphastore_cli_rebuild_help PROPERTIES
@@ -597,6 +614,7 @@ if(BUILD_TESTING)
         glyphastore_crash_persistence
         glyphastored
         glyphastore_inspect_segment
+        glyphastore_verify_store
         glyphastore_rebuild_index
     )
     if(TARGET glyphastore_benchmarks)
@@ -625,7 +643,8 @@ install(TARGETS glyphastore_core glyphastore_wire glyphastore_tls_layer glyphast
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Development
     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
-install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glyphastore_rebuild_index
+install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glyphastore_verify_store
+        glyphastore_rebuild_index
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Runtime
 )
