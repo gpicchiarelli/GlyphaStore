@@ -41,9 +41,8 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 4. The controller never mutates Worker Index or Segments directly. Future policy may only observe
    published snapshots/stats and invoke `Store::compact()`, which already serializes on
    `compaction_mutex`.
-5. Phase 1 enables automatic `Store::compact()` under **normal** policy budgets when mode is
-   `background` (observation + no-gain/byte budgets). Phase 0 scaffolding proved lifecycle without
-   compact; pressure/emergency remain deferred.
+5. Phase 2 enables automatic `Store::compact()` under **normal** and **pressure** policies when mode
+   is `background`. Emergency mutation rejection remains deferred.
 6. Concurrent manual `compact()` and controller-driven compact share the same try-lock; conflicts
    return `sequence_conflict` without queuing.
 7. `Store::close()` stops maintenance wake, waits for admitted operations (including in-flight

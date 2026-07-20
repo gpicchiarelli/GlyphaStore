@@ -31,6 +31,24 @@ enum class MaintenanceSkipReason : std::uint8_t {
     policy_deferred,
 };
 
+enum class MaintenancePressureLevel : std::uint8_t {
+    none,
+    normal,
+    pressure,
+    // emergency reserved for Phase 3
+};
+
+enum class MaintenanceActivationReason : std::uint8_t {
+    none,
+    scheduled,
+    sealed_history,
+    segment_pressure,
+    free_space_pressure,
+    budget_backoff,
+    policy_deferred,
+    no_candidate,
+};
+
 // Read-only physical observation for scheduling (no Worker Index access).
 struct MaintenanceObservation {
     bool durable{};
@@ -45,17 +63,31 @@ struct MaintenanceSnapshot {
     MaintenanceState state{MaintenanceState::stopped};
     bool thread_running{};
     MaintenanceMode mode{MaintenanceMode::cooperative};
+    MaintenancePressureLevel pressure{MaintenancePressureLevel::none};
+    MaintenanceActivationReason last_activation_reason{MaintenanceActivationReason::none};
     std::uint64_t evaluation_cycles{};
     std::uint64_t compact_attempts{};
     std::uint64_t compact_completed{};
+    std::uint64_t useful_compactions{};
     std::uint64_t skips{};
+    std::uint64_t suspend_count{};
     std::uint64_t consecutive_no_gain{};
     std::uint64_t bytes_copied_window{};
+    std::uint64_t total_bytes_copied{};
+    std::uint64_t last_bytes_copied{};
+    std::uint64_t last_records_copied{};
+    std::uint64_t last_eval_duration_ns{};
+    std::uint64_t last_compact_duration_ns{};
+    std::uint64_t ns_since_last_useful_compaction{};
     MaintenanceSkipReason last_skip_reason{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation{};
     std::optional<Error> last_error{};
 };
 
 [[nodiscard]] auto validate_maintenance_config(const MaintenanceConfig& config) -> Status;
+
+[[nodiscard]] auto classify_maintenance_pressure(const MaintenanceObservation& observation,
+                                                 const MaintenanceConfig& config) noexcept
+    -> MaintenancePressureLevel;
 
 } // namespace glyphastore

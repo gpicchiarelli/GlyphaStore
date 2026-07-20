@@ -278,8 +278,8 @@ most one transaction per call, and reports copy statistics. The online single-ou
 fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
 syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
 policy, multi-output randomized crash histories, and native power-loss certification remain open.
-Phase 1 of ADR 0023 enables budgeted automatic `compact()` under normal policy for
-`maintenance_mode=background`; pressure/emergency policies remain open.
+Phase 2 of ADR 0023 adds pressure watermarks (segment count / reserved free space) and expanded
+maintenance telemetry; emergency mutation rejection remains open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second

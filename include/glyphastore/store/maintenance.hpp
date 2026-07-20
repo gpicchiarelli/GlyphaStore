@@ -14,8 +14,7 @@
 
 namespace glyphastore {
 
-// Store-owned optional scheduler. Phase 1 background mode may invoke Store::compact()
-// under normal-policy budgets (no pressure/emergency yet).
+// Store-owned optional scheduler. Phase 2: normal + pressure budgets; emergency deferred.
 class MaintenanceController final {
   public:
     using CompactCallback = std::function<Result<CompactionResult>()>;
@@ -29,10 +28,8 @@ class MaintenanceController final {
 
     void bind_compact(CompactCallback compact);
     void bind_observe(ObserveCallback observe);
-    // White-box: force-disable automatic compact while keeping the eval thread (tests).
     void set_auto_compact_enabled(bool enabled) noexcept;
     void start();
-    // Stop admission to the controller without joining (Store::close waits for ops first).
     void request_stop() noexcept;
     void join();
     void stop();
@@ -43,9 +40,10 @@ class MaintenanceController final {
 
   private:
     void run(std::stop_token stop_token);
-    [[nodiscard]] auto eval_interval() const -> std::chrono::milliseconds;
+    [[nodiscard]] auto eval_interval_locked() const -> std::chrono::milliseconds;
     void evaluate_once();
-    void record_skip(MaintenanceSkipReason reason, MaintenanceState next);
+    void record_skip(MaintenanceSkipReason reason, MaintenanceState next,
+                     MaintenanceActivationReason activation);
 
     MaintenanceConfig config_;
     CompactCallback compact_;
@@ -56,12 +54,22 @@ class MaintenanceController final {
     bool stop_requested_{};
     bool evaluate_requested_{};
     MaintenanceState state_{MaintenanceState::stopped};
+    MaintenancePressureLevel pressure_{MaintenancePressureLevel::none};
+    MaintenanceActivationReason last_activation_reason_{MaintenanceActivationReason::none};
     std::uint64_t evaluation_cycles_{};
     std::uint64_t compact_attempts_{};
     std::uint64_t compact_completed_{};
+    std::uint64_t useful_compactions_{};
     std::uint64_t skips_{};
+    std::uint64_t suspend_count_{};
     std::uint64_t consecutive_no_gain_{};
     std::uint64_t bytes_copied_window_{};
+    std::uint64_t total_bytes_copied_{};
+    std::uint64_t last_bytes_copied_{};
+    std::uint64_t last_records_copied_{};
+    std::uint64_t last_eval_duration_ns_{};
+    std::uint64_t last_compact_duration_ns_{};
+    std::optional<std::chrono::steady_clock::time_point> last_useful_at_{};
     MaintenanceSkipReason last_skip_reason_{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation_{};
     std::optional<Error> last_error_{};

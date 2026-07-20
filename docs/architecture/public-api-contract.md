@@ -145,7 +145,7 @@ either one completed transaction and its copy statistics, or no current physical
 
 Optional automatic scheduling is governed by `StoreConfig::maintenance` and ADR 0023. The embedded
 default is `cooperative` (no maintenance thread). `background` starts one Store-owned evaluation
-thread that may call `compact()` under Phase 1 normal budgets. `glyphastored` defaults to
+thread that may call `compact()` under Phase 2 normal/pressure budgets. `glyphastored` defaults to
 `background`. See [maintenance controller](maintenance-controller.md).
 
 ## Compatibility policy

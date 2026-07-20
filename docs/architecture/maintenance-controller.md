@@ -1,6 +1,6 @@
 # MaintenanceController
 
-Status: Phase 1 normal policy (ADR 0023)
+Status: Phase 2 normal + pressure (ADR 0023)
 Applies to: embedded Store and glyphastored
 Owner: persistence maintainers
 Last reviewed: 2026-07-20
@@ -19,20 +19,24 @@ sole compaction primitives (ADR 0015).
 | `background` | no | yes | one Store-owned `std::jthread` |
 | `disabled` | no | no | none; `compact()` still available |
 
-## Phase 1 behavior (current)
+## Phase 2 behavior (current)
 
 In `background`, the controller:
 
-1. Observes catalog-level stats (`MaintenanceObservation`: segment/sealed counts, free space) without
-   touching Worker Index or mutable Segments.
-2. Under **normal** policy only:
-   - skips when durable sealed count is zero (`no_candidate`);
-   - backs off after `max_no_gain_attempts` consecutive empty compact results (`budget` / `suspended`);
-   - respects `max_copy_bytes_per_cycle` when nonzero;
-   - otherwise calls `Store::compact()` (existing mutex + round-robin path).
-3. Pressure and emergency policies remain Phase 2/3.
+1. Observes catalog-level stats (`MaintenanceObservation`) without touching Worker Index or mutable
+   Segments.
+2. Classifies pressure via `classify_maintenance_pressure`:
+   - **segment pressure** when `segment_count >= ceil(max_segment_count * segment_count_pressure_pct / 100)`;
+   - **free-space pressure** when `available_free_bytes <= reserved_free_bytes + free_bytes_pressure_margin`.
+3. **Normal** policy: skip `no_candidate`; backoff after `max_no_gain_attempts`; honor
+   `max_copy_bytes_per_cycle`; mid eval interval.
+4. **Pressure** policy: use `min_eval_interval_ms`; continue compact attempts despite no-gain / copy
+   budgets; record activation reason (`segment_pressure` / `free_space_pressure`).
+5. Still at most one `Store::compact()` in flight (shared try-lock). Emergency reject of mutations is
+   Phase 3.
 
-White-box tests may call `set_auto_compact_enabled(false)` to keep the eval thread without compact.
+Telemetry in `MaintenanceSnapshot` includes pressure level, activation reason, eval/compact
+durations, bytes/records copied, suspend count, and time since last useful compaction.
 
 ## Shutdown
 
