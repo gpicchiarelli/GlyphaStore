@@ -76,7 +76,8 @@ data-driven.
 
 Pure-Perl hot path is saturated for generic tuning. Prefer: deep pipelines + Worker overlap, one
 client per prefork process, later event-loop adapter for web throughput. Optional XS on framing is
-the only large remaining microbench lever; C++ FFI remains out of design. Details:
+the only large remaining microbench lever; C++ FFI remains out of design. Re-measure with
+`./scripts/benchmark_perl_client.sh` (sequential + concurrent). Details:
 [where performance matters](where-performance-matters.md#perl-sdk-where-further-speed-comes-from).
 
 ### 6. Per-request deadlines — **done**

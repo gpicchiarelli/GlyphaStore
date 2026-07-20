@@ -76,7 +76,7 @@ deep pipelines will not close with generic micro-tuning.
 
 | Priority | Action | Effect |
 | --- | --- | --- |
-| Use the API correctly | Deep pipelines + `execute_worker_pipelines` / `execute_batch` | Overlap Workers inside one process; the 0.1.0 baseline was mostly sequential—re-read numbers with concurrent defaults when `workers>1` |
+| Use the API correctly | Deep pipelines + `execute_worker_pipelines` / `execute_batch` | Overlap Workers inside one process; at deep pipelines concurrent ≈ sequential on loopback, but concurrent is more stable under multi-Worker load ([Perl re-bench](../../benchmark-results-perl-0.1.0-20260720-170225/analysis.md)) |
 | Production scale | One client per Hypnotoad/prefork worker process; no shared ithreads | Real win: parallelism = N processes (documented contract) |
 | Later | Mojolicious / `IO::Async` / AnyEvent adapter | Does not raise sync microbench ops/s; raises web-app throughput by not blocking the reactor |
 | Optional big jump | XS only on encode/decode/FNV | Only large remaining SDK-side leap; FFI around the C++ client stays out of design |

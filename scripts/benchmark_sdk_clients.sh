@@ -322,6 +322,7 @@ Go-only:
 
 \`\`\`bash
 ./scripts/benchmark_go_client.sh
+./scripts/benchmark_perl_client.sh
 \`\`\`
 
 Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`, \`PYTHON\`, \`PERL\`, \`GO\`.

@@ -90,6 +90,10 @@ typically single-digit percent.
 latency so bottlenecks are visible.
 
 ```bash
+# published sequential + concurrent matrix:
+./scripts/benchmark_perl_client.sh
+
+# one config (default overlaps Workers when workers>1):
 perl benchmarks/client_benchmark.pl --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 # --no-concurrent forces sequential drain across Workers

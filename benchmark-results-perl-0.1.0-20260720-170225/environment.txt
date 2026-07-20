@@ -1,0 +1,9 @@
+captured_at=2026-07-20T17:02:25Z
+git_sha=0d36afcbf466817e87fe452e0b955d7b0cb2f2eb
+perl=version='5.42.2'; archname='darwin-thread-multi-2level'; 
+perl_sdk_version=SCALAR(0xcb8c43348)
+glyphastored=/Users/gpicchiarelli/Documents/GlyphaStore/build/macos-native-release/glyphastored
+ops=100000 warmup=1 repeats=7
+workload=ordered PUT/GET pipeline read-after-write, value_size=64
+storage_mode=volatile
+note=publishes both sequential and execute_worker_pipelines concurrent modes

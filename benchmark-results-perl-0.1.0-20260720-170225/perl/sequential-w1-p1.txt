@@ -1,0 +1,3 @@
+# glyphastore Perl client benchmark
+# sdk_version=0.1.0 runtime=sync execution=single-process-worker-sequential workers=1 pipeline_pairs=1 operations=200000
+name=perl_client_pipeline_read_after_write sdk_version=0.1.0 runtime=sync execution=single-process-worker-sequential workers=1 pipeline_pairs=1 operations=200000 samples=7 median_seconds=7.580155849 min_seconds=7.340280056 max_seconds=8.385267973 median_ops_per_second=26384.682 min_ops_per_second=23851.355 max_ops_per_second=27246.917

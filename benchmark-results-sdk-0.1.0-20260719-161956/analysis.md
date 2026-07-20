@@ -67,11 +67,13 @@ Perl is single-process. The 0.1.0 published Perl rows were largely **sequential*
 Compare those to Python **sequential**, not to Python concurrent/async. On that machine Python
 sequential remained roughly 2–2.5× faster than Perl at deep pipelines.
 
-The harness now defaults to `execute_worker_pipelines` when `workers>1`. Re-evaluate Perl numbers
-against that concurrent mode before treating the sequential gap as the production story. Pure-Perl
-framing is already hot-path optimized; further product wins are process-level parallelism and
-pipeline overlap, not more generic micro-tuning (optional XS on the codec is the only large
-remaining SDK leap). See [where performance matters](../../docs/architecture/where-performance-matters.md).
+The harness now defaults to `execute_worker_pipelines` when `workers>1`. A dedicated re-bench
+([Perl 2026-07-20](../../benchmark-results-perl-0.1.0-20260720-170225/analysis.md)) shows concurrent
+≈ sequential at deep pipelines (CPU-bound framing), with clearer wins on shallow pipelines and
+better stability when sequential multi-Worker runs jitter. Pure-Perl framing remains saturated;
+further product wins are process-level parallelism and pipeline overlap, not more generic
+micro-tuning (optional XS on the codec is the only large remaining SDK leap). See
+[where performance matters](../../docs/architecture/where-performance-matters.md).
 
 ## What this suite does not prove
 
