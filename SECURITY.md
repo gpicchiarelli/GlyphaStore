@@ -41,8 +41,11 @@ untrusted networks.
 The planned **secure profile** (TLS 1.3 + mTLS + coarse capabilities) is specified in
 [docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
 [0020](docs/adr/0020-tls-outer-transport.md)–[0022](docs/adr/0022-authorization-capabilities.md).
-**OpenBSD** is a first-class target (LibreSSL; later `pledge`/`unveil`). Until that profile ships
-and is enabled, treat the daemon as sidecar / private-network only.
+**OpenBSD** is a first-class target (LibreSSL; later `pledge`/`unveil`). CI builds and tests the
+daemon against system LibreSSL
+([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Until the full
+secure profile (TLS + mTLS + capabilities) is enabled in production deployments, treat the daemon as
+sidecar / private-network only.
 
 Threat model: [docs/security/threat-model.md](docs/security/threat-model.md).
 

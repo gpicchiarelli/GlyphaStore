@@ -390,9 +390,10 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 
 - macOS on Apple Silicon is the primary development platform; macOS Intel remains a target.
 - Linux and macOS are built and tested in CI.
+- OpenBSD is a first-class target: `.github/workflows/openbsd-libressl.yml` builds and tests with
+  system **LibreSSL** (ADR 0020 / security roadmap Phase 2.6). FreeBSD remains an architectural
+  target without a dedicated native CI job yet.
 - Linux, macOS, FreeBSD, and OpenBSD are architectural targets since `0.1.0`.
-- FreeBSD and OpenBSD use the `kqueue` backend but do not yet have native CI runners; their badges
-  describe target status, not verified release support.
 
 ## Security
 

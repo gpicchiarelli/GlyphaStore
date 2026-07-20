@@ -70,6 +70,7 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - [Test strategy](development/test-strategy.md)
 - [Threat model](security/threat-model.md)
 - [Security implementation roadmap](security/roadmap.md)
+- [TLS performance note](security/tls-performance.md)
 - [Documentation roadmap](documentation-roadmap.md)
 - [Production readiness](production-readiness.md)
 - [Persistence v1 roadmap](v1-production-roadmap.md)

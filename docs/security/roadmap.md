@@ -105,8 +105,8 @@ security design.
 | 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
 | 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
 
-**Next:** OpenBSD/LibreSSL CI gate and TLS perf note (2.5), then Phase 3 mTLS principal
-extraction (ADR 0021 hooks already accept `--tls-client-ca`).
+**Next:** Phase 3 mTLS principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
+OpenBSD/LibreSSL CI and the TLS perf note are done (Phases 2.5–2.6).
 
 ---
 
@@ -120,8 +120,8 @@ extraction (ADR 0021 hooks already accept `--tls-client-ca`).
 | 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **done** (2026-07-20) — TLS without `--tls-port` keeps `--port` TLS-only; `--tls-port` enables dual cleartext+TLS on distinct ports (fail closed if ports collide); never opportunistic on one endpoint |
 | 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **partial** — Go / C++ / Python / Perl clients expose opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); Ruby Phase 3 follows the same train; fail closed; no silent cleartext fallback |
 | 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** (2026-07-20) — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs, daemon `--tls-cert`/`--tls-key`, client `--tls`/`--tls-ca`/`--server-name`); Ruby cleartext-only until its TLS train; Perl TLS soft-excluded when `IO::Socket::SSL` is missing |
-| 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | open |
-| 2.6 | OpenBSD CI: native LibreSSL build + TLS smoke | open |
+| 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | **done** (2026-07-20) — `scripts/benchmark_tls_tax.sh` + [tls-performance.md](tls-performance.md); Go bench gained `--tls` flags |
+| 2.6 | OpenBSD CI: native LibreSSL build + TLS smoke | **done** (2026-07-20) — `.github/workflows/openbsd-libressl.yml` via `vmactions/openbsd-vm` + `scripts/ci-openbsd-libressl.sh` (LibreSSL-only configure, full ctest, Go TLS PUT→GET) |
 
 **Daemon usage (when built with TLS):**
 

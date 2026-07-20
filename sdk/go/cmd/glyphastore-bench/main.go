@@ -23,6 +23,12 @@ func main() {
 	warmup := flag.Int("warmup", 1, "warmup iterations")
 	repeats := flag.Int("repeats", 7, "timed iterations")
 	execution := flag.String("execution", "concurrent", "concurrent|sequential")
+	tlsEnable := flag.Bool("tls", false, "opt-in TLS 1.3 (same harness as cleartext)")
+	tlsCA := flag.String("tls-ca", "", "PEM CA / trust anchor")
+	tlsCert := flag.String("tls-cert", "", "client certificate for mTLS")
+	tlsKey := flag.String("tls-key", "", "client private key for mTLS")
+	serverName := flag.String("server-name", "", "SNI / hostname verification name")
+	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
 	flag.Parse()
 
 	if *port <= 0 || *workers < 1 || *ops < 1 || *pipeline < 1 || *repeats < 1 || *warmup < 0 {
@@ -34,10 +40,22 @@ func main() {
 
 	batches := material(*ops, uint32(*workers), *pipeline)
 	operationCount := *ops * 2
+	transport := "cleartext"
+	if *tlsEnable {
+		transport = "tls1.3"
+	}
 	cfg := client.Config{
 		Host:                    *host,
 		Port:                    *port,
 		MaximumPipelineRequests: *pipeline * 2,
+		TLS: client.TLSConfig{
+			Enable:             *tlsEnable,
+			CAFile:             *tlsCA,
+			CertFile:           *tlsCert,
+			KeyFile:            *tlsKey,
+			ServerName:         *serverName,
+			InsecureSkipVerify: *insecure,
+		},
 	}
 	c, err := client.Connect(cfg)
 	if err != nil {
@@ -72,15 +90,15 @@ func main() {
 	}
 	fmt.Println("# glyphastore Go client benchmark")
 	fmt.Printf(
-		"# sdk_version=%s runtime=sync execution=%s workers=%d pipeline_pairs=%d operations=%d\n",
-		client.Version, *execution, *workers, *pipeline, operationCount,
+		"# sdk_version=%s runtime=sync execution=%s transport=%s workers=%d pipeline_pairs=%d operations=%d\n",
+		client.Version, *execution, transport, *workers, *pipeline, operationCount,
 	)
 	fmt.Printf(
 		"name=go_client_pipeline_read_after_write sdk_version=%s runtime=sync execution=%s "+
-			"workers=%d pipeline_pairs=%d operations=%d samples=%d "+
+			"transport=%s workers=%d pipeline_pairs=%d operations=%d samples=%d "+
 			"median_seconds=%.9f min_seconds=%.9f max_seconds=%.9f "+
 			"median_ops_per_second=%.3f min_ops_per_second=%.3f max_ops_per_second=%.3f\n",
-		client.Version, *execution, *workers, *pipeline, operationCount, len(samples),
+		client.Version, *execution, transport, *workers, *pipeline, operationCount, len(samples),
 		median(samples), minFloat(samples), maxFloat(samples),
 		median(rates), minFloat(rates), maxFloat(rates),
 	)

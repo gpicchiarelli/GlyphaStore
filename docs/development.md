@@ -55,3 +55,10 @@ zero for the batch-commit metric; its complete filesystem cost remains included 
 Hosted-runner measurements are deliberately informational because runner allocation, contention,
 and CPU models can change. Use a controlled, thermally stable runner before turning changes into
 hard regression gates or publishing absolute throughput claims.
+
+Cleartext vs TLS 1.3 tax on the Go pipeline harness:
+`./scripts/benchmark_tls_tax.sh` (see [TLS performance note](security/tls-performance.md)).
+
+OpenBSD / LibreSSL correctness gate (not a throughput bench):
+`bash scripts/ci-openbsd-libressl.sh` on OpenBSD, or the
+[OpenBSD LibreSSL](../.github/workflows/openbsd-libressl.yml) workflow.

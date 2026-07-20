@@ -152,6 +152,10 @@ GLYPHA_TEST("tls build reports backend availability") {
     GLYPHA_REQUIRE(!backend.empty());
     if (glyphastore::server::tls_build_enabled()) {
         GLYPHA_REQUIRE(backend != "disabled");
+#if defined(__OpenBSD__)
+        // ADR 0020 / Phase 2.6: OpenBSD secure-profile builds must use system LibreSSL.
+        GLYPHA_REQUIRE(backend == "LibreSSL");
+#endif
     } else {
         GLYPHA_REQUIRE(backend == "disabled");
         glyphastore::server::TlsConfig requested{
