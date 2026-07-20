@@ -1968,6 +1968,34 @@ auto DurableRuntimeCatalog::next_compaction_worker(const std::size_t start_worke
     return candidate;
 }
 
+auto DurableRuntimeCatalog::maintenance_observation() const -> Result<MaintenanceObservation> {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    const std::shared_lock catalog_lock{catalog_mutex_};
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+
+    MaintenanceObservation observation{
+        .durable = true,
+        .segment_count = manifest_.segments.size(),
+        .max_segment_count = options_.limits.max_segment_count,
+        .reserved_free_bytes = options_.limits.reserved_free_bytes,
+    };
+    for (const auto& entry : manifest_.segments) {
+        if (entry.role == ManifestSegmentRole::sealed) {
+            ++observation.sealed_segment_count;
+        }
+    }
+    if (auto free = directory_.available_space_bytes(); free) {
+        observation.available_free_bytes = *free;
+    } else if (free.error().code != ErrorCode::unavailable && free.error().code != ErrorCode::io_error) {
+        return unexpected(free.error());
+    }
+    return observation;
+}
+
 auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const std::uint64_t now_ns)
     -> DurableCompactionResult {
     bool recovery_required{};

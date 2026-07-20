@@ -45,6 +45,7 @@ enum OptionId : std::size_t {
     storage_mode,
     data_directory,
     durable_open_mode,
+    maintenance_mode,
     quiet,
     tls_cert,
     tls_key,
@@ -121,6 +122,9 @@ constexpr std::array kOptionSpecs{
     glyphastore::cli::OptionSpec{
         durable_open_mode, "open-mode", '\0', glyphastore::cli::OptionArity::required, "MODE",
         "Use open-or-create, create-new, or open-existing (default: open-or-create)"},
+    glyphastore::cli::OptionSpec{
+        maintenance_mode, "maintenance-mode", '\0', glyphastore::cli::OptionArity::required, "MODE",
+        "Use cooperative, background (default), or disabled Store maintenance scheduling"},
     glyphastore::cli::OptionSpec{quiet,
                                  "quiet",
                                  'q',
@@ -142,7 +146,9 @@ constexpr std::array kOptionSpecs{
 
 struct Options {
     glyphastore::server::ReactorConfig server;
-    glyphastore::StoreConfig store;
+    glyphastore::StoreConfig store{
+        .maintenance = {.mode = glyphastore::MaintenanceMode::background},
+    };
     bool show_help{};
     bool show_version{};
     bool quiet{};
@@ -175,6 +181,20 @@ struct Options {
     }
     if (value == "open-existing") {
         return glyphastore::DurableOpenMode::open_existing;
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] auto parse_maintenance_mode(const std::string_view value)
+    -> std::optional<glyphastore::MaintenanceMode> {
+    if (value == "cooperative") {
+        return glyphastore::MaintenanceMode::cooperative;
+    }
+    if (value == "background") {
+        return glyphastore::MaintenanceMode::background;
+    }
+    if (value == "disabled") {
+        return glyphastore::MaintenanceMode::disabled;
     }
     return std::nullopt;
 }
@@ -346,6 +366,14 @@ struct Options {
                                      "unknown --open-mode: " + std::string{*mode});
         }
         options.store.durable_open_mode = *selected;
+    }
+    if (const auto mode = parsed->value(maintenance_mode)) {
+        const auto selected = parse_maintenance_mode(*mode);
+        if (!selected) {
+            return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
+                                     "unknown --maintenance-mode: " + std::string{*mode});
+        }
+        options.store.maintenance.mode = *selected;
     }
     const bool durable = options.store.storage_mode != glyphastore::StorageMode::volatile_memory;
     if (durable && !options.store.data_directory) {

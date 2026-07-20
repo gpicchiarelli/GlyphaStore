@@ -11,6 +11,7 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/config.hpp"
+#include "glyphastore/store/maintenance_types.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <atomic>
@@ -179,6 +180,8 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const
         -> Result<std::optional<std::size_t>>;
+    // Catalog-level sealed/free snapshot for MaintenanceController (shared lock only).
+    [[nodiscard]] auto maintenance_observation() const -> Result<MaintenanceObservation>;
     [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns)
         -> DurableCompactionResult;
     [[nodiscard]] auto verify_index() -> Status;

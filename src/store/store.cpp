@@ -7,6 +7,7 @@
 #include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/global_manager.hpp"
+#include "glyphastore/store/maintenance.hpp"
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
@@ -296,6 +297,11 @@ struct Store::Impl {
         } finalizer{this};
 
         close_admission();
+        // Stop new maintenance evaluations, then drain admitted ops (including compact),
+        // then join the controller — matching DurableFlushCoordinator shutdown ordering.
+        if (maintenance) {
+            maintenance->request_stop();
+        }
         Status result;
         try {
             if (durable_runtime) {
@@ -313,6 +319,9 @@ struct Store::Impl {
         {
             std::unique_lock lock{lifecycle_mutex};
             lifecycle_changed.wait(lock, [&] { return no_active_operations(); });
+        }
+        if (maintenance) {
+            maintenance->join();
         }
 
         try {
@@ -333,6 +342,7 @@ struct Store::Impl {
         }
         durable_runtime.reset();
         volatile_runtime.reset();
+        maintenance.reset();
         clock.reset();
 
         Status final_status;
@@ -367,6 +377,7 @@ struct Store::Impl {
     std::atomic<std::uint64_t> latest_now_ns{};
     std::mutex compaction_mutex;
     std::size_t next_compaction_worker{};
+    std::unique_ptr<MaintenanceController> maintenance;
     std::atomic<LifecycleState> lifecycle{LifecycleState::open};
     mutable std::mutex lifecycle_mutex;
     std::condition_variable lifecycle_changed;
@@ -420,6 +431,9 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         return fail(ErrorCode::invalid_argument,
                     "recovery_now_ns is no longer supported; inject StoreConfig::clock instead");
     }
+    if (auto valid = validate_maintenance_config(config.maintenance); !valid) {
+        return unexpected(valid.error());
+    }
     const auto topology = detect_worker_topology();
     const auto count = WorkerCountPolicy::choose(topology, config.worker_config);
     if (config.storage_mode == StorageMode::volatile_memory) {
@@ -431,7 +445,15 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         const auto initial_now_ns = sample_clock(config.clock);
         auto impl = std::make_unique<Impl>(std::make_unique<VolatileStoreRuntime>(SegmentId{1}, count),
                                            config.clock, initial_now_ns);
-        return std::unique_ptr<Store>(new Store(std::move(impl)));
+        auto store = std::unique_ptr<Store>(new Store(std::move(impl)));
+        store->impl_->maintenance = std::make_unique<MaintenanceController>(config.maintenance);
+        Store* const raw = store.get();
+        store->impl_->maintenance->bind_compact([raw]() -> Result<CompactionResult> { return raw->compact(); });
+        store->impl_->maintenance->bind_observe([]() -> Result<MaintenanceObservation> {
+            return MaintenanceObservation{.durable = false};
+        });
+        store->impl_->maintenance->start();
+        return store;
     }
     if (!config.data_directory || config.data_directory->empty()) {
         return fail(ErrorCode::invalid_argument, "durable storage requires a data directory");
@@ -483,7 +505,18 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         return unexpected(runtime.error());
     }
     auto impl = std::make_unique<Impl>(std::move(*runtime), config.clock, recovery_now_ns);
-    return std::unique_ptr<Store>(new Store(std::move(impl)));
+    auto store = std::unique_ptr<Store>(new Store(std::move(impl)));
+    store->impl_->maintenance = std::make_unique<MaintenanceController>(config.maintenance);
+    Store* const raw = store.get();
+    store->impl_->maintenance->bind_compact([raw]() -> Result<CompactionResult> { return raw->compact(); });
+    store->impl_->maintenance->bind_observe([raw]() -> Result<MaintenanceObservation> {
+        if (!raw->impl_ || !raw->impl_->durable_runtime) {
+            return fail(ErrorCode::unavailable, "durable runtime is unavailable");
+        }
+        return raw->impl_->durable_runtime->maintenance_observation();
+    });
+    store->impl_->maintenance->start();
+    return store;
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {
@@ -688,6 +721,13 @@ auto Store::compact() -> Result<CompactionResult> try {
     return internal_failure();
 }
 
+auto Store::maintenance_snapshot() const -> MaintenanceSnapshot {
+    if (!impl_ || !impl_->maintenance) {
+        return MaintenanceSnapshot{};
+    }
+    return impl_->maintenance->snapshot();
+}
+
 auto Store::close() -> Status try { return impl_->close(); } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {
@@ -865,6 +905,10 @@ auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
 auto detail::StoreAccess::batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats> {
     return store.impl_->durable_runtime ? store.impl_->durable_runtime->batch_stats()
                                         : std::vector<DurableBatchWorkerStats>{};
+}
+
+auto detail::StoreAccess::maintenance_controller(Store& store) noexcept -> MaintenanceController* {
+    return store.impl_->maintenance.get();
 }
 
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {

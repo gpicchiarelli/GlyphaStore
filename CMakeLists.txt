@@ -94,6 +94,7 @@ add_library(glyphastore_core
     src/segment/record.cpp
     src/segment/segment.cpp
     src/segment/segment_header.cpp
+    src/store/maintenance.cpp
     src/store/store.cpp
     src/vacuum/vacuum.cpp
     src/worker/pool.cpp
@@ -253,6 +254,7 @@ if(BUILD_TESTING)
         tests/unit/adaptive_batch_sizer_tests.cpp
         tests/unit/index_tests.cpp
         tests/unit/manifest_tests.cpp
+        tests/unit/maintenance_controller_tests.cpp
         tests/unit/namespace_audit_tests.cpp
         tests/unit/persistence_filesystem_tests.cpp
         tests/unit/segment_file_tests.cpp

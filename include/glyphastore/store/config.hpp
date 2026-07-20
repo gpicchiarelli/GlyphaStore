@@ -68,6 +68,30 @@ enum class StorageMode : std::uint8_t {
     durable_group,
 };
 
+enum class MaintenanceMode : std::uint8_t {
+    cooperative,
+    background,
+    disabled,
+};
+
+struct MaintenanceConfig {
+    MaintenanceMode mode{MaintenanceMode::cooperative};
+    // Zero means "use implementation defaults" for rate/CPU budgets reserved for Phase 1+.
+    std::uint64_t max_copy_bytes_per_cycle{};
+    std::uint64_t max_copy_bytes_per_sec{};
+    std::uint32_t max_segments_per_cycle{1};
+    std::uint32_t max_cpu_ms_per_window{};
+    std::uint32_t min_eval_interval_ms{1'000};
+    std::uint32_t max_eval_interval_ms{60'000};
+    std::uint32_t suspend_on_p99_latency_ms{};
+    std::uint32_t max_no_gain_attempts{8};
+    std::uint32_t dead_byte_ratio_bp_normal{5'000};
+    std::uint32_t segment_count_pressure_pct{80};
+    std::uint64_t free_bytes_pressure_margin{};
+
+    auto operator==(const MaintenanceConfig&) const -> bool = default;
+};
+
 enum class DurableOpenMode : std::uint8_t {
     open_or_create,
     open_existing,
@@ -95,6 +119,7 @@ struct StoreConfig {
     DurablePeriodicConfig durable_periodic{};
     DurableGroupConfig durable_group{};
     DurableResourceLimits durable_limits{};
+    MaintenanceConfig maintenance{};
     // Deprecated compatibility field. Nonzero values are rejected; inject a
     // StoreClock instead so reads and recovery observe one time source.
     std::uint64_t recovery_now_ns{};

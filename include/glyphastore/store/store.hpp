@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/store/config.hpp"
+#include "glyphastore/store/maintenance_types.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <cstddef>
@@ -59,6 +60,8 @@ class Store final {
     // Segments. Calls do not queue behind an existing compaction. An empty
     // successful result means no Worker currently offers a physical Segment gain.
     [[nodiscard]] auto compact() -> Result<CompactionResult>;
+    // Observability for the optional MaintenanceController (ADR 0023).
+    [[nodiscard]] auto maintenance_snapshot() const -> MaintenanceSnapshot;
     // Idempotently prevents new operations, waits for calls already in
     // progress, flushes durable state, stops background executors, and releases
     // Store resources. Destruction performs the same shutdown as a

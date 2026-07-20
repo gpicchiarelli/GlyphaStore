@@ -4,6 +4,7 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment.hpp"
+#include "glyphastore/store/maintenance.hpp"
 #include "glyphastore/store/prepared_read.hpp"
 #include "glyphastore/store/store.hpp"
 #include "glyphastore/worker/worker.hpp"
@@ -41,6 +42,7 @@ class StoreAccess final {
     [[nodiscard]] static auto erase(Store& store, std::size_t worker_index, const HashedKey& key) -> Status;
     [[nodiscard]] static auto is_durable(const Store& store) noexcept -> bool;
     [[nodiscard]] static auto batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats>;
+    [[nodiscard]] static auto maintenance_controller(Store& store) noexcept -> MaintenanceController*;
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;
     [[nodiscard]] static auto segments(const Store& store) -> std::vector<SegmentPtr>;

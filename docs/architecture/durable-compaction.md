@@ -7,8 +7,10 @@ transaction. The durable builder now prepares the replacement Index, installs th
 and revalidates exact visible Records, and supports zero-output retirement. The internal durable
 runtime now installs the prepared manifest, commit catalog, and Worker Index atomically, retires the
 old sources, and fails closed whenever restart must complete recovery. Explicit Store-level
-scheduling is available through `Store::compact()`. Automatic background policy and the complete
-online kill/fault matrix remain implementation and certification work.
+scheduling is available through `Store::compact()`. An optional Store-owned
+[MaintenanceController](maintenance-controller.md) (ADR 0023) may observe and schedule that primitive
+under explicit modes and budgets; Phase 0 scaffolding does not yet invoke automatic compact. The
+complete online kill/fault matrix for compaction remains certification work.
 
 ## Why the complete sealed history is one unit
 
@@ -156,12 +158,17 @@ take the physical serializer only long enough to observe the lease and return a 
 `sequence_conflict`; ordinary operations on other Workers continue. This removes the former
 catalog-equivalent head-of-line block without changing any v1 on-disk byte.
 
-The public `Store::compact()` scheduler is explicit and creates no background thread. It examines
-eligible Workers in round-robin order, skips exact layouts that would reclaim no physical Segment,
-and completes at most one transaction per call under the configured temporary-space and
+The public `Store::compact()` scheduler is cooperative and creates no background thread by itself.
+It examines eligible Workers in round-robin order, skips exact layouts that would reclaim no physical
+Segment, and completes at most one transaction per call under the configured temporary-space and
 amplification limits. A Store-local try-lock rejects a concurrent maintenance request instead of
 queuing it. This bounds shutdown: `close()` either sees no compaction or waits only for the one
 already admitted transaction to finish.
+
+When `StoreConfig::maintenance.mode` is `background`, a Store-owned
+[MaintenanceController](maintenance-controller.md) may run one evaluation thread and invoke
+`Store::compact()` under Phase 1 normal-policy budgets. The controller shares the same non-queuing
+maintenance gate.
 
 ## Required evidence
 

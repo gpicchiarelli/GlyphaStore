@@ -244,8 +244,10 @@ power-cut automation and pinned native mount rows remain before this P0 item can
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 
-**Status:** in progress. Durable compaction is now exposed as explicit cooperative Store maintenance;
-automatic operational policy and the complete online crash matrix remain open. A deterministic v1
+**Status:** in progress. Durable compaction is exposed as cooperative `Store::compact()` maintenance
+with an optional Store-owned [MaintenanceController](architecture/maintenance-controller.md)
+(ADR 0023). Automatic reclaim policy (Phase 1+ budgets, pressure/emergency) and the complete online
+crash matrix remain open. A deterministic v1
 planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
@@ -276,6 +278,8 @@ most one transaction per call, and reports copy statistics. The online single-ou
 fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
 syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
 policy, multi-output randomized crash histories, and native power-loss certification remain open.
+Phase 1 of ADR 0023 enables budgeted automatic `compact()` under normal policy for
+`maintenance_mode=background`; pressure/emergency policies remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second

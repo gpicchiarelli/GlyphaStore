@@ -48,6 +48,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0020](0020-tls-outer-transport.md) | TLS 1.3 outer transport for secure profile | accepted | LibreSSL first-class on OpenBSD; enables 0021 |
 | [0021](0021-secure-profile-authentication.md) | mTLS authentication for secure profile | accepted | depends on 0020; enables 0022 |
 | [0022](0022-authorization-capabilities.md) | Coarse read/write/admin capabilities | accepted | depends on 0021 |
+| [0023](0023-maintenance-controller.md) | Optional budgeted MaintenanceController | accepted | preserves 0015; schedules `Store::compact()` |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).

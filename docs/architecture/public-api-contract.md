@@ -136,11 +136,17 @@ implementation-specific allocation count.
 
 ## Explicit maintenance
 
-`Store::compact()` is supported only by durable Stores and performs no background scheduling. A
-successful result reports either one completed whole-Worker transaction and its copy statistics, or
-no current physical gain. Selection is round-robin across Workers. Concurrent compaction calls are
-not queued, mutations never invoke compaction implicitly, and Store shutdown waits only for the one
-maintenance transaction already admitted.
+`Store::compact()` is supported for volatile (selective vacuum) and durable (whole-Worker sealed
+history) Stores. Concurrent compaction calls are not queued; mutations never invoke compaction
+implicitly; Store shutdown waits only for the one maintenance transaction already admitted.
+
+Selection for a single `compact()` call is round-robin across Workers. A successful result reports
+either one completed transaction and its copy statistics, or no current physical gain.
+
+Optional automatic scheduling is governed by `StoreConfig::maintenance` and ADR 0023. The embedded
+default is `cooperative` (no maintenance thread). `background` starts one Store-owned evaluation
+thread that may call `compact()` under Phase 1 normal budgets. `glyphastored` defaults to
+`background`. See [maintenance controller](maintenance-controller.md).
 
 ## Compatibility policy
 
