@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -26,6 +27,12 @@ struct ClientConfig {
 struct PutOptions {
     // Absolute Unix time in nanoseconds. Zero means no expiry.
     std::uint64_t expire_at_ns{};
+};
+
+// Optional per-call request budget. When timeout is unset, ClientConfig::request_timeout_ms
+// applies. Connect and bootstrap INIT/BIND always use the configured defaults.
+struct RequestOptions {
+    std::optional<std::chrono::milliseconds> timeout{};
 };
 
 enum class MutationOutcome {
@@ -85,27 +92,34 @@ class Client final {
     Client(const Client&) = delete;
     auto operator=(const Client&) -> Client& = delete;
 
-    [[nodiscard]] auto get(std::span<const std::byte> key) -> Result<std::vector<std::byte>>;
-    [[nodiscard]] auto get(std::string_view key) -> Result<std::vector<std::byte>>;
-    [[nodiscard]] auto ping(std::span<const std::byte> payload = {}) -> Result<std::vector<std::byte>>;
+    [[nodiscard]] auto get(std::span<const std::byte> key, RequestOptions options = {})
+        -> Result<std::vector<std::byte>>;
+    [[nodiscard]] auto get(std::string_view key, RequestOptions options = {})
+        -> Result<std::vector<std::byte>>;
+    [[nodiscard]] auto ping(std::span<const std::byte> payload = {}, RequestOptions options = {})
+        -> Result<std::vector<std::byte>>;
 
     [[nodiscard]] auto put(std::span<const std::byte> key, std::span<const std::byte> value,
-                           PutOptions options = {}) -> MutationResult;
-    [[nodiscard]] auto put(std::string_view key, std::string_view value, PutOptions options = {})
+                           PutOptions put_options = {}, RequestOptions options = {}) -> MutationResult;
+    [[nodiscard]] auto put(std::string_view key, std::string_view value, PutOptions put_options = {},
+                           RequestOptions options = {}) -> MutationResult;
+    [[nodiscard]] auto erase(std::span<const std::byte> key, RequestOptions options = {})
         -> MutationResult;
-    [[nodiscard]] auto erase(std::span<const std::byte> key) -> MutationResult;
-    [[nodiscard]] auto erase(std::string_view key) -> MutationResult;
+    [[nodiscard]] auto erase(std::string_view key, RequestOptions options = {}) -> MutationResult;
 
     // Executes an ordered pipeline on one Worker-bound connection. Every key
     // must route to the same Worker. Responses always correspond positionally
     // to requests, including partial transport failures.
-    [[nodiscard]] auto execute_pipeline(std::span<const PipelineRequest> requests)
+    [[nodiscard]] auto execute_pipeline(std::span<const PipelineRequest> requests,
+                                        RequestOptions options = {})
         -> Result<std::vector<PipelineResponse>>;
 
     // Groups requests by Worker, runs one pipeline per Worker (concurrently when
     // more than one Worker is involved), and restores caller order. Not atomic:
-    // Workers succeed or fail independently after admission.
-    [[nodiscard]] auto execute_batch(std::span<const PipelineRequest> requests)
+    // Workers succeed or fail independently after admission. One shared deadline
+    // covers the whole batch call.
+    [[nodiscard]] auto execute_batch(std::span<const PipelineRequest> requests,
+                                     RequestOptions options = {})
         -> Result<std::vector<PipelineResponse>>;
 
     [[nodiscard]] auto worker_for(std::span<const std::byte> key) const noexcept -> std::uint32_t;

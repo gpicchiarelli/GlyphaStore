@@ -396,6 +396,16 @@ GLYPHA_TEST("C++ client pipeline preserves indeterminate mutation outcomes after
     GLYPHA_REQUIRE(client.healthy());
 }
 
+GLYPHA_TEST("C++ client rejects non-positive request timeout override") {
+    RunningServer server;
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+    auto rejected = client.get("key", {.timeout = std::chrono::milliseconds{0}});
+    GLYPHA_REQUIRE(!rejected.has_value());
+    GLYPHA_REQUIRE(rejected.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
 GLYPHA_TEST("C++ client rejects invalid configuration before network I/O") {
     auto invalid = glyphastore::client::Client::connect({.port = 0});
     GLYPHA_REQUIRE(!invalid.has_value());

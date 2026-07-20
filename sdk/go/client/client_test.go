@@ -13,14 +13,15 @@ import (
 )
 
 type fakeServer struct {
-	workerCount         uint32
-	disconnectOnPut     bool
-	internalErrorOnPut  bool
-	ln                  net.Listener
-	values              map[string][]byte
-	valuesMu            sync.Mutex
-	wg                  sync.WaitGroup
-	stop                chan struct{}
+	workerCount        uint32
+	disconnectOnPut    bool
+	internalErrorOnPut bool
+	stallOnGet         bool
+	ln                 net.Listener
+	values             map[string][]byte
+	valuesMu           sync.Mutex
+	wg                 sync.WaitGroup
+	stop               chan struct{}
 }
 
 func startFakeServer(t *testing.T, workerCount uint32, disconnectOnPut, internalErrorOnPut bool) *fakeServer {
@@ -153,6 +154,13 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 		}
 		return s.send(conn, protocol.StatusOK, req.RequestID, ownerBound, nil)
 	case protocol.OpcodeGet:
+		if s.stallOnGet {
+			select {
+			case <-s.stop:
+			case <-time.After(time.Hour):
+			}
+			return false
+		}
 		owner, _ := protocol.WorkerFor(req.Key, s.workerCount)
 		if ownerBound != owner {
 			return s.send(conn, protocol.StatusWrongOwner, req.RequestID, owner, nil)
@@ -403,6 +411,36 @@ func TestMultiWorkerBootstrapAndBatch(t *testing.T) {
 	ge, ok := err.(*client.Error)
 	if !ok || ge.Category != client.CategoryInvalidArgument {
 		t.Fatalf("expected invalid_argument, got %v", err)
+	}
+}
+
+func TestPerCallTimeoutOverridesConfig(t *testing.T) {
+	server := startFakeServer(t, 1, false, false)
+	server.stallOnGet = true
+	defer server.close()
+
+	c, err := client.Connect(client.Config{Port: server.port(), RequestTimeout: 5 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	started := time.Now()
+	_, err = c.Get([]byte("key"), client.CallOptions{Timeout: 50 * time.Millisecond})
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("expected timeout")
+	}
+	ge, ok := err.(*client.Error)
+	if !ok || ge.Category != client.CategoryTransport {
+		t.Fatalf("expected transport, got %v", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("timeout took too long: %v", elapsed)
+	}
+	_, err = c.Get([]byte("key"), client.CallOptions{Timeout: -1})
+	if err == nil {
+		t.Fatal("expected invalid timeout")
 	}
 }
 

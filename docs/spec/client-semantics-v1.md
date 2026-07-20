@@ -157,6 +157,26 @@ Outcome classification for in-flight mutations follows §6.1 using `bytes_sent`.
 Connect timeout failure is `unavailable` or `transport` before any session exists. It is never a
 mutation `indeterminate`.
 
+### 6.5 Per-call request timeout override
+
+Official clients may accept an optional per-call request timeout that **overrides**
+`ClientConfig.request_timeout` for that logical operation only:
+
+- C++: `RequestOptions{.timeout = 50ms}`
+- Python: `timeout=0.05`
+- Perl: `timeout => 0.05`
+- Go: `CallOptions{Timeout: 50 * time.Millisecond}`
+
+Rules:
+
+1. Omitted / unset → use the configured default.
+2. Explicit non-positive override → `invalid_argument` before send.
+3. Applies to `get` / `put` / `erase` / `ping` / `execute_pipeline` / `execute_batch` (and Perl
+   `execute_worker_pipelines`). Does **not** override connect timeout or bootstrap `INIT` /
+   `BIND_WORKER`.
+4. Automatic retry (§5) reuses the **same absolute monotonic deadline**, not a fresh budget.
+5. `execute_batch` uses one shared deadline for the whole call across Workers.
+
 ## 7. Pipeline positional outcomes
 
 | Outcome | Meaning |

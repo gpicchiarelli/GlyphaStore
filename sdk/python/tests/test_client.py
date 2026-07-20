@@ -23,6 +23,7 @@ from glyphastore import (  # noqa: E402
     PipelineOpcode,
     PipelineOutcome,
     PipelineRequest,
+    TransportError,
 )
 from glyphastore.protocol import (  # noqa: E402
     Opcode,
@@ -42,10 +43,12 @@ class FakeServer:
         worker_count: int = 1,
         disconnect_on_put: bool = False,
         internal_error_on_put: bool = False,
+        stall_on_get: bool = False,
     ) -> None:
         self._worker_count = worker_count
         self._disconnect_on_put = disconnect_on_put
         self._internal_error_on_put = internal_error_on_put
+        self._stall_on_get = stall_on_get
         self._values: dict[bytes, bytes] = {}
         self._values_lock = threading.Lock()
         self._listener = socket.socket()
@@ -192,6 +195,9 @@ class FakeServer:
                             owner_worker=bound_worker,
                         )
                     elif request.opcode is Opcode.GET:
+                        if self._stall_on_get:
+                            self._stop.wait(timeout=3600)
+                            return
                         owner = worker_for(request.key, self._worker_count)
                         if bound_worker != owner:
                             self._send(
@@ -360,6 +366,17 @@ class ClientTests(unittest.TestCase):
                         PipelineRequest(PipelineOpcode.GET, b"key"),
                     ]
                 )
+        server.join()
+
+    def test_per_call_timeout_overrides_config(self) -> None:
+        server = FakeServer(stall_on_get=True)
+        with Client.connect(
+            ClientConfig(port=server.port, request_timeout=5.0)
+        ) as client:
+            with self.assertRaises(TransportError):
+                client.get(b"key", timeout=0.05)
+            with self.assertRaises(InvalidArgument):
+                client.get(b"key", timeout=0)
         server.join()
 
     def test_batch_groups_workers_and_restores_order(self) -> None:

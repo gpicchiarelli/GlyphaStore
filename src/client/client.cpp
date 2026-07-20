@@ -272,14 +272,20 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
 }
 
 [[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
-                            const ClientConfig& config) -> ExchangeResult {
-    const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
+                            const ClientConfig& config, const Clock::time_point deadline)
+    -> ExchangeResult {
     auto sent = send_frame(socket.get(), request, deadline);
     if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
         return *failure;
     }
     const auto request_bytes_sent = std::get<std::size_t>(sent);
     return receive_response(socket, config, deadline, request_bytes_sent);
+}
+
+[[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
+                            const ClientConfig& config) -> ExchangeResult {
+    const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
+    return exchange(socket, request, config, deadline);
 }
 
 [[nodiscard]] auto response_error(const server::ResponseStatus status) -> Error {
@@ -453,19 +459,36 @@ class Client::Impl final {
         return {};
     }
 
-    [[nodiscard]] auto get(const std::span<const std::byte> key) -> Result<std::vector<std::byte>> {
-        return read(server::RequestOpcode::get, key, {});
+    [[nodiscard]] auto get(const std::span<const std::byte> key, const RequestOptions options)
+        -> Result<std::vector<std::byte>> {
+        return read(server::RequestOpcode::get, key, {}, options);
     }
 
-    [[nodiscard]] auto ping(const std::span<const std::byte> payload) -> Result<std::vector<std::byte>> {
-        return read(server::RequestOpcode::ping, {}, payload);
+    [[nodiscard]] auto ping(const std::span<const std::byte> payload, const RequestOptions options)
+        -> Result<std::vector<std::byte>> {
+        return read(server::RequestOpcode::ping, {}, payload, options);
+    }
+
+    [[nodiscard]] auto resolve_deadline(const RequestOptions options) const
+        -> Result<Clock::time_point> {
+        const auto timeout_ms = options.timeout.has_value()
+                                    ? static_cast<std::uint32_t>(options.timeout->count())
+                                    : config_.request_timeout_ms;
+        if (timeout_ms == 0 || (options.timeout.has_value() && options.timeout->count() <= 0)) {
+            return fail(ErrorCode::invalid_argument, "request timeout must be positive");
+        }
+        return Clock::now() + std::chrono::milliseconds{timeout_ms};
     }
 
     [[nodiscard]] auto mutate(const server::RequestOpcode opcode, const std::span<const std::byte> key,
-                              const std::span<const std::byte> value, const std::uint64_t expire_at_ns)
-        -> MutationResult {
+                              const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
+                              const RequestOptions options) -> MutationResult {
         if (!healthy_.load(std::memory_order_acquire)) {
             return rejected({ErrorCode::unavailable, "client is closed or routing metadata changed"});
+        }
+        auto deadline = resolve_deadline(options);
+        if (!deadline) {
+            return rejected(deadline.error());
         }
         const auto worker = worker_for(key);
         auto& connection = *connections_[worker];
@@ -489,7 +512,7 @@ class Client::Impl final {
             if (encoded->size() > config_.maximum_frame_bytes) {
                 return rejected({ErrorCode::record_too_large, "request exceeds the configured frame limit"});
             }
-            auto result = exchange(connection.socket, *encoded, config_);
+            auto result = exchange(connection.socket, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 connection.reset();
                 if (failure->request_bytes_sent == 0) {
@@ -526,7 +549,18 @@ class Client::Impl final {
         return rejected({ErrorCode::unavailable, "could not send mutation"});
     }
 
-    [[nodiscard]] auto execute_pipeline(const std::span<const PipelineRequest> requests)
+    [[nodiscard]] auto execute_pipeline(const std::span<const PipelineRequest> requests,
+                                        const RequestOptions options)
+        -> Result<std::vector<PipelineResponse>> {
+        auto deadline = resolve_deadline(options);
+        if (!deadline) {
+            return unexpected(deadline.error());
+        }
+        return execute_pipeline(requests, *deadline);
+    }
+
+    [[nodiscard]] auto execute_pipeline(const std::span<const PipelineRequest> requests,
+                                        const Clock::time_point deadline)
         -> Result<std::vector<PipelineResponse>> {
         if (requests.empty()) {
             return std::vector<PipelineResponse>{};
@@ -614,7 +648,6 @@ class Client::Impl final {
             }
         };
 
-        const auto deadline = Clock::now() + std::chrono::milliseconds{config_.request_timeout_ms};
         auto sent = send_frame(connection.socket.get(), output, deadline);
         if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
             connection.reset();
@@ -672,13 +705,18 @@ class Client::Impl final {
         return responses;
     }
 
-    [[nodiscard]] auto execute_batch(const std::span<const PipelineRequest> requests)
+    [[nodiscard]] auto execute_batch(const std::span<const PipelineRequest> requests,
+                                     const RequestOptions options)
         -> Result<std::vector<PipelineResponse>> {
         if (requests.empty()) {
             return std::vector<PipelineResponse>{};
         }
         if (!healthy_.load(std::memory_order_acquire)) {
             return fail(ErrorCode::unavailable, "client is closed or routing metadata changed");
+        }
+        auto deadline = resolve_deadline(options);
+        if (!deadline) {
+            return unexpected(deadline.error());
         }
 
         struct WorkerJob {
@@ -718,8 +756,10 @@ class Client::Impl final {
         std::vector<ActiveJob> active;
         active.reserve(worker_count_);
 
-        const auto run_job = [this](WorkerJob& job) -> Result<std::vector<PipelineResponse>> {
-            return execute_pipeline(job.requests);
+        const auto shared_deadline = *deadline;
+        const auto run_job = [this, shared_deadline](WorkerJob& job)
+            -> Result<std::vector<PipelineResponse>> {
+            return execute_pipeline(job.requests, shared_deadline);
         };
 
         for (auto& job : jobs) {
@@ -856,9 +896,14 @@ class Client::Impl final {
     }
 
     [[nodiscard]] auto read(const server::RequestOpcode opcode, const std::span<const std::byte> key,
-                            const std::span<const std::byte> value) -> Result<std::vector<std::byte>> {
+                            const std::span<const std::byte> value, const RequestOptions options)
+        -> Result<std::vector<std::byte>> {
         if (!healthy_.load(std::memory_order_acquire)) {
             return fail(ErrorCode::unavailable, "client is closed or routing metadata changed");
+        }
+        auto deadline = resolve_deadline(options);
+        if (!deadline) {
+            return unexpected(deadline.error());
         }
         const auto worker = opcode == server::RequestOpcode::ping ? 0U : worker_for(key);
         auto& connection = *connections_[worker];
@@ -881,7 +926,7 @@ class Client::Impl final {
             if (encoded->size() > config_.maximum_frame_bytes) {
                 return fail(ErrorCode::record_too_large, "request exceeds the configured frame limit");
             }
-            auto result = exchange(connection.socket, *encoded, config_);
+            auto result = exchange(connection.socket, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 last_error = failure->error;
                 connection.reset();
@@ -968,87 +1013,91 @@ Client::~Client() = default;
 Client::Client(Client&&) noexcept = default;
 auto Client::operator=(Client&&) noexcept -> Client& = default;
 
-auto Client::get(const std::span<const std::byte> key) -> Result<std::vector<std::byte>> {
+auto Client::get(const std::span<const std::byte> key, const RequestOptions options)
+    -> Result<std::vector<std::byte>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");
         }
-        return implementation_->get(key);
+        return implementation_->get(key, options);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "client allocation failed");
     }
 }
 
-auto Client::get(const std::string_view key) -> Result<std::vector<std::byte>> {
-    return get(as_bytes(key));
+auto Client::get(const std::string_view key, const RequestOptions options)
+    -> Result<std::vector<std::byte>> {
+    return get(as_bytes(key), options);
 }
 
-auto Client::ping(const std::span<const std::byte> payload) -> Result<std::vector<std::byte>> {
+auto Client::ping(const std::span<const std::byte> payload, const RequestOptions options)
+    -> Result<std::vector<std::byte>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");
         }
-        return implementation_->ping(payload);
+        return implementation_->ping(payload, options);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "client allocation failed");
     }
 }
 
 auto Client::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
-                 const PutOptions options) -> MutationResult {
+                 const PutOptions put_options, const RequestOptions options) -> MutationResult {
     try {
         if (!implementation_) {
             return {.outcome = MutationOutcome::rejected,
                     .error = Error{ErrorCode::unavailable, "client was moved from"}};
         }
-        return implementation_->mutate(server::RequestOpcode::put, key, value, options.expire_at_ns);
+        return implementation_->mutate(server::RequestOpcode::put, key, value, put_options.expire_at_ns,
+                                       options);
     } catch (const std::bad_alloc&) {
         return {.outcome = MutationOutcome::rejected,
                 .error = Error{ErrorCode::resource_exhausted, "client allocation failed"}};
     }
 }
 
-auto Client::put(const std::string_view key, const std::string_view value, const PutOptions options)
-    -> MutationResult {
-    return put(as_bytes(key), as_bytes(value), options);
+auto Client::put(const std::string_view key, const std::string_view value, const PutOptions put_options,
+                 const RequestOptions options) -> MutationResult {
+    return put(as_bytes(key), as_bytes(value), put_options, options);
 }
 
-auto Client::erase(const std::span<const std::byte> key) -> MutationResult {
+auto Client::erase(const std::span<const std::byte> key, const RequestOptions options) -> MutationResult {
     try {
         if (!implementation_) {
             return {.outcome = MutationOutcome::rejected,
                     .error = Error{ErrorCode::unavailable, "client was moved from"}};
         }
-        return implementation_->mutate(server::RequestOpcode::erase, key, {}, 0);
+        return implementation_->mutate(server::RequestOpcode::erase, key, {}, 0, options);
     } catch (const std::bad_alloc&) {
         return {.outcome = MutationOutcome::rejected,
                 .error = Error{ErrorCode::resource_exhausted, "client allocation failed"}};
     }
 }
 
-auto Client::erase(const std::string_view key) -> MutationResult {
-    return erase(as_bytes(key));
+auto Client::erase(const std::string_view key, const RequestOptions options) -> MutationResult {
+    return erase(as_bytes(key), options);
 }
 
-auto Client::execute_pipeline(const std::span<const PipelineRequest> requests)
-    -> Result<std::vector<PipelineResponse>> {
+auto Client::execute_pipeline(const std::span<const PipelineRequest> requests,
+                              const RequestOptions options) -> Result<std::vector<PipelineResponse>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");
         }
-        return implementation_->execute_pipeline(requests);
+        return implementation_->execute_pipeline(requests, options);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "pipeline allocation failed before completion");
     }
 }
 
-auto Client::execute_batch(const std::span<const PipelineRequest> requests)
-    -> Result<std::vector<PipelineResponse>> {
+auto Client::execute_batch(const std::span<const PipelineRequest> requests,
+                           const RequestOptions options) -> Result<std::vector<PipelineResponse>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");
         }
-        return implementation_->execute_batch(requests);
+        return implementation_->execute_batch(requests, options);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "batch allocation failed before completion");
     }

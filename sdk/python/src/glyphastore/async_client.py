@@ -144,11 +144,21 @@ class AsyncClient:
             raise Unavailable("client is not connected")
         return worker_for(bytes(key), self._worker_count)
 
-    async def get(self, key: bytes | bytearray | memoryview) -> bytes:
-        return await self._read(Opcode.GET, bytes(key), b"")
+    async def get(
+        self,
+        key: bytes | bytearray | memoryview,
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
+        return await self._read(Opcode.GET, bytes(key), b"", timeout=timeout)
 
-    async def ping(self, payload: bytes | bytearray | memoryview = b"") -> bytes:
-        return await self._read(Opcode.PING, b"", bytes(payload))
+    async def ping(
+        self,
+        payload: bytes | bytearray | memoryview = b"",
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
+        return await self._read(Opcode.PING, b"", bytes(payload), timeout=timeout)
 
     async def put(
         self,
@@ -156,14 +166,26 @@ class AsyncClient:
         value: bytes | bytearray | memoryview,
         *,
         expire_at_ns: int = 0,
+        timeout: float | None = None,
     ) -> MutationResult:
-        return await self._mutate(Opcode.PUT, bytes(key), bytes(value), expire_at_ns)
+        return await self._mutate(
+            Opcode.PUT, bytes(key), bytes(value), expire_at_ns, timeout=timeout
+        )
 
-    async def erase(self, key: bytes | bytearray | memoryview) -> MutationResult:
-        return await self._mutate(Opcode.ERASE, bytes(key), b"", 0)
+    async def erase(
+        self,
+        key: bytes | bytearray | memoryview,
+        *,
+        timeout: float | None = None,
+    ) -> MutationResult:
+        return await self._mutate(Opcode.ERASE, bytes(key), b"", 0, timeout=timeout)
 
     async def execute_pipeline(
-        self, requests: Sequence[PipelineRequest]
+        self,
+        requests: Sequence[PipelineRequest],
+        *,
+        timeout: float | None = None,
+        _deadline: float | None = None,
     ) -> list[PipelineResponse]:
         if not requests:
             return []
@@ -171,6 +193,7 @@ class AsyncClient:
             raise Unavailable("client is closed or routing metadata changed")
         if len(requests) > self._config.maximum_pipeline_requests:
             raise InvalidArgument("pipeline exceeds the configured request limit")
+        deadline = _deadline if _deadline is not None else self._request_deadline(timeout)
 
         normalized: list[tuple[PipelineOpcode, bytes, bytes, int]] = []
         frames: list[bytes] = []
@@ -218,7 +241,6 @@ class AsyncClient:
             if not self._healthy:
                 raise Unavailable("client closed before pipeline admission")
             await self._ensure_connected(connection)
-            deadline = _deadline_after(self._config.request_timeout)
             completed = False
 
             def mark_unresolved(first: int, error: GlyphaError, bytes_sent: int) -> None:
@@ -283,12 +305,18 @@ class AsyncClient:
                 if not completed:
                     await connection.reset()
 
-    async def execute_batch(self, requests: Sequence[PipelineRequest]) -> list[PipelineResponse]:
+    async def execute_batch(
+        self,
+        requests: Sequence[PipelineRequest],
+        *,
+        timeout: float | None = None,
+    ) -> list[PipelineResponse]:
         """Group by Worker, run per-Worker pipelines concurrently, restore caller order."""
         if not requests:
             return []
         if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
+        shared_deadline = self._request_deadline(timeout)
 
         groups: dict[int, list[tuple[int, PipelineRequest]]] = {}
         for index, request in enumerate(requests):
@@ -313,7 +341,7 @@ class AsyncClient:
         ) -> tuple[list[int], list[PipelineResponse]]:
             indices = [index for index, _ in items]
             group_requests = [request for _, request in items]
-            return indices, await self.execute_pipeline(group_requests)
+            return indices, await self.execute_pipeline(group_requests, _deadline=shared_deadline)
 
         results = await asyncio.gather(*(run_group(items) for items in groups.values()))
         for indices, group_responses in results:
@@ -504,9 +532,23 @@ class AsyncClient:
             return InvalidArgument("server rejected the request")
         return GlyphaError("server reported an internal error")
 
-    async def _read(self, opcode: Opcode, key: bytes, value: bytes) -> bytes:
+    def _request_deadline(self, timeout: float | None) -> float:
+        if timeout is not None and timeout <= 0:
+            raise InvalidArgument("request timeout must be positive")
+        seconds = self._config.request_timeout if timeout is None else timeout
+        return _deadline_after(seconds)
+
+    async def _read(
+        self,
+        opcode: Opcode,
+        key: bytes,
+        value: bytes,
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
         if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
+        deadline = self._request_deadline(timeout)
         worker = 0 if opcode is Opcode.PING else self.worker_for(key)
         connection = self._connections[worker]
         async with connection.lock:
@@ -524,7 +566,6 @@ class AsyncClient:
                         raise InvalidArgument(str(error)) from error
                     if len(frame) > self._config.maximum_frame_bytes:
                         raise InvalidArgument("request exceeds the configured frame limit")
-                    deadline = _deadline_after(self._config.request_timeout)
                     exchange_started = True
                     response = await self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)
@@ -551,13 +592,23 @@ class AsyncClient:
             raise last_error
 
     async def _mutate(
-        self, opcode: Opcode, key: bytes, value: bytes, expire_at_ns: int
+        self,
+        opcode: Opcode,
+        key: bytes,
+        value: bytes,
+        expire_at_ns: int,
+        *,
+        timeout: float | None = None,
     ) -> MutationResult:
         if not self._healthy:
             return MutationResult(
                 MutationOutcome.REJECTED,
                 Unavailable("client is closed or routing metadata changed"),
             )
+        try:
+            deadline = self._request_deadline(timeout)
+        except InvalidArgument as error:
+            return MutationResult(MutationOutcome.REJECTED, error)
         worker = self.worker_for(key)
         connection = self._connections[worker]
         async with connection.lock:
@@ -591,7 +642,6 @@ class AsyncClient:
                             MutationOutcome.REJECTED,
                             InvalidArgument("request exceeds the configured frame limit"),
                         )
-                    deadline = _deadline_after(self._config.request_timeout)
                     exchange_started = True
                     response = await self._exchange(connection, frame, deadline)
                     self._validate_response(response, request_id, worker)

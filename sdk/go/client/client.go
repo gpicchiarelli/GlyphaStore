@@ -140,27 +140,51 @@ func (c *Client) WorkerFor(key []byte) (uint32, error) {
 }
 
 // Get loads a value by key.
-func (c *Client) Get(key []byte) ([]byte, error) {
-	return c.read(protocol.OpcodeGet, key, nil)
+func (c *Client) Get(key []byte, opts ...CallOptions) ([]byte, error) {
+	return c.read(protocol.OpcodeGet, key, nil, opts...)
 }
 
 // Ping echoes an opaque payload via Worker 0.
-func (c *Client) Ping(payload []byte) ([]byte, error) {
-	return c.read(protocol.OpcodePing, nil, payload)
+func (c *Client) Ping(payload []byte, opts ...CallOptions) ([]byte, error) {
+	return c.read(protocol.OpcodePing, nil, payload, opts...)
 }
 
 // Put stores a value. Outcomes are returned; the call does not fail solely for rejection.
-func (c *Client) Put(key, value []byte, expireAtNs uint64) MutationResult {
-	return c.mutate(protocol.OpcodePut, key, value, expireAtNs)
+func (c *Client) Put(key, value []byte, expireAtNs uint64, opts ...CallOptions) MutationResult {
+	return c.mutate(protocol.OpcodePut, key, value, expireAtNs, opts...)
 }
 
 // Erase deletes a key.
-func (c *Client) Erase(key []byte) MutationResult {
-	return c.mutate(protocol.OpcodeErase, key, nil, 0)
+func (c *Client) Erase(key []byte, opts ...CallOptions) MutationResult {
+	return c.mutate(protocol.OpcodeErase, key, nil, 0, opts...)
+}
+
+func (c *Client) resolveDeadline(opts ...CallOptions) (time.Time, error) {
+	timeout := c.cfg.RequestTimeout
+	if len(opts) > 0 {
+		if opts[0].Timeout < 0 {
+			return time.Time{}, invalidArgument("request timeout must be positive")
+		}
+		if opts[0].Timeout > 0 {
+			timeout = opts[0].Timeout
+		}
+	}
+	if timeout <= 0 {
+		return time.Time{}, invalidArgument("request timeout must be positive")
+	}
+	return time.Now().Add(timeout), nil
 }
 
 // ExecutePipeline runs an ordered, non-atomic pipeline on one Worker.
-func (c *Client) ExecutePipeline(requests []PipelineRequest) ([]PipelineResponse, error) {
+func (c *Client) ExecutePipeline(requests []PipelineRequest, opts ...CallOptions) ([]PipelineResponse, error) {
+	deadline, err := c.resolveDeadline(opts...)
+	if err != nil {
+		return nil, err
+	}
+	return c.executePipelineDeadline(requests, deadline)
+}
+
+func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline time.Time) ([]PipelineResponse, error) {
 	if len(requests) == 0 {
 		return nil, nil
 	}
@@ -238,7 +262,6 @@ func (c *Client) ExecutePipeline(requests []PipelineRequest) ([]PipelineResponse
 	if err := c.ensureConnected(conn); err != nil {
 		return nil, err
 	}
-	deadline := time.Now().Add(c.cfg.RequestTimeout)
 
 	markUnresolved := func(first int, err error, bytesSent int) {
 		for index := first; index < len(normalized); index++ {
@@ -302,12 +325,16 @@ func (c *Client) ExecutePipeline(requests []PipelineRequest) ([]PipelineResponse
 
 // ExecuteBatch groups by Worker, runs one pipeline per Worker concurrently, and
 // restores caller order. It is not an atomic transaction.
-func (c *Client) ExecuteBatch(requests []PipelineRequest) ([]PipelineResponse, error) {
+func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) ([]PipelineResponse, error) {
 	if len(requests) == 0 {
 		return nil, nil
 	}
 	if !c.healthy.Load() {
 		return nil, unavailable("client is closed or routing metadata changed")
+	}
+	deadline, err := c.resolveDeadline(opts...)
+	if err != nil {
+		return nil, err
 	}
 
 	type item struct {
@@ -352,7 +379,7 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest) ([]PipelineResponse, e
 			indices[i] = it.index
 			reqs[i] = it.request
 		}
-		resps, err := c.ExecutePipeline(reqs)
+		resps, err := c.executePipelineDeadline(reqs, deadline)
 		return result{indices: indices, resps: resps, err: err}
 	}
 
@@ -621,9 +648,13 @@ func (c *Client) validateResponse(response protocol.Response, requestID uint64, 
 	return nil
 }
 
-func (c *Client) read(opcode protocol.Opcode, key, value []byte) ([]byte, error) {
+func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOptions) ([]byte, error) {
 	if !c.healthy.Load() {
 		return nil, unavailable("client is closed or routing metadata changed")
+	}
+	deadline, err := c.resolveDeadline(opts...)
+	if err != nil {
+		return nil, err
 	}
 	worker := uint32(0)
 	if opcode != protocol.OpcodePing {
@@ -658,7 +689,6 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte) ([]byte, error)
 		if len(frame) > c.cfg.MaximumFrameBytes {
 			return nil, invalidArgument("request exceeds the configured frame limit")
 		}
-		deadline := time.Now().Add(c.cfg.RequestTimeout)
 		response, err := c.exchange(conn, frame, deadline)
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {
@@ -700,9 +730,13 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte) ([]byte, error)
 	return nil, last
 }
 
-func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs uint64) MutationResult {
+func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs uint64, opts ...CallOptions) MutationResult {
 	if !c.healthy.Load() {
 		return MutationResult{Outcome: MutationRejected, Err: unavailable("client is closed or routing metadata changed")}
+	}
+	deadline, err := c.resolveDeadline(opts...)
+	if err != nil {
+		return MutationResult{Outcome: MutationRejected, Err: err}
 	}
 	worker, err := c.WorkerFor(key)
 	if err != nil {
@@ -727,7 +761,6 @@ func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs ui
 		if len(frame) > c.cfg.MaximumFrameBytes {
 			return MutationResult{Outcome: MutationRejected, Err: invalidArgument("request exceeds the configured frame limit")}
 		}
-		deadline := time.Now().Add(c.cfg.RequestTimeout)
 		response, err := c.exchange(conn, frame, deadline)
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {

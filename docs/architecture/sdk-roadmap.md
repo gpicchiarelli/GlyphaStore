@@ -71,21 +71,11 @@ Today: one connection per Worker. Concurrent same-Worker traffic serializes. A f
 `connections_per_worker = 1|2|4|…` helps Zipf / hot Worker / slow reads / many threads—but only after
 benchmarks prove the connection is the bottleneck.
 
-### 6. Per-request deadlines
+### 6. Per-request deadlines — **done**
 
-Propagate the web budget into storage:
-
-```cpp
-get(key, RequestOptions{.timeout = 50ms});
-```
-
-```python
-await client.get(key, timeout=0.05)
-```
-
-```perl
-$client->get($key, timeout => 0.05)
-```
+Optional per-call request timeout overrides the configured default (same absolute deadline across
+automatic retries). See [client semantics §6.5](../spec/client-semantics-v1.md). Surfaces:
+`RequestOptions` (C++), `timeout=` (Python), `timeout =>` (Perl), `CallOptions` (Go).
 
 ### 7. Structured errors (uniform across SDKs)
 

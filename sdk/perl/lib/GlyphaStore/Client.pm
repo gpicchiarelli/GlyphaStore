@@ -355,19 +355,39 @@ sub _status_error {
     return _error('internal', 'server reported an internal error');
 }
 
-sub get   { return $_[0]->_read(OP_GET, $_[1], '') }
-sub ping  { return $_[0]->_read(OP_PING, '', $_[1] // '') }
+sub get {
+    my ($self, $key, %options) = @_;
+    return $self->_read(OP_GET, $key, '', $options{timeout});
+}
+
+sub ping {
+    my ($self, $payload, %options) = @_;
+    return $self->_read(OP_PING, '', $payload // '', $options{timeout});
+}
 
 sub put {
     my ($self, $key, $value, %options) = @_;
-    return $self->_mutate(OP_PUT, $key, $value, $options{expire_at_ns} // 0);
+    return $self->_mutate(OP_PUT, $key, $value, $options{expire_at_ns} // 0, $options{timeout});
 }
 
-sub erase { return $_[0]->_mutate(OP_ERASE, $_[1], '', 0) }
+sub erase {
+    my ($self, $key, %options) = @_;
+    return $self->_mutate(OP_ERASE, $key, '', 0, $options{timeout});
+}
+
+sub _request_deadline {
+    my ($self, $timeout) = @_;
+    if (defined $timeout) {
+        _throw('invalid_argument', 'request timeout must be positive') if $timeout <= 0;
+        return _now() + $timeout;
+    }
+    return _now() + $self->{request_timeout};
+}
 
 sub _read {
-    my ($self, $opcode, $key, $value) = @_;
+    my ($self, $opcode, $key, $value, $timeout) = @_;
     _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
+    my $deadline = $self->_request_deadline($timeout);
     my $worker = $opcode == OP_PING ? 0 : $self->worker_for($key);
     my $connection = $self->{connections}->[$worker];
     my $last_error = _error('unavailable', 'request was not attempted');
@@ -379,7 +399,6 @@ sub _read {
             _throw('invalid_argument', _plain_message($@)) if !$frame;
             _throw('invalid_argument', 'request exceeds the configured frame limit')
                 if length($frame) > $self->{maximum_frame_bytes};
-            my $deadline =  _now() + $self->{request_timeout};
             my $received = $self->_exchange($connection, $frame, $deadline);
             $self->_validate_response($received, $request_id, $worker);
             [$received, $request_id];
@@ -417,12 +436,22 @@ sub _read {
 }
 
 sub _mutate {
-    my ($self, $opcode, $key, $value, $expire_at_ns) = @_;
+    my ($self, $opcode, $key, $value, $expire_at_ns, $timeout) = @_;
     return {
         outcome => 'rejected',
         error   => _error('unavailable', 'client is closed or routing metadata changed'),
         }
         if !$self->{healthy};
+    my $deadline = eval { $self->_request_deadline($timeout) };
+    if (!$deadline) {
+        my $error = $@;
+        return {
+            outcome => 'rejected',
+            error   => ref($error) eq 'GlyphaStore::Error'
+            ? $error
+            : _error('invalid_argument', _plain_message($error)),
+        };
+    }
     my $worker = $self->worker_for($key);
     my $connection = $self->{connections}->[$worker];
     for my $attempt (0 .. 1) {
@@ -448,7 +477,6 @@ sub _mutate {
             error   => _error('invalid_argument', 'request exceeds the configured frame limit'),
             }
             if length($frame) > $self->{maximum_frame_bytes};
-        my $deadline =  _now() + $self->{request_timeout};
         my $response = eval {
             my $received = $self->_exchange($connection, $frame, $deadline);
             $self->_validate_response($received, $request_id, $worker);
@@ -539,11 +567,12 @@ sub _apply_pipeline_response {
 }
 
 sub execute_pipeline {
-    my ($self, $requests) = @_;
+    my ($self, $requests, %options) = @_;
     _throw('invalid_argument', 'pipeline requests must be an array reference')
         if ref($requests) ne 'ARRAY';
     return [] if !@$requests;
     _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
+    my $deadline = $self->_request_deadline($options{timeout});
 
     my $first_key = $requests->[0]{key} // '';
     my $worker = $self->worker_for($first_key);
@@ -557,7 +586,6 @@ sub execute_pipeline {
     _throw('unavailable', 'client closed before pipeline admission') if !$self->{healthy};
     $self->_ensure_connected($connection);
 
-    my $deadline =  _now() + $self->{request_timeout};
     my $sent = eval { $self->_send($connection, $output, $deadline) };
     if (!defined($sent)) {
         my $failure = $@;
@@ -596,11 +624,12 @@ sub execute_pipeline {
 }
 
 sub execute_batch {
-    my ($self, $requests) = @_;
+    my ($self, $requests, %options) = @_;
     _throw('invalid_argument', 'batch requests must be an array reference')
         if ref($requests) ne 'ARRAY';
     return [] if !@$requests;
     _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
+    my $deadline = $self->_request_deadline($options{timeout});
 
     my @batches = map { [] } 0 .. $self->{worker_count} - 1;
     my @original_indices = map { [] } 0 .. $self->{worker_count} - 1;
@@ -620,7 +649,7 @@ sub execute_batch {
         push @{$original_indices[$worker]}, $index;
     }
 
-    my $worker_results = $self->execute_worker_pipelines(\@batches);
+    my $worker_results = $self->execute_worker_pipelines(\@batches, deadline => $deadline);
     my @responses = map { { outcome => 'failed', value => '', error => undef } } 0 .. $#$requests;
     for my $worker (0 .. $self->{worker_count} - 1) {
         my $group = $worker_results->[$worker] // [];
@@ -716,7 +745,7 @@ sub _read_worker_pipeline_socket {
 }
 
 sub execute_worker_pipelines {
-    my ($self, $batches) = @_;
+    my ($self, $batches, %options) = @_;
     _throw('invalid_argument', 'worker pipelines must be an array reference')
         if ref($batches) ne 'ARRAY';
     _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
@@ -726,7 +755,10 @@ sub execute_worker_pipelines {
 
     my @results = map { undef } 0 .. $worker_count - 1;
     my (@active, %by_fd);
-    my $deadline =  _now() + $self->{request_timeout};
+    my $deadline
+        = defined $options{deadline}
+        ? $options{deadline}
+        : $self->_request_deadline($options{timeout});
     local $SIG{PIPE} = 'IGNORE';
     my $write_set = IO::Select->new;
     my $read_set = IO::Select->new;

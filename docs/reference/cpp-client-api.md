@@ -83,10 +83,16 @@ auto completed = cache.execute_pipeline(requests);
 runs one pipeline per non-empty Worker (concurrently when more than one Worker is involved), and
 returns responses in the caller's original order. It is not atomic: after admission, Workers fail
 independently. Per-Worker `maximum_pipeline_requests` / `maximum_pipeline_bytes` still apply; a
-pre-admission validation failure rejects the whole batch with an outer `Result` error.
+pre-admission validation failure rejects the whole batch with an outer `Result` error. One shared
+request deadline covers the whole batch call.
+
+Optional `RequestOptions{.timeout = …}` overrides `ClientConfig::request_timeout_ms` for a single
+`get` / `put` / `erase` / `ping` / `execute_pipeline` / `execute_batch`. Automatic retries reuse the
+same absolute monotonic deadline. Connect and bootstrap stay on the configured defaults.
 
 ```cpp
 auto completed = cache.execute_batch(mixed_worker_requests);
+auto quick = cache.get(key, {.timeout = std::chrono::milliseconds{50}});
 ```
 
 The default limits are 256 request frames and 1 MiB of aggregate encoded request data. They are

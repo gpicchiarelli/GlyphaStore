@@ -75,6 +75,12 @@ type Config struct {
 	MaximumPipelineBytes     int
 }
 
+// CallOptions optionally overrides the client-wide request timeout for one call.
+// Timeout == 0 means use Config.RequestTimeout. Negative values are invalid.
+type CallOptions struct {
+	Timeout time.Duration
+}
+
 // DefaultConfig returns production-oriented defaults matching the other SDKs.
 func DefaultConfig() Config {
 	return Config{
