@@ -49,6 +49,7 @@ enum OptionId : std::size_t {
     tls_cert,
     tls_key,
     tls_client_ca,
+    tls_port,
 };
 
 constexpr std::array kOptionSpecs{
@@ -128,12 +129,15 @@ constexpr std::array kOptionSpecs{
                                  "Suppress normal startup and shutdown messages"},
     glyphastore::cli::OptionSpec{
         tls_cert, "tls-cert", '\0', glyphastore::cli::OptionArity::required, "PATH",
-        "PEM certificate chain for TLS 1.3 on --port (requires --tls-key; disables cleartext)"},
+        "PEM certificate chain for TLS 1.3 (requires --tls-key; TLS-only on --port unless --tls-port)"},
     glyphastore::cli::OptionSpec{tls_key, "tls-key", '\0', glyphastore::cli::OptionArity::required, "PATH",
                                  "PEM private key for TLS (requires --tls-cert)"},
     glyphastore::cli::OptionSpec{
         tls_client_ca, "tls-client-ca", '\0', glyphastore::cli::OptionArity::required, "PATH",
         "PEM CA for client certificates (enables mTLS; requires --tls-cert/--tls-key)"},
+    glyphastore::cli::OptionSpec{
+        tls_port, "tls-port", '\0', glyphastore::cli::OptionArity::required, "PORT",
+        "Listen for TLS on PORT while --port stays cleartext (requires --tls-cert/--tls-key; 0=ephemeral)"},
 };
 
 struct Options {
@@ -362,6 +366,15 @@ struct Options {
     if (const auto path = parsed->value(tls_client_ca)) {
         options.server.tls.client_ca_file = std::filesystem::path{*path};
     }
+    if (parsed->has(tls_port)) {
+        std::size_t parsed_tls_port = 0;
+        if (auto status = set_size_option(*parsed, tls_port, "--tls-port", 0,
+                                          std::numeric_limits<std::uint16_t>::max(), parsed_tls_port);
+            !status) {
+            return glyphastore::unexpected(status.error());
+        }
+        options.server.tls_port = static_cast<std::uint16_t>(parsed_tls_port);
+    }
     if (auto tls = glyphastore::server::validate_tls_config(options.server.tls); !tls) {
         return glyphastore::unexpected(tls.error());
     }
@@ -421,26 +434,37 @@ int main(const int argc, char** argv) try {
         std::cerr << program << ": error: " << started.error().message << '\n';
         return 1;
     }
-    if (arguments->server.bind_address != "127.0.0.1" && !arguments->server.tls.requested()) {
+    if (arguments->server.bind_address != "127.0.0.1" &&
+        ((*server)->cleartext_port() != 0 || !arguments->server.tls.requested())) {
         std::cerr << program
                   << ": warning: bind address " << arguments->server.bind_address
-                  << " uses cleartext TCP with no authentication; restrict to a trusted network "
-                     "or enable TLS (--tls-cert/--tls-key; OpenBSD uses LibreSSL; "
+                  << " exposes cleartext TCP with no authentication; restrict to a trusted network "
+                     "or use TLS-only (--tls-cert/--tls-key without --tls-port; OpenBSD uses LibreSSL; "
                      "docs/security/roadmap.md)\n";
     }
     if (!arguments->quiet) {
         std::cout << program << ": listening address=" << arguments->server.bind_address
-                  << " port=" << (*server)->port() << " executors=" << (*server)->executor_count()
+                  << " executors=" << (*server)->executor_count()
                   << " storage=" << storage_mode_name(arguments->store.storage_mode);
-        if (arguments->server.tls.requested()) {
-            std::cout << " transport=tls1.3 backend=" << glyphastore::server::tls_backend_name();
+        if ((*server)->cleartext_port() != 0 && (*server)->tls_port() != 0) {
+            std::cout << " cleartext_port=" << (*server)->cleartext_port()
+                      << " tls_port=" << (*server)->tls_port()
+                      << " transport=cleartext+tls1.3 backend=" << glyphastore::server::tls_backend_name();
+            if (arguments->server.tls.mtls_enabled()) {
+                std::cout << " auth=mtls";
+            } else {
+                std::cout << " auth=none";
+            }
+        } else if ((*server)->tls_port() != 0) {
+            std::cout << " port=" << (*server)->tls_port()
+                      << " transport=tls1.3 backend=" << glyphastore::server::tls_backend_name();
             if (arguments->server.tls.mtls_enabled()) {
                 std::cout << " auth=mtls";
             } else {
                 std::cout << " auth=none";
             }
         } else {
-            std::cout << " (cleartext; no authentication)";
+            std::cout << " port=" << (*server)->port() << " (cleartext; no authentication)";
         }
         std::cout << '\n';
     }

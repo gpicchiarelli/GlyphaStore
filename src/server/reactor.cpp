@@ -58,13 +58,14 @@ namespace {
 
 } // namespace
 
-Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener listener, Poller poller,
-                 Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener cleartext_listener,
+                 TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
+                 ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                  DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
-    : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(listener)),
-      poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store), mesh_(mesh),
-      disk_reads_(disk_reads), durable_mutations_(durable_mutations), tls_(std::move(tls)),
-      disk_read_completions_(config_.disk_read_queue_capacity),
+    : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(cleartext_listener)),
+      tls_listener_(std::move(tls_listener)), poller_(std::move(poller)), wakeup_(std::move(wakeup)),
+      store_(store), mesh_(mesh), disk_reads_(disk_reads), durable_mutations_(durable_mutations),
+      tls_(std::move(tls)), disk_read_completions_(config_.disk_read_queue_capacity),
       durable_mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     free_slots_.reserve(config_.maximum_connections);
@@ -73,12 +74,16 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
     }
 }
 
-auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id, TcpListener listener,
-                     Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
+                     TcpListener cleartext_listener, TcpListener tls_listener, Store& store,
+                     ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                      DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
     -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
+    }
+    if (tls_listener.descriptor() >= 0 && !tls) {
+        return fail(ErrorCode::invalid_argument, "TLS listener requires a TLS context");
     }
     auto poller = Poller::create();
     if (!poller) {
@@ -89,11 +94,19 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
         return unexpected(wakeup.error());
     }
     auto reactor = std::unique_ptr<Reactor>(
-        new Reactor(config, executor_id, std::move(listener), std::move(*poller), std::move(*wakeup), store,
-                    mesh, disk_reads, durable_mutations, std::move(tls)));
+        new Reactor(config, executor_id, std::move(cleartext_listener), std::move(tls_listener),
+                    std::move(*poller), std::move(*wakeup), store, mesh, disk_reads, durable_mutations,
+                    std::move(tls)));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
+            !added) {
+            return unexpected(added.error());
+        }
+    }
+    if (reactor->tls_listener_.descriptor() >= 0) {
+        if (auto added = reactor->poller_.add(reactor->tls_listener_.descriptor(), kTlsListenerToken,
+                                              IoInterest::read);
             !added) {
             return unexpected(added.error());
         }
@@ -146,9 +159,10 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     --active_connections_;
 }
 
-auto Reactor::accept_ready() -> Status {
+auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
+    auto& listener = tls_endpoint ? tls_listener_ : listener_;
     while (true) {
-        auto accepted = listener_.accept();
+        auto accepted = listener.accept();
         if (!accepted) {
             return unexpected(accepted.error());
         }
@@ -156,7 +170,10 @@ auto Reactor::accept_ready() -> Status {
             return {};
         }
         ConnectionHandoff handoff{.socket = std::move(**accepted)};
-        if (tls_) {
+        if (tls_endpoint) {
+            if (!tls_) {
+                continue;
+            }
             auto session = tls_->accept_socket(handoff.socket.descriptor());
             if (!session) {
                 // Fail closed for this peer; keep accepting other connections.
@@ -892,7 +909,13 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
             continue;
         }
         if (event.token == kListenerToken) {
-            if (auto accepted = accept_ready(); !accepted) {
+            if (auto accepted = accept_ready(false); !accepted) {
+                return accepted;
+            }
+            continue;
+        }
+        if (event.token == kTlsListenerToken) {
+            if (auto accepted = accept_ready(true); !accepted) {
                 return accepted;
             }
             continue;

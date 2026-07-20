@@ -49,16 +49,21 @@ struct ReactorConfig {
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
     std::uint32_t durable_mutation_queue_wait_ms{1000};
-    // When requested(), the sole listener is TLS-only (ADR 0020). Cleartext and
-    // TLS are never opportunistic on the same endpoint; dual listeners are TODO.
+    // When tls.requested() and tls_port is unset: TLS-only on `port` (no cleartext).
+    // When tls.requested() and tls_port is set: cleartext on `port`, TLS on *tls_port
+    // (ADR 0020 dual listeners; never opportunistic TLS on one endpoint).
+    std::optional<std::uint16_t> tls_port{};
     TlsConfig tls{};
 };
 
 class Reactor final {
   public:
+    // cleartext_listener and/or tls_listener may be unbound (descriptor < 0).
+    // A bound TLS listener requires a non-null tls context.
     [[nodiscard]] static auto create(const ReactorConfig& config, std::size_t executor_id,
-                                     TcpListener listener, Store& store, ConnectionHandoffMesh& mesh,
-                                     DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations,
+                                     TcpListener cleartext_listener, TcpListener tls_listener, Store& store,
+                                     ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+                                     DurableMutationExecutor* durable_mutations,
                                      std::shared_ptr<TlsContext> tls = {})
         -> Result<std::unique_ptr<Reactor>>;
 
@@ -68,8 +73,18 @@ class Reactor final {
     auto operator=(Reactor&&) -> Reactor& = delete;
 
     [[nodiscard]] auto run_once(int timeout_ms) -> Status;
+    // Cleartext listen port, or 0 when this reactor has no cleartext listener.
+    [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t {
+        return listener_.descriptor() >= 0 ? listener_.port() : 0;
+    }
+    // TLS listen port, or 0 when this reactor has no TLS listener.
+    [[nodiscard]] auto tls_port() const noexcept -> std::uint16_t {
+        return tls_listener_.descriptor() >= 0 ? tls_listener_.port() : 0;
+    }
+    // Backward-compatible primary port: cleartext if present, otherwise TLS.
     [[nodiscard]] auto port() const noexcept -> std::uint16_t {
-        return listener_.port();
+        const auto cleartext = cleartext_port();
+        return cleartext != 0 ? cleartext : tls_port();
     }
     [[nodiscard]] auto executor_id() const noexcept -> std::size_t {
         return executor_id_;
@@ -100,11 +115,12 @@ class Reactor final {
         std::shared_ptr<std::atomic_bool> read_cancellation;
     };
 
-    Reactor(ReactorConfig config, std::size_t executor_id, TcpListener listener, Poller poller, Wakeup wakeup,
-            Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+    Reactor(ReactorConfig config, std::size_t executor_id, TcpListener cleartext_listener,
+            TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
+            ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
             DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls);
 
-    [[nodiscard]] auto accept_ready() -> Status;
+    [[nodiscard]] auto accept_ready(bool tls_endpoint) -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
     [[nodiscard]] auto read_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto write_ready(ConnectionToken token) -> Status;
@@ -126,11 +142,13 @@ class Reactor final {
 
     static constexpr std::uint64_t kListenerToken = std::numeric_limits<std::uint64_t>::max();
     static constexpr std::uint64_t kMessageToken = kListenerToken - 1U;
+    static constexpr std::uint64_t kTlsListenerToken = kListenerToken - 2U;
     static constexpr std::uint64_t kRoutingEpoch = 1;
 
     ReactorConfig config_;
     std::size_t executor_id_{};
     TcpListener listener_;
+    TcpListener tls_listener_;
     Poller poller_;
     Wakeup wakeup_;
     Store& store_;

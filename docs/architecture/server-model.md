@@ -2,8 +2,9 @@
 
 `glyphastored` is the network process around the embedded Store. The initial transport is
 non-blocking IPv4 TCP. Optional TLS 1.3 wraps the same protocol when `--tls-cert`/`--tls-key` are
-set (ADR 0020; LibreSSL on OpenBSD). Unix-domain sockets are a later transport using the same
-protocol and connection state.
+set (ADR 0020; LibreSSL on OpenBSD). With `--tls-port`, the process may expose cleartext and TLS on
+distinct ports in one process; without it, TLS configuration makes `--port` TLS-only. Unix-domain
+sockets are a later transport using the same protocol and connection state.
 
 ## Native reactor
 

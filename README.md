@@ -270,8 +270,9 @@ forwarded internally.
 
 Default listen mode is **cleartext** on `127.0.0.1`. When built with TLS (`GLYPHASTORE_ENABLE_TLS`,
 LibreSSL on OpenBSD / OpenSSL 3.x elsewhere), `--tls-cert` and `--tls-key` make `--port` a TLS 1.3
-listener (protocol v2 unchanged inside TLS). Optional `--tls-client-ca` enables mTLS. Cleartext and
-TLS are never mixed opportunistically on one endpoint; see [security roadmap](docs/security/roadmap.md).
+listener (protocol v2 unchanged inside TLS). Add `--tls-port` to keep cleartext on `--port` and
+expose TLS on a second port. Optional `--tls-client-ca` enables mTLS. Cleartext and TLS are never
+mixed opportunistically on one endpoint; see [security roadmap](docs/security/roadmap.md).
 
 The TCP benchmark runs the real binary protocol over loopback with validated pipelined responses:
 

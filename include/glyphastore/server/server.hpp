@@ -35,7 +35,10 @@ class Server final {
     void request_stop() noexcept;
     [[nodiscard]] auto join() -> Status;
 
+    // Primary port for callers: cleartext when listening cleartext, else TLS.
     [[nodiscard]] auto port() const noexcept -> std::uint16_t;
+    [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t;
+    [[nodiscard]] auto tls_port() const noexcept -> std::uint16_t;
     [[nodiscard]] auto executor_count() const noexcept -> std::size_t {
         return reactors_.size();
     }

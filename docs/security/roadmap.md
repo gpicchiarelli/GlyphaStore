@@ -43,7 +43,7 @@ changes require ADRs and compatibility evidence first.
 
 | Area | Today |
 | --- | --- |
-| Transport | Cleartext TCP (protocol v2) by default; optional TLS 1.3 outer transport when built with LibreSSL/OpenSSL and `--tls-cert`/`--tls-key` (ADR 0020 scaffold) |
+| Transport | Cleartext TCP (protocol v2) by default; optional TLS 1.3 outer transport when built with LibreSSL/OpenSSL (`--tls-cert`/`--tls-key`); optional dual cleartext+TLS via `--tls-port` (ADR 0020) |
 | Authn / authz | None — any peer that reaches the port can mutate |
 | Quotas / rate limits | Frame/buffer bounds only; no per-client identity |
 | Audit | No security audit trail |
@@ -105,8 +105,8 @@ security design.
 | 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
 | 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
 
-**Next:** Finish Phase 2 (dual-listener polish, OpenBSD CI gate, TLS perf note 2.5), then Phase 3
-mTLS principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
+**Next:** OpenBSD/LibreSSL CI gate and TLS perf note (2.5), then Phase 3 mTLS principal
+extraction (ADR 0021 hooks already accept `--tls-client-ca`).
 
 ---
 
@@ -117,10 +117,11 @@ mTLS principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
 | 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | **partial** — `TlsContext` + `--tls-cert`/`--tls-key`/`--tls-client-ca`; TLS 1.3-only; CMake `GLYPHASTORE_ENABLE_TLS` (LibreSSL on OpenBSD, OpenSSL 3.x elsewhere) |
-| 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **partial** — TLS flags make `--port` TLS-only (no cleartext fallback); dual cleartext+TLS listeners in one process still TODO |
+| 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **done** (2026-07-20) — TLS without `--tls-port` keeps `--port` TLS-only; `--tls-port` enables dual cleartext+TLS on distinct ports (fail closed if ports collide); never opportunistic on one endpoint |
 | 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **partial** — Go / C++ / Python / Perl clients expose opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); Ruby Phase 3 follows the same train; fail closed; no silent cleartext fallback |
 | 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** (2026-07-20) — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs, daemon `--tls-cert`/`--tls-key`, client `--tls`/`--tls-ca`/`--server-name`); Ruby cleartext-only until its TLS train; Perl TLS soft-excluded when `IO::Socket::SSL` is missing |
 | 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | open |
+| 2.6 | OpenBSD CI: native LibreSSL build + TLS smoke | open |
 
 **Daemon usage (when built with TLS):**
 
@@ -130,6 +131,10 @@ glyphastored --bind 127.0.0.1 --port 7379
 
 # TLS-only on --port (protocol v2 inside TLS 1.3)
 glyphastored --bind 127.0.0.1 --port 7379 \
+  --tls-cert /path/server.crt --tls-key /path/server.key
+
+# Dual listeners: cleartext on --port, TLS on --tls-port (ADR 0020)
+glyphastored --bind 127.0.0.1 --port 7379 --tls-port 7380 \
   --tls-cert /path/server.crt --tls-key /path/server.key
 
 # mTLS hook (ADR 0021): require client certs signed by this CA

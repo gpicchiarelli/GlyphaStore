@@ -36,6 +36,15 @@ namespace {
         config.maximum_output_bytes < kResponseHeaderBytes) {
         return fail(ErrorCode::invalid_argument, "server buffers are smaller than protocol headers");
     }
+    if (config.tls_port.has_value() && !config.tls.requested()) {
+        return fail(ErrorCode::invalid_argument,
+                    "tls_port requires TLS certificate configuration (--tls-cert/--tls-key)");
+    }
+    if (config.tls_port.has_value() && *config.tls_port != 0 && config.port != 0 &&
+        *config.tls_port == config.port) {
+        return fail(ErrorCode::invalid_argument,
+                    "cleartext port and tls_port must differ (no opportunistic TLS on one endpoint)");
+    }
     if (auto tls = validate_tls_config(config.tls); !tls) {
         return tls;
     }
@@ -114,21 +123,43 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
 #else
     const bool kernel_distribution = false;
 #endif
-    std::uint16_t shared_port = config.port;
+    const bool dual_listen = config.tls.requested() && config.tls_port.has_value();
+    const bool tls_only = config.tls.requested() && !dual_listen;
+    const bool listen_cleartext = !tls_only;
+    const bool listen_tls = tls_only || dual_listen;
+    std::uint16_t shared_cleartext_port = config.port;
+    std::uint16_t shared_tls_port = dual_listen ? *config.tls_port : config.port;
     for (std::size_t executor = 0; executor < server->store_->worker_count(); ++executor) {
-        TcpListener listener;
+        TcpListener cleartext_listener;
+        TcpListener tls_listener;
         if (executor == 0 || kernel_distribution) {
-            auto bound = TcpListener::bind(config.bind_address, shared_port, 512, kernel_distribution);
-            if (!bound) {
-                return unexpected(bound.error());
+            if (listen_cleartext) {
+                auto bound =
+                    TcpListener::bind(config.bind_address, shared_cleartext_port, 512, kernel_distribution);
+                if (!bound) {
+                    return unexpected(bound.error());
+                }
+                cleartext_listener = std::move(*bound);
+                if (executor == 0) {
+                    shared_cleartext_port = cleartext_listener.port();
+                }
             }
-            listener = std::move(*bound);
-            if (executor == 0) {
-                shared_port = listener.port();
+            if (listen_tls) {
+                auto bound =
+                    TcpListener::bind(config.bind_address, shared_tls_port, 512, kernel_distribution);
+                if (!bound) {
+                    return unexpected(bound.error());
+                }
+                tls_listener = std::move(*bound);
+                if (executor == 0) {
+                    shared_tls_port = tls_listener.port();
+                }
             }
         }
-        auto reactor = Reactor::create(config, executor, std::move(listener), *server->store_, server->mesh_,
-                                       *server->disk_reads_, server->durable_mutations_.get(), tls_context);
+        auto reactor =
+            Reactor::create(config, executor, std::move(cleartext_listener), std::move(tls_listener),
+                            *server->store_, server->mesh_, *server->disk_reads_,
+                            server->durable_mutations_.get(), tls_context);
         if (!reactor) {
             return unexpected(reactor.error());
         }
@@ -197,7 +228,19 @@ auto Server::join() -> Status {
 }
 
 auto Server::port() const noexcept -> std::uint16_t {
-    return reactors_.empty() ? 0 : reactors_.front()->port();
+    if (reactors_.empty()) {
+        return 0;
+    }
+    const auto cleartext = reactors_.front()->cleartext_port();
+    return cleartext != 0 ? cleartext : reactors_.front()->tls_port();
+}
+
+auto Server::cleartext_port() const noexcept -> std::uint16_t {
+    return reactors_.empty() ? 0 : reactors_.front()->cleartext_port();
+}
+
+auto Server::tls_port() const noexcept -> std::uint16_t {
+    return reactors_.empty() ? 0 : reactors_.front()->tls_port();
 }
 
 auto Server::adopted_connections_per_executor() const -> std::vector<std::size_t> {

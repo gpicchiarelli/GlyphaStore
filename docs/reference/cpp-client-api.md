@@ -185,7 +185,7 @@ differ by language, but observable request/response semantics must not.
 
 Prioritized remaining client work (ops metrics, Ruby TLS Phase 3, etc.) lives in
 [SDK roadmap](../architecture/sdk-roadmap.md) and [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md).
-Secure-profile follow-ons (interop matrix, dual listeners, authz) are tracked in
+Secure-profile follow-ons (OpenBSD CI, TLS perf note, authz) are tracked in
 [security roadmap](../security/roadmap.md) and [production readiness](../production-readiness.md).
 
 | Runtime | Intended public shape | Concurrency model |

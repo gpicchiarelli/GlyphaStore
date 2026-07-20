@@ -122,6 +122,31 @@ GLYPHA_TEST("tls config validation fails closed without cert and key") {
     GLYPHA_REQUIRE(glyphastore::server::validate_tls_config({}).has_value());
 }
 
+GLYPHA_TEST("dual listen rejects identical cleartext and tls ports") {
+    glyphastore::server::ReactorConfig config{
+        .port = 7379,
+        .tls_port = 7379,
+        .tls =
+            {
+                .certificate_file = "/tmp/glyphastore-missing-cert.pem",
+                .private_key_file = "/tmp/glyphastore-missing-key.pem",
+            },
+    };
+    const auto server = glyphastore::server::Server::create(config);
+    GLYPHA_REQUIRE(!server.has_value());
+    GLYPHA_REQUIRE(server.error().message.find("must differ") != std::string::npos);
+}
+
+GLYPHA_TEST("tls_port without TLS certificate configuration fails closed") {
+    glyphastore::server::ReactorConfig config{
+        .port = 0,
+        .tls_port = 0,
+    };
+    const auto server = glyphastore::server::Server::create(config);
+    GLYPHA_REQUIRE(!server.has_value());
+    GLYPHA_REQUIRE(server.error().message.find("tls_port requires") != std::string::npos);
+}
+
 GLYPHA_TEST("tls build reports backend availability") {
     const auto backend = glyphastore::server::tls_backend_name();
     GLYPHA_REQUIRE(!backend.empty());
@@ -222,6 +247,134 @@ GLYPHA_TEST("tls server create rejects missing certificate files") {
     };
     const auto server = glyphastore::server::Server::create(config);
     GLYPHA_REQUIRE(!server.has_value());
+}
+
+GLYPHA_TEST("dual cleartext and TLS listeners serve protocol independently") {
+    TemporaryDirectory directory;
+    if (!write_self_signed_material(directory.path())) {
+        return;
+    }
+
+    glyphastore::server::ReactorConfig config{
+        .port = 0,
+        .worker_count = 1,
+        .tls_port = 0,
+        .tls =
+            {
+                .certificate_file = directory.path() / "server.crt",
+                .private_key_file = directory.path() / "server.key",
+            },
+    };
+    auto server = glyphastore::server::Server::create(config);
+    GLYPHA_REQUIRE(server.has_value());
+    GLYPHA_REQUIRE((*server)->start().has_value());
+    const auto cleartext_port = (*server)->cleartext_port();
+    const auto tls_port = (*server)->tls_port();
+    GLYPHA_REQUIRE(cleartext_port != 0);
+    GLYPHA_REQUIRE(tls_port != 0);
+    GLYPHA_REQUIRE(cleartext_port != tls_port);
+    GLYPHA_REQUIRE((*server)->port() == cleartext_port);
+
+    // Cleartext PING on --port.
+    {
+        const auto fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        GLYPHA_REQUIRE(fd >= 0);
+        timeval timeout{.tv_sec = 2, .tv_usec = 0};
+        static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)));
+        sockaddr_in endpoint{};
+        endpoint.sin_family = AF_INET;
+        endpoint.sin_port = htons(cleartext_port);
+        static_cast<void>(::inet_pton(AF_INET, "127.0.0.1", &endpoint.sin_addr));
+        GLYPHA_REQUIRE(::connect(fd, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) == 0);
+
+        const auto ping = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::ping,
+            .request_id = 7,
+        });
+        GLYPHA_REQUIRE(ping.has_value());
+        std::size_t sent = 0;
+        while (sent < ping->size()) {
+            const auto written =
+                ::send(fd, ping->data() + static_cast<std::ptrdiff_t>(sent), ping->size() - sent, 0);
+            GLYPHA_REQUIRE(written > 0);
+            sent += static_cast<std::size_t>(written);
+        }
+        std::array<std::byte, glyphastore::server::kResponseHeaderBytes> header{};
+        std::size_t received = 0;
+        while (received < header.size()) {
+            const auto count =
+                ::recv(fd, header.data() + static_cast<std::ptrdiff_t>(received), header.size() - received, 0);
+            GLYPHA_REQUIRE(count > 0);
+            received += static_cast<std::size_t>(count);
+        }
+        std::uint32_t frame_size = 0;
+        for (std::size_t byte = 0; byte < 4; ++byte) {
+            frame_size |=
+                static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(header[byte])) << (byte * 8U);
+        }
+        std::vector<std::byte> frame(frame_size);
+        std::copy(header.begin(), header.end(), frame.begin());
+        received = header.size();
+        while (received < frame.size()) {
+            const auto count =
+                ::recv(fd, frame.data() + static_cast<std::ptrdiff_t>(received), frame.size() - received, 0);
+            GLYPHA_REQUIRE(count > 0);
+            received += static_cast<std::size_t>(count);
+        }
+        const auto decoded = glyphastore::server::decode_response(frame);
+        GLYPHA_REQUIRE(decoded.has_value());
+        GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
+        GLYPHA_REQUIRE(decoded->frame.request_id == 7);
+        static_cast<void>(::close(fd));
+    }
+
+    // TLS PING on --tls-port (must not accept cleartext protocol bytes as TLS).
+    SSL_library_init();
+    OpenSSL_add_all_algorithms();
+    SSL_load_error_strings();
+#if defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10100000L
+    auto* ctx = SSL_CTX_new(TLS_client_method());
+#else
+    auto* ctx = SSL_CTX_new(SSLv23_client_method());
+#endif
+    GLYPHA_REQUIRE(ctx != nullptr);
+#if defined(TLS1_3_VERSION)
+    GLYPHA_REQUIRE(SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) == 1);
+#endif
+    SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, nullptr);
+
+    const auto fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    GLYPHA_REQUIRE(fd >= 0);
+    timeval timeout{.tv_sec = 2, .tv_usec = 0};
+    static_cast<void>(::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)));
+    sockaddr_in endpoint{};
+    endpoint.sin_family = AF_INET;
+    endpoint.sin_port = htons(tls_port);
+    static_cast<void>(::inet_pton(AF_INET, "127.0.0.1", &endpoint.sin_addr));
+    GLYPHA_REQUIRE(::connect(fd, reinterpret_cast<const sockaddr*>(&endpoint), sizeof(endpoint)) == 0);
+
+    auto* ssl = SSL_new(ctx);
+    GLYPHA_REQUIRE(ssl != nullptr);
+    GLYPHA_REQUIRE(SSL_set_fd(ssl, fd) == 1);
+    GLYPHA_REQUIRE(SSL_connect(ssl) == 1);
+
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 8,
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(send_all_ssl(ssl, *ping));
+    const auto frame = receive_response_ssl(ssl);
+    const auto decoded = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(decoded.has_value());
+    GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(decoded->frame.request_id == 8);
+
+    SSL_free(ssl);
+    static_cast<void>(::close(fd));
+    SSL_CTX_free(ctx);
+    (*server)->request_stop();
+    GLYPHA_REQUIRE((*server)->join().has_value());
 }
 
 #endif
