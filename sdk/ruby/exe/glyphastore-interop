@@ -1,0 +1,68 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require_relative "../lib/glypha_store"
+
+options = {
+  host: "127.0.0.1",
+  key_hex: "",
+  value_hex: "",
+  expire_at_ns: 0
+}
+parser = OptionParser.new do |opts|
+  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get>"
+  opts.on("--host HOST", String) { |v| options[:host] = v }
+  opts.on("--port PORT", Integer) { |v| options[:port] = v }
+  opts.on("--key-hex HEX", String) { |v| options[:key_hex] = v }
+  opts.on("--value-hex HEX", String) { |v| options[:value_hex] = v }
+  opts.on("--expire-at-ns N", Integer) { |v| options[:expire_at_ns] = v }
+end
+parser.parse!
+command = ARGV.shift
+abort(parser.help) if options[:port].nil? || command.nil?
+
+def parse_hex(text)
+  cleaned = text.to_s.gsub(/\s+/, "")
+  return "".b if cleaned.empty?
+  raise "odd hex length" if cleaned.length.odd?
+
+  [cleaned].pack("H*")
+end
+
+def to_hex(payload)
+  payload.to_s.b.unpack1("H*")
+end
+
+key = parse_hex(options[:key_hex])
+value = parse_hex(options[:value_hex])
+config = GlyphaStore::ClientConfig.defaults
+config.host = options[:host]
+config.port = options[:port]
+client = GlyphaStore::Client.connect(config)
+begin
+  case command
+  when "put"
+    result = client.put(key, value, expire_at_ns: options[:expire_at_ns])
+    abort("put not committed: #{result}") unless result.committed?
+  when "get"
+    puts to_hex(client.get(key))
+  when "erase"
+    result = client.erase(key)
+    abort("erase not committed: #{result}") unless result.committed?
+  when "pipeline-put-get"
+    responses = client.execute_pipeline(
+      [
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::PUT, key: key, value: value),
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::GET, key: key)
+      ]
+    )
+    abort("pipeline outcomes failed") unless responses.length == 2 && responses[0].succeeded? && responses[1].succeeded?
+    abort("pipeline value mismatch") unless responses[1].value == value
+    puts to_hex(responses[1].value)
+  else
+    abort("unknown command: #{command}")
+  end
+ensure
+  client.close
+end

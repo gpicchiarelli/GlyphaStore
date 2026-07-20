@@ -7,5 +7,6 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
   cp "$root/tests/fixtures/$fixture" "$root/sdk/python/tests/fixtures/$fixture"
   cp "$root/tests/fixtures/$fixture" "$root/sdk/perl/t/fixtures/$fixture"
   cp "$root/tests/fixtures/$fixture" "$root/sdk/go/testdata/$fixture"
+  cp "$root/tests/fixtures/$fixture" "$root/sdk/ruby/test/fixtures/$fixture"
   echo "synced $fixture"
 done

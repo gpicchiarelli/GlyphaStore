@@ -25,7 +25,7 @@ Related: [production readiness](../production-readiness.md),
 | Python | Effectively complete, including async |
 | Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
 | Go | Complete as a synchronous client (protocol + client + interop + CI) |
-| Ruby | **Planned** — isomorphic sync client first; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
+| Ruby | **Phase 1 sync client landed** (`sdk/ruby`) — interop + CI; AsyncClient / C ext still open |
 
 Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
 [client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
@@ -111,12 +111,13 @@ client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
 tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), and CI coverage
 via `scripts/test-go-client.sh` and the cross-SDK matrix.
 
-### 11. Ruby client — **planned (isomorphic)**
+### 11. Ruby client — **Phase 1 sync done; Phase 2+ open**
 
-Full native Ruby SDK roadmap: [ruby-sdk-roadmap.md](ruby-sdk-roadmap.md). Priorities:
-**correctness → security posture → performance**. Sync client + interop first; AsyncClient and
-optional C framing extension after measurement; TLS/auth on the shared server security train. No
-FFI wrap of the C++ client as the default design.
+`sdk/ruby` gem (`glyphastore` / `GlyphaStore`): protocol goldens, structured errors, sync client
+(`get`/`put`/`erase`/`ping`, `execute_pipeline`, `execute_batch`), monotonic deadlines, per-call
+`timeout:`, interop CLI, and CI via `scripts/test-ruby-client.sh`. Still open per
+[ruby-sdk-roadmap.md](ruby-sdk-roadmap.md): AsyncClient, optional C framing extension, published
+benches, TLS/auth with the server security train. No FFI wrap of the C++ client.
 
 ## Product blockers (not “more languages”)
 
@@ -143,7 +144,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 5. Multi-Worker `batch` API on every official client. **(done)**
 6. Go client. **(`sdk/go`, interop + CI)**
 7. Structured errors + per-call timeouts on every official client. **(done)**
-8. Ruby client Phase 1 (sync, isomorphic). **([Ruby SDK roadmap](ruby-sdk-roadmap.md))**
+8. Ruby client Phase 1 (sync, isomorphic). **(`sdk/ruby`, interop + CI)**
 9. Authentication and TLS (all SDKs in the same train, including Ruby Phase 3).
 10. Metrics, health, and diagnostics.
 11. Backup/restore and operational procedures.

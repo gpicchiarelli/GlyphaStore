@@ -100,13 +100,20 @@ jobs:
             cmp -s "tests/fixtures/$fixture" "sdk/python/tests/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/go/testdata/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/ruby/test/fixtures/$fixture"
           done
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
       - name: Test Python client
         run: ./scripts/test-python-client.sh
       - name: Test Perl client
         run: ./scripts/test-perl-client.sh
       - name: Test Go client
         run: ./scripts/test-go-client.sh
+      - name: Test Ruby client
+        run: ./scripts/test-ruby-client.sh
       - name: Package and verify Python client
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client

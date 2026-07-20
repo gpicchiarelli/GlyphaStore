@@ -103,28 +103,27 @@ Silent semantic drift is not.
 
 **Exit:** maintainers agree API sketch + gem name; this roadmap linked from [sdk-roadmap.md](sdk-roadmap.md).
 
-### Phase 1 — Correctness MVP (sync client) — **ship gate for “official”**
+### Phase 1 — Correctness MVP (sync client) — **done for alpha**
 
 Order is intentional: codec → errors → session → CRUD → pipeline → batch → interop.
 
-| Step | Deliverable | Correctness / security focus |
+| Step | Deliverable | Status |
 | ---: | --- | --- |
-| 1.1 | `sdk/ruby` gem layout, LICENSE BSD-3-Clause, CI skeleton | Reproducible install; no network in unit tests |
-| 1.2 | `GlyphaStore::Protocol` + golden fixtures | Bit-identical encode/decode; reject non-canonical |
-| 1.3 | `GlyphaStore::Error` + category/retryability helpers | Full §2.1 fields; no message-parsing APIs |
-| 1.4 | `Client.connect` / bootstrap / bind / health | Epoch/count mismatch → unhealthy; fail closed |
-| 1.5 | `get`/`put`/`erase`/`ping` + mutation outcomes | Zero-byte vs partial send; `INTERNAL_ERROR` → indeterminate |
-| 1.6 | Monotonic deadlines + per-call `timeout:` | `Process.clock_gettime(Process::CLOCK_MONOTONIC)`; reset socket on expiry |
-| 1.7 | Automatic retry §5 only | Tests that prove **no** second mutation retry after `bytes_sent > 0` |
-| 1.8 | `execute_pipeline` positional outcomes | Disconnect mid-batch classification matrix |
-| 1.9 | `execute_batch` | Group by worker, overlap (threads or select), restore order; one shared deadline |
-| 1.10 | Thread contract | Document + test: safe shared client across threads with per-Worker mutex (MRI); **do not** share across `fork` without reconnect |
-| 1.11 | Interop CLI + matrix | Binary keys, empty values, TTL, pipelines; Workers 1/2/4 |
-| 1.12 | Fake-server fault tests | Partial write, peer reset after mutation byte, deadline stall, wrong owner |
+| 1.1 | `sdk/ruby` gem layout, LICENSE BSD-3-Clause, CI | done |
+| 1.2 | `GlyphaStore::Protocol` + golden fixtures | done |
+| 1.3 | `GlyphaStore::Error` + category/retryability helpers | done |
+| 1.4 | `Client.connect` / bootstrap / bind / health | done |
+| 1.5 | `get`/`put`/`erase`/`ping` + mutation outcomes | done |
+| 1.6 | Monotonic deadlines + per-call `timeout:` | done |
+| 1.7 | Automatic retry §5 only | done (aligned with Go; expand fault matrix in 0.2) |
+| 1.8 | `execute_pipeline` positional outcomes | done |
+| 1.9 | `execute_batch` | done |
+| 1.10 | Thread / fork contract documented | done (README) |
+| 1.11 | Interop CLI + matrix | done (Workers 1/2/4) |
+| 1.12 | Fake-server fault tests | done (core cases); broaden in 0.2 |
 
-**Exit (Phase 1 done):** green `test-ruby-client.sh`, green interop row, semantics tests for every
-§5/§6/§7/§8 bullet above. Performance polish is **not** required to call the client official, but
-gross foot-guns (e.g. per-byte Ruby loops on encode) must be avoided from day one.
+**Exit (Phase 1):** green `test-ruby-client.sh`, green interop row including Ruby, semantics coverage
+for CRUD / pipeline / batch / structured errors / deadlines.
 
 ### Phase 2 — Performance hardening + async
 
