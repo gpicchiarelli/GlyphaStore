@@ -1,5 +1,5 @@
 Status: normative for official GlyphaStore TCP clients
-Applies to: wire protocol v2 clients (C++, Python, Perl, Go)
+Applies to: wire protocol v2 clients (C++, Python, Perl, Go; Ruby when official)
 Owner: networking maintainers
 Last reviewed: 2026-07-19
 
@@ -167,6 +167,7 @@ Official clients may accept an optional per-call request timeout that **override
 - Python: `timeout=0.05`
 - Perl: `timeout => 0.05`
 - Go: `CallOptions{Timeout: 50 * time.Millisecond}`
+- Ruby (planned): `timeout:` keyword / options — see [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md)
 
 Rules:
 

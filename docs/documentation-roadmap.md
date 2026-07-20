@@ -19,7 +19,8 @@ material; it cannot override specifications.
 | P1 | Operations handbook | Start/stop, signals, directories, limits, backup/restore constraints, metrics, incidents | operators | 20–30 pages | stable daemon configuration | 4–6 days |
 | P1 | Compatibility and migration manual | Turn format matrix into released-version upgrade/downgrade procedures | operators, release engineers | 10–15 pages | first released durable artifact | 3–4 days |
 | P1 | TCP client conformance guide | Give pseudocode, retry rules, malformed examples, and conformance vectors | client implementers | 12–18 pages | wire fixtures | 3 days |
-| P1 | SDK roadmap execution notes | Track batch API, per-request deadlines, structured errors, Perl clock/fork, Go sequencing | client maintainers | living doc | [sdk-roadmap](architecture/sdk-roadmap.md) | ongoing |
+| P1 | Ruby SDK isomorphism roadmap | Phase gates for a complete Ruby client (correctness → security → performance) | client maintainers | living doc | **done:** [ruby-sdk-roadmap](architecture/ruby-sdk-roadmap.md) | — |
+| P1 | SDK roadmap execution notes | Track batch API, per-request deadlines, structured errors, Perl clock/fork, Go sequencing, Ruby | client maintainers | living doc | [sdk-roadmap](architecture/sdk-roadmap.md) | ongoing |
 | P1 | Rebalance design ADR/specification | Define epoch transition and ownership propagation before online resizing exists | architects | 12–20 pages | routing v1 and Worker-affine server | 4–6 days |
 | P1 | Observability reference | Define counters, units, cardinality, health/readiness, and stable log fields | operators | 10–15 pages | metrics implementation design | 3 days |
 | P1 | Backup and restore specification | Define consistent snapshot boundary and supported copy/restore procedure | operators, storage maintainers | 10–15 pages | persistence and flush contracts | 3–4 days |

@@ -172,16 +172,17 @@ connection so a late frame cannot satisfy a later call.
 ## Cross-language SDK contract
 
 The C++ client and canonical fixtures define behavior to reproduce, not a C ABI to wrap. Python,
-Perl, Go, and a future Erlang client must implement the same wire contract and the same mutation /
-pipeline outcome rules natively so each runtime retains its normal cancellation, scheduling,
-packaging, and binary-data conventions. Outcome classification is part of the public contract:
-zero-byte final send failures are `rejected`, and a successful mutation response with a non-empty
-value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may differ
-by language, but observable request/response semantics must not.
+Perl, Go, Ruby, and a future Erlang client must implement the same wire contract and the same
+mutation / pipeline outcome rules natively so each runtime retains its normal cancellation,
+scheduling, packaging, and binary-data conventions. Outcome classification is part of the public
+contract: zero-byte final send failures are `rejected`, and a successful mutation response with a
+non-empty value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may
+differ by language, but observable request/response semantics must not.
 
-Prioritized remaining client work (ops metrics, TLS, etc.) lives in
-[SDK roadmap](../architecture/sdk-roadmap.md). Product blockers such as TLS and metrics are listed
-there and in [production readiness](../production-readiness.md).
+Prioritized remaining client work (ops metrics, TLS, Ruby Phase 1, etc.) lives in
+[SDK roadmap](../architecture/sdk-roadmap.md) and [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md).
+Product blockers such as TLS and metrics are listed there and in
+[production readiness](../production-readiness.md).
 
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|
@@ -189,6 +190,7 @@ there and in [production readiness](../production-readiness.md).
 | Python | Native package under `sdk/python` (`Client` + `AsyncClient`) | sync: one locked connection per Worker; async: one `asyncio.Lock` per Worker |
 | Perl | Native module under `sdk/perl` using byte strings | synchronous handles; one client per process/thread (event-loop adapter later) |
 | Go | Native module under `sdk/go` (`client` + `protocol`) | synchronous, goroutine-safe, one connection per Worker; `ExecuteBatch` fans out per Worker |
+| Ruby | Planned under `sdk/ruby` ([roadmap](../architecture/ruby-sdk-roadmap.md)) | sync first: per-Worker mutex; AsyncClient (Fiber) in Phase 2; one client per forked worker process |
 | Erlang | Native OTP application | supervised Worker-connection processes |
 
 Every SDK must consume the canonical request/response corpus under `tests/fixtures/`, use unsigned

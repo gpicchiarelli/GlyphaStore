@@ -1,7 +1,7 @@
 Status: roadmap
-Applies to: native SDKs (C++, Python, Perl, Go) and shared wire contract
+Applies to: native SDKs (C++, Python, Perl, Go; Ruby planned) and shared wire contract
 Owner: maintainer
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-20
 
 # SDK and client roadmap
 
@@ -14,19 +14,22 @@ Related: [production readiness](../production-readiness.md),
 [v1 production roadmap](../v1-production-roadmap.md),
 [documentation roadmap](../documentation-roadmap.md),
 [C++ client API / cross-language contract](../reference/cpp-client-api.md),
-[where performance matters](where-performance-matters.md).
+[where performance matters](where-performance-matters.md),
+[Ruby SDK roadmap](ruby-sdk-roadmap.md).
 
-## Verdict (2026-07-19)
+## Verdict (2026-07-20)
 
 | Client | Assessment |
 | --- | --- |
 | C++ | Effectively complete for alpha |
 | Python | Effectively complete, including async |
-| Perl | Complete as a synchronous client; a few hardening details remain |
+| Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
 | Go | Complete as a synchronous client (protocol + client + interop + CI) |
+| Ruby | **Planned** — isomorphic sync client first; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
 
-Do not multiply languages before clients are demonstrably equivalent, release-compatible, and
-safe to operate. The server must still be treated as loopback / tightly controlled private network /
+Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
+[client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
+official. The server must still be treated as loopback / tightly controlled private network /
 sidecar / development only until authentication and TLS exist.
 
 ## Immediate client priorities
@@ -108,6 +111,13 @@ client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
 tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), and CI coverage
 via `scripts/test-go-client.sh` and the cross-SDK matrix.
 
+### 11. Ruby client — **planned (isomorphic)**
+
+Full native Ruby SDK roadmap: [ruby-sdk-roadmap.md](ruby-sdk-roadmap.md). Priorities:
+**correctness → security posture → performance**. Sync client + interop first; AsyncClient and
+optional C framing extension after measurement; TLS/auth on the shared server security train. No
+FFI wrap of the C++ client as the default design.
+
 ## Product blockers (not “more languages”)
 
 These gate “ready for real applications” more than additional SDKs:
@@ -130,12 +140,14 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4)**
 3. Perl monotonic clock + thread/fork contract docs. **(done)**
 4. Normative errors, retry, and timeout specification. **([client semantics v1](../spec/client-semantics-v1.md), [ADR 0019](../adr/0019-client-error-retry-timeout.md))**
-5. Multi-Worker `batch` API on every official client.
+5. Multi-Worker `batch` API on every official client. **(done)**
 6. Go client. **(`sdk/go`, interop + CI)**
-7. Authentication and TLS.
-8. Metrics, health, and diagnostics.
-9. Backup/restore and operational procedures.
-10. Cross-release compatibility and artifact signing.
+7. Structured errors + per-call timeouts on every official client. **(done)**
+8. Ruby client Phase 1 (sync, isomorphic). **([Ruby SDK roadmap](ruby-sdk-roadmap.md))**
+9. Authentication and TLS (all SDKs in the same train, including Ruby Phase 3).
+10. Metrics, health, and diagnostics.
+11. Backup/restore and operational procedures.
+12. Cross-release compatibility and artifact signing.
 
-The leap now is not “many more languages.” It is that **every client is demonstrably equivalent,
-compatible across releases, and usable safely**.
+The leap is that **every official client is demonstrably equivalent, compatible across releases,
+and usable safely**—including any new language admitted under an isomorphism roadmap.
