@@ -124,7 +124,8 @@ implementation or design document alone is not sufficient.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
   [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md)
-  (OpenBSD/LibreSSL first-class). Implementation of the secure profile remains open.
+  (OpenBSD/LibreSSL first-class). Daemon TLS scaffold landed (Phase 2 partial: cert/key/mTLS CA
+  flags); SDK TLS train and remaining secure-profile work remain open.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.

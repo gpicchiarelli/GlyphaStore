@@ -1,5 +1,6 @@
 #include "cli/arguments.hpp"
 #include "glyphastore/server/server.hpp"
+#include "glyphastore/server/tls.hpp"
 
 #include <array>
 #include <cerrno>
@@ -45,6 +46,9 @@ enum OptionId : std::size_t {
     data_directory,
     durable_open_mode,
     quiet,
+    tls_cert,
+    tls_key,
+    tls_client_ca,
 };
 
 constexpr std::array kOptionSpecs{
@@ -122,6 +126,14 @@ constexpr std::array kOptionSpecs{
                                  glyphastore::cli::OptionArity::none,
                                  {},
                                  "Suppress normal startup and shutdown messages"},
+    glyphastore::cli::OptionSpec{
+        tls_cert, "tls-cert", '\0', glyphastore::cli::OptionArity::required, "PATH",
+        "PEM certificate chain for TLS 1.3 on --port (requires --tls-key; disables cleartext)"},
+    glyphastore::cli::OptionSpec{tls_key, "tls-key", '\0', glyphastore::cli::OptionArity::required, "PATH",
+                                 "PEM private key for TLS (requires --tls-cert)"},
+    glyphastore::cli::OptionSpec{
+        tls_client_ca, "tls-client-ca", '\0', glyphastore::cli::OptionArity::required, "PATH",
+        "PEM CA for client certificates (enables mTLS; requires --tls-cert/--tls-key)"},
 };
 
 struct Options {
@@ -340,6 +352,19 @@ struct Options {
         return glyphastore::fail(glyphastore::ErrorCode::invalid_argument,
                                  "--data-dir and --open-mode require a durable --storage-mode");
     }
+
+    if (const auto path = parsed->value(tls_cert)) {
+        options.server.tls.certificate_file = std::filesystem::path{*path};
+    }
+    if (const auto path = parsed->value(tls_key)) {
+        options.server.tls.private_key_file = std::filesystem::path{*path};
+    }
+    if (const auto path = parsed->value(tls_client_ca)) {
+        options.server.tls.client_ca_file = std::filesystem::path{*path};
+    }
+    if (auto tls = glyphastore::server::validate_tls_config(options.server.tls); !tls) {
+        return glyphastore::unexpected(tls.error());
+    }
     return options;
 }
 
@@ -396,18 +421,28 @@ int main(const int argc, char** argv) try {
         std::cerr << program << ": error: " << started.error().message << '\n';
         return 1;
     }
-    if (arguments->server.bind_address != "127.0.0.1") {
+    if (arguments->server.bind_address != "127.0.0.1" && !arguments->server.tls.requested()) {
         std::cerr << program
                   << ": warning: bind address " << arguments->server.bind_address
                   << " uses cleartext TCP with no authentication; restrict to a trusted network "
-                     "or wait for the secure TLS profile "
-                     "(docs/security/roadmap.md; OpenBSD uses LibreSSL)\n";
+                     "or enable TLS (--tls-cert/--tls-key; OpenBSD uses LibreSSL; "
+                     "docs/security/roadmap.md)\n";
     }
     if (!arguments->quiet) {
         std::cout << program << ": listening address=" << arguments->server.bind_address
                   << " port=" << (*server)->port() << " executors=" << (*server)->executor_count()
-                  << " storage=" << storage_mode_name(arguments->store.storage_mode)
-                  << " (cleartext; no authentication)\n";
+                  << " storage=" << storage_mode_name(arguments->store.storage_mode);
+        if (arguments->server.tls.requested()) {
+            std::cout << " transport=tls1.3 backend=" << glyphastore::server::tls_backend_name();
+            if (arguments->server.tls.mtls_enabled()) {
+                std::cout << " auth=mtls";
+            } else {
+                std::cout << " auth=none";
+            }
+        } else {
+            std::cout << " (cleartext; no authentication)";
+        }
+        std::cout << '\n';
     }
     while (g_stop_signal == 0 && (*server)->healthy()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});

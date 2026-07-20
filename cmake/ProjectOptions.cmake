@@ -10,6 +10,9 @@ option(GLYPHASTORE_WARNINGS_AS_ERRORS "Treat supported compiler warnings as erro
 option(GLYPHASTORE_ENABLE_CLANG_TIDY "Run clang-tidy while compiling" OFF)
 option(GLYPHASTORE_ENABLE_LTO "Enable link-time optimization on release-style builds" OFF)
 option(GLYPHASTORE_NATIVE_CPU "Tune code generation for the host CPU (-mcpu=native)" OFF)
+# AUTO: ON when LibreSSL/OpenSSL is found, OFF otherwise. Explicit ON fails configure if missing.
+set(GLYPHASTORE_ENABLE_TLS "AUTO" CACHE STRING "Enable daemon TLS (ON, OFF, or AUTO)")
+set_property(CACHE GLYPHASTORE_ENABLE_TLS PROPERTY STRINGS AUTO ON OFF)
 set(GLYPHASTORE_PGO "OFF" CACHE STRING "PGO mode: OFF, GENERATE, or USE")
 set_property(CACHE GLYPHASTORE_PGO PROPERTY STRINGS OFF GENERATE USE)
 set(GLYPHASTORE_PGO_PROFILE_DIR "${CMAKE_SOURCE_DIR}/build/pgo-profiles" CACHE PATH "Directory for raw PGO profile data")

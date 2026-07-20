@@ -8,6 +8,7 @@
 #include "glyphastore/server/poller.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/socket.hpp"
+#include "glyphastore/server/tls.hpp"
 #include "glyphastore/server/wakeup.hpp"
 #include "glyphastore/store/store.hpp"
 
@@ -48,13 +49,17 @@ struct ReactorConfig {
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
     std::uint32_t durable_mutation_queue_wait_ms{1000};
+    // When requested(), the sole listener is TLS-only (ADR 0020). Cleartext and
+    // TLS are never opportunistic on the same endpoint; dual listeners are TODO.
+    TlsConfig tls{};
 };
 
 class Reactor final {
   public:
     [[nodiscard]] static auto create(const ReactorConfig& config, std::size_t executor_id,
                                      TcpListener listener, Store& store, ConnectionHandoffMesh& mesh,
-                                     DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations)
+                                     DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations,
+                                     std::shared_ptr<TlsContext> tls = {})
         -> Result<std::unique_ptr<Reactor>>;
 
     Reactor(const Reactor&) = delete;
@@ -79,6 +84,7 @@ class Reactor final {
   private:
     struct Connection {
         SocketHandle socket;
+        std::unique_ptr<TlsSession> tls;
         std::uint32_t generation{1};
         std::vector<std::byte> input;
         std::size_t input_offset{};
@@ -96,7 +102,7 @@ class Reactor final {
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener listener, Poller poller, Wakeup wakeup,
             Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-            DurableMutationExecutor* durable_mutations);
+            DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls);
 
     [[nodiscard]] auto accept_ready() -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
@@ -131,6 +137,7 @@ class Reactor final {
     ConnectionHandoffMesh& mesh_;
     DiskReadExecutor& disk_reads_;
     DurableMutationExecutor* durable_mutations_{};
+    std::shared_ptr<TlsContext> tls_;
     BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
     BoundedMpscQueue<DurableMutationCompletion> durable_mutation_completions_;
     std::vector<Connection> connections_;

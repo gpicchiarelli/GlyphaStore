@@ -2,6 +2,7 @@
 
 #include "glyphastore/server/disk_read_executor.hpp"
 #include "glyphastore/server/socket.hpp"
+#include "glyphastore/server/tls.hpp"
 #include "store/store_internal.hpp"
 
 #include <algorithm>
@@ -34,6 +35,9 @@ namespace {
     if (config.maximum_input_bytes < kRequestHeaderBytes ||
         config.maximum_output_bytes < kResponseHeaderBytes) {
         return fail(ErrorCode::invalid_argument, "server buffers are smaller than protocol headers");
+    }
+    if (auto tls = validate_tls_config(config.tls); !tls) {
+        return tls;
     }
     return {};
 }
@@ -97,6 +101,14 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         }
         server->durable_mutations_ = std::move(*durable_mutations);
     }
+    std::shared_ptr<TlsContext> tls_context;
+    if (config.tls.requested()) {
+        auto created = TlsContext::create(config.tls);
+        if (!created) {
+            return unexpected(created.error());
+        }
+        tls_context = std::move(*created);
+    }
 #if defined(__linux__)
     const bool kernel_distribution = config.reuse_port && server->store_->worker_count() > 1;
 #else
@@ -116,7 +128,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
             }
         }
         auto reactor = Reactor::create(config, executor, std::move(listener), *server->store_, server->mesh_,
-                                       *server->disk_reads_, server->durable_mutations_.get());
+                                       *server->disk_reads_, server->durable_mutations_.get(), tls_context);
         if (!reactor) {
             return unexpected(reactor.error());
         }

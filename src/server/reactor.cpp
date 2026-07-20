@@ -60,10 +60,10 @@ namespace {
 
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener listener, Poller poller,
                  Wakeup wakeup, Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                 DurableMutationExecutor* durable_mutations)
+                 DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(listener)),
       poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store), mesh_(mesh),
-      disk_reads_(disk_reads), durable_mutations_(durable_mutations),
+      disk_reads_(disk_reads), durable_mutations_(durable_mutations), tls_(std::move(tls)),
       disk_read_completions_(config_.disk_read_queue_capacity),
       durable_mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
@@ -75,7 +75,8 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id, TcpListener listener,
                      Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                     DurableMutationExecutor* durable_mutations) -> Result<std::unique_ptr<Reactor>> {
+                     DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
+    -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
     }
@@ -87,9 +88,9 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     if (!wakeup) {
         return unexpected(wakeup.error());
     }
-    auto reactor =
-        std::unique_ptr<Reactor>(new Reactor(config, executor_id, std::move(listener), std::move(*poller),
-                                             std::move(*wakeup), store, mesh, disk_reads, durable_mutations));
+    auto reactor = std::unique_ptr<Reactor>(
+        new Reactor(config, executor_id, std::move(listener), std::move(*poller), std::move(*wakeup), store,
+                    mesh, disk_reads, durable_mutations, std::move(tls)));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
@@ -125,6 +126,7 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     if (current->read_cancellation) {
         current->read_cancellation->store(true, std::memory_order_release);
     }
+    current->tls.reset();
     current->socket.reset();
     current->input.clear();
     current->input_offset = 0;
@@ -154,6 +156,14 @@ auto Reactor::accept_ready() -> Status {
             return {};
         }
         ConnectionHandoff handoff{.socket = std::move(**accepted)};
+        if (tls_) {
+            auto session = tls_->accept_socket(handoff.socket.descriptor());
+            if (!session) {
+                // Fail closed for this peer; keep accepting other connections.
+                continue;
+            }
+            handoff.tls = std::move(*session);
+        }
         if (auto adopted = adopt_connection(std::move(handoff)); !adopted) {
             return adopted;
         }
@@ -171,6 +181,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     free_slots_.pop_back();
     auto& current = connections_[slot];
     current.socket = std::move(handoff.socket);
+    current.tls = std::move(handoff.tls);
     current.input = std::move(handoff.input);
     current.input_offset = 0;
     current.output = std::move(handoff.output);
@@ -349,6 +360,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
         current->output_offset = 0;
     }
     ConnectionHandoff handoff{.socket = std::move(current->socket),
+                              .tls = std::move(current->tls),
                               .input = std::move(current->input),
                               .output = std::move(current->output),
                               .bound_worker = static_cast<std::uint32_t>(target_worker),
@@ -731,49 +743,66 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
     }
     std::array<std::byte, 16U * 1024U> buffer{};
     while (true) {
-        const auto received = ::recv(current->socket.descriptor(), buffer.data(), buffer.size(), 0);
-        if (received > 0) {
-            const auto received_size = static_cast<std::size_t>(received);
-            const auto buffered = current->input.size() - current->input_offset;
-            if (received_size > config_.maximum_input_bytes ||
-                buffered > config_.maximum_input_bytes - received_size) {
-                return fail(ErrorCode::record_too_large, "connection input high watermark exceeded");
+        std::size_t received_size = 0;
+        if (current->tls) {
+            auto received = current->tls->read(buffer.data(), buffer.size());
+            if (!received) {
+                return unexpected(received.error());
             }
-            current->input.insert(current->input.end(), buffer.begin(),
-                                  buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
-            if (auto processed = process_frames(token); !processed) {
-                return processed;
+            if (received->kind == TlsIoKind::would_block) {
+                return {};
+            }
+            if (received->kind == TlsIoKind::closed) {
+                current->peer_read_closed = true;
+                if (current->output_offset == current->output.size() && !current->request_in_flight) {
+                    close_connection(token);
+                    return {};
+                }
+                return write_ready(token);
+            }
+            received_size = received->bytes;
+        } else {
+            const auto received = ::recv(current->socket.descriptor(), buffer.data(), buffer.size(), 0);
+            if (received > 0) {
+                received_size = static_cast<std::size_t>(received);
+            } else if (received == 0) {
+                current->peer_read_closed = true;
+                if (current->output_offset == current->output.size() && !current->request_in_flight) {
+                    close_connection(token);
+                    return {};
+                }
+                return write_ready(token);
+            } else if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                return {};
+            } else if (errno == EINTR) {
+                continue;
+            } else {
+                return system_error("recv");
+            }
+        }
+        const auto buffered = current->input.size() - current->input_offset;
+        if (received_size > config_.maximum_input_bytes ||
+            buffered > config_.maximum_input_bytes - received_size) {
+            return fail(ErrorCode::record_too_large, "connection input high watermark exceeded");
+        }
+        current->input.insert(current->input.end(), buffer.begin(),
+                              buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
+        if (auto processed = process_frames(token); !processed) {
+            return processed;
+        }
+        current = connection(token);
+        if (current == nullptr) {
+            return {};
+        }
+        if (current->output_offset < current->output.size()) {
+            if (auto flushed = write_ready(token); !flushed) {
+                return flushed;
             }
             current = connection(token);
             if (current == nullptr) {
                 return {};
             }
-            if (current->output_offset < current->output.size()) {
-                if (auto flushed = write_ready(token); !flushed) {
-                    return flushed;
-                }
-                current = connection(token);
-                if (current == nullptr) {
-                    return {};
-                }
-            }
-            continue;
         }
-        if (received == 0) {
-            current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && !current->request_in_flight) {
-                close_connection(token);
-                return {};
-            }
-            return write_ready(token);
-        }
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            return {};
-        }
-        if (errno == EINTR) {
-            continue;
-        }
-        return system_error("recv");
     }
 }
 
@@ -785,12 +814,33 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     while (current->output_offset < current->output.size()) {
         const auto* data = current->output.data() + current->output_offset;
         const auto remaining = current->output.size() - current->output_offset;
-        const auto written = ::send(current->socket.descriptor(), data, remaining, send_flags());
-        if (written > 0) {
-            current->output_offset += static_cast<std::size_t>(written);
-            continue;
+        std::size_t written_size = 0;
+        bool would_block = false;
+        if (current->tls) {
+            auto written = current->tls->write(data, remaining);
+            if (!written) {
+                return unexpected(written.error());
+            }
+            if (written->kind == TlsIoKind::would_block) {
+                would_block = true;
+            } else if (written->kind == TlsIoKind::closed) {
+                return fail(ErrorCode::io_error, "TLS write closed by peer");
+            } else {
+                written_size = written->bytes;
+            }
+        } else {
+            const auto written = ::send(current->socket.descriptor(), data, remaining, send_flags());
+            if (written > 0) {
+                written_size = static_cast<std::size_t>(written);
+            } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                would_block = true;
+            } else if (written < 0 && errno == EINTR) {
+                continue;
+            } else {
+                return system_error("send");
+            }
         }
-        if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+        if (would_block) {
             if (current->write_armed) {
                 return {};
             }
@@ -803,10 +853,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
             current->write_armed = true;
             return {};
         }
-        if (written < 0 && errno == EINTR) {
-            continue;
-        }
-        return system_error("send");
+        current->output_offset += written_size;
     }
     current->output.clear();
     current->output_offset = 0;

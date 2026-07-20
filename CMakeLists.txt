@@ -26,10 +26,39 @@ include(CompilerWarnings)
 include(Sanitizers)
 include(Hardening)
 include(XcodeSupport)
+include(FindGlyphaStoreTls)
 
 glyphastore_project_options()
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 set(CMAKE_PREDEFINED_TARGETS_FOLDER "CMake")
+
+if(GLYPHASTORE_ENABLE_TLS STREQUAL "ON")
+    if(NOT GLYPHASTORE_TLS_FOUND)
+        message(FATAL_ERROR
+            "GLYPHASTORE_ENABLE_TLS=ON but no TLS library was found. "
+            "On OpenBSD install/use system LibreSSL; elsewhere provide OpenSSL 3.x "
+            "(set OPENSSL_ROOT_DIR if needed).")
+    endif()
+    set(GLYPHASTORE_TLS_ENABLED TRUE)
+elseif(GLYPHASTORE_ENABLE_TLS STREQUAL "OFF")
+    set(GLYPHASTORE_TLS_ENABLED FALSE)
+elseif(GLYPHASTORE_ENABLE_TLS STREQUAL "AUTO")
+    set(GLYPHASTORE_TLS_ENABLED ${GLYPHASTORE_TLS_FOUND})
+else()
+    message(FATAL_ERROR "GLYPHASTORE_ENABLE_TLS must be AUTO, ON, or OFF")
+endif()
+
+if(GLYPHASTORE_TLS_ENABLED)
+    message(STATUS "GlyphaStore TLS: enabled (${GLYPHASTORE_TLS_BACKEND})")
+else()
+    if(GLYPHASTORE_ENABLE_TLS STREQUAL "AUTO")
+        message(STATUS
+            "GlyphaStore TLS: disabled (no LibreSSL/OpenSSL 3.x found; "
+            "cleartext daemon only. Set OPENSSL_ROOT_DIR or GLYPHASTORE_ENABLE_TLS=ON)")
+    else()
+        message(STATUS "GlyphaStore TLS: disabled (GLYPHASTORE_ENABLE_TLS=OFF)")
+    endif()
+endif()
 
 add_library(glyphastore_cli_support
     src/cli/arguments.cpp
@@ -143,6 +172,7 @@ add_library(glyphastore_server_core
     src/server/server.cpp
     src/server/socket.cpp
     src/server/thread_affinity.cpp
+    src/server/tls.cpp
     src/server/wakeup.cpp
     ${GLYPHASTORE_POLLER_SOURCE}
 )
@@ -160,6 +190,15 @@ target_link_libraries(glyphastore_server_core
     PUBLIC GlyphaStore::core GlyphaStore::wire
     PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
 )
+if(GLYPHASTORE_TLS_ENABLED)
+    target_compile_definitions(glyphastore_server_core
+        PUBLIC GLYPHASTORE_HAS_TLS=1
+        PRIVATE "GLYPHASTORE_TLS_BACKEND_NAME=\"${GLYPHASTORE_TLS_BACKEND}\""
+    )
+    target_link_libraries(glyphastore_server_core PRIVATE GlyphaStore::tls)
+else()
+    target_compile_definitions(glyphastore_server_core PUBLIC GLYPHASTORE_HAS_TLS=0)
+endif()
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
 glyphastore_enable_ipo(glyphastore_server_core)
@@ -209,6 +248,7 @@ if(BUILD_TESTING)
         tests/unit/segment_tests.cpp
         tests/unit/segment_header_tests.cpp
         tests/unit/segment_catalog_tests.cpp
+        tests/unit/tls_tests.cpp
         tests/unit/trusted_read_tests.cpp
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
@@ -226,6 +266,9 @@ if(BUILD_TESTING)
     target_link_libraries(glyphastore_tests
         PRIVATE GlyphaStore::server GlyphaStore::client glyphastore_cli_support glyphastore_project_options
     )
+    if(GLYPHASTORE_TLS_ENABLED)
+        target_link_libraries(glyphastore_tests PRIVATE GlyphaStore::tls)
+    endif()
     target_include_directories(glyphastore_tests PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
         "${CMAKE_CURRENT_SOURCE_DIR}/tests"
