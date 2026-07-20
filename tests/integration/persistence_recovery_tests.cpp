@@ -1560,6 +1560,11 @@ GLYPHA_TEST("zero hot-cache budget falls back to pinned active-Segment reads for
     const auto expired = (*runtime)->get(ttl_key, 100);
     GLYPHA_REQUIRE(!expired.has_value());
     GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+    // Repeated cold GETs must not keep the expired Index entry; a second GET is Index-miss only.
+    const auto expired_again = (*runtime)->get(ttl_key, 100);
+    GLYPHA_REQUIRE(!expired_again.has_value());
+    GLYPHA_REQUIRE(expired_again.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE(expired_again.error().message == "key is not present");
 
     const auto stats = (*runtime)->hot_cache_stats();
     GLYPHA_REQUIRE(stats.size() == 1);
@@ -1569,6 +1574,7 @@ GLYPHA_TEST("zero hot-cache budget falls back to pinned active-Segment reads for
     GLYPHA_REQUIRE(stats[0].staged_bytes == 0);
     GLYPHA_REQUIRE(stats[0].byte_budget == 0);
     GLYPHA_REQUIRE(stats[0].admission_bypasses == sizes.size() + 3U);
+    // First TTL GET is a miss that validates expiry; the second is an Index miss (no cold I/O).
     GLYPHA_REQUIRE(stats[0].misses == sizes.size() + 3U);
 }
 

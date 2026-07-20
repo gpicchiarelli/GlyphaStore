@@ -457,6 +457,63 @@ GLYPHA_TEST("durable Store recovery and reads share the injected clock") {
     GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
 }
 
+GLYPHA_TEST("durable get lazily reclaims expired Index entries on hot and cold paths") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    const auto clock = std::make_shared<ManualStoreClock>(99);
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_live_keys = 1;
+
+    {
+        auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                                .storage_mode = glyphastore::StorageMode::durable_sync,
+                                                .data_directory = path,
+                                                .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                                .durable_limits = limits,
+                                                .clock = clock});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("expired-hot", bytes("v"), 100).has_value());
+        GLYPHA_REQUIRE(store.get("expired-hot").has_value());
+        clock->set(100);
+        const auto hidden = store.get("expired-hot");
+        GLYPHA_REQUIRE(!hidden.has_value());
+        GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
+        // Hot-path reclaim must free the live-key budget without a durable erase tombstone.
+        GLYPHA_REQUIRE(store.put("replacement-hot", bytes("next"), 0).has_value());
+        GLYPHA_REQUIRE(value_string(*store.get("replacement-hot")) == "next");
+        GLYPHA_REQUIRE(store.verify_index().has_value());
+        GLYPHA_REQUIRE(store.erase("replacement-hot").has_value());
+        GLYPHA_REQUIRE(store.close().has_value());
+    }
+
+    {
+        // Cold path: reopen with hot cache disabled so GET must validate the Record on disk.
+        limits.max_hot_cache_bytes = 0;
+        limits.max_hot_cache_bytes_per_worker = 0;
+        limits.max_hot_cache_staging_bytes_per_worker = 0;
+        limits.max_hot_cache_entries_per_worker = 0;
+        clock->set(199);
+        auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                                .storage_mode = glyphastore::StorageMode::durable_sync,
+                                                .data_directory = path,
+                                                .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                                .durable_limits = limits,
+                                                .clock = clock});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("expired-cold", bytes("cold"), 200).has_value());
+        GLYPHA_REQUIRE(store.get("expired-cold").has_value());
+        clock->set(200);
+        const auto hidden = store.get("expired-cold");
+        GLYPHA_REQUIRE(!hidden.has_value());
+        GLYPHA_REQUIRE(hidden.error().code == glyphastore::ErrorCode::not_found);
+        GLYPHA_REQUIRE(store.put("replacement-cold", bytes("after"), 0).has_value());
+        GLYPHA_REQUIRE(value_string(*store.get("replacement-cold")) == "after");
+        GLYPHA_REQUIRE(store.verify_index().has_value());
+    }
+}
+
 GLYPHA_TEST("Store rejects legacy recovery timestamp overrides") {
     const auto opened = glyphastore::Store::open({.recovery_now_ns = 1});
     GLYPHA_REQUIRE(!opened.has_value());

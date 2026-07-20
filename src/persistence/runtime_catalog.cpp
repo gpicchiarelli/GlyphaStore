@@ -1201,6 +1201,11 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                 ++worker.hot_record_hits;
                 if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
                     cached->second.expire_at_ns <= now_ns) {
+                    // Index-only lazy reclaim: drop the expired live entry so budgets and later
+                    // GETs do not keep paying for a key that can never become visible again.
+                    // Compaction remains the durable TTL cleanup path (no tombstone here).
+                    static_cast<void>(worker.index.erase_no_compact(key));
+                    worker.erase_hot_record(key.key);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
                 hot.emplace(HotRecordSnapshot{.value_bytes = cached->second.value_bytes,
@@ -1293,6 +1298,21 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
         }
         if (!visited) {
             if (visited.error().code == ErrorCode::not_found) {
+                // Visitor not_found is validated expiry only. Reclaim under lock if the Index
+                // still names the exact RecordRef that failed expiration — otherwise a concurrent
+                // put/erase may have already moved or removed the key.
+                {
+                    const std::lock_guard worker_lock{worker.mutex};
+                    const std::shared_lock catalog_lock{catalog_mutex_};
+                    if (healthy()) {
+                        const HashedKey key{.key = read.key_, .hash = read.key_hash_};
+                        const auto current = worker.index.find(key);
+                        if (current && *current == read.reference_) {
+                            static_cast<void>(worker.index.erase_no_compact(key));
+                            worker.erase_hot_record(key.key);
+                        }
+                    }
+                }
                 return unexpected(visited.error());
             }
             return fail_closed(visited.error());

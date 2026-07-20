@@ -350,8 +350,10 @@ post-compaction no-gain detection.
   plus mutable Worker handles. Next, measure whether `hot_records` should be removed or replaced by
   a byte-bounded admission/eviction policy; active-Segment cold reads need an explicit pinned commit
   boundary before cached values can be safely evicted.
-- Lazily remove expired Index entries after a validated read and make durable TTL reclamation part
-  of compaction. Repeated reads of an expired key must not repeatedly perform avoidable disk I/O.
+- Validated GET expiry now lazily removes the Index entry (`erase_no_compact`) and matching hot-cache
+  row on both hot and cold paths, freeing live-key budget without a durable tombstone. Repeated GETs
+  of a reclaimed expired key are Index misses. Compaction remains the durable TTL cleanup path; make
+  durable TTL reclamation during compaction an explicit, measured part of the reclaim story.
 
 ### Offline verification, backup, restore, and repair
 
