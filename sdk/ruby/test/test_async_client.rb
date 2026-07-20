@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
-require_relative "../lib/glypha_store"
-require_relative "../lib/glypha_store/async_client"
+require "glypha_store"
+require "glypha_store/async_client"
 require_relative "fake_server"
 
 class AsyncClientTest < Minitest::Test

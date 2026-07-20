@@ -13,6 +13,13 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
   fi
 done
 
+expected="$(tr -d '[:space:]' <"$root/VERSION")"
+got="$(PYTHONPATH="$sdk/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c 'import glyphastore; print(glyphastore.__version__)')"
+if [[ "$got" != "$expected" ]]; then
+  echo "glyphastore.__version__='$got' does not match VERSION='$expected'" >&2
+  exit 1
+fi
+
 rm -rf "$sdk/dist" "$sdk/build"
 find "$sdk" -maxdepth 2 -type d -name '*.egg-info' -exec rm -rf {} +
 

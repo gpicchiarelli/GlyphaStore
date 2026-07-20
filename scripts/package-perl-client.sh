@@ -14,6 +14,15 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
   fi
 done
 
+expected="$(tr -d '[:space:]' <"$root/VERSION")"
+perl_versions="$(rg -o "our \\\$VERSION = '([^']+)'" -r '$1' "$sdk/lib" --no-filename | sort -u)"
+perl_count="$(printf '%s\n' "$perl_versions" | grep -c . || true)"
+if [[ "$perl_count" -ne 1 || "$perl_versions" != "$expected" ]]; then
+  echo "Perl \$VERSION drift or mismatch: '${perl_versions:-<none>}' (expected $expected)" >&2
+  exit 1
+fi
+echo "Perl VERSION $perl_versions OK"
+
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-perl-pack.XXXXXX")"
 cleanup() { rm -rf "$work"; }
 trap cleanup EXIT

@@ -15,7 +15,8 @@ Related: [production readiness](../production-readiness.md),
 [documentation roadmap](../documentation-roadmap.md),
 [C++ client API / cross-language contract](../reference/cpp-client-api.md),
 [where performance matters](where-performance-matters.md),
-[Ruby SDK roadmap](ruby-sdk-roadmap.md).
+[Ruby SDK roadmap](ruby-sdk-roadmap.md),
+[SDK packaging standard](sdk-packaging.md).
 
 ## Verdict (2026-07-20)
 
@@ -148,7 +149,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 9. Authentication and TLS (all SDKs in the same train, including Ruby Phase 3).
 10. Metrics, health, and diagnostics.
 11. Backup/restore and operational procedures.
-12. Cross-release compatibility and artifact signing.
+12. Cross-release compatibility and artifact signing. **(packaging gates: [sdk-packaging](sdk-packaging.md); publish/signing credentials still operator-owned)**
 
 The leap is that **every official client is demonstrably equivalent, compatible across releases,
 and usable safely**—including any new language admitted under an isomorphism roadmap.

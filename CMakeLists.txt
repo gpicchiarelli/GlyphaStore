@@ -678,6 +678,7 @@ install(
     FILES
         "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfig.cmake"
         "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfigVersion.cmake"
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/FindGlyphaStoreTls.cmake"
     DESTINATION "${CMAKE_INSTALL_LIBDIR}/cmake/GlyphaStore"
     COMPONENT Development
 )

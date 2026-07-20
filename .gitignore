@@ -49,6 +49,12 @@ sdk/perl/Makefile
 sdk/perl/Makefile.old
 sdk/perl/MYMETA.*
 sdk/perl/GlyphaStore-*.tar.gz
+sdk/go/dist/
+sdk/go/bin/
+sdk/ruby/dist/
+sdk/ruby/*.gem
+sdk/cpp-dist/
+dist/sdk-artifacts/
 
 # Fuzzing output (seed corpora belong under fuzz/corpus when intentionally committed)
 crash-*

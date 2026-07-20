@@ -58,6 +58,7 @@ Use a PyPI API token scoped to the `glyphastore` project. Do not commit tokens.
 ## Version bump checklist
 
 1. Bump `__version__` in `src/glyphastore/__init__.py` (single source; `pyproject.toml` is dynamic)
-2. Update `CHANGELOG.md`
-3. Re-run `./scripts/package-python-client.sh`
-4. Tag/release and upload
+2. Update root `VERSION` and every other official SDK in lockstep (or land an ADR)
+3. Update `CHANGELOG.md`
+4. Run `./scripts/check-sdk-versions.sh` and `./scripts/package-python-client.sh`
+5. Tag/release and upload

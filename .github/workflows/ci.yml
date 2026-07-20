@@ -106,6 +106,8 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.3"
+      - name: Lock SDK versions
+        run: ./scripts/check-sdk-versions.sh
       - name: Test Python client
         run: ./scripts/test-python-client.sh
       - name: Test Perl client
@@ -120,6 +122,12 @@ jobs:
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client
         run: ./scripts/package-perl-client.sh
+      - name: Package and verify Go client
+        run: ./scripts/package-go-client.sh
+      - name: Package and verify Ruby client
+        run: ./scripts/package-ruby-client.sh
+      - name: Checksum packaged SDK artifacts
+        run: ./scripts/checksum-sdk-artifacts.sh
       - name: Build daemon and interop client
         env:
           CC: clang

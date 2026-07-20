@@ -2,7 +2,7 @@
 
 require "minitest/autorun"
 require "pathname"
-require_relative "../lib/glypha_store"
+require "glypha_store"
 
 class ProtocolTest < Minitest::Test
   FIXTURES = Pathname.new(__dir__).join("fixtures")

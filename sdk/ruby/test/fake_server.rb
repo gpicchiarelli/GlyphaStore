@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 require "socket"
-require_relative "../lib/glypha_store"
+require "glypha_store"
 
 class FakeServer
   attr_reader :port

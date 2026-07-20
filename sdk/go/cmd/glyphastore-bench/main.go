@@ -14,8 +14,6 @@ import (
 	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
 )
 
-const sdkVersion = "0.1.0"
-
 func main() {
 	host := flag.String("host", "127.0.0.1", "server host")
 	port := flag.Int("port", 0, "server port")
@@ -75,14 +73,14 @@ func main() {
 	fmt.Println("# glyphastore Go client benchmark")
 	fmt.Printf(
 		"# sdk_version=%s runtime=sync execution=%s workers=%d pipeline_pairs=%d operations=%d\n",
-		sdkVersion, *execution, *workers, *pipeline, operationCount,
+		client.Version, *execution, *workers, *pipeline, operationCount,
 	)
 	fmt.Printf(
 		"name=go_client_pipeline_read_after_write sdk_version=%s runtime=sync execution=%s "+
 			"workers=%d pipeline_pairs=%d operations=%d samples=%d "+
 			"median_seconds=%.9f min_seconds=%.9f max_seconds=%.9f "+
 			"median_ops_per_second=%.3f min_ops_per_second=%.3f max_ops_per_second=%.3f\n",
-		sdkVersion, *execution, *workers, *pipeline, operationCount, len(samples),
+		client.Version, *execution, *workers, *pipeline, operationCount, len(samples),
 		median(samples), minFloat(samples), maxFloat(samples),
 		median(rates), minFloat(rates), maxFloat(rates),
 	)

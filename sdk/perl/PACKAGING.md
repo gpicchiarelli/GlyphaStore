@@ -61,8 +61,9 @@ cpanm ./GlyphaStore-0.1.0.tar.gz
 
 ## Version bump checklist
 
-1. Bump `$VERSION` in every `.pm` under `lib/`
-2. Update `Changes`
-3. Keep `Makefile.PL` `provides` versions in sync (same scalar)
-4. Re-run packaging verification
-5. Upload the new tarball to PAUSE
+1. Bump `$VERSION` in **every** `.pm` under `lib/` (must stay identical)
+2. Update root `VERSION` and every other official SDK in lockstep (or land an ADR)
+3. Update `Changes`
+4. Keep `Makefile.PL` `provides` versions in sync (same scalar)
+5. Run `./scripts/check-sdk-versions.sh` and `./scripts/package-perl-client.sh`
+6. Upload the new tarball to PAUSE
