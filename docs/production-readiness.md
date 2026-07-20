@@ -121,8 +121,13 @@ implementation or design document alone is not sufficient.
   profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
-- [ ] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
+- [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
+  Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
+  [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md)
+  (OpenBSD/LibreSSL first-class). Implementation of the secure profile remains open.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
+  Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
+  [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.
 
 ### Distribution and lifecycle
 

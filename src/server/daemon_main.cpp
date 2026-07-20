@@ -57,7 +57,8 @@ constexpr std::array kOptionSpecs{
                                  {},
                                  "Show version information and exit"},
     glyphastore::cli::OptionSpec{bind, "bind", 'b', glyphastore::cli::OptionArity::required, "IPv4",
-                                 "Bind to an IPv4 address (default: 127.0.0.1)"},
+                                 "Bind to an IPv4 address (default: 127.0.0.1; non-loopback is "
+                                 "cleartext with no authentication — trusted networks only)"},
     glyphastore::cli::OptionSpec{port, "port", 'p', glyphastore::cli::OptionArity::required, "PORT",
                                  "Listen on PORT; 0 selects an ephemeral port (default: 7379)"},
     glyphastore::cli::OptionSpec{workers, "workers", 'w', glyphastore::cli::OptionArity::required, "COUNT",
@@ -395,10 +396,18 @@ int main(const int argc, char** argv) try {
         std::cerr << program << ": error: " << started.error().message << '\n';
         return 1;
     }
+    if (arguments->server.bind_address != "127.0.0.1") {
+        std::cerr << program
+                  << ": warning: bind address " << arguments->server.bind_address
+                  << " uses cleartext TCP with no authentication; restrict to a trusted network "
+                     "or wait for the secure TLS profile "
+                     "(docs/security/roadmap.md; OpenBSD uses LibreSSL)\n";
+    }
     if (!arguments->quiet) {
         std::cout << program << ": listening address=" << arguments->server.bind_address
                   << " port=" << (*server)->port() << " executors=" << (*server)->executor_count()
-                  << " storage=" << storage_mode_name(arguments->store.storage_mode) << '\n';
+                  << " storage=" << storage_mode_name(arguments->store.storage_mode)
+                  << " (cleartext; no authentication)\n";
     }
     while (g_stop_signal == 0 && (*server)->healthy()) {
         std::this_thread::sleep_for(std::chrono::milliseconds{50});

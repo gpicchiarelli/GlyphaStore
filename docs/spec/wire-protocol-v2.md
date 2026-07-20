@@ -11,7 +11,7 @@ The protocol runs over a reliable TCP byte stream. Every integer is unsigned and
 
 The maximum protocol frame size is 2 MiB, including the header. The server's connection input and output buffering may impose an additional configured limit (4 MiB by default). A client must handle partial reads and writes.
 
-There is currently no TLS, authentication, compression, multiplexed stream identifier, or protocol-level timeout. Deployments requiring confidentiality or access control must provide an external trusted boundary. Official clients impose local connect/request deadlines and classify failures as specified in [client semantics v1](client-semantics-v1.md).
+There is currently no TLS, authentication, compression, multiplexed stream identifier, or protocol-level timeout. Deployments requiring confidentiality or access control must provide an external trusted boundary. Official clients impose local connect/request deadlines and classify failures as specified in [client semantics v1](client-semantics-v1.md). The planned secure profile wraps this protocol in TLS 1.3 with mTLS ([ADR 0020](../adr/0020-tls-outer-transport.md), [ADR 0021](../adr/0021-secure-profile-authentication.md)) without changing frame layout; OpenBSD uses LibreSSL.
 
 ## 2. Request frame
 

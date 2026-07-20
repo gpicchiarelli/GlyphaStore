@@ -88,9 +88,14 @@ cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
 
 ## Performance notes
 
-- Contiguous little-endian frame encoding into pre-sized buffers (`EncodeRequestInto` / `AppendRequest`)
-- One write per exchange or pipeline; reusable receive buffer with offset compaction
-- Per-Worker `sync.Mutex`; `ExecuteBatch` fans out one goroutine per Worker
+- Contiguous little-endian frame encoding into pre-sized, connection-local scratch buffers
+- One write deadline per send and one read deadline per exchange (or per pipeline receive phase)
+- `DecodeResponseView` + `OwnBytes` avoid allocating empty values; GET payloads are copied once
+- One TCP connection and `sync.Mutex` per Worker; `ExecuteBatch` fans out one goroutine per Worker
 - Atomic request IDs and fail-closed health (no nested lock under connection mutex)
+- Prefer pipeline depth around **8–32** pairs for peak Go throughput; depth 128 often regresses
+  on client CPU while raw TCP continues to climb
 
-Treat the server as loopback / private network / sidecar until TLS and authentication exist.
+Treat the server as loopback / private network / sidecar until TLS and authentication exist
+([security roadmap](../../docs/security/roadmap.md); ADRs 0020–0022). OpenBSD is a first-class
+target (LibreSSL).

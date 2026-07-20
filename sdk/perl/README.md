@@ -6,6 +6,10 @@ transient `unavailable` reconnects while routing metadata is stable), and preser
 mutation outcomes. Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
+**Security posture:** cleartext TCP, no authentication. Use loopback / private network / sidecar
+until the secure TLS+mTLS profile ships
+([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL).
+
 License: BSD-3-Clause. Requires Perl ≥ 5.32.
 
 ### Thread and fork contract

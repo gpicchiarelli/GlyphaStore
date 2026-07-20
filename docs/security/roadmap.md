@@ -1,0 +1,271 @@
+# GlyphaStore security implementation roadmap
+
+Status: roadmap  
+Applies to: daemon TCP surface, official SDKs, durable namespace ops  
+Owner: security maintainers  
+Last reviewed: 2026-07-20
+
+This roadmap turns [threat-model.md](threat-model.md) and the security rows in
+[production-readiness.md](../production-readiness.md) / [v1-production-roadmap.md](../v1-production-roadmap.md)
+into an ordered implementation plan. It does **not** redefine wire or persistence contracts; those
+changes require ADRs and compatibility evidence first.
+
+## Principles (non-negotiable)
+
+1. **Correctness before exposure.** Fail-closed storage/recovery rules are never weakened for auth
+   convenience.
+2. **Same train for all official SDKs.** When TLS or session auth lands, C++ / Python / Perl / Go
+   (and Ruby if released) ship in the **same release**. No SDK left on silent cleartext defaults
+   while others “go secure” ([sdk-roadmap.md](../architecture/sdk-roadmap.md),
+   [ruby-sdk-roadmap.md](../architecture/ruby-sdk-roadmap.md)).
+3. **Secure profiles fail closed.** A deployment that asks for TLS/auth must not fall back to
+   cleartext or anonymous access by default.
+4. **OS/network boundary is not a product feature.** Loopback / private / sidecar remains the
+   *documented* posture until Phases 2–4 are done; it is not a substitute for those phases.
+5. **UDS is not security.** Unix-domain sockets may come later as a same-host transport; they do
+   not replace TLS/auth on reachable listeners ([server-model.md](../architecture/server-model.md)).
+6. **No payload secrets in logs.** Categories, sizes, request IDs — never key/value dumps
+   ([threat-model.md](threat-model.md) §7).
+7. **OpenBSD is first-class.** Secure-profile TLS uses **LibreSSL** on OpenBSD; CI and docs must
+   not treat OpenBSD as a best-effort port ([ADR 0020](../adr/0020-tls-outer-transport.md)).
+   `pledge`/`unveil` land with the secure profile hardening, not as a substitute for TLS.
+
+## Platform matrix (secure profile)
+
+| OS | TLS library expectation | Extra confinement |
+| --- | --- | --- |
+| OpenBSD | LibreSSL (system) | `pledge` / `unveil` for data dir + cert paths (Phase 2/6) |
+| FreeBSD | LibreSSL or OpenSSL 3.x | Capsicum evaluation later (existing v1 roadmap note) |
+| Linux | OpenSSL 3.x or LibreSSL | standard file perms; optional Landlock later |
+| macOS | LibreSSL/OpenSSL as provided by build | Keychain integration optional later |
+
+## Current baseline (honest)
+
+| Area | Today |
+| --- | --- |
+| Transport | Cleartext TCP (protocol v2) |
+| Authn / authz | None — any peer that reaches the port can mutate |
+| Quotas / rate limits | Frame/buffer bounds only; no per-client identity |
+| Audit | No security audit trail |
+| At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
+| Safe deployment | Embedded trusted caller, or daemon on trusted loopback/private network only |
+
+**Exit criterion for “beyond trusted boundary”:** Phases 0–5 complete with published specs, ADR(s),
+interop tests, and an ops runbook. Until then, Internet / hostile multi-tenant exposure stays
+**unsupported**.
+
+## Dependency graph (high level)
+
+```text
+Phase 0  Posture & hygiene
+    │
+Phase 1  Decisions (threat model + ADRs)
+    ├──────────────┬────────────────┐
+Phase 2  TLS       Phase 5a DoS     Phase 7 Supply chain
+    │              (can overlap)     (can overlap)
+Phase 3  Authn
+    │
+Phase 4  Authz
+    │
+Phase 5b Quotas / idle timeouts (identity-aware)
+    │
+Phase 6  Audit & admin surface
+    │
+Phase 8  Later: UDS, at-rest crypto, multi-tenant keyed routing
+```
+
+## Phase 0 — Posture, hygiene, and honesty (now → short)
+
+**Goal:** Make the unsafe surface impossible to misunderstand; close documentation gaps that block
+security design.
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 0.1 | Daemon / README / SDK connect docs state cleartext + no auth | **done** (daemon banner + SDK READMEs) |
+| 0.2 | Bind defaults remain loopback-oriented; non-loopback bind documented as explicit opt-in | **done** (CLI help + stderr warning) |
+| 0.3 | Log/error redaction audit (no key/value bytes in default logs) | Ongoing; policy in threat model §7 |
+| 0.4 | Link this roadmap from docs index and production readiness | **done** |
+
+**Out of scope here:** new wire bytes.
+
+**Effort:** days, mostly docs + small daemon messaging.
+
+---
+
+## Phase 1 — Decide the security architecture (gate) — **done 2026-07-20**
+
+**Goal:** Freeze *what* we will build before coding TLS/auth into the wire.
+
+| ID | Deliverable | Status |
+| --- | --- | --- |
+| 1.1 | Expand [threat-model.md](threat-model.md) with attacker profiles | **done** (§3a) |
+| 1.2 | ADR transport security | **done** [ADR 0020](../adr/0020-tls-outer-transport.md) — TLS 1.3 outer; LibreSSL on OpenBSD |
+| 1.3 | ADR authentication | **done** [ADR 0021](../adr/0021-secure-profile-authentication.md) — mTLS v1 |
+| 1.4 | ADR authorization | **done** [ADR 0022](../adr/0022-authorization-capabilities.md) — coarse capabilities |
+| 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
+| 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
+
+**Next:** Phase 2 implementation (daemon TLS + SDK train), with OpenBSD/LibreSSL as a release gate.
+
+---
+
+## Phase 2 — Transport security (TLS)
+
+**Goal:** Confidentiality and integrity of the byte stream; optional client identity via certificates.
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | Config validation; refuse weak config |
+| 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | Documented; tests |
+| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | Same options semantics across SDKs |
+| 2.4 | Interop matrix: every SDK PUT→GET over TLS | Extends `test-sdk-interop.sh` (or sibling) |
+| 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | Published under benchmark-results; no capacity claims |
+
+**Wire protocol:** Prefer **TLS as outer transport** with protocol v2 unchanged (no opcode churn),
+unless ADR 1.5 requires an in-band upgrade — default is outer TLS.
+
+**Effort:** 2–4 weeks daemon + SDK train (calendar longer if OpenSSL/Secure Transport matrices).
+
+---
+
+## Phase 3 — Authentication (authn)
+
+**Goal:** Every admitted session has a stable **principal id** (or is rejected).
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 3.1 | Principal model (cert CN/SAN, token subject, or both per ADR) | Spec section + ADR |
+| 3.2 | Session establishment after TLS (if token-based): single auth exchange, then normal v2 ops | Timeouts, failure → close |
+| 3.3 | Credential provisioning docs (files, env, rotation without downtime) | Runbook |
+| 3.4 | SDK credential hooks (no secrets in `Error.Error()` / logs / `inspect`) | Tests for redaction |
+| 3.5 | Reject anonymous peers when secure profile enabled | Negative tests |
+
+**Effort:** 2–3 weeks after Phase 2 (or overlapping if mTLS-only authn is chosen in ADR).
+
+---
+
+## Phase 4 — Authorization (authz)
+
+**Goal:** Principals are limited to allowed operations / namespaces.
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 4.1 | Capability table: e.g. `read`, `write`, `admin` (exact set in ADR) | Spec |
+| 4.2 | Enforcement points: before mutate admission; GET/PING policy explicit | Unit + interop denial tests |
+| 4.3 | Namespace or prefix scope (if ADR requires) | Boundary tests; no cross-scope leak |
+| 4.4 | Default-deny in secure profile | Misconfig fails closed |
+
+**Non-goal for first authz cut:** rich multi-tenant isolation with adversarial hash-flood resistance
+(threat model §6). That needs a **versioned keyed routing** design — Phase 8.
+
+**Effort:** 2–4 weeks depending on granularity chosen in Phase 1.
+
+---
+
+## Phase 5 — Abuse controls and limits
+
+**Goal:** Bound damage from authenticated or pre-auth peers (DoS, slowloris, fan-out).
+
+Split so transport-agnostic work can start early:
+
+| ID | When | Deliverable | Acceptance |
+| --- | --- | --- | --- |
+| 5.1 | Parallel to Phase 2 | Connection / handshake rate limits; max connections | Load test + metrics |
+| 5.2 | Parallel to Phase 2 | Idle and request deadlines (daemon-side), aligned with client semantics | Spec + tests |
+| 5.3 | After Phase 3 | Per-principal request and bandwidth quotas | Fairness under overload |
+| 5.4 | After Phase 3 | Pipeline / frame admission policy under overload | Existing buffer bounds + explicit reject/close |
+
+**Effort:** 2–3 weeks cumulative; 5.1–5.2 are high leverage even before public exposure.
+
+---
+
+## Phase 6 — Audit, admin, and operability
+
+**Goal:** Operators can see *who did what* and manage secure deployments without folklore.
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 6.1 | Security audit events: connect, auth success/fail, authz deny, TLS errors | Structured logs; no payloads |
+| 6.2 | Admin/diagnostic surface: listener mode, TLS status, principal counts (no secret material) | Readiness fails on sticky storage errors still holds |
+| 6.3 | Runbooks: rotate certs/tokens, revoke principal, incident response | Linked from production readiness |
+| 6.4 | Backup/restore note: credentials and data-dir permissions | Threat model § updated |
+
+**Effort:** 1–2 weeks (+ ongoing polish).
+
+---
+
+## Phase 7 — Supply chain and security process (parallel track)
+
+**Goal:** Trust the bits you ship, not only the wire.
+
+| ID | Deliverable | Acceptance |
+| --- | --- | --- |
+| 7.1 | Dependency + secret scanning in CI | Gate on main |
+| 7.2 | SBOM + checksums/signatures for release artifacts | Release checklist |
+| 7.3 | Fuzz regression intake for parsers (wire + persistence) | Documented owners |
+| 7.4 | Supported security maintenance window | Published policy |
+
+**Effort:** ongoing; bootstrap 1–2 weeks.
+
+---
+
+## Phase 8 — Later / optional (after secure TCP profile exists)
+
+Do **not** schedule these as blockers for “leave loopback”:
+
+| Item | Why later |
+| --- | --- |
+| Unix-domain socket transport | Convenience / same-host; optional `SO_PEERCRED` binding — not a TLS replacement |
+| At-rest encryption / MAC for segments | Key management, rotation, compaction, backup — large design |
+| Multi-tenant adversarial isolation | Needs keyed routing version + quota identity (threat model §6) |
+| Protocol-level compression / multiplexing | Unrelated; separate ADRs |
+
+---
+
+## Suggested calendar (indicative)
+
+Assuming one focused security track alongside normal engine work:
+
+| Window | Focus |
+| --- | --- |
+| Week 0–1 | Phase 0 + Phase 1 ADRs |
+| Week 2–6 | Phase 2 TLS (daemon + SDK train) including **OpenBSD/LibreSSL CI** + Phase 5.1–5.2 |
+| Week 6–8 | Phase 3 mTLS authn (mostly config on top of Phase 2) |
+| Week 8–10 | Phase 4 capabilities |
+| Week 9–11 | Phase 5.3–5.4 + Phase 6 + OpenBSD `pledge`/`unveil` pass |
+| Continuous | Phase 7 |
+
+OpenBSD stretches the TLS calendar (native builders, LibreSSL API quirks) and is **required**, not
+optional. Prefer **shipping mTLS + local principals first**, federation later.
+
+## SDK train checklist (every security release)
+
+- [ ] Spec / ADR merged before SDK API freeze  
+- [ ] C++ client  
+- [ ] Python sync + async  
+- [ ] Perl  
+- [ ] Go  
+- [ ] Ruby (if already past Phase 1 of its roadmap)  
+- [ ] Interop harness green on secure profile  
+- [ ] Cleartext profile still tested for trusted deployments (explicit, not default in secure docs)  
+- [ ] Changelog + migration notes (how to enable TLS/auth without downtime)
+
+## Relationship to other roadmaps
+
+| Document | Role |
+| --- | --- |
+| [threat-model.md](threat-model.md) | Assets, boundaries, residual risks — **authority for “what we fear”** |
+| This file | Ordered **how/when we implement controls** |
+| [v1-production-roadmap.md](../v1-production-roadmap.md) | Broader P1 security/storage namespace bullets |
+| [sdk-roadmap.md](../architecture/sdk-roadmap.md) | SDK train constraint for TLS/auth |
+| [production-readiness.md](../production-readiness.md) | Checklist gates for beta/RC |
+
+## Definition of done (security beta)
+
+- Accepted ADRs for TLS + authn + authz granularity  
+- Secure profile: TLS + authn + default-deny authz + basic rate/idle limits  
+- All official SDKs in the same release  
+- Threat model updated (“residual risk” rows closed or explicitly deferred to Phase 8)  
+- Audit events + rotate/revoke runbook  
+- Supply-chain scanning + vulnerability response owner named  
+- Docs state clearly what remains unsupported (public Internet multi-tenant, at-rest crypto, …)

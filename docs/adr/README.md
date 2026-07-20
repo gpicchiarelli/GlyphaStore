@@ -45,7 +45,15 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0017](0017-bounded-durable-hot-cache.md) | Bounded durable hot cache with pinned active fallback | accepted | preserves 0008; builds on 0016 |
 | [0018](0018-bounded-durable-mutation-lanes.md) | Bounded Worker-affine durable mutation lanes | accepted | preserves 0008, 0011, 0012 |
 | [0019](0019-client-error-retry-timeout.md) | Official client error/retry/timeout contract | accepted | detailed by client semantics v1; depends on 0013 |
+| [0020](0020-tls-outer-transport.md) | TLS 1.3 outer transport for secure profile | accepted | LibreSSL first-class on OpenBSD; enables 0021 |
+| [0021](0021-secure-profile-authentication.md) | mTLS authentication for secure profile | accepted | depends on 0020; enables 0022 |
+| [0022](0022-authorization-capabilities.md) | Coarse read/write/admin capabilities | accepted | depends on 0021 |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).
 Embedded Store `ErrorCode` values remain a separate surface.
+
+Secure network profile (TLS / mTLS / capabilities) is governed by
+[ADR 0020](0020-tls-outer-transport.md), [ADR 0021](0021-secure-profile-authentication.md), and
+[ADR 0022](0022-authorization-capabilities.md); implementation order is in
+[security roadmap](../security/roadmap.md).

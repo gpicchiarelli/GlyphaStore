@@ -30,6 +30,7 @@ type connection struct {
 	conn   net.Conn
 	input  []byte
 	offset int
+	encode []byte // scratch for outbound frames; valid only under mu
 }
 
 func (c *connection) reset() {
@@ -39,6 +40,15 @@ func (c *connection) reset() {
 	}
 	c.input = c.input[:0]
 	c.offset = 0
+	// Keep encode capacity across reconnects; only drop length.
+	c.encode = c.encode[:0]
+}
+
+func (c *connection) encodeScratch(size int) []byte {
+	if cap(c.encode) < size {
+		c.encode = make([]byte, 0, size)
+	}
+	return c.encode[:0]
 }
 
 // Client is a thread-safe GlyphaStore client with one bound TCP connection per Worker.
@@ -201,10 +211,8 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		begin     int
 	}
 	normalized := make([]meta, 0, len(requests))
-	output := make([]byte, 0, 256)
 	var worker *uint32
-	outputSize := 0
-
+	needed := 0
 	for _, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
 			return nil, invalidArgument("pipeline request contains an invalid opcode")
@@ -223,30 +231,14 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 			(len(request.Value) != 0 || request.ExpireAtNs != 0) {
 			return nil, invalidArgument("GET and ERASE pipeline requests cannot carry PUT fields")
 		}
-		requestID := c.nextRequestID()
-		begin := outputSize
-		before := len(output)
-		output, err = protocol.AppendRequest(
-			output,
-			protocol.Opcode(request.Opcode),
-			requestID,
-			request.Key,
-			request.Value,
-			request.ExpireAtNs,
-			protocol.NoWorker,
-		)
-		if err != nil {
-			return nil, invalidArgument(err.Error())
-		}
-		frameLen := len(output) - before
+		frameLen := protocol.RequestFrameSize(request.Key, request.Value)
 		if frameLen > c.cfg.MaximumFrameBytes {
 			return nil, invalidArgument("pipeline request exceeds the configured frame limit")
 		}
-		if frameLen > c.cfg.MaximumPipelineBytes-outputSize {
+		if frameLen > c.cfg.MaximumPipelineBytes-needed {
 			return nil, invalidArgument("pipeline exceeds the configured aggregate byte limit")
 		}
-		normalized = append(normalized, meta{opcode: request.Opcode, requestID: requestID, begin: begin})
-		outputSize += frameLen
+		needed += frameLen
 	}
 
 	responses := make([]PipelineResponse, len(requests))
@@ -262,6 +254,31 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 	if err := c.ensureConnected(conn); err != nil {
 		return nil, err
 	}
+
+	output := conn.encodeScratch(needed)
+	outputSize := 0
+	for _, request := range requests {
+		requestID := c.nextRequestID()
+		begin := outputSize
+		before := len(output)
+		var err error
+		output, err = protocol.AppendRequest(
+			output,
+			protocol.Opcode(request.Opcode),
+			requestID,
+			request.Key,
+			request.Value,
+			request.ExpireAtNs,
+			protocol.NoWorker,
+		)
+		if err != nil {
+			return nil, invalidArgument(err.Error())
+		}
+		frameLen := len(output) - before
+		normalized = append(normalized, meta{opcode: request.Opcode, requestID: requestID, begin: begin})
+		outputSize += frameLen
+	}
+	conn.encode = output[:0]
 
 	markUnresolved := func(first int, err error, bytesSent int) {
 		for index := first; index < len(normalized); index++ {
@@ -288,8 +305,13 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		return responses, nil
 	}
 
+	if err := conn.conn.SetReadDeadline(deadline); err != nil {
+		conn.reset()
+		markUnresolved(0, transport("response receive failed: "+err.Error()), len(output))
+		return responses, nil
+	}
 	for index, item := range normalized {
-		response, err := c.receiveResponse(conn, deadline)
+		response, err := c.receiveResponse(conn, time.Time{})
 		if err != nil {
 			conn.reset()
 			markUnresolved(index, err, len(output))
@@ -544,11 +566,11 @@ func (c *Client) ensureConnected(conn *connection) error {
 }
 
 func (c *Client) send(conn *connection, frame []byte, deadline time.Time) error {
+	if err := conn.conn.SetWriteDeadline(deadline); err != nil {
+		return &sendFailure{err: transport("request send failed: " + err.Error()), bytesSent: 0}
+	}
 	sent := 0
 	for sent < len(frame) {
-		if err := conn.conn.SetWriteDeadline(deadline); err != nil {
-			return &sendFailure{err: transport("request send failed: " + err.Error()), bytesSent: sent}
-		}
 		n, err := conn.conn.Write(frame[sent:])
 		if n > 0 {
 			sent += n
@@ -568,6 +590,11 @@ func (c *Client) send(conn *connection, frame []byte, deadline time.Time) error 
 }
 
 func (c *Client) receiveResponse(conn *connection, deadline time.Time) (protocol.Response, error) {
+	if !deadline.IsZero() {
+		if err := conn.conn.SetReadDeadline(deadline); err != nil {
+			return protocol.Response{}, transport("response receive failed: " + err.Error())
+		}
+	}
 	for {
 		available := len(conn.input) - conn.offset
 		if available >= 4 {
@@ -578,14 +605,16 @@ func (c *Client) receiveResponse(conn *connection, deadline time.Time) (protocol
 			if available >= frameSize {
 				start := conn.offset
 				frame := conn.input[start : start+frameSize]
-				response, err := protocol.DecodeResponse(frame, c.cfg.MaximumFrameBytes)
+				response, err := protocol.DecodeResponseView(frame, c.cfg.MaximumFrameBytes)
+				if err != nil {
+					return protocol.Response{}, protocolErr(err.Error())
+				}
+				// Own before compacting the receive buffer (Value may alias frame).
+				response.Value = protocol.OwnBytes(response.Value)
 				conn.offset += frameSize
 				if conn.offset == len(conn.input) {
 					conn.input = conn.input[:0]
 					conn.offset = 0
-				}
-				if err != nil {
-					return protocol.Response{}, protocolErr(err.Error())
 				}
 				return response, nil
 			}
@@ -594,9 +623,6 @@ func (c *Client) receiveResponse(conn *connection, deadline time.Time) (protocol
 			copy(conn.input, conn.input[conn.offset:])
 			conn.input = conn.input[: len(conn.input)-conn.offset]
 			conn.offset = 0
-		}
-		if err := conn.conn.SetReadDeadline(deadline); err != nil {
-			return protocol.Response{}, transport("response receive failed: " + err.Error())
 		}
 		if cap(conn.input)-len(conn.input) < 64*1024 {
 			grown := make([]byte, len(conn.input), len(conn.input)+64*1024)
@@ -682,14 +708,18 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 			continue
 		}
 		requestID := c.nextRequestID()
-		frame, err := protocol.EncodeRequest(opcode, requestID, key, value, 0, protocol.NoWorker)
+		size := protocol.RequestFrameSize(key, value)
+		if size > c.cfg.MaximumFrameBytes {
+			return nil, invalidArgument("request exceeds the configured frame limit")
+		}
+		scratch := conn.encodeScratch(size)
+		n, err := protocol.EncodeRequestInto(scratch[:size], opcode, requestID, key, value, 0, protocol.NoWorker)
 		if err != nil {
 			return nil, invalidArgument(err.Error())
 		}
-		if len(frame) > c.cfg.MaximumFrameBytes {
-			return nil, invalidArgument("request exceeds the configured frame limit")
-		}
+		frame := scratch[:n]
 		response, err := c.exchange(conn, frame, deadline)
+		conn.encode = scratch[:0]
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {
 				last = promoteSendFailure(sf, readOpName(opcode), requestID, worker, c.routingEpoch, false)
@@ -780,14 +810,18 @@ func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs ui
 			return MutationResult{Outcome: MutationRejected, Err: err}
 		}
 		requestID := c.nextRequestID()
-		frame, err := protocol.EncodeRequest(opcode, requestID, key, value, expireAtNs, protocol.NoWorker)
+		size := protocol.RequestFrameSize(key, value)
+		if size > c.cfg.MaximumFrameBytes {
+			return MutationResult{Outcome: MutationRejected, Err: invalidArgument("request exceeds the configured frame limit").withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationRejected)}
+		}
+		scratch := conn.encodeScratch(size)
+		n, err := protocol.EncodeRequestInto(scratch[:size], opcode, requestID, key, value, expireAtNs, protocol.NoWorker)
 		if err != nil {
 			return MutationResult{Outcome: MutationRejected, Err: invalidArgument(err.Error()).withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationRejected)}
 		}
-		if len(frame) > c.cfg.MaximumFrameBytes {
-			return MutationResult{Outcome: MutationRejected, Err: invalidArgument("request exceeds the configured frame limit").withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationRejected)}
-		}
+		frame := scratch[:n]
 		response, err := c.exchange(conn, frame, deadline)
+		conn.encode = scratch[:0]
 		if err != nil {
 			if sf, ok := err.(*sendFailure); ok {
 				conn.reset()

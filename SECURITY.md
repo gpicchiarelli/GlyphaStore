@@ -32,6 +32,20 @@ Include as much of the following as possible:
 Expect an acknowledgement within three business days. Acknowledgement is not a confirmation of
 severity or eligibility for a CVE.
 
+## Current network posture
+
+`glyphastored` speaks **cleartext TCP** with **no authentication**. The safe default is bind
+`127.0.0.1` (loopback) or an otherwise trusted private boundary. Do not expose the listener to
+untrusted networks.
+
+The planned **secure profile** (TLS 1.3 + mTLS + coarse capabilities) is specified in
+[docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
+[0020](docs/adr/0020-tls-outer-transport.md)–[0022](docs/adr/0022-authorization-capabilities.md).
+**OpenBSD** is a first-class target (LibreSSL; later `pledge`/`unveil`). Until that profile ships
+and is enabled, treat the daemon as sidecar / private-network only.
+
+Threat model: [docs/security/threat-model.md](docs/security/threat-model.md).
+
 ## Security scope
 
 Persisted segment files, native network frames, and recovery metadata are all treated as untrusted

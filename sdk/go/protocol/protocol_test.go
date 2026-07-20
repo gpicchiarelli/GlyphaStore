@@ -155,6 +155,42 @@ func TestResponseDecoderMatchesEveryCanonicalFixture(t *testing.T) {
 	}
 }
 
+func TestDecodeResponseViewEmptyValueIsNil(t *testing.T) {
+	frame, err := protocol.EncodeResponse(protocol.StatusOK, 1, nil, 0, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view, err := protocol.DecodeResponseView(frame, protocol.MaxFrameBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.Value != nil {
+		t.Fatalf("expected nil empty value, got %#v", view.Value)
+	}
+	owned, err := protocol.DecodeResponse(frame, protocol.MaxFrameBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owned.Value != nil {
+		t.Fatalf("expected nil owned empty value, got %#v", owned.Value)
+	}
+}
+
+func TestOwnBytes(t *testing.T) {
+	if protocol.OwnBytes(nil) != nil || protocol.OwnBytes([]byte{}) != nil {
+		t.Fatal("empty should be nil")
+	}
+	src := []byte("abc")
+	out := protocol.OwnBytes(src)
+	if string(out) != "abc" {
+		t.Fatal(out)
+	}
+	src[0] = 'z'
+	if string(out) != "abc" {
+		t.Fatal("OwnBytes must copy")
+	}
+}
+
 func TestResponseEncoderRoundTripsCanonicalFixture(t *testing.T) {
 	raw := frames(fixture(t, "wire_responses_v2.hex"))
 	for i, frame := range raw {

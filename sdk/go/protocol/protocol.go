@@ -257,8 +257,9 @@ func EncodeResponse(
 	return buf, nil
 }
 
-// DecodeResponse decodes one complete response and rejects noncanonical fields.
-func DecodeResponse(frame []byte, maximumFrameBytes int) (Response, error) {
+// DecodeResponseView decodes one complete response. Value aliases frame and is
+// only valid while frame remains unchanged; use OwnBytes before retaining it.
+func DecodeResponseView(frame []byte, maximumFrameBytes int) (Response, error) {
 	if maximumFrameBytes <= 0 {
 		maximumFrameBytes = MaxFrameBytes
 	}
@@ -285,7 +286,10 @@ func DecodeResponse(frame []byte, maximumFrameBytes int) (Response, error) {
 	if !validStatus(status) {
 		return Response{}, errors.New("response status is unknown")
 	}
-	value := append([]byte(nil), frame[ResponseHeaderBytes:frameSize]...)
+	var value []byte
+	if valueSize > 0 {
+		value = frame[ResponseHeaderBytes:frameSize]
+	}
 	return Response{
 		Status:       status,
 		RequestID:    binary.LittleEndian.Uint64(frame[8:16]),
@@ -294,6 +298,26 @@ func DecodeResponse(frame []byte, maximumFrameBytes int) (Response, error) {
 		RoutingEpoch: binary.LittleEndian.Uint64(frame[32:40]),
 		Value:        value,
 	}, nil
+}
+
+// OwnBytes returns a retained copy of b, or nil when b is empty.
+func OwnBytes(b []byte) []byte {
+	if len(b) == 0 {
+		return nil
+	}
+	out := make([]byte, len(b))
+	copy(out, b)
+	return out
+}
+
+// DecodeResponse decodes one complete response and returns an owned Value copy.
+func DecodeResponse(frame []byte, maximumFrameBytes int) (Response, error) {
+	response, err := DecodeResponseView(frame, maximumFrameBytes)
+	if err != nil {
+		return Response{}, err
+	}
+	response.Value = OwnBytes(response.Value)
+	return response, nil
 }
 
 // FNV1a64 returns the canonical 64-bit FNV-1a hash used for Worker routing.

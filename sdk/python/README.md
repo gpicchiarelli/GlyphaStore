@@ -9,6 +9,10 @@ the same codec, configuration, and outcome model. Runtime dependency: none (Pyth
 Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
+**Security posture:** cleartext TCP, no authentication. Use loopback / private network / sidecar
+until the secure TLS+mTLS profile ships
+([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL).
+
 License: BSD-3-Clause.
 
 ```python
