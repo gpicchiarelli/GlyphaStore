@@ -42,7 +42,8 @@ Select one of these generated schemes:
 - `glyphastore_tests` to build or run the standalone test executable.
 - `check` to build the test dependencies and execute the complete CTest suite.
 - `glyphastore_benchmarks` and `glyphastore_server_benchmarks` for focused Release measurements.
-- `glyphastore_inspect_segment` and `glyphastore_rebuild_index` for tool debugging.
+- `glyphastore_inspect_segment` for read-only durable Segment validation (`--json`, `--no-scan`).
+- `glyphastore_rebuild_index` remains a placeholder (Store recovery rebuilds Indexes).
 
 Because GlyphaStore uses a standalone CTest executable rather than XCTest bundles, use the
 `check` scheme's **Build** action for the full suite. The `glyphastore_tests` scheme's **Run** action

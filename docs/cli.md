@@ -35,9 +35,30 @@ and advisory on macOS.
 ## Maintenance tools
 
 ```bash
-glyphastore_inspect_segment -- segment.gseg
-glyphastore_rebuild_index -- segment-0001.gseg segment-0002.gseg
+glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
+glyphastore_rebuild_index -- segment-<16hex>-<8hex>.glypha
 ```
 
-The inspector and rebuild commands currently expose their stable CLI envelope, but file-backed segment
-recovery remains a prototype. They report that limitation explicitly instead of implying a completed repair.
+### `glyphastore_inspect_segment`
+
+Read-only validation of one durable Segment file. It does not take the Store directory lock and does
+not modify the file.
+
+Default work:
+
+1. open as a private, singly linked, owner-only regular file of exactly 64 MiB;
+2. decode the Segment header and select the newest valid commit slot;
+3. when the basename is a canonical `segment-…glypha` name, require it to match header identity;
+4. scan the committed Record extent (CRC32C, sequences, commit metadata agreement).
+
+`--no-scan` stops after header/commit validation. `--json` emits a stable single-line JSON object on
+stdout. Exit codes: `0` validated, `1` validation/I/O failure, `2` usage.
+
+A concurrent writer can make a point-in-time read observe a torn commit slot; that is reported as
+validation failure (fail-closed), not success.
+
+### `glyphastore_rebuild_index`
+
+The offline rewrite tool is not implemented for durable v1. Durable Indexes are rebuilt by ordinary
+Store recovery. Invoking the tool with Segment paths exits `1` with an explicit error. Help and
+version remain available.

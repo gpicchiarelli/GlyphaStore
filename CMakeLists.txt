@@ -389,12 +389,16 @@ if(BUILD_TESTING)
     )
     add_test(NAME glyphastore_cli_inspect_help COMMAND glyphastore_inspect_segment --help)
     set_tests_properties(glyphastore_cli_inspect_help PROPERTIES
-        PASS_REGULAR_EXPRESSION "Inspect a GlyphaStore segment file"
+        PASS_REGULAR_EXPRESSION "Inspect a GlyphaStore durable Segment file"
     )
     add_test(NAME glyphastore_cli_rebuild_help COMMAND glyphastore_rebuild_index --help)
     set_tests_properties(glyphastore_cli_rebuild_help PROPERTIES
         PASS_REGULAR_EXPRESSION "Rebuild a GlyphaStore index"
     )
+    add_test(NAME glyphastore_cli_rebuild_not_implemented
+        COMMAND glyphastore_rebuild_index -- /tmp/does-not-matter.glypha
+    )
+    set_tests_properties(glyphastore_cli_rebuild_not_implemented PROPERTIES WILL_FAIL TRUE)
     add_test(NAME glyphastore_cli_rejects_invalid_workers COMMAND glyphastored --workers 257)
     set_tests_properties(glyphastore_cli_rejects_invalid_workers PROPERTIES WILL_FAIL TRUE)
     add_test(NAME glyphastore_cli_daemon_rejects_missing_data_directory

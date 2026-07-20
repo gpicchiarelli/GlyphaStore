@@ -1,14 +1,17 @@
 #include "glyphastore/persistence/segment_file.hpp"
 
+#include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "system_error.hpp"
 
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <cstdint>
 #include <fcntl.h>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
@@ -17,6 +20,14 @@
 
 namespace glyphastore {
 namespace {
+
+auto interrupted_open(const char* path, int flags) -> int {
+    int descriptor{};
+    do {
+        descriptor = ::open(path, flags);
+    } while (descriptor < 0 && errno == EINTR);
+    return descriptor;
+}
 
 auto interrupted_open_at(int directory, const char* name, int flags, mode_t mode = 0) -> int {
     int descriptor{};
@@ -291,6 +302,44 @@ auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdent
     }
     return DurableSegmentFile{std::move(file),  header->identity,  *selected,
                               directory.hooks_, directory.health_, mode == SegmentFileOpenMode::read_write};
+}
+
+auto DurableSegmentFile::open_path(const std::filesystem::path& path) -> Result<DurableSegmentFile> {
+    if (path.empty()) {
+        return fail(ErrorCode::invalid_argument, "Segment path cannot be empty");
+    }
+    FileDescriptor file{interrupted_open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+    if (!file.valid()) {
+        if (errno == ENOENT) {
+            return fail(ErrorCode::not_found, "Segment does not exist");
+        }
+        return persistence_system_error("open(Segment path)");
+    }
+    if (auto valid = validate_private_segment(file.get()); !valid) {
+        return unexpected(valid.error());
+    }
+    const auto size = file.size();
+    if (!size) {
+        return unexpected(size.error());
+    }
+    if (*size != kSegmentSizeBytes) {
+        return fail(ErrorCode::invalid_record, "Segment file is not exactly 64 MiB");
+    }
+
+    std::array<std::byte, kSegmentHeaderReservedBytes> header_bytes{};
+    if (auto read = file.read_exact_at(header_bytes, 0); !read) {
+        return unexpected(read.error());
+    }
+    const auto header = decode_segment_header(header_bytes);
+    if (!header) {
+        return unexpected(header.error());
+    }
+    const auto selected = select_newest_segment_commit(*header);
+    if (!selected) {
+        return unexpected(selected.error());
+    }
+    auto health = std::make_shared<std::atomic_bool>(true);
+    return DurableSegmentFile{std::move(file), header->identity, *selected, {}, std::move(health), false};
 }
 
 auto DurableSegmentFile::before(const FilesystemOperation operation) const -> Status {
@@ -681,6 +730,46 @@ auto DurableSegmentFile::visit_runtime_record(const RecordRef& reference, void* 
         return unexpected(read.error());
     }
     return visitor(context, record);
+}
+
+auto inspect_durable_segment(const std::filesystem::path& path, const bool scan_records)
+    -> Result<DurableSegmentInspectReport> {
+    auto opened = DurableSegmentFile::open_path(path);
+    if (!opened) {
+        return unexpected(opened.error());
+    }
+
+    DurableSegmentInspectReport report{
+        .path = path,
+        .identity = opened->identity(),
+        .selected = opened->selected_commit(),
+    };
+
+    const auto basename = path.filename().string();
+    if (const auto parsed = parse_segment_filename(basename); parsed) {
+        const bool matches = parsed->segment_id == report.identity.segment_id &&
+                             parsed->generation == report.identity.generation && !parsed->temporary;
+        if (!matches) {
+            return fail(ErrorCode::corrupted_data,
+                        "Segment filename identity disagrees with Segment header identity");
+        }
+        report.filename_matches_identity = true;
+    }
+
+    if (scan_records) {
+        std::uint64_t counted{};
+        const auto count = [](void* context, const RecordRef&, const RecordView&) -> Status {
+            ++*static_cast<std::uint64_t*>(context);
+            return {};
+        };
+        if (auto scanned = opened->visit_committed_records(&counted, count); !scanned) {
+            return unexpected(scanned.error());
+        }
+        report.scanned_records = counted;
+    } else {
+        report.scanned_records = report.selected.commit.record_count;
+    }
+    return report;
 }
 
 } // namespace glyphastore

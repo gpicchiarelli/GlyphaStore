@@ -471,3 +471,84 @@ GLYPHA_TEST("batched append_record defers commit slot until flush_pending_commit
     GLYPHA_REQUIRE(scan.has_value());
     GLYPHA_REQUIRE(scan->size() == 2);
 }
+
+GLYPHA_TEST("inspect_durable_segment validates a sealed path without a directory lock") {
+    SegmentTemporaryDirectory temporary;
+    const auto identity = segment_identity(0x42, 7);
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+        GLYPHA_REQUIRE(created.durable());
+        const auto record = encoded_record(1, "inspect", "ok");
+        GLYPHA_REQUIRE(record.has_value());
+        GLYPHA_REQUIRE(created.file->append(*record).committed());
+        GLYPHA_REQUIRE(created.file->seal().committed());
+    }
+
+    const auto path = temporary.path() / glyphastore::segment_filename(identity);
+    const auto report = glyphastore::inspect_durable_segment(path);
+    GLYPHA_REQUIRE(report.has_value());
+    GLYPHA_REQUIRE(report->identity == identity);
+    GLYPHA_REQUIRE(report->selected.commit.state == glyphastore::PersistedSegmentState::sealed);
+    GLYPHA_REQUIRE(report->selected.commit.record_count == 1);
+    GLYPHA_REQUIRE(report->scanned_records == 1);
+    GLYPHA_REQUIRE(report->filename_matches_identity.has_value());
+    GLYPHA_REQUIRE(*report->filename_matches_identity);
+
+    const auto header_only = glyphastore::inspect_durable_segment(path, false);
+    GLYPHA_REQUIRE(header_only.has_value());
+    GLYPHA_REQUIRE(header_only->scanned_records == 1);
+}
+
+GLYPHA_TEST("inspect_durable_segment fails closed on committed Record corruption") {
+    SegmentTemporaryDirectory temporary;
+    const auto identity = segment_identity(0x43, 1);
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+        GLYPHA_REQUIRE(created.durable());
+        const auto record = encoded_record(3, "corrupt", "me");
+        GLYPHA_REQUIRE(record.has_value());
+        GLYPHA_REQUIRE(created.file->append(*record).committed());
+    }
+
+    const auto path = temporary.path() / glyphastore::segment_filename(identity);
+    glyphastore::FileDescriptor raw{::open(path.c_str(), O_RDWR | O_CLOEXEC)};
+    GLYPHA_REQUIRE(raw.valid());
+    const std::byte corrupt{0x00};
+    GLYPHA_REQUIRE(
+        raw.write_all_at(std::span{&corrupt, 1}, glyphastore::kSegmentHeaderReservedBytes).has_value());
+    GLYPHA_REQUIRE(raw.sync(glyphastore::FileSyncMode::data).has_value());
+    raw.reset();
+
+    const auto report = glyphastore::inspect_durable_segment(path);
+    GLYPHA_REQUIRE(!report.has_value());
+    GLYPHA_REQUIRE(report.error().code == glyphastore::ErrorCode::invalid_record ||
+                   report.error().code == glyphastore::ErrorCode::checksum_mismatch);
+
+    const auto header_only = glyphastore::inspect_durable_segment(path, false);
+    GLYPHA_REQUIRE(header_only.has_value());
+}
+
+GLYPHA_TEST("inspect_durable_segment rejects filename identity disagreement") {
+    SegmentTemporaryDirectory temporary;
+    const auto identity = segment_identity(0x44, 2);
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+        GLYPHA_REQUIRE(created.durable());
+    }
+
+    const auto original = temporary.path() / glyphastore::segment_filename(identity);
+    const auto mismatched = temporary.path() / glyphastore::segment_filename(segment_identity(0x99, 9));
+    std::error_code ec;
+    std::filesystem::rename(original, mismatched, ec);
+    GLYPHA_REQUIRE(!ec);
+
+    const auto report = glyphastore::inspect_durable_segment(mismatched);
+    GLYPHA_REQUIRE(!report.has_value());
+    GLYPHA_REQUIRE(report.error().code == glyphastore::ErrorCode::corrupted_data);
+}

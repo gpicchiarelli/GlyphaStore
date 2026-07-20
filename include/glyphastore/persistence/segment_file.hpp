@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -25,6 +26,16 @@ using RecordVisitor = Status (*)(void* context, const RecordView& record);
 
 struct SegmentFileCreationResult;
 
+struct DurableSegmentInspectReport {
+    std::filesystem::path path;
+    SegmentHeaderIdentity identity{};
+    SelectedSegmentCommit selected{};
+    std::uint64_t scanned_records{};
+    // Set when the basename parses as a canonical Segment name; true iff it
+    // matches header identity. Unset when the basename is not canonical.
+    std::optional<bool> filename_matches_identity;
+};
+
 struct SegmentCommitResult {
     SegmentCommitOutcome outcome{SegmentCommitOutcome::not_committed};
     std::optional<Error> error;
@@ -41,6 +52,9 @@ class DurableSegmentFile final {
     [[nodiscard]] static auto open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
                                    SegmentFileOpenMode mode = SegmentFileOpenMode::read_write)
         -> Result<DurableSegmentFile>;
+    // Read-only open of an absolute or relative Segment path without a data-directory
+    // lock. Used by offline inspection; never opens writable.
+    [[nodiscard]] static auto open_path(const std::filesystem::path& path) -> Result<DurableSegmentFile>;
 
     DurableSegmentFile(const DurableSegmentFile&) = delete;
     auto operator=(const DurableSegmentFile&) -> DurableSegmentFile& = delete;
@@ -130,5 +144,11 @@ struct SegmentFileCreationResult {
 };
 
 [[nodiscard]] auto segment_filename(const SegmentHeaderIdentity& identity) -> std::string;
+
+// Read-only validation of one Segment file: private regular file, exact size,
+// header/commit decode, optional committed-extent CRC scan. Fail-closed on any
+// disagreement; does not modify the file or take a Store lock.
+[[nodiscard]] auto inspect_durable_segment(const std::filesystem::path& path, bool scan_records = true)
+    -> Result<DurableSegmentInspectReport>;
 
 } // namespace glyphastore

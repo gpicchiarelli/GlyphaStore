@@ -360,11 +360,11 @@ post-compaction no-gain detection.
 
 ### Offline verification, backup, restore, and repair
 
-- Replace `glyphastore_inspect_segment` and `glyphastore_rebuild_index` placeholders with v1-aware,
-  bounded, read-only tools. Provide stable text and JSON output, CRC/identity/commit validation,
-  useful exit codes, and fixture tests.
-- Add `verify-store` across Manifest and all Segments. Keep destructive repair a distinct command
-  requiring an explicit output directory; never rewrite the only copy in place.
+- `glyphastore_inspect_segment` is a v1-aware, bounded, read-only Segment validator (header/commit
+  decode, optional committed CRC scan, text/JSON, fail-closed exit codes).
+  `glyphastore_rebuild_index` still refuses offline rewrite; durable Indexes are rebuilt by Store
+  recovery. Next: add `verify-store` across Manifest and all Segments. Keep destructive repair a
+  distinct command requiring an explicit output directory; never rewrite the only copy in place.
 - Specify a consistent backup/snapshot procedure, including active Segment and manifest ordering,
   then test backup and restore during concurrent writes and after kills.
 - Publish upgrade/downgrade rules for persistence v1 and test artifacts created by every released
