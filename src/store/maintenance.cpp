@@ -308,8 +308,9 @@ void MaintenanceController::evaluate_once() {
                             MaintenanceActivationReason::none);
                 return;
             }
-            // Fault: clear reject so the Store is not permanently wedged without recover path.
-            publish_mutations_rejected_locked(false);
+            // Keep an already-published emergency gate: reclaim fault must not re-open mutations
+            // while capacity is still exhausted. Recovery is a later non-emergency observation
+            // (evaluate still observes when auto-compact is disabled) or request_stop.
             state_ = MaintenanceState::faulted;
             auto_compact_enabled_ = false;
             return;
@@ -414,7 +415,7 @@ void MaintenanceController::evaluate_once() {
             } else if (result.error().code == ErrorCode::sequence_conflict) {
                 record_skip(MaintenanceSkipReason::sequence_conflict, MaintenanceState::idle, activation);
             } else {
-                publish_mutations_rejected_locked(false);
+                // Preserve emergency rejection published from this cycle's observation.
                 state_ = MaintenanceState::faulted;
                 auto_compact_enabled_ = false;
             }
@@ -446,7 +447,7 @@ void MaintenanceController::run(const std::stop_token stop_token) {
             if (stop_requested_) {
                 break;
             }
-            if (state_ != MaintenanceState::suspended) {
+            if (state_ != MaintenanceState::suspended && state_ != MaintenanceState::faulted) {
                 state_ = MaintenanceState::idle;
             }
             const auto deadline = std::chrono::steady_clock::now() + eval_interval_locked();

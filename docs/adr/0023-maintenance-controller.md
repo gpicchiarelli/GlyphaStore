@@ -55,8 +55,8 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 Positive: clear lifecycle and config surface; daemon path ready for autosufficient reclaim; no format
 change; compact remains the ground-truth transaction; emergency fails closed on capacity.
 
-Negative / deferred: full production benches and multi-output randomized crash histories remain
-follow-up. Background mode adds one Store thread when enabled.
+Negative / deferred: production reclaim benches remain follow-up. Background mode adds one Store
+thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015.
 
 ## Compatibility and migration
 
@@ -68,9 +68,11 @@ follow-up. Background mode adds one Store thread when enabled.
 
 - Unit tests: cooperative starts no thread; background starts and joins on close; invalid intervals
   rejected; close with background mode is clean; pressure continues under no-gain budget; emergency
-  rejects put/erase with `storage_exhausted` and recovers when watermarks clear.
-- Integration: manual `compact()` still works; concurrent compact still returns `sequence_conflict`.
-- Remaining before claiming production automatic reclaim: crash/close matrix depth and benches.
+  rejects put/erase with `storage_exhausted` and recovers when watermarks clear; emergency gate
+  survives compact fault; close/flush under emergency remain correct.
+- Integration: durable catalog-driven emergency; Store close during blocked background compact drains
+  then joins; manual `compact()` still works; concurrent compact still returns `sequence_conflict`.
+- Remaining before claiming production automatic reclaim efficacy: production benches (not lifecycle).
 
 ## References
 

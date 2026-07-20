@@ -1,6 +1,8 @@
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/core/types.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
@@ -69,6 +71,50 @@ class ManualStoreClock final : public glyphastore::StoreClock {
 
   private:
     std::atomic<std::uint64_t> now_ns_;
+};
+
+class BlockingRecordRead final {
+  public:
+    void arm() {
+        const std::lock_guard lock{mutex_};
+        armed_ = true;
+    }
+
+    [[nodiscard]] auto wait_until_blocked() -> bool {
+        std::unique_lock lock{mutex_};
+        return condition_.wait_for(lock, std::chrono::seconds{5}, [&] { return blocked_; });
+    }
+
+    void release() {
+        {
+            const std::lock_guard lock{mutex_};
+            released_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    static auto read_some_at(void* opaque, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& state = *static_cast<BlockingRecordRead*>(opaque);
+        if (offset >= glyphastore::kSegmentHeaderReservedBytes) {
+            std::unique_lock lock{state.mutex_};
+            if (state.armed_ && !state.claimed_) {
+                state.claimed_ = true;
+                state.blocked_ = true;
+                state.condition_.notify_all();
+                state.condition_.wait(lock, [&] { return state.released_; });
+            }
+        }
+        return ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset));
+    }
+
+  private:
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    bool armed_{};
+    bool claimed_{};
+    bool blocked_{};
+    bool released_{};
 };
 
 auto bootstrap_store_id() -> glyphastore::StoreId {
@@ -969,4 +1015,149 @@ GLYPHA_TEST("durable_group single put flushes within max_wait_ms") {
     const auto value = (*reopened)->get("solo");
     GLYPHA_REQUIRE(value.has_value());
     GLYPHA_REQUIRE(value_string(*value) == "value");
+}
+
+GLYPHA_TEST("durable catalog observation enters emergency and rejects put until close") {
+    StoreTemporaryDirectory temporary;
+    glyphastore::DurableResourceLimits limits{};
+    limits.max_segment_count = 1;
+    limits.max_store_bytes = 4ULL * glyphastore::kSegmentSizeBytes;
+    limits.max_temporary_compaction_bytes = glyphastore::kSegmentSizeBytes;
+
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .durable_limits = limits,
+        .maintenance =
+            {
+                .mode = glyphastore::MaintenanceMode::background,
+                .min_eval_interval_ms = 60'000,
+                .max_eval_interval_ms = 60'000,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("seed", bytes("value")).has_value());
+
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(store);
+    GLYPHA_REQUIRE(controller != nullptr);
+    controller->request_evaluate();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snap = store.maintenance_snapshot();
+        if (snap.mutations_rejected) {
+            GLYPHA_REQUIRE(snap.pressure == glyphastore::MaintenancePressureLevel::emergency);
+            GLYPHA_REQUIRE(snap.last_observation.durable);
+            GLYPHA_REQUIRE(snap.last_observation.segment_count >= snap.last_observation.max_segment_count);
+            const auto put = store.put("blocked", bytes("x"));
+            GLYPHA_REQUIRE(!put.has_value());
+            GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::storage_exhausted);
+            GLYPHA_REQUIRE(store.flush().has_value());
+            GLYPHA_REQUIRE(value_string(*store.get("seed")) == "value");
+            GLYPHA_REQUIRE(store.close().has_value());
+            GLYPHA_REQUIRE(!store.maintenance_snapshot().mutations_rejected);
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}
+
+GLYPHA_TEST("close during blocked background compact drains then joins") {
+    StoreTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    const auto store_id = bootstrap_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{3},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    const glyphastore::Manifest manifest{
+        .store_id = store_id,
+        .manifest_generation = 1,
+        .routing_algorithm = glyphastore::RoutingAlgorithm::fnv1a64_v1,
+        .worker_count = 1,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{4},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments = entries,
+    };
+    {
+        auto directory =
+            glyphastore::DataDirectory::open_and_lock(path, glyphastore::DataDirectoryOpenMode::create_new);
+        GLYPHA_REQUIRE(directory.has_value());
+        for (const auto& entry : entries) {
+            const glyphastore::SegmentHeaderIdentity identity{
+                .store_id = store_id,
+                .segment_id = entry.segment_id,
+                .generation = entry.generation,
+                .owner_worker = entry.owner_worker,
+            };
+            auto created = glyphastore::DurableSegmentFile::create(*directory, identity);
+            GLYPHA_REQUIRE(created.durable());
+            GLYPHA_REQUIRE(created.file.has_value());
+            if (entry.role == glyphastore::ManifestSegmentRole::sealed) {
+                const auto key = entry.segment_id.value == 1 ? "first" : "second";
+                const auto encoded = glyphastore::encode_record({
+                    .sequence = glyphastore::SequenceNumber{entry.segment_id.value},
+                    .opcode = glyphastore::Opcode::put,
+                    .type = glyphastore::ValueType::bytes,
+                    .flags = 0,
+                    .key_hash = glyphastore::hash_key(key),
+                    .expire_at_ns = 0,
+                    .key = bytes(key),
+                    .value = bytes("value"),
+                });
+                GLYPHA_REQUIRE(encoded.has_value());
+                GLYPHA_REQUIRE(created.file->append(*encoded).committed());
+                GLYPHA_REQUIRE(created.file->seal().committed());
+            }
+        }
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+    }
+
+    BlockingRecordRead blocked_build;
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .maintenance =
+            {
+                .mode = glyphastore::MaintenanceMode::background,
+                .min_eval_interval_ms = 60'000,
+                .max_eval_interval_ms = 60'000,
+            },
+        .filesystem_hooks =
+            {.file_io = {.context = &blocked_build, .read_some_at = &BlockingRecordRead::read_some_at}},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(store);
+    GLYPHA_REQUIRE(controller != nullptr);
+
+    blocked_build.arm();
+    controller->request_evaluate();
+    GLYPHA_REQUIRE(blocked_build.wait_until_blocked());
+
+    glyphastore::Status closed;
+    std::thread closer{[&] { closed = store.close(); }};
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    blocked_build.release();
+    closer.join();
+    GLYPHA_REQUIRE(closed.has_value());
+    GLYPHA_REQUIRE(!store.maintenance_snapshot().thread_running);
+    GLYPHA_REQUIRE(store.maintenance_snapshot().state == glyphastore::MaintenanceState::stopped);
 }

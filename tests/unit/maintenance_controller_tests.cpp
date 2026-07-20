@@ -436,3 +436,143 @@ GLYPHA_TEST("emergency rejects mutations even when auto-compact is disabled") {
     }
     GLYPHA_REQUIRE(false);
 }
+
+GLYPHA_TEST("emergency gate survives compact fault") {
+    glyphastore::StoreConfig config{};
+    config.worker_config.explicit_count = 1;
+    config.maintenance.mode = glyphastore::MaintenanceMode::background;
+    config.maintenance.min_eval_interval_ms = 60'000;
+    config.maintenance.max_eval_interval_ms = 60'000;
+
+    auto store = glyphastore::Store::open(config);
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+
+    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 100,
+            .sealed_segment_count = 2,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 2'048,
+        };
+    });
+    controller->bind_compact([]() -> glyphastore::Result<glyphastore::CompactionResult> {
+        return glyphastore::fail(glyphastore::ErrorCode::io_error, "injected compact fault");
+    });
+    controller->request_evaluate();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snap = (**store).maintenance_snapshot();
+        if (snap.mutations_rejected && snap.last_error.has_value() &&
+            snap.last_error->code == glyphastore::ErrorCode::io_error) {
+            GLYPHA_REQUIRE(snap.state == glyphastore::MaintenanceState::faulted ||
+                           snap.compact_attempts > 0);
+            GLYPHA_REQUIRE(snap.pressure == glyphastore::MaintenancePressureLevel::emergency);
+            const auto put = (**store).put("still-blocked", std::as_bytes(std::span{"z", 1}));
+            GLYPHA_REQUIRE(!put.has_value());
+            GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::storage_exhausted);
+
+            controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+                return glyphastore::MaintenanceObservation{
+                    .durable = true,
+                    .segment_count = 10,
+                    .sealed_segment_count = 1,
+                    .max_segment_count = 100,
+                    .reserved_free_bytes = 1'024,
+                    .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+                };
+            });
+            controller->request_evaluate();
+            const auto recover_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (std::chrono::steady_clock::now() < recover_deadline) {
+                if (!(**store).maintenance_snapshot().mutations_rejected) {
+                    GLYPHA_REQUIRE((**store).put("after-fault", std::as_bytes(std::span{"y", 1})).has_value());
+                    GLYPHA_REQUIRE((**store).close().has_value());
+                    return;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            GLYPHA_REQUIRE(false);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}
+
+GLYPHA_TEST("close under emergency clears mutations_rejected and stops thread") {
+    glyphastore::StoreConfig config{};
+    config.worker_config.explicit_count = 1;
+    config.maintenance.mode = glyphastore::MaintenanceMode::background;
+    config.maintenance.min_eval_interval_ms = 60'000;
+    config.maintenance.max_eval_interval_ms = 60'000;
+
+    auto store = glyphastore::Store::open(config);
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 100,
+            .sealed_segment_count = 1,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 2'048,
+        };
+    });
+    controller->request_evaluate();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if ((**store).maintenance_snapshot().mutations_rejected) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE((**store).maintenance_snapshot().mutations_rejected);
+    GLYPHA_REQUIRE((**store).close().has_value());
+    const auto snap = (**store).maintenance_snapshot();
+    GLYPHA_REQUIRE(!snap.thread_running);
+    GLYPHA_REQUIRE(!snap.mutations_rejected);
+    GLYPHA_REQUIRE(snap.state == glyphastore::MaintenanceState::stopped);
+}
+
+GLYPHA_TEST("flush succeeds while emergency rejects put") {
+    glyphastore::StoreConfig config{};
+    config.worker_config.explicit_count = 1;
+    config.maintenance.mode = glyphastore::MaintenanceMode::background;
+    config.maintenance.min_eval_interval_ms = 60'000;
+    config.maintenance.max_eval_interval_ms = 60'000;
+
+    auto store = glyphastore::Store::open(config);
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 100,
+            .sealed_segment_count = 0,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 2'048,
+        };
+    });
+    controller->request_evaluate();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if ((**store).maintenance_snapshot().mutations_rejected) {
+            GLYPHA_REQUIRE((**store).flush().has_value());
+            const auto put = (**store).put("nope", std::as_bytes(std::span{"n", 1}));
+            GLYPHA_REQUIRE(!put.has_value());
+            GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::storage_exhausted);
+            GLYPHA_REQUIRE((**store).close().has_value());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}
