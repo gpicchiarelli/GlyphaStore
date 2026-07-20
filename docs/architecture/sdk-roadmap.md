@@ -69,7 +69,15 @@ transaction: Workers succeed or fail independently after admission. Perl still e
 
 Today: one connection per Worker. Concurrent same-Worker traffic serializes. A future
 `connections_per_worker = 1|2|4|…` helps Zipf / hot Worker / slow reads / many threads—but only after
-benchmarks prove the connection is the bottleneck.
+benchmarks prove the connection is the bottleneck. Suite 0.2 should add p50/p95 so that decision is
+data-driven.
+
+### 5b. Perl performance path (guidance)
+
+Pure-Perl hot path is saturated for generic tuning. Prefer: deep pipelines + Worker overlap, one
+client per prefork process, later event-loop adapter for web throughput. Optional XS on framing is
+the only large remaining microbench lever; C++ FFI remains out of design. Details:
+[where performance matters](where-performance-matters.md#perl-sdk-where-further-speed-comes-from).
 
 ### 6. Per-request deadlines — **done**
 

@@ -63,16 +63,34 @@ cd sdk/perl && perl Makefile.PL && make && make test && make install
 `GlyphaStore::Protocol` exposes the full bidirectional codec and FNV-1a Worker routing. See
 [PACKAGING.md](PACKAGING.md) for PAUSE/MetaCPAN upload steps.
 
-## Performance benchmark
+## Performance
+
+### Production (what actually scales)
+
+- Prefer deep ordered pipelines and `execute_worker_pipelines` / `execute_batch` so Workers overlap
+  inside one process.
+- Run **one client per process** (Hypnotoad / prefork). Do not share a client across ithreads; that
+  is the documented contract. Process count is the parallel scale-out knob.
+- An event-loop adapter (Mojolicious / `IO::Async` / AnyEvent) is a later roadmap item: it raises
+  web-app concurrency by not blocking the reactor, not the sync microbench ops/s number.
+
+### Microbench vs Python
+
+The pure-Perl hot path is already tight (`pack 'Q<'`, zero-copy octets, integer FNV, in-place
+`sysread`, reused `IO::Select`, `encode_request_hot`). The remaining gap versus Python sequential at
+deep pipelines (~2–2.5× in the 0.1.0 sequential baseline) is not closed by further generic
+micro-tuning. Compare Perl concurrent (`workers>1`, default harness) to a fair peer; the published
+0.1.0 Perl rows were largely sequential.
+
+The only large remaining SDK-side leap is optional **XS on encode/decode/FNV** (heavier packaging).
+FFI wrapping the C++ client is out of design. Secondary wins (fewer hashrefs, less copying) are
+typically single-digit percent.
+
+`connections_per_worker` waits on measurement, same as the other SDKs. Suite 0.2 should add p50/p95
+latency so bottlenecks are visible.
 
 ```bash
-perl benchmarks/client_benchmark.pl --port 7379 --workers 1 \
+perl benchmarks/client_benchmark.pl --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
+# --no-concurrent forces sequential drain across Workers
 ```
-
-With multiple Workers the harness defaults to overlapping pipelines via
-`execute_worker_pipelines` (`--no-concurrent` forces the old sequential drain).
-
-The client keeps pure-Perl framing but hot paths use native `pack 'Q<'`, avoid
-copying octet strings, wrap FNV-1a in 64-bit integer arithmetic, and reuse
-`IO::Select` / in-place `sysread` buffers.

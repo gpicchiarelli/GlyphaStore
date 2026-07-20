@@ -68,6 +68,24 @@ That split is intentional:
 See [SDK 0.1.0 analysis](../../benchmark-results-sdk-0.1.0-20260719-161956/analysis.md) and the
 [benchmark standard](../spec/benchmark-standard.md).
 
+## Perl SDK: where further speed comes from
+
+The pure-Perl hot path is already squeezed (`pack 'Q<'`, in-place `sysread`, reused `IO::Select`,
+`encode_request_hot`, multi-Worker overlap). A remaining ~2–2.5× gap versus Python **sequential** at
+deep pipelines will not close with generic micro-tuning.
+
+| Priority | Action | Effect |
+| --- | --- | --- |
+| Use the API correctly | Deep pipelines + `execute_worker_pipelines` / `execute_batch` | Overlap Workers inside one process; the 0.1.0 baseline was mostly sequential—re-read numbers with concurrent defaults when `workers>1` |
+| Production scale | One client per Hypnotoad/prefork worker process; no shared ithreads | Real win: parallelism = N processes (documented contract) |
+| Later | Mojolicious / `IO::Async` / AnyEvent adapter | Does not raise sync microbench ops/s; raises web-app throughput by not blocking the reactor |
+| Optional big jump | XS only on encode/decode/FNV | Only large remaining SDK-side leap; FFI around the C++ client stays out of design |
+| Secondary polish | Fewer response hashrefs, less FNV/`substr` copying | Typically single-digit %, not 2× |
+| Like other SDKs | `connections_per_worker` only after measure; p50/p95 in suite 0.2 | Know *where* time goes before changing connection shape |
+
+**Product performance:** processes + pipelines/overlap, then event-loop. **Closing the microbench
+gap:** XS on framing. Everything else is polish.
+
 ## The real quid
 
 The claim is not “faster than Redis” as a product slogan (Redis/RESP compatibility is a non-goal;
