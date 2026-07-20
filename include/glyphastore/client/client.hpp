@@ -14,6 +14,19 @@
 
 namespace glyphastore::client {
 
+// Opt-in TLS (ADR 0020). Cleartext remains the default. When enable is true the
+// client fails closed (no cleartext fallback). Hostname/SNI verification is on
+// unless insecure_skip_verify is set (lab escape only).
+struct TlsOptions {
+    bool enable{false};
+    std::string ca_file{};
+    std::string cert_file{};
+    std::string key_file{};
+    // Empty uses ClientConfig::host for SNI / hostname verification.
+    std::string server_name{};
+    bool insecure_skip_verify{false};
+};
+
 struct ClientConfig {
     std::string host{"127.0.0.1"};
     std::uint16_t port{7379};
@@ -22,6 +35,7 @@ struct ClientConfig {
     std::size_t maximum_frame_bytes{2U * 1024U * 1024U};
     std::size_t maximum_pipeline_requests{256};
     std::size_t maximum_pipeline_bytes{1024U * 1024U};
+    TlsOptions tls{};
 };
 
 struct PutOptions {

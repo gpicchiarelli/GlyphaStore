@@ -1,8 +1,18 @@
 package client_test
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/binary"
+	"encoding/pem"
+	"math/big"
 	"net"
+	"os"
+	"path/filepath"
 	"strconv"
 	"sync"
 	"testing"
@@ -17,6 +27,7 @@ type fakeServer struct {
 	disconnectOnPut    bool
 	internalErrorOnPut bool
 	stallOnGet         bool
+	tlsConfig          *tls.Config
 	ln                 net.Listener
 	values             map[string][]byte
 	valuesMu           sync.Mutex
@@ -26,6 +37,11 @@ type fakeServer struct {
 
 func startFakeServer(t *testing.T, workerCount uint32, disconnectOnPut, internalErrorOnPut bool) *fakeServer {
 	t.Helper()
+	return startFakeServerTLS(t, workerCount, disconnectOnPut, internalErrorOnPut, nil)
+}
+
+func startFakeServerTLS(t *testing.T, workerCount uint32, disconnectOnPut, internalErrorOnPut bool, tlsConfig *tls.Config) *fakeServer {
+	t.Helper()
 	if workerCount == 0 {
 		workerCount = 1
 	}
@@ -33,10 +49,14 @@ func startFakeServer(t *testing.T, workerCount uint32, disconnectOnPut, internal
 	if err != nil {
 		t.Fatal(err)
 	}
+	if tlsConfig != nil {
+		ln = tls.NewListener(ln, tlsConfig)
+	}
 	s := &fakeServer{
 		workerCount:        workerCount,
 		disconnectOnPut:    disconnectOnPut,
 		internalErrorOnPut: internalErrorOnPut,
+		tlsConfig:          tlsConfig,
 		ln:                 ln,
 		values:             make(map[string][]byte),
 		stop:               make(chan struct{}),
@@ -503,4 +523,93 @@ func reverse(in []byte) []byte {
 		out[len(in)-1-i] = in[i]
 	}
 	return out
+}
+
+func TestConnectTLSPing(t *testing.T) {
+	dir := t.TempDir()
+	certPEM, keyPEM := mustSelfSigned(t)
+	certPath := filepath.Join(dir, "server.crt")
+	keyPath := filepath.Join(dir, "server.key")
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cert, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := startFakeServerTLS(t, 1, false, false, &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		MinVersion:   tls.VersionTLS13,
+	})
+	defer server.close()
+
+	c, err := client.Connect(client.Config{
+		Host:           "127.0.0.1",
+		Port:           server.port(),
+		ConnectTimeout: time.Second,
+		RequestTimeout: time.Second,
+		TLS: client.TLSConfig{
+			Enable:     true,
+			CAFile:     certPath,
+			ServerName: "localhost",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	payload := []byte("tls-ping")
+	got, err := c.Ping(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestTLSConfigRequiresCertAndKeyPair(t *testing.T) {
+	_, err := client.Connect(client.Config{
+		Host: "127.0.0.1",
+		Port: 1,
+		TLS: client.TLSConfig{
+			Enable:   true,
+			CertFile: "only-cert.pem",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected incomplete mTLS config to fail")
+	}
+}
+
+func mustSelfSigned(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{"localhost"},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes})
+	return certPEM, keyPEM
 }

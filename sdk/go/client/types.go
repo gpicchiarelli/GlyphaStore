@@ -66,13 +66,31 @@ func (r PipelineResponse) Succeeded() bool {
 
 // Config configures a Client.
 type Config struct {
-	Host                     string
-	Port                     int
-	ConnectTimeout           time.Duration
-	RequestTimeout           time.Duration
-	MaximumFrameBytes        int
-	MaximumPipelineRequests  int
-	MaximumPipelineBytes     int
+	Host                    string
+	Port                    int
+	ConnectTimeout          time.Duration
+	RequestTimeout          time.Duration
+	MaximumFrameBytes       int
+	MaximumPipelineRequests int
+	MaximumPipelineBytes    int
+	// TLS is opt-in (cleartext remains the default). When TLS.Enable is true the
+	// client fails closed: there is no cleartext fallback.
+	TLS TLSConfig
+}
+
+// TLSConfig configures optional TLS 1.3 for the secure profile (ADR 0020).
+type TLSConfig struct {
+	Enable bool
+	// CAFile is an optional PEM CA bundle. Empty uses the system trust store
+	// unless InsecureSkipVerify is set.
+	CAFile string
+	// CertFile and KeyFile enable mTLS when both are set.
+	CertFile string
+	KeyFile  string
+	// ServerName overrides Host for SNI and hostname verification.
+	ServerName string
+	// InsecureSkipVerify disables certificate and hostname verification (lab only).
+	InsecureSkipVerify bool
 }
 
 // CallOptions optionally overrides the client-wide request timeout for one call.

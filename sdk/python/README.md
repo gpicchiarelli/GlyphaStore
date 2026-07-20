@@ -9,9 +9,12 @@ the same codec, configuration, and outcome model. Runtime dependency: none (Pyth
 Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
-**Security posture:** cleartext TCP, no authentication. Use loopback / private network / sidecar
-until the secure TLS+mTLS profile ships
-([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL).
+**Security posture:** cleartext TCP by default (no authentication). Opt-in TLS 1.3 via
+`ClientConfig(tls=True, tls_ca=..., cert_file=..., key_file=..., server_name=...,
+insecure_skip_verify=...)` on both `Client` and `AsyncClient` — hostname/SNI verification on by
+default, fail closed (no cleartext fallback). Use loopback / private network / sidecar for
+cleartext; mTLS authn is ADR 0021
+([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL on the daemon).
 
 License: BSD-3-Clause.
 

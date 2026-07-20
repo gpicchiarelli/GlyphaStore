@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/protocol.hpp"
+#include "glyphastore/server/tls.hpp"
 
 #include <algorithm>
 #include <array>
@@ -182,17 +183,56 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return value;
 }
 
-[[nodiscard]] auto send_frame(const int descriptor, const std::span<const std::byte> frame,
+struct WorkerConnection {
+    explicit WorkerConnection(const std::uint32_t index) : worker(index) {
+        input.reserve(64U * 1024U);
+    }
+
+    void reset() noexcept {
+        tls.reset();
+        socket.reset();
+        input.clear();
+        input_offset = 0;
+    }
+
+    std::uint32_t worker{};
+    std::mutex mutex;
+    Socket socket;
+    std::unique_ptr<server::TlsSession> tls;
+    std::vector<std::byte> input;
+    std::size_t input_offset{};
+};
+
+[[nodiscard]] auto send_frame(WorkerConnection& connection, const std::span<const std::byte> frame,
                               const Clock::time_point deadline)
     -> std::variant<std::size_t, ExchangeFailure> {
     std::size_t sent{};
     while (sent < frame.size()) {
+        if (connection.tls) {
+            auto written = connection.tls->write(frame.data() + sent, frame.size() - sent);
+            if (!written) {
+                return ExchangeFailure{written.error(), sent};
+            }
+            if (written->kind == server::TlsIoKind::would_block) {
+                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                if (ready) {
+                    continue;
+                }
+                return ExchangeFailure{ready.error(), sent};
+            }
+            if (written->kind == server::TlsIoKind::closed) {
+                return ExchangeFailure{{ErrorCode::io_error, "server closed the TLS connection"}, sent};
+            }
+            sent += written->bytes;
+            continue;
+        }
 #if defined(MSG_NOSIGNAL)
         constexpr int send_flags = MSG_NOSIGNAL;
 #else
         constexpr int send_flags = 0;
 #endif
-        const auto count = ::send(descriptor, frame.data() + sent, frame.size() - sent, send_flags);
+        const auto count =
+            ::send(connection.socket.get(), frame.data() + sent, frame.size() - sent, send_flags);
         if (count > 0) {
             sent += static_cast<std::size_t>(count);
             continue;
@@ -201,7 +241,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
             continue;
         }
         if (count < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            auto ready = wait_for(descriptor, POLLOUT, deadline);
+            auto ready = wait_for(connection.socket.get(), POLLOUT, deadline);
             if (ready) {
                 continue;
             }
@@ -212,11 +252,30 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return sent;
 }
 
-[[nodiscard]] auto receive_exact(const int descriptor, const std::span<std::byte> output,
+[[nodiscard]] auto receive_exact(WorkerConnection& connection, const std::span<std::byte> output,
                                  const Clock::time_point deadline) -> Status {
     std::size_t received{};
     while (received < output.size()) {
-        const auto count = ::recv(descriptor, output.data() + received, output.size() - received, 0);
+        if (connection.tls) {
+            auto read = connection.tls->read(output.data() + received, output.size() - received);
+            if (!read) {
+                return unexpected(read.error());
+            }
+            if (read->kind == server::TlsIoKind::would_block) {
+                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                if (ready) {
+                    continue;
+                }
+                return ready;
+            }
+            if (read->kind == server::TlsIoKind::closed) {
+                return fail(ErrorCode::io_error, "server closed the TLS connection");
+            }
+            received += read->bytes;
+            continue;
+        }
+        const auto count =
+            ::recv(connection.socket.get(), output.data() + received, output.size() - received, 0);
         if (count > 0) {
             received += static_cast<std::size_t>(count);
             continue;
@@ -228,7 +287,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
             continue;
         }
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
-            auto ready = wait_for(descriptor, POLLIN, deadline);
+            auto ready = wait_for(connection.socket.get(), POLLIN, deadline);
             if (ready) {
                 continue;
             }
@@ -239,11 +298,11 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return {};
 }
 
-[[nodiscard]] auto receive_response(Socket& socket, const ClientConfig& config,
+[[nodiscard]] auto receive_response(WorkerConnection& connection, const ClientConfig& config,
                                     const Clock::time_point deadline, const std::size_t request_bytes_sent)
     -> ExchangeResult {
     std::array<std::byte, sizeof(std::uint32_t)> size_bytes{};
-    if (auto received = receive_exact(socket.get(), size_bytes, deadline); !received) {
+    if (auto received = receive_exact(connection, size_bytes, deadline); !received) {
         return ExchangeFailure{received.error(), request_bytes_sent};
     }
     const auto frame_size = static_cast<std::size_t>(load_u32(size_bytes));
@@ -254,7 +313,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     std::vector<std::byte> frame(frame_size);
     std::ranges::copy(size_bytes, frame.begin());
     if (auto received =
-            receive_exact(socket.get(), std::span<std::byte>{frame}.subspan(size_bytes.size()), deadline);
+            receive_exact(connection, std::span<std::byte>{frame}.subspan(size_bytes.size()), deadline);
         !received) {
         return ExchangeFailure{received.error(), request_bytes_sent};
     }
@@ -271,21 +330,21 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
                          .value = {decoded->frame.value.begin(), decoded->frame.value.end()}};
 }
 
-[[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
+[[nodiscard]] auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
                             const ClientConfig& config, const Clock::time_point deadline)
     -> ExchangeResult {
-    auto sent = send_frame(socket.get(), request, deadline);
+    auto sent = send_frame(connection, request, deadline);
     if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
         return *failure;
     }
     const auto request_bytes_sent = std::get<std::size_t>(sent);
-    return receive_response(socket, config, deadline, request_bytes_sent);
+    return receive_response(connection, config, deadline, request_bytes_sent);
 }
 
-[[nodiscard]] auto exchange(Socket& socket, const std::span<const std::byte> request,
+[[nodiscard]] auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
                             const ClientConfig& config) -> ExchangeResult {
     const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
-    return exchange(socket, request, config, deadline);
+    return exchange(connection, request, config, deadline);
 }
 
 [[nodiscard]] auto category_for(const ErrorCode code) -> std::string {
@@ -447,24 +506,6 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return server::RequestOpcode::get;
 }
 
-struct WorkerConnection {
-    explicit WorkerConnection(const std::uint32_t index) : worker(index) {
-        input.reserve(64U * 1024U);
-    }
-
-    void reset() noexcept {
-        socket.reset();
-        input.clear();
-        input_offset = 0;
-    }
-
-    std::uint32_t worker{};
-    std::mutex mutex;
-    Socket socket;
-    std::vector<std::byte> input;
-    std::size_t input_offset{};
-};
-
 [[nodiscard]] auto receive_buffered_response(WorkerConnection& connection, const ClientConfig& config,
                                              const Clock::time_point deadline,
                                              const std::size_t request_bytes_sent) -> ExchangeResult {
@@ -508,6 +549,26 @@ struct WorkerConnection {
             connection.input_offset = 0;
         }
         std::array<std::byte, 64U * 1024U> chunk;
+        if (connection.tls) {
+            auto read = connection.tls->read(chunk.data(), chunk.size());
+            if (!read) {
+                return ExchangeFailure{read.error(), request_bytes_sent};
+            }
+            if (read->kind == server::TlsIoKind::would_block) {
+                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                if (ready) {
+                    continue;
+                }
+                return ExchangeFailure{ready.error(), request_bytes_sent};
+            }
+            if (read->kind == server::TlsIoKind::closed) {
+                return ExchangeFailure{{ErrorCode::io_error, "server closed the TLS connection"},
+                                       request_bytes_sent};
+            }
+            connection.input.insert(connection.input.end(), chunk.begin(),
+                                    chunk.begin() + static_cast<std::ptrdiff_t>(read->bytes));
+            continue;
+        }
         const auto count = ::recv(connection.socket.get(), chunk.data(), chunk.size(), 0);
         if (count > 0) {
             connection.input.insert(connection.input.end(), chunk.begin(),
@@ -549,6 +610,23 @@ class Client::Impl final {
             config_.maximum_frame_bytes > server::kMaxFrameBytes || config_.maximum_pipeline_requests == 0 ||
             config_.maximum_pipeline_bytes < server::kRequestHeaderBytes) {
             return fail(ErrorCode::invalid_argument, "client configuration is outside protocol limits");
+        }
+        if (config_.tls.enable) {
+            server::ClientTlsConfig tls_config{
+                .enable = true,
+                .ca_file = config_.tls.ca_file,
+                .certificate_file = config_.tls.cert_file,
+                .private_key_file = config_.tls.key_file,
+                .server_name = config_.tls.server_name.empty() ? config_.host : config_.tls.server_name,
+                .insecure_skip_verify = config_.tls.insecure_skip_verify,
+                .handshake_timeout_ms = config_.connect_timeout_ms,
+            };
+            auto context = server::TlsContext::create_client(tls_config);
+            if (!context) {
+                return unexpected(context.error());
+            }
+            tls_context_ = std::move(*context);
+            tls_server_name_ = tls_config.server_name;
         }
         auto first = std::make_unique<WorkerConnection>(0);
         auto discovered = bootstrap(*first, std::nullopt);
@@ -635,7 +713,7 @@ class Client::Impl final {
                     {ErrorCode::record_too_large, "request exceeds the configured frame limit"}, operation,
                     request_id, worker, routing_epoch_, 0, std::nullopt, true, false));
             }
-            auto result = exchange(connection.socket, *encoded, config_, *deadline);
+            auto result = exchange(connection, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 connection.reset();
                 if (failure->request_bytes_sent == 0) {
@@ -783,7 +861,7 @@ class Client::Impl final {
             }
         };
 
-        auto sent = send_frame(connection.socket.get(), output, deadline);
+        auto sent = send_frame(connection, output, deadline);
         if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
             connection.reset();
             mark_unresolved(0, failure->error, failure->request_bytes_sent);
@@ -973,12 +1051,20 @@ class Client::Impl final {
         }
         connection.reset();
         connection.socket = std::move(*opened);
+        if (tls_context_) {
+            auto session = tls_context_->connect_socket(connection.socket.get(), tls_server_name_);
+            if (!session) {
+                connection.reset();
+                return unexpected(session.error());
+            }
+            connection.tls = std::move(*session);
+        }
         const auto init_id = next_request_id();
         auto init = server::encode_request({.opcode = server::RequestOpcode::init, .request_id = init_id});
         if (!init) {
             return unexpected(init.error());
         }
-        auto initialized = exchange(connection.socket, *init, config_);
+        auto initialized = exchange(connection, *init, config_);
         if (const auto* failure = std::get_if<ExchangeFailure>(&initialized)) {
             connection.reset();
             return unexpected(failure->error);
@@ -1006,7 +1092,7 @@ class Client::Impl final {
         if (!bind) {
             return unexpected(bind.error());
         }
-        auto bound = exchange(connection.socket, *bind, config_);
+        auto bound = exchange(connection, *bind, config_);
         if (const auto* failure = std::get_if<ExchangeFailure>(&bound)) {
             connection.reset();
             return unexpected(failure->error);
@@ -1071,7 +1157,7 @@ class Client::Impl final {
                     {ErrorCode::record_too_large, "request exceeds the configured frame limit"}, operation,
                     request_id, worker, routing_epoch_));
             }
-            auto result = exchange(connection.socket, *encoded, config_, *deadline);
+            auto result = exchange(connection, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
                 last_error = enrich_error(failure->error, operation, request_id, worker, routing_epoch_,
                                           failure->request_bytes_sent);
@@ -1134,6 +1220,8 @@ class Client::Impl final {
     }
 
     ClientConfig config_;
+    std::shared_ptr<server::TlsContext> tls_context_{};
+    std::string tls_server_name_{};
     std::vector<std::unique_ptr<WorkerConnection>> connections_;
     std::uint32_t worker_count_{};
     std::uint64_t routing_epoch_{};

@@ -6,9 +6,11 @@ transient `unavailable` reconnects while routing metadata is stable), and preser
 mutation outcomes. Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
-**Security posture:** cleartext TCP, no authentication. Use loopback / private network / sidecar
-until the secure TLS+mTLS profile ships
-([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL).
+**Security posture:** cleartext TCP by default (no authentication). Opt-in TLS 1.3 via
+`tls => 1` with `tls_ca` / `ca_file`, `cert_file` / `key_file` (mTLS), `server_name`, and
+`insecure_skip_verify` (lab only). Requires `IO::Socket::SSL`; if missing, TLS requests fail closed.
+Hostname/SNI verification is on by default. Use loopback / private network / sidecar for cleartext
+([security roadmap](../../docs/security/roadmap.md); OpenBSD uses LibreSSL on the daemon).
 
 License: BSD-3-Clause. Requires Perl ≥ 5.32.
 

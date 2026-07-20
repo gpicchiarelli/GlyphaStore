@@ -137,6 +137,35 @@ glyphastore_enable_hardening(glyphastore_wire)
 glyphastore_enable_ipo(glyphastore_wire)
 set_target_properties(glyphastore_wire PROPERTIES FOLDER "Libraries")
 
+add_library(glyphastore_tls_layer
+    src/server/tls.cpp
+)
+add_library(GlyphaStore::tls_layer ALIAS glyphastore_tls_layer)
+set_target_properties(glyphastore_tls_layer PROPERTIES EXPORT_NAME tls_layer)
+target_compile_features(glyphastore_tls_layer PUBLIC cxx_std_23)
+target_include_directories(glyphastore_tls_layer
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_tls_layer
+    PUBLIC GlyphaStore::core
+    PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
+)
+if(GLYPHASTORE_TLS_ENABLED)
+    target_compile_definitions(glyphastore_tls_layer
+        PUBLIC GLYPHASTORE_HAS_TLS=1
+        PRIVATE "GLYPHASTORE_TLS_BACKEND_NAME=\"${GLYPHASTORE_TLS_BACKEND}\""
+    )
+    target_link_libraries(glyphastore_tls_layer PUBLIC GlyphaStore::tls)
+else()
+    target_compile_definitions(glyphastore_tls_layer PUBLIC GLYPHASTORE_HAS_TLS=0)
+endif()
+glyphastore_set_warnings(glyphastore_tls_layer)
+glyphastore_enable_hardening(glyphastore_tls_layer)
+glyphastore_enable_ipo(glyphastore_tls_layer)
+set_target_properties(glyphastore_tls_layer PROPERTIES FOLDER "Libraries")
+
 add_library(glyphastore_client
     src/client/client.cpp
 )
@@ -149,7 +178,7 @@ target_include_directories(glyphastore_client
         $<INSTALL_INTERFACE:include>
 )
 target_link_libraries(glyphastore_client
-    PRIVATE GlyphaStore::wire $<BUILD_INTERFACE:glyphastore_project_options>
+    PRIVATE GlyphaStore::wire GlyphaStore::tls_layer $<BUILD_INTERFACE:glyphastore_project_options>
 )
 glyphastore_set_warnings(glyphastore_client)
 glyphastore_enable_hardening(glyphastore_client)
@@ -172,7 +201,6 @@ add_library(glyphastore_server_core
     src/server/server.cpp
     src/server/socket.cpp
     src/server/thread_affinity.cpp
-    src/server/tls.cpp
     src/server/wakeup.cpp
     ${GLYPHASTORE_POLLER_SOURCE}
 )
@@ -187,18 +215,9 @@ target_include_directories(glyphastore_server_core
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
 target_link_libraries(glyphastore_server_core
-    PUBLIC GlyphaStore::core GlyphaStore::wire
+    PUBLIC GlyphaStore::core GlyphaStore::wire GlyphaStore::tls_layer
     PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
 )
-if(GLYPHASTORE_TLS_ENABLED)
-    target_compile_definitions(glyphastore_server_core
-        PUBLIC GLYPHASTORE_HAS_TLS=1
-        PRIVATE "GLYPHASTORE_TLS_BACKEND_NAME=\"${GLYPHASTORE_TLS_BACKEND}\""
-    )
-    target_link_libraries(glyphastore_server_core PRIVATE GlyphaStore::tls)
-else()
-    target_compile_definitions(glyphastore_server_core PUBLIC GLYPHASTORE_HAS_TLS=0)
-endif()
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
 glyphastore_enable_ipo(glyphastore_server_core)
@@ -241,6 +260,7 @@ if(BUILD_TESTING)
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/client_tests.cpp
+        tests/unit/client_tls_tests.cpp
         tests/unit/durable_flush_coordinator_tests.cpp
         tests/unit/record_tests.cpp
         tests/unit/resource_limits_tests.cpp
@@ -592,7 +612,7 @@ endif()
 
 glyphastore_add_xcode_project_files()
 
-install(TARGETS glyphastore_core glyphastore_wire glyphastore_client
+install(TARGETS glyphastore_core glyphastore_wire glyphastore_tls_layer glyphastore_client
     EXPORT GlyphaStoreTargets
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT Runtime
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Runtime NAMELINK_COMPONENT Development

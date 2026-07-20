@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import ssl
+import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -25,6 +28,7 @@ from glyphastore import (  # noqa: E402
     PipelineRequest,
     TransportError,
 )
+from glyphastore.client import build_ssl_context  # noqa: E402
 from glyphastore.protocol import (  # noqa: E402
     Opcode,
     Status,
@@ -44,11 +48,13 @@ class FakeServer:
         disconnect_on_put: bool = False,
         internal_error_on_put: bool = False,
         stall_on_get: bool = False,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self._worker_count = worker_count
         self._disconnect_on_put = disconnect_on_put
         self._internal_error_on_put = internal_error_on_put
         self._stall_on_get = stall_on_get
+        self._ssl_context = ssl_context
         self._values: dict[bytes, bytes] = {}
         self._values_lock = threading.Lock()
         self._listener = socket.socket()
@@ -106,6 +112,12 @@ class FakeServer:
                     continue
                 except OSError:
                     break
+                if self._ssl_context is not None:
+                    try:
+                        connection = self._ssl_context.wrap_socket(connection, server_side=True)
+                    except ssl.SSLError:
+                        connection.close()
+                        continue
                 thread = threading.Thread(
                     target=self._serve, args=(connection,), daemon=True
                 )
@@ -480,6 +492,78 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
             result = await client.put(b"key", b"value")
             self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
         server.join()
+
+
+class ClientTlsTests(unittest.TestCase):
+    def test_tls_config_requires_cert_and_key_pair(self) -> None:
+        with self.assertRaises(InvalidArgument):
+            Client.connect(
+                ClientConfig(port=1, tls=True, cert_file="only-cert.pem")
+            )
+
+    def test_build_ssl_context_requires_tls_1_3(self) -> None:
+        context = build_ssl_context(
+            ClientConfig(tls=True, insecure_skip_verify=True)
+        )
+        self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_3)
+        self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_3)
+        self.assertEqual(context.verify_mode, ssl.CERT_NONE)
+
+    def test_sync_and_async_tls_ping(self) -> None:
+        material = _self_signed_material()
+        if material is None:
+            self.skipTest("openssl CLI unavailable for ephemeral certs")
+        cert_path, key_path = material
+        server_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_context.minimum_version = ssl.TLSVersion.TLSv1_3
+        server_context.load_cert_chain(certfile=cert_path, keyfile=key_path)
+        server = FakeServer(ssl_context=server_context)
+        config = ClientConfig(
+            port=server.port,
+            tls=True,
+            tls_ca=cert_path,
+            server_name="localhost",
+        )
+        with Client.connect(config) as client:
+            self.assertEqual(client.ping(b"tls-ping"), b"tls-ping")
+
+        async def _async_ping() -> None:
+            async with await AsyncClient.connect(config) as async_client:
+                self.assertEqual(await async_client.ping(b"tls-async"), b"tls-async")
+
+        asyncio.run(_async_ping())
+        server.join()
+
+
+def _self_signed_material() -> tuple[str, str] | None:
+    directory = tempfile.mkdtemp(prefix="glyphastore-py-tls-")
+    cert_path = str(Path(directory) / "server.crt")
+    key_path = str(Path(directory) / "server.key")
+    command = [
+        "openssl",
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        key_path,
+        "-out",
+        cert_path,
+        "-days",
+        "1",
+        "-subj",
+        "/CN=localhost",
+    ]
+    try:
+        completed = subprocess.run(
+            command, check=False, capture_output=True, timeout=30
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if completed.returncode != 0:
+        return None
+    return cert_path, key_path
 
 
 if __name__ == "__main__":

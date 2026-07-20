@@ -7,6 +7,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <string_view>
 
 namespace glyphastore::server {
 
@@ -29,6 +30,26 @@ struct TlsConfig {
 };
 
 [[nodiscard]] auto validate_tls_config(const TlsConfig& config) -> Status;
+
+// Client-side TLS connect settings (ADR 0020). Empty paths mean "not configured".
+// When enable is true, hostname/SNI verification is on unless insecure_skip_verify
+// (lab escape only). Optional certificate_file+private_key_file enable mTLS.
+struct ClientTlsConfig {
+    bool enable{false};
+    std::filesystem::path ca_file{};
+    std::filesystem::path certificate_file{};
+    std::filesystem::path private_key_file{};
+    // SNI / hostname verification name. Empty uses the TCP peer host string.
+    std::string server_name{};
+    bool insecure_skip_verify{false};
+    std::uint32_t handshake_timeout_ms{10'000};
+
+    [[nodiscard]] auto requested() const noexcept -> bool {
+        return enable;
+    }
+};
+
+[[nodiscard]] auto validate_client_tls_config(const ClientTlsConfig& config) -> Status;
 
 [[nodiscard]] constexpr auto tls_build_enabled() noexcept -> bool {
 #if defined(GLYPHASTORE_HAS_TLS) && GLYPHASTORE_HAS_TLS
@@ -57,6 +78,8 @@ class TlsSession;
 class TlsContext final {
   public:
     [[nodiscard]] static auto create(const TlsConfig& config) -> Result<std::shared_ptr<TlsContext>>;
+    [[nodiscard]] static auto create_client(const ClientTlsConfig& config)
+        -> Result<std::shared_ptr<TlsContext>>;
     ~TlsContext();
 
     TlsContext(const TlsContext&) = delete;
@@ -68,8 +91,16 @@ class TlsContext final {
     // On success the session owns the TLS state; the caller retains SocketHandle ownership.
     [[nodiscard]] auto accept_socket(int descriptor) const -> Result<std::unique_ptr<TlsSession>>;
 
+    // Performs a client handshake on an already-connected, non-blocking socket.
+    // server_name is used for SNI and hostname verification (unless insecure).
+    [[nodiscard]] auto connect_socket(int descriptor, std::string_view server_name) const
+        -> Result<std::unique_ptr<TlsSession>>;
+
     [[nodiscard]] auto mtls_enabled() const noexcept -> bool {
         return mtls_enabled_;
+    }
+    [[nodiscard]] auto client_mode() const noexcept -> bool {
+        return client_mode_;
     }
 
   private:
@@ -78,6 +109,8 @@ class TlsContext final {
     struct Impl;
     std::unique_ptr<Impl> impl_;
     bool mtls_enabled_{};
+    bool client_mode_{};
+    bool insecure_skip_verify_{};
     std::uint32_t handshake_timeout_ms_{10'000};
 };
 

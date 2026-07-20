@@ -52,6 +52,12 @@ sub connect {
         maximum_frame_bytes       => $config{maximum_frame_bytes} // MAX_FRAME_BYTES,
         maximum_pipeline_requests => $config{maximum_pipeline_requests} // 256,
         maximum_pipeline_bytes    => $config{maximum_pipeline_bytes} // 1024 * 1024,
+        tls                       => $config{tls} ? 1 : 0,
+        tls_ca                    => $config{tls_ca} // $config{ca_file},
+        cert_file                 => $config{cert_file},
+        key_file                  => $config{key_file},
+        server_name               => $config{server_name},
+        insecure_skip_verify      => $config{insecure_skip_verify} ? 1 : 0,
         worker_count              => 0,
         routing_epoch             => 0,
         next_request_id           => 1,
@@ -92,6 +98,19 @@ sub _validate_config {
         || $self->{maximum_frame_bytes} > MAX_FRAME_BYTES
         || $self->{maximum_pipeline_requests} < 1
         || $self->{maximum_pipeline_bytes} < 40;
+    my $has_cert = defined($self->{cert_file}) && length($self->{cert_file});
+    my $has_key  = defined($self->{key_file})  && length($self->{key_file});
+    if ($self->{tls} && ($has_cert xor $has_key)) {
+        _throw('invalid_argument', 'TLS mTLS requires both cert_file and key_file (fail closed)');
+    }
+    if (($has_cert || $has_key) && !$self->{tls}) {
+        _throw('invalid_argument', 'cert_file/key_file require tls => 1 (fail closed)');
+    }
+    if ($self->{tls}) {
+        eval { require IO::Socket::SSL; 1 }
+            or _throw('invalid_argument',
+            'TLS was requested but IO::Socket::SSL is not installed (fail closed)');
+    }
     return;
 }
 
@@ -162,13 +181,50 @@ sub DESTROY {
 
 sub _open_socket {
     my ($self) = @_;
-    my $socket = IO::Socket::INET->new(
-        PeerAddr => $self->{host},
-        PeerPort => $self->{port},
-        Proto    => 'tcp',
-        Timeout  => $self->{connect_timeout},
+    if (!$self->{tls}) {
+        my $socket = IO::Socket::INET->new(
+            PeerAddr => $self->{host},
+            PeerPort => $self->{port},
+            Proto    => 'tcp',
+            Timeout  => $self->{connect_timeout},
+        );
+        _throw('unavailable', "could not connect to GlyphaStore: $!") if !$socket;
+        setsockopt($socket, IPPROTO_TCP, TCP_NODELAY, pack('i', 1));
+        $socket->blocking(0);
+        return $socket;
+    }
+
+    require IO::Socket::SSL;
+    my $server_name
+        = (defined($self->{server_name}) && length($self->{server_name}))
+        ? $self->{server_name}
+        : $self->{host};
+    my %ssl_args = (
+        PeerHost        => $self->{host},
+        PeerPort        => $self->{port},
+        Proto           => 'tcp',
+        Timeout         => $self->{connect_timeout},
+        SSL_version     => 'TLSv1_3',
+        SSL_hostname    => $server_name,
+        SSL_verifycn_name => $server_name,
     );
-    _throw('unavailable', "could not connect to GlyphaStore: $!") if !$socket;
+    if ($self->{insecure_skip_verify}) {
+        $ssl_args{SSL_verify_mode} = IO::Socket::SSL::SSL_VERIFY_NONE();
+    }
+    else {
+        $ssl_args{SSL_verify_mode} = IO::Socket::SSL::SSL_VERIFY_PEER();
+        $ssl_args{SSL_ca_file} = $self->{tls_ca}
+            if defined($self->{tls_ca}) && length($self->{tls_ca});
+    }
+    if (defined($self->{cert_file}) && length($self->{cert_file})) {
+        $ssl_args{SSL_cert_file} = $self->{cert_file};
+        $ssl_args{SSL_key_file}  = $self->{key_file};
+    }
+    my $socket = IO::Socket::SSL->new(%ssl_args);
+    if (!$socket) {
+        my $err = $IO::Socket::SSL::SSL_ERROR // $!;
+        _throw('unavailable', "could not connect to GlyphaStore over TLS: $err");
+    }
     setsockopt($socket, IPPROTO_TCP, TCP_NODELAY, pack('i', 1));
     $socket->blocking(0);
     return $socket;
@@ -1084,6 +1140,7 @@ C<maximum_frame_bytes>, C<maximum_pipeline_requests>, and C<maximum_pipeline_byt
 
 L<GlyphaStore::Protocol>, L<GlyphaStore::Error>, L<GlyphaStore::SendFailure>, and
 core modules: C<Errno>, C<IO::Select>, C<IO::Socket::INET>, C<Socket>, C<Time::HiRes>.
+Optional TLS requires C<IO::Socket::SSL> (fail closed if C<tls =E<gt> 1> without it).
 
 =head1 INCOMPATIBILITIES
 

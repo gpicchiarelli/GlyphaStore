@@ -10,7 +10,9 @@ categories, monotonic request deadlines, at-most-one automatic retry, and
 `ExecuteBatch` groups by Worker, overlaps goroutines, and restores caller order.
 
 Module: `github.com/gpicchiarelli/GlyphaStore/sdk/go`  
-License: BSD-3-Clause. Requires Go ≥ 1.22.
+Version: `client.Version` (must match repository `VERSION`)  
+License: BSD-3-Clause. Requires Go ≥ 1.22.  
+Packaging: [PACKAGING.md](PACKAGING.md)
 
 ```go
 package main
@@ -96,6 +98,9 @@ cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
 - Prefer pipeline depth around **8–32** pairs for peak Go throughput; depth 128 often regresses
   on client CPU while raw TCP continues to climb
 
-Treat the server as loopback / private network / sidecar until TLS and authentication exist
+Treat the server as loopback / private network / sidecar for cleartext. Opt-in TLS 1.3 is
+available via `Config.TLS` (`Enable`, `CAFile`, `CertFile`/`KeyFile` for mTLS, `ServerName`,
+`InsecureSkipVerify` lab escape only). Hostname/SNI verification is on by default; there is no
+silent cleartext fallback when TLS is requested
 ([security roadmap](../../docs/security/roadmap.md); ADRs 0020–0022). OpenBSD is a first-class
-target (LibreSSL).
+target (LibreSSL on the daemon).

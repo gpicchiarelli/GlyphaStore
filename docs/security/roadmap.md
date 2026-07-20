@@ -105,12 +105,12 @@ security design.
 | 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
 | 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
 
-**Next:** Finish Phase 2 (SDK TLS train, dual-listener polish, OpenBSD CI gate), then Phase 3 mTLS
-principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
+**Next:** Finish Phase 2 (dual-listener polish, OpenBSD CI gate, interop matrix 2.4), then Phase 3
+mTLS principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
 
 ---
 
-## Phase 2 — Transport security (TLS) — **in progress (daemon scaffold 2026-07-20)**
+## Phase 2 — Transport security (TLS) — **in progress (daemon + SDK TLS 2026-07-20)**
 
 **Goal:** Confidentiality and integrity of the byte stream; optional client identity via certificates.
 
@@ -118,7 +118,7 @@ principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
 | --- | --- | --- |
 | 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | **partial** — `TlsContext` + `--tls-cert`/`--tls-key`/`--tls-client-ca`; TLS 1.3-only; CMake `GLYPHASTORE_ENABLE_TLS` (LibreSSL on OpenBSD, OpenSSL 3.x elsewhere) |
 | 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **partial** — TLS flags make `--port` TLS-only (no cleartext fallback); dual cleartext+TLS listeners in one process still TODO |
-| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | open |
+| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **partial** — Go / C++ / Python / Perl clients expose opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); Ruby Phase 3 follows the same train; fail closed; no silent cleartext fallback |
 | 2.4 | Interop matrix: every SDK PUT→GET over TLS | open |
 | 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | open |
 

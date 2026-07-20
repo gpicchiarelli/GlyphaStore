@@ -3,13 +3,14 @@
 Status: normative for the current experimental C++ client
 Applies to: `GlyphaStore::client`, wire protocol v2
 Owner: networking maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-20
 
 ## Purpose and ownership
 
 `glyphastore::client::Client` is the reference implementation of wire protocol v2. It is separate
 from the embedded Store and server runtime: applications link `GlyphaStore::client`, while the
-client links only the small `GlyphaStore::wire` codec library.
+client links the small `GlyphaStore::wire` codec library and (when TLS is enabled at build time)
+`GlyphaStore::tls_layer`.
 
 `Client::connect()` performs `INIT`, records the server's Worker count and routing epoch, then opens
 and binds exactly one TCP connection for every Worker. The client routes the complete binary key
@@ -19,8 +20,11 @@ Worker has either one synchronous request or one ordered pipeline in flight thro
 instance.
 
 The API is synchronous and supports explicitly bounded pipelines. It deliberately does not promise
-asynchronous completion, connection pooling beyond one connection per Worker, TLS, authentication,
-or automatic topology rebalance.
+asynchronous completion, connection pooling beyond one connection per Worker, authentication tokens,
+or automatic topology rebalance. Opt-in TLS 1.3 is available via `ClientConfig::tls`
+(`TlsOptions`: `enable`, `ca_file`, `cert_file`/`key_file` for mTLS, `server_name`,
+`insecure_skip_verify` lab escape). Hostname/SNI verification is on by default; TLS requests fail
+closed with no cleartext fallback ([ADR 0020](../adr/0020-tls-outer-transport.md)).
 
 ## Basic use
 
@@ -179,10 +183,10 @@ contract: zero-byte final send failures are `rejected`, and a successful mutatio
 non-empty value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may
 differ by language, but observable request/response semantics must not.
 
-Prioritized remaining client work (ops metrics, TLS, Ruby Phase 1, etc.) lives in
+Prioritized remaining client work (ops metrics, Ruby TLS Phase 3, etc.) lives in
 [SDK roadmap](../architecture/sdk-roadmap.md) and [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md).
-Product blockers such as TLS and metrics are listed there and in
-[production readiness](../production-readiness.md).
+Secure-profile follow-ons (interop matrix, dual listeners, authz) are tracked in
+[security roadmap](../security/roadmap.md) and [production readiness](../production-readiness.md).
 
 | Runtime | Intended public shape | Concurrency model |
 |---|---|---|

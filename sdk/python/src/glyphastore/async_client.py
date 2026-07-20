@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import ssl
 import time
 from collections.abc import Sequence
 from typing import Final
@@ -25,6 +26,7 @@ from .client import (
     TransportError,
     Unavailable,
     _enrich,
+    build_ssl_context,
 )
 from .protocol import (
     MAX_FRAME_BYTES,
@@ -118,16 +120,10 @@ class AsyncClient:
 
     @staticmethod
     def _validate_config(config: ClientConfig) -> None:
-        if (
-            not config.host
-            or not 0 < config.port <= 65_535
-            or config.connect_timeout <= 0
-            or config.request_timeout <= 0
-            or not RESPONSE_HEADER_BYTES <= config.maximum_frame_bytes <= MAX_FRAME_BYTES
-            or config.maximum_pipeline_requests <= 0
-            or config.maximum_pipeline_bytes < 40
-        ):
-            raise InvalidArgument("client configuration is outside protocol limits")
+        # Keep sync/async validation identical (including TLS fail-closed rules).
+        from .client import Client
+
+        Client._validate_config(config)
 
     @property
     def worker_count(self) -> int:
@@ -375,11 +371,21 @@ class AsyncClient:
 
     async def _open_stream(self) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         try:
+            ssl_context = None
+            server_hostname = None
+            if self._config.tls:
+                ssl_context = build_ssl_context(self._config)
+                server_hostname = self._config.server_name or self._config.host
             return await asyncio.wait_for(
-                asyncio.open_connection(self._config.host, self._config.port),
+                asyncio.open_connection(
+                    self._config.host,
+                    self._config.port,
+                    ssl=ssl_context,
+                    server_hostname=server_hostname,
+                ),
                 timeout=self._config.connect_timeout,
             )
-        except (OSError, asyncio.TimeoutError) as error:
+        except (OSError, asyncio.TimeoutError, ssl.SSLError) as error:
             raise Unavailable(f"could not connect to GlyphaStore: {error}") from error
 
     async def _bootstrap(

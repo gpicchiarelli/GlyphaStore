@@ -2,6 +2,7 @@ use v5.32;
 use strict;
 use warnings;
 use FindBin;
+use File::Temp;
 use IO::Select;
 use IO::Socket::INET;
 use POSIX qw(_exit);
@@ -350,5 +351,103 @@ $client = GlyphaStore::Client->connect(
 }
 $client->close;
 waitpid($pid, 0);
+
+{
+    my $err;
+    eval {
+        GlyphaStore::Client->connect(port => 1, tls => 1, cert_file => 'only-cert.pem');
+        1;
+    } or $err = $@;
+    ok(ref($err) eq 'GlyphaStore::Error' && $err->category eq 'invalid_argument',
+        'TLS mTLS requires both cert_file and key_file');
+}
+
+SKIP: {
+    eval { require IO::Socket::SSL; 1 }
+        or skip 'IO::Socket::SSL not installed', 1;
+    my $tmpdir = File::Temp::tempdir(CLEANUP => 1);
+    my $cert = "$tmpdir/server.crt";
+    my $key  = "$tmpdir/server.key";
+    my $rc = system(
+        "openssl req -x509 -newkey rsa:2048 -nodes -keyout '$key' -out '$cert' -days 1 -subj '/CN=localhost' >/dev/null 2>&1"
+    );
+    skip 'openssl CLI unavailable for ephemeral certs', 1 if $rc != 0;
+
+    my $listener = IO::Socket::INET->new(
+        LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp',
+        Listen => 1, ReuseAddr => 1)
+        or die "listen failed: $!";
+    my $tls_port = $listener->sockport;
+    my $tls_pid = fork();
+    die "fork failed: $!" if !defined($tls_pid);
+    if (!$tls_pid) {
+        require IO::Socket::SSL;
+        my $plain = $listener->accept;
+        close($listener);
+        my $ssl = IO::Socket::SSL->start_SSL(
+            $plain,
+            SSL_server    => 1,
+            SSL_cert_file => $cert,
+            SSL_key_file  => $key,
+            SSL_version   => 'TLSv1_3',
+        ) or _exit(1);
+        my $bound;
+        eval {
+            while (1) {
+                my $request = receive_request($ssl);
+                my $opcode = $request->{opcode};
+                if ($opcode == OP_INIT) {
+                    send_response(
+                        $ssl,
+                        status        => STATUS_OK,
+                        request_id    => $request->{request_id},
+                        owner_worker  => 0,
+                        worker_count  => 1,
+                        routing_epoch => 9,
+                        value         => 'GlyphaStore/2'
+                    );
+                }
+                elsif ($opcode == OP_BIND_WORKER) {
+                    $bound = $request->{target_worker};
+                    send_response(
+                        $ssl,
+                        status        => STATUS_OK,
+                        request_id    => $request->{request_id},
+                        owner_worker  => $request->{target_worker},
+                        worker_count  => 1,
+                        routing_epoch => 9
+                    );
+                }
+                elsif ($opcode == OP_PING) {
+                    send_response(
+                        $ssl,
+                        status        => STATUS_OK,
+                        request_id    => $request->{request_id},
+                        owner_worker  => $bound // 0,
+                        worker_count  => 1,
+                        routing_epoch => 9,
+                        value         => $request->{value}
+                    );
+                }
+                else {
+                    last;
+                }
+            }
+        };
+        close($ssl);
+        _exit(0);
+    }
+    close($listener);
+    my $tls_client = GlyphaStore::Client->connect(
+        host        => '127.0.0.1',
+        port        => $tls_port,
+        tls         => 1,
+        tls_ca      => $cert,
+        server_name => 'localhost',
+    );
+    is($tls_client->ping('tls-ping'), 'tls-ping', 'TLS client ping over IO::Socket::SSL');
+    $tls_client->close;
+    waitpid($tls_pid, 0);
+}
 
 done_testing;

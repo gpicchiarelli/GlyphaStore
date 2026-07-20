@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import socket
+import ssl
 import threading
 import time
 from collections.abc import Sequence
@@ -197,6 +198,35 @@ class ClientConfig:
     maximum_frame_bytes: int = MAX_FRAME_BYTES
     maximum_pipeline_requests: int = 256
     maximum_pipeline_bytes: int = 1024 * 1024
+    # Opt-in TLS 1.3 (ADR 0020). Cleartext remains the default. When tls is True the
+    # client fails closed (no cleartext fallback). Hostname/SNI verification is on
+    # unless insecure_skip_verify is set (lab escape only).
+    tls: bool = False
+    tls_ca: str | None = None
+    cert_file: str | None = None
+    key_file: str | None = None
+    server_name: str | None = None
+    insecure_skip_verify: bool = False
+
+
+def build_ssl_context(config: ClientConfig) -> ssl.SSLContext:
+    """Build a TLS 1.3 client context from ClientConfig (sync and async)."""
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_3
+    context.maximum_version = ssl.TLSVersion.TLSv1_3
+    if config.insecure_skip_verify:
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+    else:
+        context.check_hostname = True
+        context.verify_mode = ssl.CERT_REQUIRED
+        if config.tls_ca:
+            context.load_verify_locations(cafile=config.tls_ca)
+        else:
+            context.load_default_certs()
+    if config.cert_file and config.key_file:
+        context.load_cert_chain(certfile=config.cert_file, keyfile=config.key_file)
+    return context
 
 
 class _SendFailure(Exception):
@@ -286,6 +316,15 @@ class Client:
             or config.maximum_pipeline_bytes < 40
         ):
             raise InvalidArgument("client configuration is outside protocol limits")
+        has_cert = bool(config.cert_file)
+        has_key = bool(config.key_file)
+        if config.tls and has_cert != has_key:
+            raise InvalidArgument("TLS mTLS requires both cert_file and key_file (fail closed)")
+        if (has_cert or has_key) and not config.tls:
+            raise InvalidArgument("cert_file/key_file require tls=True (fail closed)")
+
+    def _ssl_context(self) -> ssl.SSLContext:
+        return build_ssl_context(self._config)
 
     @property
     def worker_count(self) -> int:
@@ -542,7 +581,14 @@ class Client:
                 (self._config.host, self._config.port), self._config.connect_timeout
             )
             opened.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            return opened
+            if not self._config.tls:
+                return opened
+            server_hostname = self._config.server_name or self._config.host
+            try:
+                return self._ssl_context().wrap_socket(opened, server_hostname=server_hostname)
+            except ssl.SSLError as error:
+                opened.close()
+                raise Unavailable(f"TLS handshake failed: {error}") from error
         except OSError as error:
             raise Unavailable(f"could not connect to GlyphaStore: {error}") from error
 

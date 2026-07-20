@@ -6,9 +6,13 @@
 package client
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -129,7 +133,97 @@ func validateConfig(cfg Config) error {
 		cfg.MaximumPipelineBytes < 40 {
 		return invalidArgument("client configuration is outside protocol limits")
 	}
+	if cfg.TLS.Enable {
+		hasCert := cfg.TLS.CertFile != ""
+		hasKey := cfg.TLS.KeyFile != ""
+		if hasCert != hasKey {
+			return invalidArgument("TLS mTLS requires both CertFile and KeyFile (fail closed)")
+		}
+	}
 	return nil
+}
+
+func (c *Client) dial() (net.Conn, error) {
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port)), c.cfg.ConnectTimeout)
+	if err != nil {
+		return nil, unavailable("could not connect to GlyphaStore: " + err.Error())
+	}
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	if !c.cfg.TLS.Enable {
+		return conn, nil
+	}
+	tlsConn, err := c.handshakeTLS(conn)
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
+	return tlsConn, nil
+}
+
+func (c *Client) handshakeTLS(conn net.Conn) (*tls.Conn, error) {
+	tlsCfg, err := buildTLSConfig(c.cfg)
+	if err != nil {
+		return nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(c.cfg.ConnectTimeout))
+	tlsConn := tls.Client(conn, tlsCfg)
+	if err := tlsConn.Handshake(); err != nil {
+		return nil, unavailable("TLS handshake failed: " + sanitizeTLSError(err))
+	}
+	_ = conn.SetDeadline(time.Time{})
+	state := tlsConn.ConnectionState()
+	if state.Version < tls.VersionTLS13 {
+		return nil, unavailable("TLS negotiation produced a version below TLS 1.3")
+	}
+	return tlsConn, nil
+}
+
+func buildTLSConfig(cfg Config) (*tls.Config, error) {
+	serverName := cfg.TLS.ServerName
+	if serverName == "" {
+		serverName = cfg.Host
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:         tls.VersionTLS13,
+		ServerName:         serverName,
+		InsecureSkipVerify: cfg.TLS.InsecureSkipVerify, //nolint:gosec // explicit lab escape
+	}
+	if cfg.TLS.CAFile != "" {
+		pem, err := os.ReadFile(cfg.TLS.CAFile)
+		if err != nil {
+			return nil, invalidArgument("cannot read TLS CA file")
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, invalidArgument("TLS CA file does not contain a usable certificate")
+		}
+		tlsCfg.RootCAs = pool
+	}
+	if cfg.TLS.CertFile != "" && cfg.TLS.KeyFile != "" {
+		cert, err := tls.LoadX509KeyPair(cfg.TLS.CertFile, cfg.TLS.KeyFile)
+		if err != nil {
+			return nil, invalidArgument("cannot load TLS client certificate/key pair")
+		}
+		tlsCfg.Certificates = []tls.Certificate{cert}
+	}
+	return tlsCfg, nil
+}
+
+func sanitizeTLSError(err error) string {
+	if err == nil {
+		return "unknown TLS error"
+	}
+	var certErr *tls.CertificateVerificationError
+	if errors.As(err, &certErr) {
+		return "certificate verification failed"
+	}
+	msg := err.Error()
+	if len(msg) > 200 {
+		return "TLS failure"
+	}
+	return msg
 }
 
 // WorkerCount returns the discovered Worker mesh size.
@@ -475,17 +569,6 @@ func (c *Client) nextRequestID() uint64 {
 			return current
 		}
 	}
-}
-
-func (c *Client) dial() (net.Conn, error) {
-	conn, err := net.DialTimeout("tcp", net.JoinHostPort(c.cfg.Host, strconv.Itoa(c.cfg.Port)), c.cfg.ConnectTimeout)
-	if err != nil {
-		return nil, unavailable("could not connect to GlyphaStore: " + err.Error())
-	}
-	if tcp, ok := conn.(*net.TCPConn); ok {
-		_ = tcp.SetNoDelay(true)
-	}
-	return conn, nil
 }
 
 func (c *Client) bootstrap(conn *connection, expected *[2]uint64) (uint32, uint64, error) {
