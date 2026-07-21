@@ -26,6 +26,7 @@ struct DaemonOptions {
     };
     bool show_help{};
     bool show_version{};
+    bool show_dump_config{};
     bool quiet{};
 };
 
@@ -36,6 +37,9 @@ using DaemonEnvironmentLookup =
 [[nodiscard]] auto daemon_option_specs() noexcept -> std::span<const cli::OptionSpec>;
 
 [[nodiscard]] auto storage_mode_name(StorageMode mode) noexcept -> std::string_view;
+
+// Stable ASCII dump of the fully resolved effective configuration (paths only for TLS files).
+[[nodiscard]] auto format_daemon_config_dump(const DaemonOptions& options) -> std::string;
 
 // Precedence: defaults < config file < environment < CLI.
 // --config / GLYPHASTORE_CONFIG select the file; the file cannot set config=.

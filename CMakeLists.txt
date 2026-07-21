@@ -510,6 +510,12 @@ if(BUILD_TESTING)
     set_tests_properties(glyphastore_cli_daemon_rejects_unknown_config_key
         PROPERTIES WILL_FAIL TRUE
     )
+    add_test(NAME glyphastore_cli_daemon_dump_config
+        COMMAND glyphastored --dump-config --port 0
+    )
+    set_tests_properties(glyphastore_cli_daemon_dump_config PROPERTIES
+        PASS_REGULAR_EXPRESSION "GlyphaStore/config.*port=0"
+    )
     set_tests_properties(
         glyphastore_cli_daemon_help
         glyphastore_cli_daemon_version
@@ -519,6 +525,7 @@ if(BUILD_TESTING)
         glyphastore_cli_daemon_rejects_zero_group_max_records
         glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
         glyphastore_cli_daemon_rejects_unknown_config_key
+        glyphastore_cli_daemon_dump_config
         glyphastore_cli_inspect_help
         glyphastore_cli_rebuild_help
         glyphastore_cli_rejects_invalid_workers

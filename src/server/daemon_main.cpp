@@ -56,6 +56,10 @@ int main(const int argc, char** argv) try {
         std::cout << program << ' ' << GLYPHASTORE_VERSION << '\n';
         return 0;
     }
+    if (arguments->show_dump_config) {
+        std::cout << glyphastore::server::format_daemon_config_dump(*arguments);
+        return 0;
+    }
 
     auto server = glyphastore::server::Server::create(arguments->server, arguments->store);
     if (!server) {

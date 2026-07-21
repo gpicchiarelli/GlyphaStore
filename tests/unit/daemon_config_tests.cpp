@@ -162,3 +162,42 @@ GLYPHA_TEST("daemon config GLYPHASTORE_CONFIG selects the file") {
     GLYPHA_REQUIRE(parsed.has_value());
     GLYPHA_REQUIRE(parsed->server.port == 4242);
 }
+
+GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "dump.conf";
+    write_file(config, "port = 1111\nworkers = 2\nquiet = true\n");
+    std::unordered_map<std::string, std::string> environment{{"GLYPHASTORE_PORT", "2222"}};
+    const auto getenv_fn = [&environment](const std::string_view name) -> std::optional<std::string> {
+        const auto found = environment.find(std::string{name});
+        if (found == environment.end()) {
+            return std::nullopt;
+        }
+        return found->second;
+    };
+    const auto config_arg = config.string();
+    const std::array arguments{"glyphastored", "--config", config_arg.c_str(), "--dump-config", "--port",
+                               "3333"};
+    const auto parsed = parse(arguments, getenv_fn);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->show_dump_config);
+    GLYPHA_REQUIRE(parsed->server.port == 3333);
+    GLYPHA_REQUIRE(parsed->server.worker_count == 2);
+    GLYPHA_REQUIRE(parsed->quiet);
+    const auto dump = glyphastore::server::format_daemon_config_dump(*parsed);
+    GLYPHA_REQUIRE(dump.starts_with("GlyphaStore/config\n"));
+    GLYPHA_REQUIRE(dump.find("port=3333\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("workers=2\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("quiet=true\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("bind=127.0.0.1\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("storage-mode=volatile\n") != std::string::npos);
+}
+
+GLYPHA_TEST("daemon dump-config cannot be set from a config file") {
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "bad-dump.conf";
+    write_file(config, "dump-config = true\n");
+    const auto result = glyphastore::server::load_daemon_config_file(config);
+    GLYPHA_REQUIRE(!result.has_value());
+    GLYPHA_REQUIRE(result.error().message.find("cannot set") != std::string::npos);
+}

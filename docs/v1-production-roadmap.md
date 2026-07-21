@@ -397,6 +397,8 @@ post-compaction no-gain detection.
   writes, flush/close the Store, and only then exit. Test SIGINT/SIGTERM during every phase.
 - Add liveness, readiness, structured logs, metrics, build/config dump, and an administrative
   diagnostic surface. Readiness must fail on sticky storage errors and during unsafe recovery.
+  Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented; histogram export
+  and structured logging remain open.
 - Add wire golden fixtures, reserved-bit validation, opcode-specific key/value/expiry constraints,
   stable error mapping, duplicate request-id guidance, reconnect semantics, and compatibility
   tests. Protocol versioning remains independent from persistence v1.

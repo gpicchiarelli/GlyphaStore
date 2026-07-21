@@ -19,6 +19,7 @@ enum OptionId : std::size_t {
     help,
     version,
     config,
+    dump_config,
     bind,
     port,
     maximum_connections,
@@ -60,6 +61,8 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{version, "version", 'V', cli::OptionArity::none, {}, "Show version information and exit"},
     cli::OptionSpec{config, "config", '\0', cli::OptionArity::required, "PATH",
                     "Load settings from PATH (defaults < file < env < CLI)"},
+    cli::OptionSpec{dump_config, "dump-config", '\0', cli::OptionArity::none, {},
+                    "Print the resolved effective configuration and exit without listening"},
     cli::OptionSpec{bind, "bind", 'b', cli::OptionArity::required, "IPv4",
                     "Bind to an IPv4 address (default: 127.0.0.1; non-loopback is "
                     "cleartext with no authentication — trusted networks only)"},
@@ -194,7 +197,7 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
     SettingMap settings;
     for (const auto& option : parsed.options) {
         const auto& spec = kOptionSpecs[option.id];
-        if (option.id == help || option.id == version || option.id == config) {
+        if (option.id == help || option.id == version || option.id == config || option.id == dump_config) {
             continue;
         }
         if (spec.arity == cli::OptionArity::none) {
@@ -559,7 +562,7 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
 
 [[nodiscard]] auto ingest_setting(SettingMap& settings, const std::string_view key,
                                   std::string value, const std::string_view where) -> Status {
-    if (key == "help" || key == "version" || key == "config") {
+    if (key == "help" || key == "version" || key == "config" || key == "dump-config") {
         return fail(ErrorCode::invalid_argument,
                     std::string{where} + " cannot set '" + std::string{key} + "'");
     }
@@ -597,6 +600,116 @@ auto storage_mode_name(const StorageMode mode) noexcept -> std::string_view {
         return "durable-group";
     }
     return "unknown";
+}
+
+namespace {
+
+[[nodiscard]] auto open_mode_name(const DurableOpenMode mode) noexcept -> std::string_view {
+    switch (mode) {
+    case DurableOpenMode::open_or_create:
+        return "open-or-create";
+    case DurableOpenMode::create_new:
+        return "create-new";
+    case DurableOpenMode::open_existing:
+        return "open-existing";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] auto maintenance_mode_name(const MaintenanceMode mode) noexcept -> std::string_view {
+    switch (mode) {
+    case MaintenanceMode::cooperative:
+        return "cooperative";
+    case MaintenanceMode::background:
+        return "background";
+    case MaintenanceMode::disabled:
+        return "disabled";
+    }
+    return "unknown";
+}
+
+} // namespace
+
+auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
+    const auto& group = options.store.storage_mode == StorageMode::durable_periodic &&
+                                options.store.durable_periodic.batch.has_value()
+                            ? *options.store.durable_periodic.batch
+                            : options.store.durable_group;
+    std::string out;
+    out.reserve(2048);
+    out += "GlyphaStore/config\n";
+    out += "bind=";
+    out += options.server.bind_address;
+    out += "\nport=";
+    out += std::to_string(options.server.port);
+    out += "\nworkers=";
+    out += std::to_string(options.server.worker_count);
+    out += "\nmax-connections=";
+    out += std::to_string(options.server.maximum_connections);
+    out += "\nhandoff-capacity=";
+    out += std::to_string(options.server.connection_handoff_capacity);
+    out += "\nevent-batch-size=";
+    out += std::to_string(options.server.event_batch_size);
+    out += "\nmax-input-bytes=";
+    out += std::to_string(options.server.maximum_input_bytes);
+    out += "\nmax-output-bytes=";
+    out += std::to_string(options.server.maximum_output_bytes);
+    out += "\ndurable-mutation-queue-capacity=";
+    out += std::to_string(options.server.durable_mutation_queue_capacity);
+    out += "\ndurable-mutation-queue-bytes=";
+    out += std::to_string(options.server.durable_mutation_queue_bytes);
+    out += "\ndurable-group-concurrency=";
+    out += std::to_string(options.server.durable_group_mutation_concurrency);
+    out += "\ndurable-mutation-queue-wait-ms=";
+    out += std::to_string(options.server.durable_mutation_queue_wait_ms);
+    out += "\nshutdown-drain-ms=";
+    out += std::to_string(options.server.shutdown_drain_ms);
+    out += "\nreuse-port=";
+    out += options.server.reuse_port ? "true" : "false";
+    out += "\nexecutor-affinity=";
+    out += options.server.executor_affinity ? "true" : "false";
+    out += "\nstorage-mode=";
+    out += storage_mode_name(options.store.storage_mode);
+    out += "\ndata-dir=";
+    if (options.store.data_directory) {
+        out += options.store.data_directory->string();
+    }
+    out += "\nopen-mode=";
+    out += open_mode_name(options.store.durable_open_mode);
+    out += "\nmaintenance-mode=";
+    out += maintenance_mode_name(options.store.maintenance.mode);
+    out += "\nsync-interval-ms=";
+    out += std::to_string(options.store.durable_periodic.sync_interval_ms);
+    out += "\ngroup-max-records=";
+    out += std::to_string(group.max_records);
+    out += "\ngroup-max-bytes=";
+    out += std::to_string(group.max_bytes);
+    out += "\ngroup-max-wait-ms=";
+    out += std::to_string(group.max_wait_ms);
+    out += "\nmax-store-bytes=";
+    out += std::to_string(options.store.durable_limits.max_store_bytes);
+    out += "\nreserved-free-bytes=";
+    out += std::to_string(options.store.durable_limits.reserved_free_bytes);
+    out += "\nmax-segments=";
+    out += std::to_string(options.store.durable_limits.max_segment_count);
+    out += "\nmax-hot-cache-bytes=";
+    out += std::to_string(options.store.durable_limits.max_hot_cache_bytes);
+    out += "\nmax-temporary-compaction-bytes=";
+    out += std::to_string(options.store.durable_limits.max_temporary_compaction_bytes);
+    out += "\nquiet=";
+    out += options.quiet ? "true" : "false";
+    out += "\ntls-cert=";
+    out += options.server.tls.certificate_file.string();
+    out += "\ntls-key=";
+    out += options.server.tls.private_key_file.string();
+    out += "\ntls-client-ca=";
+    out += options.server.tls.client_ca_file.string();
+    out += "\ntls-port=";
+    if (options.server.tls_port.has_value()) {
+        out += std::to_string(*options.server.tls_port);
+    }
+    out += '\n';
+    return out;
 }
 
 auto environment_name_for_option(const std::string_view long_name) -> std::string {
@@ -655,7 +768,7 @@ auto load_daemon_environment(const DaemonEnvironmentLookup& getenv_fn)
     const DaemonEnvironmentLookup& lookup = getenv_fn ? getenv_fn : DaemonEnvironmentLookup{default_getenv};
     SettingMap settings;
     for (const auto& spec : kOptionSpecs) {
-        if (spec.id == help || spec.id == version || spec.id == config) {
+        if (spec.id == help || spec.id == version || spec.id == config || spec.id == dump_config) {
             continue;
         }
         const auto env_name = environment_name_for_option(spec.long_name);
@@ -729,7 +842,12 @@ auto parse_daemon_options(const int argc, char* const argv[], DaemonEnvironmentL
     }
     apply_layer(merged, *cli_settings);
 
-    return materialize_from_settings(std::move(merged), false, false);
+    auto options = materialize_from_settings(std::move(merged), false, false);
+    if (!options) {
+        return unexpected(options.error());
+    }
+    options->show_dump_config = parsed_cli->has(dump_config);
+    return options;
 }
 
 } // namespace glyphastore::server

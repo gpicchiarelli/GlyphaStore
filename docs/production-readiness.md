@@ -120,7 +120,8 @@ implementation or design document alone is not sufficient.
   Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
   The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
   flags plus documented file/environment precedence (`defaults < file < env < CLI`, `--config` /
-  `GLYPHASTORE_CONFIG`, unknown keys fail closed). Deployment profiles remain pending.
+  `GLYPHASTORE_CONFIG`, unknown keys fail closed). `--dump-config` prints the resolved effective
+  settings and exits without listening. Deployment profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
   lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging remain

@@ -19,6 +19,7 @@ GlyphaStore command-line programs share one strict parser and a common operation
 ```bash
 glyphastored --bind 127.0.0.1 --port 7379 --workers 4
 glyphastored --config /etc/glyphastore/daemon.conf
+glyphastored --dump-config --config /etc/glyphastore/daemon.conf
 glyphastored --port 0 --workers 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
 glyphastored --help
 ```
@@ -31,6 +32,9 @@ equivalents) fail closed before the process listens. Deployment profiles remain 
 
 - `--config PATH` or `GLYPHASTORE_CONFIG=PATH` selects a settings file. The file cannot set `config`,
   `help`, or `version`.
+- `--dump-config` prints the fully resolved effective settings (`GlyphaStore/config` ASCII key=value)
+  after the same validation used before listen, then exits without binding or opening a Store. TLS
+  settings appear as paths only. The flag is CLI-only (not settable from file or environment).
 - File keys are the long option names without `--` (`port = 7379`, `storage-mode = durable-sync`,
   `quiet = true`). Lines may be blank or start with `#`. Values may be quoted with `"..."`.
 - Environment variables use `GLYPHASTORE_` plus the long name in `SCREAMING_SNAKE_CASE`
