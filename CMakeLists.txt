@@ -199,6 +199,7 @@ endif()
 
 add_library(glyphastore_server_core
     src/server/connection_handoff.cpp
+    src/server/daemon_config.cpp
     src/server/disk_read_executor.cpp
     src/server/durable_mutation_executor.cpp
     src/server/reactor.cpp
@@ -220,7 +221,7 @@ target_include_directories(glyphastore_server_core
 )
 target_link_libraries(glyphastore_server_core
     PUBLIC GlyphaStore::core GlyphaStore::wire GlyphaStore::tls_layer
-    PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
+    PRIVATE glyphastore_cli_support $<BUILD_INTERFACE:glyphastore_project_options>
 )
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
@@ -265,6 +266,7 @@ if(BUILD_TESTING)
         tests/unit/store_backup_tests.cpp
         tests/unit/store_repair_tests.cpp
         tests/unit/cli_arguments_tests.cpp
+        tests/unit/daemon_config_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/client_tests.cpp
@@ -501,6 +503,12 @@ if(BUILD_TESTING)
     set_tests_properties(glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
         PROPERTIES WILL_FAIL TRUE
     )
+    add_test(NAME glyphastore_cli_daemon_rejects_unknown_config_key
+        COMMAND glyphastored --config "${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/daemon-unknown-key.conf"
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_unknown_config_key
+        PROPERTIES WILL_FAIL TRUE
+    )
     set_tests_properties(
         glyphastore_cli_daemon_help
         glyphastore_cli_daemon_version
@@ -509,6 +517,7 @@ if(BUILD_TESTING)
         glyphastore_cli_daemon_rejects_resource_flags_in_volatile_mode
         glyphastore_cli_daemon_rejects_zero_group_max_records
         glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
+        glyphastore_cli_daemon_rejects_unknown_config_key
         glyphastore_cli_inspect_help
         glyphastore_cli_rebuild_help
         glyphastore_cli_rejects_invalid_workers

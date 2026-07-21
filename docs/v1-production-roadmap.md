@@ -84,7 +84,9 @@ exposes durable batch and resource caps (`--sync-interval-ms`, `--group-max-*`, 
 `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, `--max-temporary-compaction-bytes`)
 with fail-closed volatile rejection. Real-daemon wire-protocol SIGKILL coverage exists for
 post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
-(`glyphastore_crash_daemon`). File/environment config precedence and deployment profiles remain open.
+(`glyphastore_crash_daemon`). File/environment config precedence is implemented (`--config` /
+`GLYPHASTORE_CONFIG`, `GLYPHASTORE_*` mirrors of long options, defaults < file < env < CLI).
+Deployment profiles remain open.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

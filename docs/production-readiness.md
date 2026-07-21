@@ -118,9 +118,9 @@ implementation or design document alone is not sufficient.
 
 - [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
   Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
-  The daemon now has explicit storage-mode, data-directory, durable open-policy, batch, and resource
-  flags that are validated before binding; CLI/file/environment precedence and deployment profiles
-  remain pending.
+  The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
+  flags plus documented file/environment precedence (`defaults < file < env < CLI`, `--config` /
+  `GLYPHASTORE_CONFIG`, unknown keys fail closed). Deployment profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.

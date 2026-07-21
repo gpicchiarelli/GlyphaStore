@@ -18,9 +18,24 @@ GlyphaStore command-line programs share one strict parser and a common operation
 
 ```bash
 glyphastored --bind 127.0.0.1 --port 7379 --workers 4
+glyphastored --config /etc/glyphastore/daemon.conf
 glyphastored --port 0 --workers 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
 glyphastored --help
 ```
+
+### Configuration precedence
+
+Settings resolve as **defaults < config file < environment < CLI**. Unknown keys, empty values,
+duplicate keys in one file, and conflicting `--reuse-port` / `--no-reuse-port` (or their env/file
+equivalents) fail closed before the process listens. Deployment profiles remain a separate follow-up.
+
+- `--config PATH` or `GLYPHASTORE_CONFIG=PATH` selects a settings file. The file cannot set `config`,
+  `help`, or `version`.
+- File keys are the long option names without `--` (`port = 7379`, `storage-mode = durable-sync`,
+  `quiet = true`). Lines may be blank or start with `#`. Values may be quoted with `"..."`.
+- Environment variables use `GLYPHASTORE_` plus the long name in `SCREAMING_SNAKE_CASE`
+  (`GLYPHASTORE_PORT`, `GLYPHASTORE_DATA_DIR`, `GLYPHASTORE_MAX_STORE_BYTES`). Boolean flags accept
+  `true`/`false`, `yes`/`no`, `on`/`off`, or `1`/`0`.
 
 `SIGINT` and `SIGTERM` request an orderly process stop. The daemon stops accepting new connections,
 drains existing connections and admitted durable mutations (bounded by `--shutdown-drain-ms`, default
