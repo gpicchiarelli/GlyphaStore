@@ -79,10 +79,12 @@ a mutation admitted during shutdown, drain-deadline abandonment of still-queued 
 and connection drain of idle and in-flight clients. Wire-protocol `HEALTH` and `READY` probes expose
 process liveness and traffic readiness (fail closed on sticky storage faults, maintenance emergency,
 or shutdown). Lock-free Worker-local kernel counters now expose exact batch occupancy, close reasons,
-failures, and commit duration; histogram export remains an observability surface task. Remaining
-resource CLI controls remain open. Real-daemon wire-protocol SIGKILL coverage exists for
+failures, and commit duration; histogram export remains an observability surface task. Daemon CLI now
+exposes durable batch and resource caps (`--sync-interval-ms`, `--group-max-*`, `--max-store-bytes`,
+`--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, `--max-temporary-compaction-bytes`)
+with fail-closed volatile rejection. Real-daemon wire-protocol SIGKILL coverage exists for
 post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
-(`glyphastore_crash_daemon`).
+(`glyphastore_crash_daemon`). File/environment config precedence and deployment profiles remain open.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

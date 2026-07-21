@@ -36,7 +36,11 @@ or a sticky faulted state. Failed probes return `INTERNAL_ERROR`. `--quiet`
 suppresses normal startup and shutdown messages, but never suppresses errors.
 
 Important server controls include bounded connection counts, handoff queues, event batches, and per-connection
-input/output buffers. Unsupported Worker counts and buffers smaller than protocol headers are rejected before
+input/output buffers. Durable deployments also expose batch and resource caps:
+`--sync-interval-ms`, `--group-max-records` / `--group-max-bytes` / `--group-max-wait-ms`,
+`--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, and
+`--max-temporary-compaction-bytes`. Those flags require a durable `--storage-mode` and are validated
+before the process listens. Unsupported Worker counts and buffers smaller than protocol headers are rejected before
 the server binds a socket. `--reuse-port` and `--no-reuse-port` are mutually exclusive; the operating system
 decides whether per-executor listeners are available. Executor affinity is strict on supported Linux systems
 and advisory on macOS.

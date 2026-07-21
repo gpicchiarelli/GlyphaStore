@@ -465,6 +465,19 @@ if(BUILD_TESTING)
     set_tests_properties(glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
         PROPERTIES WILL_FAIL TRUE
     )
+    add_test(NAME glyphastore_cli_daemon_rejects_resource_flags_in_volatile_mode
+        COMMAND glyphastored --max-store-bytes 1GiB
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_resource_flags_in_volatile_mode
+        PROPERTIES WILL_FAIL TRUE
+    )
+    add_test(NAME glyphastore_cli_daemon_rejects_zero_group_max_records
+        COMMAND glyphastored --storage-mode durable-group --data-dir /tmp/glyphastore-cli-group
+                --group-max-records 0
+    )
+    set_tests_properties(glyphastore_cli_daemon_rejects_zero_group_max_records
+        PROPERTIES WILL_FAIL TRUE
+    )
     add_test(NAME glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
         COMMAND glyphastored --durable-mutation-queue-capacity 0
     )
@@ -476,6 +489,8 @@ if(BUILD_TESTING)
         glyphastore_cli_daemon_version
         glyphastore_cli_daemon_rejects_missing_data_directory
         glyphastore_cli_daemon_rejects_durable_options_in_volatile_mode
+        glyphastore_cli_daemon_rejects_resource_flags_in_volatile_mode
+        glyphastore_cli_daemon_rejects_zero_group_max_records
         glyphastore_cli_daemon_rejects_zero_durable_mutation_queue
         glyphastore_cli_inspect_help
         glyphastore_cli_rebuild_help
