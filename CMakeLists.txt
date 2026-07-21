@@ -223,6 +223,7 @@ target_link_libraries(glyphastore_server_core
     PUBLIC GlyphaStore::core GlyphaStore::wire GlyphaStore::tls_layer
     PRIVATE glyphastore_cli_support $<BUILD_INTERFACE:glyphastore_project_options>
 )
+target_compile_definitions(glyphastore_server_core PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
 glyphastore_set_warnings(glyphastore_server_core)
 glyphastore_enable_hardening(glyphastore_server_core)
 glyphastore_enable_ipo(glyphastore_server_core)

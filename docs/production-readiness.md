@@ -122,6 +122,9 @@ implementation or design document alone is not sufficient.
   flags plus documented file/environment precedence (`defaults < file < env < CLI`, `--config` /
   `GLYPHASTORE_CONFIG`, unknown keys fail closed). Deployment profiles remain pending.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
+  Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
+  lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging remain
+  open.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs

@@ -10,6 +10,7 @@
 #include <exception>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace glyphastore::server {
@@ -21,6 +22,54 @@ namespace {
 
 [[nodiscard]] auto probe_server_ready(const void* context) noexcept -> bool {
     return static_cast<const Server*>(context)->ready();
+}
+
+[[nodiscard]] auto probe_server_stats(const void* context, std::string& out) noexcept -> bool {
+    try {
+        auto report = static_cast<const Server*>(context)->stats_report();
+        if (!report) {
+            return false;
+        }
+        out = std::move(*report);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+[[nodiscard]] auto maintenance_state_name(const MaintenanceState state) noexcept -> std::string_view {
+    switch (state) {
+    case MaintenanceState::stopped:
+        return "stopped";
+    case MaintenanceState::idle:
+        return "idle";
+    case MaintenanceState::evaluating:
+        return "evaluating";
+    case MaintenanceState::compacting:
+        return "compacting";
+    case MaintenanceState::suspended:
+        return "suspended";
+    case MaintenanceState::draining:
+        return "draining";
+    case MaintenanceState::faulted:
+        return "faulted";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] auto maintenance_pressure_name(const MaintenancePressureLevel level) noexcept
+    -> std::string_view {
+    switch (level) {
+    case MaintenancePressureLevel::none:
+        return "none";
+    case MaintenancePressureLevel::normal:
+        return "normal";
+    case MaintenancePressureLevel::pressure:
+        return "pressure";
+    case MaintenancePressureLevel::emergency:
+        return "emergency";
+    }
+    return "unknown";
 }
 
 [[nodiscard]] auto validate_config(const ReactorConfig& config) -> Status {
@@ -140,6 +189,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
     const ServerLifecycleProbes lifecycle_probes{
         .live = probe_server_live,
         .ready = probe_server_ready,
+        .stats = probe_server_stats,
         .context = server.get(),
     };
     for (std::size_t executor = 0; executor < server->store_->worker_count(); ++executor) {
@@ -308,6 +358,113 @@ auto Server::ready() const noexcept -> bool {
         return false;
     }
     return true;
+}
+
+auto Server::stats_report() const -> Result<std::string> {
+    if (!live()) {
+        return fail(ErrorCode::unavailable, "server is not live");
+    }
+    try {
+        constexpr std::size_t kStatsBudgetBytes = 256U * 1024U;
+        std::string out;
+        out.reserve(4096);
+        out += "GlyphaStore/stats\n";
+#ifndef GLYPHASTORE_VERSION
+#define GLYPHASTORE_VERSION "dev"
+#endif
+        out += "version=";
+        out += GLYPHASTORE_VERSION;
+        out += '\n';
+        out += "live=1\n";
+        out += ready() ? "ready=1\n" : "ready=0\n";
+        out += "executors=";
+        out += std::to_string(reactors_.size());
+        out += '\n';
+
+        std::uint64_t connections_active{};
+        std::uint64_t connections_adopted{};
+        for (const auto& reactor : reactors_) {
+            connections_active += reactor->active_connections();
+            connections_adopted += reactor->adopted_connections();
+        }
+        out += "connections_active=";
+        out += std::to_string(connections_active);
+        out += '\n';
+        out += "connections_adopted=";
+        out += std::to_string(connections_adopted);
+        out += '\n';
+
+        const auto maintenance = store_->maintenance_snapshot();
+        out += "maintenance_state=";
+        out += maintenance_state_name(maintenance.state);
+        out += '\n';
+        out += "maintenance_pressure=";
+        out += maintenance_pressure_name(maintenance.pressure);
+        out += '\n';
+        out += "mutations_rejected=";
+        out += maintenance.mutations_rejected ? "1\n" : "0\n";
+        out += "compact_attempts=";
+        out += std::to_string(maintenance.compact_attempts);
+        out += '\n';
+        out += "compact_completed=";
+        out += std::to_string(maintenance.compact_completed);
+        out += '\n';
+        out += "useful_compactions=";
+        out += std::to_string(maintenance.useful_compactions);
+        out += '\n';
+
+        for (const auto& lane : durable_mutation_stats()) {
+            out += "lane[";
+            out += std::to_string(lane.worker_index);
+            out += "].queue_depth=";
+            out += std::to_string(lane.queue_depth);
+            out += "\nlane[";
+            out += std::to_string(lane.worker_index);
+            out += "].admitted=";
+            out += std::to_string(lane.admitted);
+            out += "\nlane[";
+            out += std::to_string(lane.worker_index);
+            out += "].rejected=";
+            out += std::to_string(lane.rejected);
+            out += "\nlane[";
+            out += std::to_string(lane.worker_index);
+            out += "].expired_before_store=";
+            out += std::to_string(lane.expired_before_store);
+            out += "\nlane[";
+            out += std::to_string(lane.worker_index);
+            out += "].completed=";
+            out += std::to_string(lane.completed);
+            out += '\n';
+            if (out.size() > kStatsBudgetBytes) {
+                return fail(ErrorCode::resource_exhausted, "stats report exceeds the bounded size budget");
+            }
+        }
+        for (const auto& batch : durable_batch_stats()) {
+            out += "batch[";
+            out += std::to_string(batch.worker_id.value);
+            out += "].enabled=";
+            out += batch.enabled ? "1" : "0";
+            out += "\nbatch[";
+            out += std::to_string(batch.worker_id.value);
+            out += "].pending_records=";
+            out += std::to_string(batch.pending_records);
+            out += "\nbatch[";
+            out += std::to_string(batch.worker_id.value);
+            out += "].committed_batches=";
+            out += std::to_string(batch.committed_batches);
+            out += "\nbatch[";
+            out += std::to_string(batch.worker_id.value);
+            out += "].failed_batches=";
+            out += std::to_string(batch.failed_batches);
+            out += '\n';
+            if (out.size() > kStatsBudgetBytes) {
+                return fail(ErrorCode::resource_exhausted, "stats report exceeds the bounded size budget");
+            }
+        }
+        return out;
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, {});
+    }
 }
 
 auto Server::adopted_connections_per_executor() const -> std::vector<std::size_t> {

@@ -3,7 +3,7 @@
 Status: normative for the current TCP server
 Applies to: protocol version 2
 Owner: networking maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-21
 
 ## 1. Transport and byte order
 
@@ -68,12 +68,18 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 | 6 | `BIND_WORKER` | `target_worker` | confirms worker metadata; may transfer connection ownership |
 | 7 | `HEALTH` | no key/value required | value is ASCII `GlyphaStore/live`; liveness probe |
 | 8 | `READY` | no key/value required | value is ASCII `GlyphaStore/ready`; readiness probe |
+| 9 | `STATS` | no key/value required | value is bounded ASCII `GlyphaStore/stats` report |
 
-`HEALTH` and `READY` are accepted before initialization and binding. They do not mutate Store state.
-`HEALTH` returns `OK` while the daemon process is live (started and no executor failure recorded).
-`READY` returns `OK` only while the server is ready to accept traffic: live, not shutting down, Store
-admission open, durable catalog healthy, and maintenance is not in emergency or a sticky faulted
-state. Failed probes return `INTERNAL_ERROR` with an empty value.
+`HEALTH`, `READY`, and `STATS` are accepted before initialization and binding. They do not mutate
+Store state. `HEALTH` returns `OK` while the daemon process is live (started and no executor failure
+recorded). `READY` returns `OK` only while the server is ready to accept traffic: live, not shutting
+down, Store admission open, durable catalog healthy, and maintenance is not in emergency or a sticky
+faulted state. `STATS` returns `OK` with a versioned line-oriented report (`version`, `live`, `ready`,
+connection counts, per-Worker durable mutation lane counters, batch counters, and maintenance
+snapshot fields) while live; the payload is capped and may return `OVERLOADED` if it cannot fit the
+connection output budget. Failed liveness/readiness/stats probes return `INTERNAL_ERROR` with an
+empty value. Treat `STATS` as a private-admin surface until ADR 0021/0022 authentication is enforced;
+it never returns TLS private-key material.
 
 Fields not listed for an opcode must be sent as zero/empty. The current decoder may accept ignored data, but clients must not rely on it.
 
@@ -100,16 +106,16 @@ A conventional session is:
 stateDiagram-v2
     [*] --> Connected
     Connected --> Initialized: INIT
-    Connected --> Connected: PING / HEALTH / READY
-    Initialized --> Initialized: INIT or PING or HEALTH or READY
+    Connected --> Connected: PING / HEALTH / READY / STATS
+    Initialized --> Initialized: INIT or PING or HEALTH or READY or STATS
     Initialized --> Bound: BIND_WORKER once
-    Bound --> Bound: PING / GET / PUT / ERASE
+    Bound --> Bound: PING / GET / PUT / ERASE / HEALTH / READY / STATS
     Bound --> [*]: peer close, protocol failure, or server close
 ```
 
 Current version-2 behavior is precise:
 
-- `PING`, `HEALTH`, and `READY` are accepted before initialization and binding;
+- `PING`, `HEALTH`, `READY`, and `STATS` are accepted before initialization and binding;
 - repeated `INIT` is accepted and returns the same identification value;
 - `BIND_WORKER` requires successful initialization, a valid target, and no prior bind;
 - `GET`, `PUT`, and `ERASE` before binding return `NOT_BOUND`;

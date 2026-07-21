@@ -56,6 +56,9 @@ class Server final {
     // Traffic readiness: live, not shutting down, Store admission open, durable catalog healthy,
     // and maintenance is not in emergency or a sticky faulted state.
     [[nodiscard]] auto ready() const noexcept -> bool;
+    // Bounded ASCII admin report (version, live/ready, connections, lane/batch, maintenance).
+    // Read-only; fails closed when not live or when the report would exceed the size budget.
+    [[nodiscard]] auto stats_report() const -> Result<std::string>;
 
   private:
     Server(ReactorConfig config, std::unique_ptr<Store> store);

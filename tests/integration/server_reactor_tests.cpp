@@ -789,6 +789,16 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(ready.has_value());
     GLYPHA_REQUIRE(ready->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(text(ready->decoded.frame.value) == "GlyphaStore/ready");
+    const auto stats = probe_lifecycle(socket, glyphastore::server::RequestOpcode::stats, 403);
+    GLYPHA_REQUIRE(stats.has_value());
+    GLYPHA_REQUIRE(stats->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto stats_text = text(stats->decoded.frame.value);
+    GLYPHA_REQUIRE(stats_text.starts_with("GlyphaStore/stats\n"));
+    GLYPHA_REQUIRE(stats_text.find("live=1\n") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("ready=1\n") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("version=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("connections_active=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_state=") != std::string_view::npos);
     static_cast<void>(::close(socket));
 
     server.request_stop();

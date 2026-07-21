@@ -27,6 +27,9 @@ namespace glyphastore::server {
 struct ServerLifecycleProbes final {
     bool (*live)(const void* context) noexcept{};
     bool (*ready)(const void* context) noexcept{};
+    // Optional read-only admin probe. Writes a bounded ASCII report into `out`.
+    // Returns false when the process is not live or the report cannot be built.
+    bool (*stats)(const void* context, std::string& out) noexcept{};
     const void* context{};
 };
 

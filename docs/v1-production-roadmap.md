@@ -76,10 +76,12 @@ Strict-group mode retains bounded concurrent producers so daemon batching does n
 occupancy one. Tests suspend real sync calls and prove Reactor responsiveness, independent queue
 admission, bounded overload, non-commit of expired queued work, multi-record group sync, recovery of
 a mutation admitted during shutdown, drain-deadline abandonment of still-queued work, stop-accept,
-and connection drain of idle and in-flight clients. Wire-protocol `HEALTH` and `READY` probes expose
-process liveness and traffic readiness (fail closed on sticky storage faults, maintenance emergency,
-or shutdown). Lock-free Worker-local kernel counters now expose exact batch occupancy, close reasons,
-failures, and commit duration; histogram export remains an observability surface task. Daemon CLI now
+and connection drain of idle and in-flight clients. Wire-protocol `HEALTH`, `READY`, and `STATS`
+probes expose process liveness, traffic readiness (fail closed on sticky storage faults, maintenance
+emergency, or shutdown), and a bounded ASCII admin report (version, connections, durable lane/batch
+counters, maintenance snapshot). Lock-free Worker-local kernel counters now expose exact batch
+occupancy, close reasons, failures, and commit duration; histogram export remains an observability
+surface task. Daemon CLI now
 exposes durable batch and resource caps (`--sync-interval-ms`, `--group-max-*`, `--max-store-bytes`,
 `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, `--max-temporary-compaction-bytes`)
 with fail-closed volatile rejection. Real-daemon wire-protocol SIGKILL coverage exists for

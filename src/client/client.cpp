@@ -483,6 +483,8 @@ struct WorkerConnection {
         return "health";
     case server::RequestOpcode::ready:
         return "ready";
+    case server::RequestOpcode::stats:
+        return "stats";
     }
     return "unknown";
 }

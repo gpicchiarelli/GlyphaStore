@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <chrono>
 #include <span>
+#include <string>
 #include <string_view>
 #include <sys/socket.h>
 #include <utility>
@@ -324,8 +325,9 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             break;
         }
         if (shutting_down_ && decoded->frame.opcode != RequestOpcode::health &&
-            decoded->frame.opcode != RequestOpcode::ready) {
-            // Connection drain refuses new work; lifecycle probes may still observe live/ready.
+            decoded->frame.opcode != RequestOpcode::ready &&
+            decoded->frame.opcode != RequestOpcode::stats) {
+            // Connection drain refuses new work; lifecycle probes may still observe live/ready/stats.
             ResponseView refused{.status = ResponseStatus::overloaded,
                                  .request_id = decoded->frame.request_id,
                                  .owner_worker = static_cast<std::uint32_t>(executor_id_),
@@ -372,6 +374,35 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                 response.status = ResponseStatus::internal_error;
             }
             break;
+        case RequestOpcode::stats: {
+            if (lifecycle_probes_.stats == nullptr) {
+                response.status = ResponseStatus::internal_error;
+                break;
+            }
+            try {
+                std::string report;
+                if (!lifecycle_probes_.stats(lifecycle_probes_.context, report)) {
+                    response.status = ResponseStatus::internal_error;
+                    break;
+                }
+                const auto value_budget = config_.maximum_output_bytes > kResponseHeaderBytes
+                                             ? config_.maximum_output_bytes - kResponseHeaderBytes
+                                             : std::size_t{0};
+                if (report.size() > value_budget ||
+                    report.size() + kResponseHeaderBytes > kMaxFrameBytes) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                response.value = std::as_bytes(std::span<const char>{report.data(), report.size()});
+                if (auto queued = queue_response(token, response); !queued) {
+                    return queued;
+                }
+                immediate_response = false;
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+            }
+            break;
+        }
         case RequestOpcode::get:
         case RequestOpcode::put:
         case RequestOpcode::erase:
@@ -701,6 +732,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
     case RequestOpcode::ping:
     case RequestOpcode::health:
     case RequestOpcode::ready:
+    case RequestOpcode::stats:
     case RequestOpcode::bind_worker:
         response.status = ResponseStatus::invalid_request;
         break;

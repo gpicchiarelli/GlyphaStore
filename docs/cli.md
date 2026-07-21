@@ -47,7 +47,9 @@ cancelled. A timed-out drain makes process exit fail closed (`join` returns an e
 Wire-protocol `HEALTH` (opcode 7) and `READY` (opcode 8) probes are accepted before `INIT`/`BIND_WORKER`.
 `HEALTH` returns `OK` with value `GlyphaStore/live` while executors are live; `READY` returns `OK`
 with value `GlyphaStore/ready` only when the Store is operational and maintenance is not in emergency
-or a sticky faulted state. Failed probes return `INTERNAL_ERROR`. `--quiet`
+or a sticky faulted state. `STATS` (opcode 9) returns a bounded ASCII admin report (version, live/ready,
+connections, durable lane/batch counters, maintenance snapshot) while live. Failed probes return
+`INTERNAL_ERROR`. `--quiet`
 suppresses normal startup and shutdown messages, but never suppresses errors.
 
 Important server controls include bounded connection counts, handoff queues, event batches, and per-connection
