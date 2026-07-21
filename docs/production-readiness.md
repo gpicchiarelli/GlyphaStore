@@ -56,7 +56,9 @@ implementation or design document alone is not sufficient.
   CRC/key/reference metadata and remain fail-closed after corruption. Existing stores support
   ordered durable puts/tombstones, exact-intent rotation completion, and crash-recoverable public
   Store creation. The `glyphastore_crash_persistence` harness SIGKILL-tests bootstrap, put, and
-  rotation boundaries on Linux CI; native-platform exhaustive matrices and disk-full coverage remain
+  rotation boundaries on Linux CI; `glyphastore_crash_daemon` SIGKILL-tests the real `glyphastored`
+  process after wire-protocol acknowledgements (durable-sync/group immediately; durable-periodic
+  after the flush window). Native-platform exhaustive matrices and disk-full coverage remain
   pending.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
   Segment unit recovery rejects committed corruption and ignores uncommitted tails; missing catalog

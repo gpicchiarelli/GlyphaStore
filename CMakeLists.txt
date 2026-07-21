@@ -340,6 +340,26 @@ if(BUILD_TESTING)
         glyphastore_crash_group
         PROPERTIES TIMEOUT 600 LABELS "crash"
     )
+
+    add_executable(glyphastore_crash_daemon tests/crash/crash_daemon.cpp)
+    target_link_libraries(glyphastore_crash_daemon
+        PRIVATE GlyphaStore::client GlyphaStore::core glyphastore_project_options
+    )
+    glyphastore_set_warnings(glyphastore_crash_daemon)
+    glyphastore_enable_hardening(glyphastore_crash_daemon)
+    set_target_properties(glyphastore_crash_daemon PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_crash_daemon_sync
+        COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-sync)
+    add_test(NAME glyphastore_crash_daemon_group
+        COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-group)
+    add_test(NAME glyphastore_crash_daemon_periodic
+        COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-periodic)
+    set_tests_properties(
+        glyphastore_crash_daemon_sync
+        glyphastore_crash_daemon_group
+        glyphastore_crash_daemon_periodic
+        PROPERTIES TIMEOUT 120 LABELS "crash"
+    )
 endif()
 
 add_executable(glyphastore_inspect_segment tools/inspect_segment.cpp)
@@ -629,6 +649,7 @@ if(BUILD_TESTING)
     set(glyphastore_check_dependencies
         glyphastore_tests
         glyphastore_crash_persistence
+        glyphastore_crash_daemon
         glyphastored
         glyphastore_inspect_segment
         glyphastore_verify_store

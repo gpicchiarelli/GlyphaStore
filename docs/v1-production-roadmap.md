@@ -80,7 +80,9 @@ and connection drain of idle and in-flight clients. Wire-protocol `HEALTH` and `
 process liveness and traffic readiness (fail closed on sticky storage faults, maintenance emergency,
 or shutdown). Lock-free Worker-local kernel counters now expose exact batch occupancy, close reasons,
 failures, and commit duration; histogram export remains an observability surface task. Remaining
-resource CLI controls and real-daemon process-kill coverage remain open.
+resource CLI controls remain open. Real-daemon wire-protocol SIGKILL coverage exists for
+post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
+(`glyphastore_crash_daemon`).
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

@@ -46,6 +46,8 @@ Select one of these generated schemes:
 - `glyphastore_verify_store` for Manifest + catalog Segment validation (exclusive lock).
 - `glyphastore_backup_store` for offline verified backup/restore copies.
 - `glyphastore_rebuild_index` remains a placeholder (Store recovery rebuilds Indexes).
+- Crash labels: `glyphastore_crash_persistence` (Store filesystem boundaries) and
+  `glyphastore_crash_daemon` (real `glyphastored` SIGKILL after wire acknowledgements).
 
 Because GlyphaStore uses a standalone CTest executable rather than XCTest bundles, use the
 `check` scheme's **Build** action for the full suite. The `glyphastore_tests` scheme's **Run** action
