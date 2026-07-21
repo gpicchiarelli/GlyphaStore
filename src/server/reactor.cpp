@@ -180,7 +180,8 @@ void Reactor::close_idle_connections() noexcept {
         if (!candidate.socket.valid()) {
             continue;
         }
-        if (candidate.request_in_flight || candidate.output_offset < candidate.output.size()) {
+        if (candidate.request_in_flight || candidate.output_offset < candidate.output.size() ||
+            candidate.input_offset < candidate.input.size()) {
             continue;
         }
         close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
@@ -312,7 +313,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
-    while (!shutting_down_ && !current->request_in_flight && current->input_offset < current->input.size()) {
+    while (!current->request_in_flight && current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         auto decoded = decode_request(available);
@@ -321,6 +322,20 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         }
         if (!decoded->complete) {
             break;
+        }
+        if (shutting_down_ && decoded->frame.opcode != RequestOpcode::health &&
+            decoded->frame.opcode != RequestOpcode::ready) {
+            // Connection drain refuses new work; lifecycle probes may still observe live/ready.
+            ResponseView refused{.status = ResponseStatus::overloaded,
+                                 .request_id = decoded->frame.request_id,
+                                 .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                                 .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                 .routing_epoch = kRoutingEpoch};
+            if (auto queued = queue_response(token, refused); !queued) {
+                return queued;
+            }
+            current->input_offset += decoded->consumed;
+            continue;
         }
         if (decoded->frame.opcode == RequestOpcode::bind_worker) {
             current->input_offset += decoded->consumed;
