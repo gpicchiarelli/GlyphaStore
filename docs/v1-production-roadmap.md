@@ -373,10 +373,12 @@ post-compaction no-gain detection.
   decode, optional committed CRC scan, text/JSON, fail-closed exit codes).
   `glyphastore_verify_store` validates Manifest + namespace + every catalog Segment under an
   exclusive data-directory lock (optional `--no-scan`). `glyphastore_backup_store` performs offline
-  verified backup/restore copies (lock → verify → copy catalog files → verify). Live/hot backup and
-  destructive repair remain open. `glyphastore_rebuild_index` still refuses offline rewrite; durable
-  Indexes are rebuilt by Store recovery. Keep destructive repair a distinct command requiring an
-  explicit output directory; never rewrite the only copy in place.
+  verified backup/restore copies (lock → verify → copy catalog files → verify).
+  `glyphastore_repair_store` performs offline fail-closed repair into an explicit empty workspace
+  (`store/` + `quarantine/` + audit): it never mutates the source, quarantines non-catalog anomalies,
+  and refuses missing catalog or unsafe namespace entries. In-place destructive rewrite remains
+  forbidden. Live/hot backup remains open. `glyphastore_rebuild_index` still refuses offline Index
+  rewrite; durable Indexes are rebuilt by Store recovery.
 - Live/hot backup and snapshot under concurrent writers remain open; the offline contract is in
   [backup-restore](architecture/backup-restore.md).
 - Publish upgrade/downgrade rules for persistence v1 and test artifacts created by every released

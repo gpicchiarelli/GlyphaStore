@@ -3,7 +3,7 @@
 Status: implemented for stopped Stores
 Applies to: durable data directories (`manifest.glypha` + catalog Segments)
 Owner: persistence maintainers
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-21
 
 ## Contract
 
@@ -26,9 +26,12 @@ Restore is the same verified copy from a backup directory into a new empty desti
 ## Explicit non-goals
 
 - Live/hot backup while writers hold the Store lock
-- Copying crash temporaries, compaction intents, or bootstrap intents
-- In-place destructive repair or quarantine
+- Copying crash temporaries, compaction intents, or bootstrap intents into a backup
+- In-place destructive repair
 - Filesystem freeze / COW snapshot orchestration
+
+Offline repair that quarantines non-catalog anomalies into an explicit workspace is provided by
+`glyphastore_repair_store` (see [cli.md](../cli.md)); it never rewrites the source directory.
 
 ## Failure modes
 

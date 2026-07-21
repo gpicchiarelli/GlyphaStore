@@ -91,6 +91,7 @@ add_library(glyphastore_core
     src/persistence/segment_file.cpp
     src/persistence/store_verify.cpp
     src/persistence/store_backup.cpp
+    src/persistence/store_repair.cpp
     src/segment/crc32c.cpp
     src/segment/global_manager.cpp
     src/segment/record.cpp
@@ -262,6 +263,7 @@ if(BUILD_TESTING)
         tests/unit/segment_file_tests.cpp
         tests/unit/store_verify_tests.cpp
         tests/unit/store_backup_tests.cpp
+        tests/unit/store_repair_tests.cpp
         tests/unit/cli_arguments_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
@@ -395,6 +397,17 @@ glyphastore_enable_ipo(glyphastore_backup_store)
 set_target_properties(glyphastore_backup_store PROPERTIES FOLDER "Tools")
 glyphastore_xcode_scheme(glyphastore_backup_store ARGUMENTS --help)
 
+add_executable(glyphastore_repair_store tools/repair_store.cpp)
+target_link_libraries(glyphastore_repair_store
+    PRIVATE GlyphaStore::core glyphastore_cli_support glyphastore_project_options
+)
+target_compile_definitions(glyphastore_repair_store PRIVATE GLYPHASTORE_VERSION="${PROJECT_VERSION}")
+glyphastore_set_warnings(glyphastore_repair_store)
+glyphastore_enable_hardening(glyphastore_repair_store)
+glyphastore_enable_ipo(glyphastore_repair_store)
+set_target_properties(glyphastore_repair_store PROPERTIES FOLDER "Tools")
+glyphastore_xcode_scheme(glyphastore_repair_store ARGUMENTS --help)
+
 add_executable(glyphastore_interop_client tools/interop_client.cpp)
 target_link_libraries(glyphastore_interop_client
     PRIVATE GlyphaStore::client glyphastore_project_options
@@ -444,6 +457,10 @@ if(BUILD_TESTING)
     add_test(NAME glyphastore_cli_backup_help COMMAND glyphastore_backup_store --help)
     set_tests_properties(glyphastore_cli_backup_help PROPERTIES
         PASS_REGULAR_EXPRESSION "Offline backup"
+    )
+    add_test(NAME glyphastore_cli_repair_help COMMAND glyphastore_repair_store --help)
+    set_tests_properties(glyphastore_cli_repair_help PROPERTIES
+        PASS_REGULAR_EXPRESSION "Offline repair"
     )
     add_test(NAME glyphastore_cli_rebuild_help COMMAND glyphastore_rebuild_index --help)
     set_tests_properties(glyphastore_cli_rebuild_help PROPERTIES
@@ -669,6 +686,7 @@ if(BUILD_TESTING)
         glyphastore_inspect_segment
         glyphastore_verify_store
         glyphastore_backup_store
+        glyphastore_repair_store
         glyphastore_rebuild_index
     )
     if(TARGET glyphastore_benchmarks)
@@ -698,7 +716,7 @@ install(TARGETS glyphastore_core glyphastore_wire glyphastore_tls_layer glyphast
     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
 install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glyphastore_verify_store
-        glyphastore_backup_store glyphastore_rebuild_index
+        glyphastore_backup_store glyphastore_repair_store glyphastore_rebuild_index
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Runtime
 )

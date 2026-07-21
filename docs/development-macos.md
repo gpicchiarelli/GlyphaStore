@@ -45,6 +45,7 @@ Select one of these generated schemes:
 - `glyphastore_inspect_segment` for read-only durable Segment validation (`--json`, `--no-scan`).
 - `glyphastore_verify_store` for Manifest + catalog Segment validation (exclusive lock).
 - `glyphastore_backup_store` for offline verified backup/restore copies.
+- `glyphastore_repair_store` for offline repair into an explicit workspace (`store/` + `quarantine/`).
 - `glyphastore_rebuild_index` remains a placeholder (Store recovery rebuilds Indexes).
 - Crash labels: `glyphastore_crash_persistence` (Store filesystem boundaries) and
   `glyphastore_crash_daemon` (real `glyphastored` SIGKILL after wire acknowledgements).

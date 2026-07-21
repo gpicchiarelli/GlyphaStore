@@ -51,6 +51,7 @@ and advisory on macOS.
 glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
 glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
 glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/destination
+glyphastore_repair_store [--json] [--no-scan] -- /path/to/source /path/to/empty-workspace
 glyphastore_rebuild_index -- segment-<16hex>-<8hex>.glypha
 ```
 
@@ -104,6 +105,22 @@ verifies the source, creates an empty destination, copies catalog Segments then 
 syncs, and verifies the destination. Restore uses the same command with backup as source and a new
 empty destination. See [backup-restore](architecture/backup-restore.md). Live/hot backup is not
 supported.
+
+### `glyphastore_repair_store`
+
+```bash
+glyphastore_repair_store [--json] [--no-scan] -- /path/to/source /path/to/empty-workspace
+```
+
+Offline fail-closed repair that never mutates the source. Requires an empty explicit workspace and
+creates:
+
+- `<workspace>/store` — clean Manifest + catalog Segments (verified after copy)
+- `<workspace>/quarantine` — non-catalog namespace anomalies plus `audit.txt`
+
+Unlisted Segments, crash temporaries, compaction intents, and unknown regular files are quarantined.
+Missing catalog entries and unsafe entries (symlinks, hard links, non-regular objects) fail closed
+without writing a usable store. Live/hot repair is not supported.
 
 ### `glyphastore_rebuild_index`
 

@@ -197,8 +197,10 @@ GLYPHA_TEST("namespace audit reports canonical symlinks and hard links as unsafe
         GLYPHA_REQUIRE(report.has_value());
         GLYPHA_REQUIRE(!report->recovery_safe());
         GLYPHA_REQUIRE(report->issues.size() == 2);
-        GLYPHA_REQUIRE(report->issues[0].kind == glyphastore::NamespaceIssueKind::unknown_entry);
+        GLYPHA_REQUIRE(report->issues[0].kind == glyphastore::NamespaceIssueKind::unsafe_entry);
+        GLYPHA_REQUIRE(report->issues[0].name == "extra-hard-link");
         GLYPHA_REQUIRE(report->issues[1].kind == glyphastore::NamespaceIssueKind::unsafe_entry);
+        GLYPHA_REQUIRE(report->issues[1].name == expected);
     }
 }
 

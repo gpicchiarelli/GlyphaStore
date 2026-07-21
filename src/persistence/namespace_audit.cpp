@@ -278,6 +278,19 @@ auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
             continue;
         }
 
+        const auto status = status_at(directory_descriptor, name);
+        if (!status) {
+            return unexpected(status.error());
+        }
+        if (!private_regular(*status)) {
+            if (auto added =
+                    append_issue(report, {.kind = NamespaceIssueKind::unsafe_entry, .name = name});
+                !added) {
+                return unexpected(added.error());
+            }
+            continue;
+        }
+
         const auto issue_kind = looks_engine_owned(name) ? NamespaceIssueKind::malformed_engine_name
                                                          : NamespaceIssueKind::unknown_entry;
         if (auto added = append_issue(report, {.kind = issue_kind, .name = name}); !added) {
