@@ -186,7 +186,8 @@ void DurableMutationExecutor::note_worker_exit() noexcept {
     }
 }
 
-auto DurableMutationExecutor::stop_and_drain(const std::chrono::milliseconds deadline) -> Status {
+auto DurableMutationExecutor::stop_and_drain(const std::optional<std::chrono::milliseconds> deadline)
+    -> Status {
     {
         const std::lock_guard lifecycle_lock{lifecycle_mutex_};
         if (stopping_.exchange(true, std::memory_order_acq_rel)) {
@@ -202,12 +203,14 @@ auto DurableMutationExecutor::stop_and_drain(const std::chrono::milliseconds dea
     }
 
     bool timed_out = false;
-    if (deadline.count() > 0) {
-        const auto deadline_at = std::chrono::steady_clock::now() + deadline;
-        std::unique_lock lifecycle_lock{lifecycle_mutex_};
-        while (active_workers_.load(std::memory_order_acquire) != 0 &&
-               std::chrono::steady_clock::now() < deadline_at) {
-            drained_.wait_until(lifecycle_lock, deadline_at);
+    if (deadline.has_value()) {
+        if (deadline->count() > 0) {
+            const auto deadline_at = std::chrono::steady_clock::now() + *deadline;
+            std::unique_lock lifecycle_lock{lifecycle_mutex_};
+            while (active_workers_.load(std::memory_order_acquire) != 0 &&
+                   std::chrono::steady_clock::now() < deadline_at) {
+                drained_.wait_until(lifecycle_lock, deadline_at);
+            }
         }
         timed_out = active_workers_.load(std::memory_order_acquire) != 0;
         if (timed_out) {

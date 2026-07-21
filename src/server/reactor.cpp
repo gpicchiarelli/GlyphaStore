@@ -159,6 +159,41 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     --active_connections_;
 }
 
+void Reactor::stop_accepting() noexcept {
+    shutting_down_ = true;
+    if (listener_.descriptor() >= 0) {
+        static_cast<void>(poller_.remove(listener_.descriptor()));
+        listener_ = TcpListener{};
+    }
+    if (tls_listener_.descriptor() >= 0) {
+        static_cast<void>(poller_.remove(tls_listener_.descriptor()));
+        tls_listener_ = TcpListener{};
+    }
+}
+
+void Reactor::close_idle_connections() noexcept {
+    for (std::uint32_t slot = 0; slot < connections_.size(); ++slot) {
+        auto& candidate = connections_[slot];
+        if (!candidate.socket.valid()) {
+            continue;
+        }
+        if (candidate.request_in_flight || candidate.output_offset < candidate.output.size()) {
+            continue;
+        }
+        close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
+    }
+}
+
+void Reactor::close_all_connections() noexcept {
+    for (std::uint32_t slot = 0; slot < connections_.size(); ++slot) {
+        auto& candidate = connections_[slot];
+        if (!candidate.socket.valid()) {
+            continue;
+        }
+        close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
+    }
+}
+
 auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
     auto& listener = tls_endpoint ? tls_listener_ : listener_;
     while (true) {
@@ -274,7 +309,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
-    while (!current->request_in_flight && current->input_offset < current->input.size()) {
+    while (!shutting_down_ && !current->request_in_flight && current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         auto decoded = decode_request(available);

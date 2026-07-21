@@ -140,9 +140,11 @@ rather than a hard performance-core pin. The executable validates `INIT`, one-ti
 rebinding, wrong-owner rejection, TCP lifecycle, native readiness, partial frames, pipelining,
 large partial output, half-close, connection generations, and graceful stop.
 
-Graceful stop drains durable mutations already admitted before closing Store. Client disconnect does
-not cancel admitted storage work: a stale `(slot, generation)` completion is discarded, and the
-client must classify the mutation as indeterminate.
+Graceful stop stops accepting new connections, drains existing connections within
+`--shutdown-drain-ms`, drains durable mutations already admitted before closing Store, and fails
+closed if the shared deadline expires. Client disconnect does not cancel admitted storage work: a
+stale `(slot, generation)` completion is discarded, and the client must classify the mutation as
+indeterminate.
 
 `glyphastore_server_benchmarks` measures the real loopback TCP protocol using one owner-bound
 connection per client. Server startup, `INIT`, `BIND_WORKER`, connection establishment, request

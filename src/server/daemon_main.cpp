@@ -99,8 +99,9 @@ constexpr std::array kOptionSpecs{
                                  "Expire queued mutations after this wait; 0 disables (default: 1000)"},
     glyphastore::cli::OptionSpec{shutdown_drain, "shutdown-drain-ms", '\0',
                                  glyphastore::cli::OptionArity::required, "MILLISECONDS",
-                                 "Bound durable mutation drain after stop (default: 30000; 0 unbounded). "
-                                 "Queued pre-Store work expires as unavailable on timeout"},
+                                 "Bound connection and durable mutation drain after stop (default: 30000; 0 "
+                                 "unbounded). Stop accepting, close idle connections, expire queued pre-Store "
+                                 "work as unavailable on timeout"},
     glyphastore::cli::OptionSpec{reuse_port,
                                  "reuse-port",
                                  '\0',

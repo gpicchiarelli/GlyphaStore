@@ -83,10 +83,12 @@ class DurableMutationExecutor final {
     void note_rejected(std::size_t worker_index) noexcept;
     [[nodiscard]] auto stats() const -> std::vector<DurableMutationWorkerStats>;
     // Stops admission and drains every admitted mutation before returning.
-    // Zero deadline waits unbounded. A positive deadline expires remaining queued
-    // (pre-Store) work as unavailable once it elapses; in-flight Store mutations
-    // are never cancelled. Returns unavailable if the deadline expired.
-    [[nodiscard]] auto stop_and_drain(std::chrono::milliseconds deadline = {}) -> Status;
+    // nullopt waits unbounded. A set deadline expires remaining queued (pre-Store)
+    // work as unavailable once it elapses (including a zero deadline, which arms
+    // expiry immediately); in-flight Store mutations are never cancelled.
+    // Returns unavailable if the deadline expired before workers finished.
+    [[nodiscard]] auto stop_and_drain(std::optional<std::chrono::milliseconds> deadline = std::nullopt)
+        -> Status;
 
   private:
     struct Lane;

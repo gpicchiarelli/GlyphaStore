@@ -750,6 +750,114 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
+GLYPHA_TEST("server shutdown stops accepting and closes idle connections") {
+    auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 4});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto port = server.port();
+
+    const auto idle_socket = connect_to(port);
+    GLYPHA_REQUIRE(idle_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(idle_socket, 0, 1));
+
+    server.request_stop();
+    const auto refuse_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    bool refused = false;
+    while (std::chrono::steady_clock::now() < refuse_deadline) {
+        const auto probe = connect_to(port);
+        if (probe < 0) {
+            refused = true;
+            break;
+        }
+        static_cast<void>(::close(probe));
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(refused);
+
+    const auto closed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    bool peer_closed = false;
+    while (std::chrono::steady_clock::now() < closed_deadline) {
+        char byte{};
+        const auto received = ::recv(idle_socket, &byte, 1, 0);
+        if (received == 0) {
+            peer_closed = true;
+            break;
+        }
+        if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(peer_closed);
+    GLYPHA_REQUIRE(server.join().has_value());
+    static_cast<void>(::close(idle_socket));
+}
+
+GLYPHA_TEST("server shutdown drains in-flight durable response before closing connection") {
+    ServerTemporaryDirectory temporary;
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 2,
+         .durable_group_mutation_concurrency = 1,
+         .shutdown_drain_ms = 5'000},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    blocker.arm();
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 310,
+        .key = bytes("connection-drain-key"),
+        .value = bytes("flushed"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    server.request_stop();
+    std::optional<glyphastore::Status> joined;
+    std::thread joiner{[&] { joined = server.join(); }};
+    std::this_thread::sleep_for(std::chrono::milliseconds{30});
+    blocker.release();
+
+    const auto frame = receive_response(socket);
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 310);
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    char byte{};
+    const auto closed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    bool peer_closed = false;
+    while (std::chrono::steady_clock::now() < closed_deadline) {
+        const auto received = ::recv(socket, &byte, 1, 0);
+        if (received == 0) {
+            peer_closed = true;
+            break;
+        }
+        if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(peer_closed);
+    joiner.join();
+    GLYPHA_REQUIRE(joined.has_value());
+    GLYPHA_REQUIRE(joined->has_value());
+    static_cast<void>(::close(socket));
+}
+
 GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane producers") {
     ServerTemporaryDirectory temporary;
     GroupBatchObserver observer;

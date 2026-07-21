@@ -49,9 +49,11 @@ struct ReactorConfig {
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
     std::uint32_t durable_mutation_queue_wait_ms{1000};
-    // Bound how long join() waits for durable mutation lanes to finish after
-    // stop. Zero means wait unbounded. When the deadline expires, remaining
-    // queued (not yet in Store) mutations complete as unavailable; in-flight
+    // Bound how long join() waits after stop for connection drain and durable
+    // mutation lanes. Zero means wait unbounded. The same deadline starts when
+    // request_stop() is first observed: listeners stop accepting, idle
+    // connections close, in-flight responses may still flush, then remaining
+    // queued (not yet in Store) mutations complete as unavailable. In-flight
     // Store work is never cancelled and still drains before Store::close().
     // A timed-out drain makes join() return unavailable (fail-closed).
     std::uint32_t shutdown_drain_ms{30'000};
@@ -79,6 +81,19 @@ class Reactor final {
     auto operator=(Reactor&&) -> Reactor& = delete;
 
     [[nodiscard]] auto run_once(int timeout_ms) -> Status;
+    // Remove listeners from the poller and close them. Existing connections stay
+    // open until drained or force-closed. Safe only on the owning executor thread.
+    void stop_accepting() noexcept;
+    // Close connections with no in-flight request and no pending output. Used
+    // while shutting down so idle clients cannot hold the process open.
+    void close_idle_connections() noexcept;
+    // Force-close every connection. Outstanding async completions are still
+    // accounted when they arrive (stale generation discards the response).
+    void close_all_connections() noexcept;
+    [[nodiscard]] auto idle_for_shutdown() const noexcept -> bool {
+        return active_connections_.load(std::memory_order_relaxed) == 0 &&
+               disk_reads_outstanding_ == 0 && durable_mutations_outstanding_ == 0;
+    }
     // Cleartext listen port, or 0 when this reactor has no cleartext listener.
     [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t {
         return listener_.descriptor() >= 0 ? listener_.port() : 0;
@@ -172,6 +187,7 @@ class Reactor final {
     std::size_t disk_reads_outstanding_{};
     std::size_t durable_mutations_outstanding_{};
     std::size_t durable_mutation_bytes_outstanding_{};
+    bool shutting_down_{};
 };
 
 } // namespace glyphastore::server
