@@ -61,11 +61,13 @@ namespace {
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener cleartext_listener,
                  TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
                  ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                 DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
+                 DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
+                 std::shared_ptr<TlsContext> tls)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(cleartext_listener)),
       tls_listener_(std::move(tls_listener)), poller_(std::move(poller)), wakeup_(std::move(wakeup)),
       store_(store), mesh_(mesh), disk_reads_(disk_reads), durable_mutations_(durable_mutations),
-      tls_(std::move(tls)), disk_read_completions_(config_.disk_read_queue_capacity),
+      lifecycle_probes_(lifecycle_probes), tls_(std::move(tls)),
+      disk_read_completions_(config_.disk_read_queue_capacity),
       durable_mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     free_slots_.reserve(config_.maximum_connections);
@@ -77,7 +79,8 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
                      TcpListener cleartext_listener, TcpListener tls_listener, Store& store,
                      ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                     DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls)
+                     DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
+                     std::shared_ptr<TlsContext> tls)
     -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
@@ -96,7 +99,7 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     auto reactor = std::unique_ptr<Reactor>(
         new Reactor(config, executor_id, std::move(cleartext_listener), std::move(tls_listener),
                     std::move(*poller), std::move(*wakeup), store, mesh, disk_reads, durable_mutations,
-                    std::move(tls)));
+                    lifecycle_probes, std::move(tls)));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
@@ -337,6 +340,22 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             break;
         case RequestOpcode::ping:
             response.value = decoded->frame.value;
+            break;
+        case RequestOpcode::health:
+            if (lifecycle_probes_.live != nullptr &&
+                lifecycle_probes_.live(lifecycle_probes_.context)) {
+                response.value = bytes("GlyphaStore/live");
+            } else {
+                response.status = ResponseStatus::internal_error;
+            }
+            break;
+        case RequestOpcode::ready:
+            if (lifecycle_probes_.ready != nullptr &&
+                lifecycle_probes_.ready(lifecycle_probes_.context)) {
+                response.value = bytes("GlyphaStore/ready");
+            } else {
+                response.status = ResponseStatus::internal_error;
+            }
             break;
         case RequestOpcode::get:
         case RequestOpcode::put:
@@ -665,6 +684,8 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         break;
     case RequestOpcode::init:
     case RequestOpcode::ping:
+    case RequestOpcode::health:
+    case RequestOpcode::ready:
     case RequestOpcode::bind_worker:
         response.status = ResponseStatus::invalid_request;
         break;

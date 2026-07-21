@@ -129,6 +129,27 @@ auto initialize_and_bind(const int socket, const std::uint32_t worker, const std
            bound->frame.owner_worker == worker && bound->frame.worker_count == worker_count;
 }
 
+struct LifecycleProbeResponse final {
+    glyphastore::server::DecodedFrame<glyphastore::server::ResponseView> decoded;
+    std::vector<std::byte> frame_bytes;
+};
+
+auto probe_lifecycle(const int socket, const glyphastore::server::RequestOpcode opcode,
+                     const std::uint64_t request_id) -> std::optional<LifecycleProbeResponse> {
+    const auto request =
+        glyphastore::server::encode_request({.opcode = opcode, .request_id = request_id});
+    if (!request || !send_all(socket, *request)) {
+        return std::nullopt;
+    }
+    LifecycleProbeResponse result{.frame_bytes = receive_response(socket)};
+    const auto decoded = glyphastore::server::decode_response(result.frame_bytes);
+    if (!decoded) {
+        return std::nullopt;
+    }
+    result.decoded = *decoded;
+    return result;
+}
+
 class ServerTemporaryDirectory final {
   public:
     ServerTemporaryDirectory() {
@@ -748,6 +769,121 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     GLYPHA_REQUIRE(!abandoned.has_value());
     GLYPHA_REQUIRE(abandoned.error().code == glyphastore::ErrorCode::not_found);
     GLYPHA_REQUIRE((*recovered)->close().has_value());
+}
+
+GLYPHA_TEST("server HEALTH and READY succeed while operational") {
+    auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 2});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    GLYPHA_REQUIRE(server.live());
+    GLYPHA_REQUIRE(server.ready());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    const auto health = probe_lifecycle(socket, glyphastore::server::RequestOpcode::health, 401);
+    GLYPHA_REQUIRE(health.has_value());
+    GLYPHA_REQUIRE(health->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(health->decoded.frame.value) == "GlyphaStore/live");
+    const auto ready = probe_lifecycle(socket, glyphastore::server::RequestOpcode::ready, 402);
+    GLYPHA_REQUIRE(ready.has_value());
+    GLYPHA_REQUIRE(ready->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(ready->decoded.frame.value) == "GlyphaStore/ready");
+    static_cast<void>(::close(socket));
+
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server READY fails during shutdown while HEALTH stays live") {
+    auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 2});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    server.request_stop();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (!server.live()) {
+            break;
+        }
+        const auto health = probe_lifecycle(socket, glyphastore::server::RequestOpcode::health, 411);
+        GLYPHA_REQUIRE(health.has_value());
+        GLYPHA_REQUIRE(health->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+        const auto ready = probe_lifecycle(socket, glyphastore::server::RequestOpcode::ready, 412);
+        GLYPHA_REQUIRE(ready.has_value());
+        GLYPHA_REQUIRE(ready->decoded.frame.status == glyphastore::server::ResponseStatus::internal_error);
+        if (!server.ready()) {
+            static_cast<void>(::close(socket));
+            GLYPHA_REQUIRE(server.join().has_value());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    static_cast<void>(::close(socket));
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server READY fails under maintenance emergency") {
+    ServerTemporaryDirectory temporary;
+    glyphastore::DurableResourceLimits limits{};
+    limits.max_segment_count = 1;
+    limits.max_store_bytes = 4ULL * glyphastore::kSegmentSizeBytes;
+    limits.max_temporary_compaction_bytes = glyphastore::kSegmentSizeBytes;
+    {
+        auto seeded = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = temporary.store_path(),
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .durable_limits = limits,
+            .maintenance = {.mode = glyphastore::MaintenanceMode::cooperative},
+        });
+        GLYPHA_REQUIRE(seeded.has_value());
+        GLYPHA_REQUIRE((*seeded)->put("seed", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*seeded)->close().has_value());
+    }
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 2},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+         .durable_limits = limits,
+         .maintenance =
+             {
+                 .mode = glyphastore::MaintenanceMode::background,
+                 .min_eval_interval_ms = 60'000,
+                 .max_eval_interval_ms = 60'000,
+             }});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    const auto emergency_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < emergency_deadline) {
+        const auto ready = probe_lifecycle(socket, glyphastore::server::RequestOpcode::ready, 422);
+        GLYPHA_REQUIRE(ready.has_value());
+        if (ready->decoded.frame.status == glyphastore::server::ResponseStatus::internal_error) {
+            GLYPHA_REQUIRE(!server.ready());
+            const auto health = probe_lifecycle(socket, glyphastore::server::RequestOpcode::health, 421);
+            GLYPHA_REQUIRE(health.has_value());
+            GLYPHA_REQUIRE(health->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+            static_cast<void>(::close(socket));
+            server.request_stop();
+            GLYPHA_REQUIRE(server.join().has_value());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+    GLYPHA_REQUIRE(false);
 }
 
 GLYPHA_TEST("server shutdown stops accepting and closes idle connections") {

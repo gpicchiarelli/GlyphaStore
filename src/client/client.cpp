@@ -479,6 +479,10 @@ struct WorkerConnection {
         return "erase";
     case server::RequestOpcode::bind_worker:
         return "bind_worker";
+    case server::RequestOpcode::health:
+        return "health";
+    case server::RequestOpcode::ready:
+        return "ready";
     }
     return "unknown";
 }

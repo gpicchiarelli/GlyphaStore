@@ -142,9 +142,10 @@ large partial output, half-close, connection generations, and graceful stop.
 
 Graceful stop stops accepting new connections, drains existing connections within
 `--shutdown-drain-ms`, drains durable mutations already admitted before closing Store, and fails
-closed if the shared deadline expires. Client disconnect does not cancel admitted storage work: a
-stale `(slot, generation)` completion is discarded, and the client must classify the mutation as
-indeterminate.
+closed if the shared deadline expires. Wire-protocol `HEALTH` and `READY` report process liveness
+and traffic readiness without requiring Worker binding. Client disconnect does not cancel admitted
+storage work: a stale `(slot, generation)` completion is discarded, and the client must classify the
+mutation as indeterminate.
 
 `glyphastore_server_benchmarks` measures the real loopback TCP protocol using one owner-bound
 connection per client. Server startup, `INIT`, `BIND_WORKER`, connection establishment, request

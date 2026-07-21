@@ -276,6 +276,13 @@ struct Store::Impl {
         }
     }
 
+    [[nodiscard]] auto operational() const noexcept -> bool {
+        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
+            return false;
+        }
+        return !durable_runtime || durable_runtime->healthy();
+    }
+
     [[nodiscard]] auto close() -> Status {
         auto expected = LifecycleState::open;
         if (!lifecycle.compare_exchange_strong(expected, LifecycleState::closing, std::memory_order_acq_rel,
@@ -939,6 +946,10 @@ auto detail::StoreAccess::maintenance_controller(Store& store) noexcept -> Maint
 
 auto detail::StoreAccess::maintenance_mutations_rejected(const Store& store) noexcept -> bool {
     return store.impl_->maintenance != nullptr && store.impl_->maintenance->mutations_rejected();
+}
+
+auto detail::StoreAccess::operational(const Store& store) noexcept -> bool {
+    return store.impl_ != nullptr && store.impl_->operational();
 }
 
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {

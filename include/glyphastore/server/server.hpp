@@ -51,6 +51,11 @@ class Server final {
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
     }
+    // Process liveness: started and no executor failure has been recorded.
+    [[nodiscard]] auto live() const noexcept -> bool;
+    // Traffic readiness: live, not shutting down, Store admission open, durable catalog healthy,
+    // and maintenance is not in emergency or a sticky faulted state.
+    [[nodiscard]] auto ready() const noexcept -> bool;
 
   private:
     Server(ReactorConfig config, std::unique_ptr<Store> store);

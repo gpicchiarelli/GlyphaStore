@@ -15,6 +15,14 @@
 namespace glyphastore::server {
 namespace {
 
+[[nodiscard]] auto probe_server_live(const void* context) noexcept -> bool {
+    return static_cast<const Server*>(context)->live();
+}
+
+[[nodiscard]] auto probe_server_ready(const void* context) noexcept -> bool {
+    return static_cast<const Server*>(context)->ready();
+}
+
 [[nodiscard]] auto validate_config(const ReactorConfig& config) -> Status {
     constexpr std::size_t maximum_queue_capacity = std::size_t{1} << 30U;
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
@@ -129,6 +137,11 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
     const bool listen_tls = tls_only || dual_listen;
     std::uint16_t shared_cleartext_port = config.port;
     std::uint16_t shared_tls_port = dual_listen ? *config.tls_port : config.port;
+    const ServerLifecycleProbes lifecycle_probes{
+        .live = probe_server_live,
+        .ready = probe_server_ready,
+        .context = server.get(),
+    };
     for (std::size_t executor = 0; executor < server->store_->worker_count(); ++executor) {
         TcpListener cleartext_listener;
         TcpListener tls_listener;
@@ -159,7 +172,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         auto reactor =
             Reactor::create(config, executor, std::move(cleartext_listener), std::move(tls_listener),
                             *server->store_, server->mesh_, *server->disk_reads_,
-                            server->durable_mutations_.get(), tls_context);
+                            server->durable_mutations_.get(), lifecycle_probes, tls_context);
         if (!reactor) {
             return unexpected(reactor.error());
         }
@@ -271,6 +284,30 @@ auto Server::cleartext_port() const noexcept -> std::uint16_t {
 
 auto Server::tls_port() const noexcept -> std::uint16_t {
     return reactors_.empty() ? 0 : reactors_.front()->tls_port();
+}
+
+auto Server::live() const noexcept -> bool {
+    return started_.load(std::memory_order_acquire) && healthy();
+}
+
+auto Server::ready() const noexcept -> bool {
+    if (!live()) {
+        return false;
+    }
+    if (stop_requested_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    if (!detail::StoreAccess::operational(*store_)) {
+        return false;
+    }
+    const auto snapshot = store_->maintenance_snapshot();
+    if (snapshot.mutations_rejected) {
+        return false;
+    }
+    if (snapshot.state == MaintenanceState::faulted && snapshot.last_error.has_value()) {
+        return false;
+    }
+    return true;
 }
 
 auto Server::adopted_connections_per_executor() const -> std::vector<std::size_t> {

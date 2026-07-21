@@ -27,7 +27,12 @@ drains existing connections and admitted durable mutations (bounded by `--shutdo
 30s; `0` waits unbounded), then closes the Store. Idle connections are closed once in-flight responses
 flush; new requests on draining connections are refused. Queued mutations that have not entered Store
 execution when the drain deadline expires complete as `unavailable`; in-flight Store work is never
-cancelled. A timed-out drain makes process exit fail closed (`join` returns an error). `--quiet`
+cancelled. A timed-out drain makes process exit fail closed (`join` returns an error).
+
+Wire-protocol `HEALTH` (opcode 7) and `READY` (opcode 8) probes are accepted before `INIT`/`BIND_WORKER`.
+`HEALTH` returns `OK` with value `GlyphaStore/live` while executors are live; `READY` returns `OK`
+with value `GlyphaStore/ready` only when the Store is operational and maintenance is not in emergency
+or a sticky faulted state. Failed probes return `INTERNAL_ERROR`. `--quiet`
 suppresses normal startup and shutdown messages, but never suppresses errors.
 
 Important server controls include bounded connection counts, handoff queues, event batches, and per-connection

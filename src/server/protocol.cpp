@@ -71,6 +71,10 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         return RequestOpcode::erase;
     case static_cast<std::uint8_t>(RequestOpcode::bind_worker):
         return RequestOpcode::bind_worker;
+    case static_cast<std::uint8_t>(RequestOpcode::health):
+        return RequestOpcode::health;
+    case static_cast<std::uint8_t>(RequestOpcode::ready):
+        return RequestOpcode::ready;
     default:
         return fail(ErrorCode::invalid_record, "request contains an unknown opcode");
     }

@@ -24,6 +24,12 @@
 
 namespace glyphastore::server {
 
+struct ServerLifecycleProbes final {
+    bool (*live)(const void* context) noexcept{};
+    bool (*ready)(const void* context) noexcept{};
+    const void* context{};
+};
+
 struct ReactorConfig {
     std::string bind_address{"127.0.0.1"};
     std::uint16_t port{7379};
@@ -72,6 +78,7 @@ class Reactor final {
                                      TcpListener cleartext_listener, TcpListener tls_listener, Store& store,
                                      ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                                      DurableMutationExecutor* durable_mutations,
+                                     ServerLifecycleProbes lifecycle_probes = {},
                                      std::shared_ptr<TlsContext> tls = {})
         -> Result<std::unique_ptr<Reactor>>;
 
@@ -139,7 +146,8 @@ class Reactor final {
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener cleartext_listener,
             TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
             ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-            DurableMutationExecutor* durable_mutations, std::shared_ptr<TlsContext> tls);
+            DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
+            std::shared_ptr<TlsContext> tls);
 
     [[nodiscard]] auto accept_ready(bool tls_endpoint) -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
@@ -176,6 +184,7 @@ class Reactor final {
     ConnectionHandoffMesh& mesh_;
     DiskReadExecutor& disk_reads_;
     DurableMutationExecutor* durable_mutations_{};
+    ServerLifecycleProbes lifecycle_probes_{};
     std::shared_ptr<TlsContext> tls_;
     BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
     BoundedMpscQueue<DurableMutationCompletion> durable_mutation_completions_;

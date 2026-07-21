@@ -66,6 +66,14 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 | 4 | `PUT` | key, value; optional `expire_at_ns` | empty value |
 | 5 | `ERASE` | key | empty value or `NOT_FOUND` according to Store result |
 | 6 | `BIND_WORKER` | `target_worker` | confirms worker metadata; may transfer connection ownership |
+| 7 | `HEALTH` | no key/value required | value is ASCII `GlyphaStore/live`; liveness probe |
+| 8 | `READY` | no key/value required | value is ASCII `GlyphaStore/ready`; readiness probe |
+
+`HEALTH` and `READY` are accepted before initialization and binding. They do not mutate Store state.
+`HEALTH` returns `OK` while the daemon process is live (started and no executor failure recorded).
+`READY` returns `OK` only while the server is ready to accept traffic: live, not shutting down, Store
+admission open, durable catalog healthy, and maintenance is not in emergency or a sticky faulted
+state. Failed probes return `INTERNAL_ERROR` with an empty value.
 
 Fields not listed for an opcode must be sent as zero/empty. The current decoder may accept ignored data, but clients must not rely on it.
 
@@ -92,8 +100,8 @@ A conventional session is:
 stateDiagram-v2
     [*] --> Connected
     Connected --> Initialized: INIT
-    Connected --> Connected: PING
-    Initialized --> Initialized: INIT or PING
+    Connected --> Connected: PING / HEALTH / READY
+    Initialized --> Initialized: INIT or PING or HEALTH or READY
     Initialized --> Bound: BIND_WORKER once
     Bound --> Bound: PING / GET / PUT / ERASE
     Bound --> [*]: peer close, protocol failure, or server close
@@ -101,7 +109,7 @@ stateDiagram-v2
 
 Current version-2 behavior is precise:
 
-- `PING` is accepted before initialization and binding;
+- `PING`, `HEALTH`, and `READY` are accepted before initialization and binding;
 - repeated `INIT` is accepted and returns the same identification value;
 - `BIND_WORKER` requires successful initialization, a valid target, and no prior bind;
 - `GET`, `PUT`, and `ERASE` before binding return `NOT_BOUND`;
