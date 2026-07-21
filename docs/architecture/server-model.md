@@ -77,8 +77,10 @@ key bytes
 value bytes
 ```
 
-`expire_at_ns` is an absolute Unix-epoch nanosecond timestamp for `PUT` and is ignored by other
-opcodes. `target_worker` is used only by `BIND_WORKER`. The daemon supplies its own current
+`expire_at_ns` is an absolute Unix-epoch nanosecond timestamp for `PUT` and must be zero for other
+opcodes. `target_worker` is meaningful only for `BIND_WORKER` (a real Worker id); all other opcodes
+must set it to `kNoWorker`. Encoders and decoders reject non-canonical opcode-specific fields.
+The daemon supplies its own current
 wall-clock timestamp to Store reads.
 
 A response header is also 40 bytes:

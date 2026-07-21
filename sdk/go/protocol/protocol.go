@@ -27,6 +27,9 @@ const (
 	OpcodePut        Opcode = 4
 	OpcodeErase      Opcode = 5
 	OpcodeBindWorker Opcode = 6
+	OpcodeHealth     Opcode = 7
+	OpcodeReady      Opcode = 8
+	OpcodeStats      Opcode = 9
 )
 
 // Status is a wire-protocol v2 response status.
@@ -155,21 +158,25 @@ func validateRequestFields(
 		if len(key) != 0 || len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
 			return errors.New("INIT request cannot carry key, value, expiry, or target_worker")
 		}
+	case OpcodeHealth, OpcodeReady, OpcodeStats:
+		if len(key) != 0 || len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
+			return errors.New("lifecycle probe cannot carry key, value, expiry, or target_worker")
+		}
 	case OpcodePing:
 		if len(key) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
 			return errors.New("PING request cannot carry key, expiry, or target_worker")
 		}
 	case OpcodeGet:
-		if len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
-			return errors.New("GET request cannot carry value, expiry, or target_worker")
+		if len(key) == 0 || len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
+			return errors.New("GET request requires a key and cannot carry value, expiry, or target_worker")
 		}
 	case OpcodePut:
-		if targetWorker != NoWorker {
-			return errors.New("PUT request cannot carry target_worker")
+		if len(key) == 0 || targetWorker != NoWorker {
+			return errors.New("PUT request requires a key and cannot carry target_worker")
 		}
 	case OpcodeErase:
-		if len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
-			return errors.New("ERASE request cannot carry value, expiry, or target_worker")
+		if len(key) == 0 || len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
+			return errors.New("ERASE request requires a key and cannot carry value, expiry, or target_worker")
 		}
 	case OpcodeBindWorker:
 		if len(key) != 0 || len(value) != 0 || expireAtNs != 0 {
@@ -218,11 +225,16 @@ func DecodeRequest(frame []byte, maximumFrameBytes int) (Request, error) {
 	valueStart := keyStart + keySize
 	key := append([]byte(nil), frame[keyStart:valueStart]...)
 	value := append([]byte(nil), frame[valueStart:valueStart+valueSize]...)
+	expireAtNs := binary.LittleEndian.Uint64(frame[24:32])
+	targetWorker := binary.LittleEndian.Uint32(frame[32:36])
+	if err := validateRequestFields(opcode, key, value, expireAtNs, targetWorker); err != nil {
+		return Request{}, err
+	}
 	return Request{
 		Opcode:       opcode,
 		RequestID:    binary.LittleEndian.Uint64(frame[8:16]),
-		ExpireAtNs:   binary.LittleEndian.Uint64(frame[24:32]),
-		TargetWorker: binary.LittleEndian.Uint32(frame[32:36]),
+		ExpireAtNs:   expireAtNs,
+		TargetWorker: targetWorker,
 		Key:          key,
 		Value:        value,
 	}, nil
@@ -344,7 +356,8 @@ func WorkerFor(key []byte, workerCount uint32) (uint32, error) {
 
 func validOpcode(opcode Opcode) bool {
 	switch opcode {
-	case OpcodeInit, OpcodePing, OpcodeGet, OpcodePut, OpcodeErase, OpcodeBindWorker:
+	case OpcodeInit, OpcodePing, OpcodeGet, OpcodePut, OpcodeErase, OpcodeBindWorker,
+		OpcodeHealth, OpcodeReady, OpcodeStats:
 		return true
 	default:
 		return false

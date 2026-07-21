@@ -35,7 +35,10 @@ class ProtocolTest < Minitest::Test
       GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::ERASE, 5, key: "erase-key".b),
       GlyphaStore::Protocol.encode_request(
         GlyphaStore::Protocol::Opcode::BIND_WORKER, 6, target_worker: 2
-      )
+      ),
+      GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::HEALTH, 7),
+      GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::READY, 8),
+      GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::STATS, 9)
     ]
     assert_equal expected, encoded
   end

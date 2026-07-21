@@ -121,6 +121,59 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
     return static_cast<std::uint32_t>(value);
 }
 
+[[nodiscard]] auto validate_request_fields(const RequestView& request) -> Status {
+    const bool has_key = !request.key.empty();
+    const bool has_value = !request.value.empty();
+    const bool has_expiry = request.expire_at_ns != 0;
+    const bool has_target = request.target_worker != kNoWorker;
+    switch (request.opcode) {
+    case RequestOpcode::init:
+    case RequestOpcode::health:
+    case RequestOpcode::ready:
+    case RequestOpcode::stats:
+        if (has_key || has_value || has_expiry || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "lifecycle probe/INIT cannot carry key, value, expiry, or target_worker");
+        }
+        return {};
+    case RequestOpcode::ping:
+        if (has_key || has_expiry || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "PING request cannot carry key, expiry, or target_worker");
+        }
+        return {};
+    case RequestOpcode::get:
+        if (!has_key || has_value || has_expiry || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "GET request requires a key and cannot carry value, expiry, or target_worker");
+        }
+        return {};
+    case RequestOpcode::put:
+        if (!has_key || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "PUT request requires a key and cannot carry target_worker");
+        }
+        return {};
+    case RequestOpcode::erase:
+        if (!has_key || has_value || has_expiry || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "ERASE request requires a key and cannot carry value, expiry, or target_worker");
+        }
+        return {};
+    case RequestOpcode::bind_worker:
+        if (has_key || has_value || has_expiry) {
+            return fail(ErrorCode::invalid_argument,
+                        "BIND_WORKER request cannot carry key, value, or expiry");
+        }
+        if (!has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "BIND_WORKER request requires an explicit target_worker");
+        }
+        return {};
+    }
+    return fail(ErrorCode::invalid_argument, "request contains an unknown opcode");
+}
+
 } // namespace
 
 auto decode_request(const std::span<const std::byte> input, const std::size_t maximum_frame_bytes)
@@ -156,15 +209,17 @@ auto decode_request(const std::span<const std::byte> input, const std::size_t ma
     }
     const auto key = input.subspan(kRequestHeaderBytes, key_size);
     const auto value = input.subspan(kRequestHeaderBytes + key_size, value_size);
-    return DecodedFrame<RequestView>{.complete = true,
-                                     .consumed = frame_size,
-                                     .frame = RequestView{.opcode = *opcode,
-                                                          .flags = std::to_integer<std::uint8_t>(input[7]),
-                                                          .request_id = load_u64(input, 8),
-                                                          .expire_at_ns = load_u64(input, 24),
-                                                          .target_worker = load_u32(input, 32),
-                                                          .key = key,
-                                                          .value = value}};
+    RequestView frame{.opcode = *opcode,
+                      .flags = std::to_integer<std::uint8_t>(input[7]),
+                      .request_id = load_u64(input, 8),
+                      .expire_at_ns = load_u64(input, 24),
+                      .target_worker = load_u32(input, 32),
+                      .key = key,
+                      .value = value};
+    if (auto valid = validate_request_fields(frame); !valid) {
+        return unexpected(valid.error());
+    }
+    return DecodedFrame<RequestView>{.complete = true, .consumed = frame_size, .frame = frame};
 }
 
 auto decode_response(const std::span<const std::byte> input, const std::size_t maximum_frame_bytes)
@@ -208,6 +263,9 @@ auto decode_response(const std::span<const std::byte> input, const std::size_t m
 auto encoded_request_size(const RequestView& request) -> Result<std::size_t> {
     if (request.flags != 0) {
         return fail(ErrorCode::invalid_argument, "request flags are not defined in protocol v2");
+    }
+    if (auto valid = validate_request_fields(request); !valid) {
+        return unexpected(valid.error());
     }
     const auto frame_size = checked_frame_size(kRequestHeaderBytes, request.key.size(), request.value.size());
     if (!frame_size || *frame_size > kMaxFrameBytes) {

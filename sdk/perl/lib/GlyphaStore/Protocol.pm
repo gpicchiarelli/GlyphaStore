@@ -17,7 +17,7 @@ BEGIN {
 
 our @EXPORT_OK = qw(
     PROTOCOL_VERSION REQUEST_HEADER_BYTES RESPONSE_HEADER_BYTES MAX_FRAME_BYTES NO_WORKER
-    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER
+    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
     STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND
     encode_request encode_request_parts encode_request_hot decode_request encode_response
@@ -39,6 +39,9 @@ use constant OP_GET         => 3;
 use constant OP_PUT         => 4;
 use constant OP_ERASE       => 5;
 use constant OP_BIND_WORKER => 6;
+use constant OP_HEALTH      => 7;
+use constant OP_READY       => 8;
+use constant OP_STATS       => 9;
 
 use constant STATUS_OK              => 0;
 use constant STATUS_INVALID_REQUEST => 1;
@@ -78,7 +81,7 @@ sub _as_u64 {
 sub encode_request_parts {
     my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
     die "unknown protocol-v2 opcode\n"
-        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BIND_WORKER;
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_STATS;
 
     $key   = _require_bytes($key, 'key');
     $value = _require_bytes($value, 'value');
@@ -95,7 +98,7 @@ sub encode_request_parts {
 sub encode_request_hot {
     my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
     die "unknown protocol-v2 opcode\n"
-        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BIND_WORKER;
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_STATS;
     $key   = _require_bytes($key, 'key');
     $value = _require_bytes($value, 'value');
     $expire_at_ns = 0 unless defined $expire_at_ns;
@@ -103,24 +106,22 @@ sub encode_request_hot {
     return _pack_request($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker);
 }
 
-sub _pack_request {
-    my ($opcode, $rid, $key, $value, $expire, $target_worker) = @_;
-    my $key_len = length($key);
-    my $value_len = length($value);
+sub _validate_request_fields {
+    my ($opcode, $key_len, $value_len, $expire, $target_worker) = @_;
     if ($opcode == OP_INIT && ($key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
         die "INIT request cannot carry key, value, expiry, or target_worker\n";
     }
     if ($opcode == OP_PING && ($key_len || $expire || $target_worker != NO_WORKER)) {
         die "PING request cannot carry key, expiry, or target_worker\n";
     }
-    if ($opcode == OP_GET && ($value_len || $expire || $target_worker != NO_WORKER)) {
-        die "GET request cannot carry value, expiry, or target_worker\n";
+    if ($opcode == OP_GET && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        die "GET request requires a key and cannot carry value, expiry, or target_worker\n";
     }
-    if ($opcode == OP_PUT && $target_worker != NO_WORKER) {
-        die "PUT request cannot carry target_worker\n";
+    if ($opcode == OP_PUT && (!$key_len || $target_worker != NO_WORKER)) {
+        die "PUT request requires a key and cannot carry target_worker\n";
     }
-    if ($opcode == OP_ERASE && ($value_len || $expire || $target_worker != NO_WORKER)) {
-        die "ERASE request cannot carry value, expiry, or target_worker\n";
+    if ($opcode == OP_ERASE && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        die "ERASE request requires a key and cannot carry value, expiry, or target_worker\n";
     }
     if ($opcode == OP_BIND_WORKER && ($key_len || $value_len || $expire)) {
         die "BIND_WORKER request cannot carry key, value, or expiry\n";
@@ -128,6 +129,17 @@ sub _pack_request {
     if ($opcode == OP_BIND_WORKER && $target_worker == NO_WORKER) {
         die "BIND_WORKER request requires an explicit target_worker\n";
     }
+    if (($opcode == OP_HEALTH || $opcode == OP_READY || $opcode == OP_STATS)
+        && ($key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        die "lifecycle probe cannot carry key, value, expiry, or target_worker\n";
+    }
+}
+
+sub _pack_request {
+    my ($opcode, $rid, $key, $value, $expire, $target_worker) = @_;
+    my $key_len = length($key);
+    my $value_len = length($value);
+    _validate_request_fields($opcode, $key_len, $value_len, $expire, $target_worker);
 
     my $frame_size = REQUEST_HEADER_BYTES + $key_len + $value_len;
     die "request exceeds the protocol frame limit\n" if $frame_size > MAX_FRAME_BYTES;
@@ -156,16 +168,19 @@ sub decode_request {
         if $frame_size != length($frame) || $frame_size > $maximum;
     die "request protocol version is unsupported\n" if $version != PROTOCOL_VERSION;
     die "request canonical fields are invalid\n" if $flags != 0 || $reserved != 0;
-    die "unknown protocol-v2 opcode\n" if $opcode < OP_INIT || $opcode > OP_BIND_WORKER;
+    die "unknown protocol-v2 opcode\n" if $opcode < OP_INIT || $opcode > OP_STATS;
     die "request payload extent is invalid\n"
         if REQUEST_HEADER_BYTES + $key_size + $value_size != $frame_size;
+    my $key = substr($frame, REQUEST_HEADER_BYTES, $key_size);
+    my $value = substr($frame, REQUEST_HEADER_BYTES + $key_size, $value_size);
+    _validate_request_fields($opcode, $key_size, $value_size, $expire_at_ns, $target_worker);
     return {
         opcode         => $opcode,
         request_id     => $request_id,
         expire_at_ns   => $expire_at_ns,
         target_worker  => $target_worker,
-        key            => substr($frame, REQUEST_HEADER_BYTES, $key_size),
-        value          => substr($frame, REQUEST_HEADER_BYTES + $key_size, $value_size),
+        key            => $key,
+        value          => $value,
     };
 }
 

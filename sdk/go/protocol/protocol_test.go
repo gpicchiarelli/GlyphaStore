@@ -78,6 +78,21 @@ func TestRequestEncoderMatchesEveryCanonicalFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded = append(encoded, frame)
+	frame, err = protocol.EncodeRequest(protocol.OpcodeHealth, 7, nil, nil, 0, protocol.NoWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, frame)
+	frame, err = protocol.EncodeRequest(protocol.OpcodeReady, 8, nil, nil, 0, protocol.NoWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, frame)
+	frame, err = protocol.EncodeRequest(protocol.OpcodeStats, 9, nil, nil, 0, protocol.NoWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, frame)
 
 	if len(encoded) != len(expected) {
 		t.Fatalf("frame count: got %d want %d", len(encoded), len(expected))
@@ -102,6 +117,7 @@ func TestRequestDecoderRoundTripsCanonicalFixture(t *testing.T) {
 	wantOpcodes := []protocol.Opcode{
 		protocol.OpcodeInit, protocol.OpcodePing, protocol.OpcodeGet,
 		protocol.OpcodePut, protocol.OpcodeErase, protocol.OpcodeBindWorker,
+		protocol.OpcodeHealth, protocol.OpcodeReady, protocol.OpcodeStats,
 	}
 	for i, opcode := range wantOpcodes {
 		if decoded[i].Opcode != opcode {

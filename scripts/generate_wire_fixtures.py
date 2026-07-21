@@ -82,6 +82,9 @@ def request_corpus() -> bytes:
         request(4, 4, key=b"put\x00key", value=b"\x10\x20\xff", expire_at_ns=123456789),
         request(5, 5, key=b"erase-key"),
         request(6, 6, target_worker=2),
+        request(7, 7),
+        request(8, 8),
+        request(9, 9),
     )
     return b"".join(frames)
 
@@ -110,7 +113,7 @@ def split_frames(data: bytes, header_bytes: int) -> list[bytes]:
 
 def verify_requests(data: bytes) -> None:
     frames = split_frames(data, REQUEST_HEADER_BYTES)
-    if len(frames) != 6:
+    if len(frames) != 9:
         raise ValueError("request corpus must contain every protocol-v2 opcode")
     for expected_opcode, frame in enumerate(frames, start=1):
         frame_size, version, opcode, flags, request_id, key_size, value_size = struct.unpack_from(
@@ -124,6 +127,22 @@ def verify_requests(data: bytes) -> None:
             raise ValueError("request fixture payload extent mismatch")
         if struct.unpack_from("<I", frame, 36)[0] != 0:
             raise ValueError("request fixture reserved field is nonzero")
+        expire_at_ns, target_worker = struct.unpack_from("<QI", frame, 24)
+        if expected_opcode == 6:
+            if target_worker == NO_WORKER:
+                raise ValueError("BIND_WORKER fixture must set target_worker")
+        elif target_worker != NO_WORKER:
+            raise ValueError("non-BIND fixture target_worker must be NO_WORKER")
+        if expected_opcode in (1, 7, 8, 9) and (key_size or value_size or expire_at_ns):
+            raise ValueError("lifecycle/INIT fixture must have empty payloads")
+        if expected_opcode == 2 and (key_size or expire_at_ns):
+            raise ValueError("PING fixture cannot carry key or expiry")
+        if expected_opcode in (3, 5) and (value_size or expire_at_ns or key_size == 0):
+            raise ValueError("GET/ERASE fixture must carry a key without value/expiry")
+        if expected_opcode == 4 and key_size == 0:
+            raise ValueError("PUT fixture requires a key")
+        if expected_opcode == 6 and (key_size or value_size or expire_at_ns):
+            raise ValueError("BIND_WORKER fixture cannot carry key, value, or expiry")
 
 
 def verify_responses(data: bytes) -> None:

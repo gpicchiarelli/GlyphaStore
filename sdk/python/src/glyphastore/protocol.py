@@ -23,6 +23,9 @@ class Opcode(IntEnum):
     PUT = 4
     ERASE = 5
     BIND_WORKER = 6
+    HEALTH = 7
+    READY = 8
+    STATS = 9
 
 
 class Status(IntEnum):
@@ -68,6 +71,37 @@ def _u32(value: int, field: str) -> int:
     return value
 
 
+def _validate_request_fields(
+    opcode: Opcode,
+    key: bytes,
+    value: bytes,
+    expire_at_ns: int,
+    target_worker: int,
+) -> None:
+    if opcode is Opcode.INIT and (key or value or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("INIT request cannot carry key, value, expiry, or target_worker")
+    if opcode is Opcode.PING and (key or expire_at_ns != 0 or target_worker != NO_WORKER):
+        raise ValueError("PING request cannot carry key, expiry, or target_worker")
+    if opcode is Opcode.GET and (
+        not key or value or expire_at_ns != 0 or target_worker != NO_WORKER
+    ):
+        raise ValueError("GET request requires a key and cannot carry value, expiry, or target_worker")
+    if opcode is Opcode.PUT and (not key or target_worker != NO_WORKER):
+        raise ValueError("PUT request requires a key and cannot carry target_worker")
+    if opcode is Opcode.ERASE and (
+        not key or value or expire_at_ns != 0 or target_worker != NO_WORKER
+    ):
+        raise ValueError("ERASE request requires a key and cannot carry value, expiry, or target_worker")
+    if opcode is Opcode.BIND_WORKER and (key or value or expire_at_ns != 0):
+        raise ValueError("BIND_WORKER request cannot carry key, value, or expiry")
+    if opcode is Opcode.BIND_WORKER and target_worker == NO_WORKER:
+        raise ValueError("BIND_WORKER request requires an explicit target_worker")
+    if opcode in (Opcode.HEALTH, Opcode.READY, Opcode.STATS) and (
+        key or value or expire_at_ns != 0 or target_worker != NO_WORKER
+    ):
+        raise ValueError("lifecycle probe cannot carry key, value, expiry, or target_worker")
+
+
 def encode_request(
     opcode: Opcode,
     request_id: int,
@@ -86,20 +120,7 @@ def encode_request(
         raise TypeError("key and value must be bytes-like")
     key = bytes(key)
     value = bytes(value)
-    if opcode is Opcode.INIT and (key or value or expire_at_ns != 0 or target_worker != NO_WORKER):
-        raise ValueError("INIT request cannot carry key, value, expiry, or target_worker")
-    if opcode is Opcode.PING and (key or expire_at_ns != 0 or target_worker != NO_WORKER):
-        raise ValueError("PING request cannot carry key, expiry, or target_worker")
-    if opcode is Opcode.GET and (value or expire_at_ns != 0 or target_worker != NO_WORKER):
-        raise ValueError("GET request cannot carry value, expiry, or target_worker")
-    if opcode is Opcode.PUT and target_worker != NO_WORKER:
-        raise ValueError("PUT request cannot carry target_worker")
-    if opcode is Opcode.ERASE and (value or expire_at_ns != 0 or target_worker != NO_WORKER):
-        raise ValueError("ERASE request cannot carry value, expiry, or target_worker")
-    if opcode is Opcode.BIND_WORKER and (key or value or expire_at_ns != 0):
-        raise ValueError("BIND_WORKER request cannot carry key, value, or expiry")
-    if opcode is Opcode.BIND_WORKER and target_worker == NO_WORKER:
-        raise ValueError("BIND_WORKER request requires an explicit target_worker")
+    _validate_request_fields(opcode, key, value, expire_at_ns, target_worker)
     _u64(request_id, "request_id")
     _u64(expire_at_ns, "expire_at_ns")
     _u32(target_worker, "target_worker")
@@ -153,13 +174,16 @@ def decode_request(
         raise ValueError("request opcode is unknown") from error
     key_start = REQUEST_HEADER_BYTES
     value_start = key_start + key_size
+    key = bytes(frame[key_start:value_start])
+    value = bytes(frame[value_start : value_start + value_size])
+    _validate_request_fields(decoded_opcode, key, value, expire_at_ns, target_worker)
     return Request(
         opcode=decoded_opcode,
         request_id=request_id,
         expire_at_ns=expire_at_ns,
         target_worker=target_worker,
-        key=bytes(frame[key_start:value_start]),
-        value=bytes(frame[value_start : value_start + value_size]),
+        key=key,
+        value=value,
     )
 
 

@@ -33,8 +33,10 @@ It is not production ready yet. The most important gaps are behavioral rather th
   and write-amplification policy; daemon configuration and compaction-time enforcement remain;
 - process-kill coverage is useful but is not evidence for sudden power loss, every supported
   filesystem, disk-full behavior, or remote/user-space filesystems;
-- the offline inspection and rebuild commands are placeholders, while backup, restore, metrics,
-  readiness, authentication, transport security, and release provenance are absent.
+- offline inspection (`glyphastore_inspect_store`) and fail-closed repair
+  (`glyphastore_repair_store`) exist; `glyphastore_rebuild_index` still refuses offline Index
+  rebuild. Live/hot backup, restore automation, histogram/Prometheus metrics export,
+  authentication, transport security, and release provenance remain open.
 
 These items are release gates. Local throughput gains do not reduce their priority.
 

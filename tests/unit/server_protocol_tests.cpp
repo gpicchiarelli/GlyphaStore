@@ -27,7 +27,6 @@ GLYPHA_TEST("server protocol request round trips and handles partial frames") {
         .opcode = glyphastore::server::RequestOpcode::put,
         .request_id = 42,
         .expire_at_ns = 900,
-        .target_worker = 7,
         .key = bytes("key"),
         .value = bytes("value"),
     };
@@ -47,7 +46,7 @@ GLYPHA_TEST("server protocol request round trips and handles partial frames") {
     GLYPHA_REQUIRE(decoded->frame.flags == 0);
     GLYPHA_REQUIRE(decoded->frame.request_id == 42);
     GLYPHA_REQUIRE(decoded->frame.expire_at_ns == 900);
-    GLYPHA_REQUIRE(decoded->frame.target_worker == 7);
+    GLYPHA_REQUIRE(decoded->frame.target_worker == glyphastore::server::kNoWorker);
     GLYPHA_REQUIRE(text(decoded->frame.key) == "key");
     GLYPHA_REQUIRE(text(decoded->frame.value) == "value");
 }
@@ -141,6 +140,53 @@ GLYPHA_TEST("server protocol response round trips") {
     GLYPHA_REQUIRE(text(decoded->frame.value) == "pong");
 }
 
+GLYPHA_TEST("server protocol rejects noncanonical opcode-specific fields") {
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
+                                                             .opcode = glyphastore::server::RequestOpcode::get,
+                                                             .request_id = 1,
+                                                             .key = bytes("k"),
+                                                             .value = bytes("x"),
+                                                         })
+                         .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
+                                                             .opcode = glyphastore::server::RequestOpcode::put,
+                                                             .request_id = 1,
+                                                             .target_worker = 1,
+                                                             .key = bytes("k"),
+                                                             .value = bytes("v"),
+                                                         })
+                         .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
+                                                             .opcode = glyphastore::server::RequestOpcode::health,
+                                                             .request_id = 1,
+                                                             .key = bytes("k"),
+                                                         })
+                         .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
+                                                             .opcode = glyphastore::server::RequestOpcode::bind_worker,
+                                                             .request_id = 1,
+                                                         })
+                         .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
+                                                             .opcode = glyphastore::server::RequestOpcode::get,
+                                                             .request_id = 1,
+                                                         })
+                         .has_value());
+
+    auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 9,
+        .value = bytes("ok"),
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    // Force a non-canonical target_worker while keeping payload sizes intact.
+    (*ping)[32] = std::byte{1};
+    (*ping)[33] = std::byte{0};
+    (*ping)[34] = std::byte{0};
+    (*ping)[35] = std::byte{0};
+    GLYPHA_REQUIRE(!glyphastore::server::decode_request(*ping).has_value());
+}
+
 GLYPHA_TEST("wire protocol v2 matches independent canonical request fixtures") {
     const auto corpus = glyphastore::test::read_hex_fixture(std::filesystem::path{GLYPHASTORE_SOURCE_DIR} /
                                                             "tests/fixtures/wire_requests_v2.hex");
@@ -159,7 +205,7 @@ GLYPHA_TEST("wire protocol v2 matches independent canonical request fixtures") {
         offset += decoded->consumed;
         ++expected_opcode;
     }
-    GLYPHA_REQUIRE(expected_opcode == 7);
+    GLYPHA_REQUIRE(expected_opcode == 10);
 }
 
 GLYPHA_TEST("wire protocol v2 matches independent canonical response fixtures") {

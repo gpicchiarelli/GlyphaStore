@@ -60,15 +60,15 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 
 | Value | Name | Request fields | Successful response |
 |---:|---|---|---|
-| 1 | `INIT` | no key/value required | value is ASCII `GlyphaStore/2`; reports worker metadata |
-| 2 | `PING` | value is opaque; key ignored | echoes value |
-| 3 | `GET` | key required by Store semantics | stored value or `NOT_FOUND` |
-| 4 | `PUT` | key, value; optional `expire_at_ns` | empty value |
-| 5 | `ERASE` | key | empty value or `NOT_FOUND` according to Store result |
-| 6 | `BIND_WORKER` | `target_worker` | confirms worker metadata; may transfer connection ownership |
-| 7 | `HEALTH` | no key/value required | value is ASCII `GlyphaStore/live`; liveness probe |
-| 8 | `READY` | no key/value required | value is ASCII `GlyphaStore/ready`; readiness probe |
-| 9 | `STATS` | no key/value required | value is bounded ASCII `GlyphaStore/stats` report |
+| 1 | `INIT` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/2`; reports worker metadata |
+| 2 | `PING` | empty key; opaque value; `expire_at_ns = 0`; `target_worker = kNoWorker` | echoes value |
+| 3 | `GET` | non-empty key; empty value; `expire_at_ns = 0`; `target_worker = kNoWorker` | stored value or `NOT_FOUND` |
+| 4 | `PUT` | non-empty key; value; optional `expire_at_ns`; `target_worker = kNoWorker` | empty value |
+| 5 | `ERASE` | non-empty key; empty value; `expire_at_ns = 0`; `target_worker = kNoWorker` | empty value or `NOT_FOUND` according to Store result |
+| 6 | `BIND_WORKER` | empty key/value; `expire_at_ns = 0`; `target_worker` set to a real Worker id (not `kNoWorker`) | confirms worker metadata; may transfer connection ownership |
+| 7 | `HEALTH` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/live`; liveness probe |
+| 8 | `READY` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/ready`; readiness probe |
+| 9 | `STATS` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is bounded ASCII `GlyphaStore/stats` report |
 
 `HEALTH`, `READY`, and `STATS` are accepted before initialization and binding. They do not mutate
 Store state. `HEALTH` returns `OK` while the daemon process is live (started and no executor failure
@@ -81,7 +81,9 @@ connection output budget. Failed liveness/readiness/stats probes return `INTERNA
 empty value. Treat `STATS` as a private-admin surface until ADR 0021/0022 authentication is enforced;
 it never returns TLS private-key material.
 
-Fields not listed for an opcode must be sent as zero/empty. The current decoder may accept ignored data, but clients must not rely on it.
+Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
+decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode
+error on clients). Clients must not send ignored data.
 
 ## 5. Status codes
 

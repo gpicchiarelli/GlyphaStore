@@ -17,6 +17,9 @@ module GlyphaStore
       PUT = 4
       ERASE = 5
       BIND_WORKER = 6
+      HEALTH = 7
+      READY = 8
+      STATS = 9
     end
 
     module Status
@@ -82,13 +85,16 @@ module GlyphaStore
 
       key_start = REQUEST_HEADER_BYTES
       value_start = key_start + key_size
+      key = frame.byteslice(key_start, key_size).b
+      value = frame.byteslice(value_start, value_size).b
+      validate_request_fields!(opcode, key, value, expire_at_ns, target_worker)
       Request.new(
         opcode: opcode,
         request_id: request_id,
         expire_at_ns: expire_at_ns,
         target_worker: target_worker,
-        key: frame.byteslice(key_start, key_size).b,
-        value: frame.byteslice(value_start, value_size).b
+        key: key,
+        value: value
       )
     end
 
@@ -153,7 +159,7 @@ module GlyphaStore
     end
 
     def valid_opcode?(opcode)
-      opcode.between?(Opcode::INIT, Opcode::BIND_WORKER)
+      opcode.between?(Opcode::INIT, Opcode::STATS)
     end
 
     def valid_status?(status)
@@ -194,20 +200,26 @@ module GlyphaStore
           raise ArgumentError, "PING request cannot carry key, expiry, or target_worker"
         end
       when Opcode::GET
-        if !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
-          raise ArgumentError, "GET request cannot carry value, expiry, or target_worker"
+        if key.empty? || !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
+          raise ArgumentError, "GET request requires a key and cannot carry value, expiry, or target_worker"
         end
       when Opcode::PUT
-        raise ArgumentError, "PUT request cannot carry target_worker" if target_worker != NO_WORKER
+        if key.empty? || target_worker != NO_WORKER
+          raise ArgumentError, "PUT request requires a key and cannot carry target_worker"
+        end
       when Opcode::ERASE
-        if !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
-          raise ArgumentError, "ERASE request cannot carry value, expiry, or target_worker"
+        if key.empty? || !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
+          raise ArgumentError, "ERASE request requires a key and cannot carry value, expiry, or target_worker"
         end
       when Opcode::BIND_WORKER
         if !key.empty? || !value.empty? || expire_at_ns != 0
           raise ArgumentError, "BIND_WORKER request cannot carry key, value, or expiry"
         end
         raise ArgumentError, "BIND_WORKER request requires an explicit target_worker" if target_worker == NO_WORKER
+      when Opcode::HEALTH, Opcode::READY, Opcode::STATS
+        if !key.empty? || !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
+          raise ArgumentError, "lifecycle probe cannot carry key, value, expiry, or target_worker"
+        end
       else
         raise ArgumentError, "opcode is not defined by wire protocol v2"
       end

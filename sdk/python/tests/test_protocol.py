@@ -54,6 +54,9 @@ class ProtocolTests(unittest.TestCase):
             ),
             encode_request(Opcode.ERASE, 5, key=b"erase-key"),
             encode_request(Opcode.BIND_WORKER, 6, target_worker=2),
+            encode_request(Opcode.HEALTH, 7),
+            encode_request(Opcode.READY, 8),
+            encode_request(Opcode.STATS, 9),
         ]
         self.assertEqual(encoded, expected)
 
