@@ -117,8 +117,10 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) then
   separates publication wait, rotation execution, and residual PUT time. Runtime telemetry now also
   splits Segment seal, replacement creation, Manifest publication, residual in-memory execution,
-  and the post-rotation final Record commit; a clean controlled APFS baseline for these deeper
-  phases remains.
+  and the post-rotation final Record commit. The
+  [deep-phase macOS matrix](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md)
+  localizes 65--72% of forced rotation execution to replacement creation; controlled-hardware
+  evidence remains.
 - Shorter compaction publication leases. Measure the deeper rotation phases first; only then decide
   whether replacement Segment construction should move before publication authority, with
   generation revalidation/rebase at commit.

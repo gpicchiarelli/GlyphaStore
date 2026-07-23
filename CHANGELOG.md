@@ -37,7 +37,10 @@ public API exists.
   2.5% median throughput cost. Split execution telemetry into Segment seal, replacement Segment
   creation, Manifest publication, residual in-memory execution, and the post-rotation final Record
   commit. Serialize only the short multi-writer atomic statistics update, without adding a storage
-  lock or extending the compaction publication lease.
+  lock or extending the compaction publication lease. The clean macOS deep-phase matrix attributes
+  65--72% of forced rotation execution to replacement creation and about 0.3 ms to final Record
+  commit. Require the churn harness to observe a complete quiescent Worker sweep before settling;
+  all corrected samples compact to four instead of 22 Segments.
 - Add a reproducible concurrent-maintenance benchmark comparing disabled, cooperative, and
   Store-owned background policy under a synchronized mixed GET/PUT workload. Record a clean
   seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB

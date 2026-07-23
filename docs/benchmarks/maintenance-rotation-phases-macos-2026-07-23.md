@@ -107,8 +107,8 @@ the typical cost of every rotation during this churn shape.
 - Do not justify a persistence-v2 third-authority protocol from this evidence. First establish a
   rotation latency objective and obtain controlled APFS measurements.
 
-The next macOS work should split rotation execution into Segment seal, replacement creation,
-Manifest publication, and final flush/Record-commit phases. If forced publication wait violates the
-eventual latency objective, investigate building compaction replacements before taking the
-publication lease and revalidating/rebasing the Manifest at commit, rather than widening v1
-recovery authority.
+The requested split into Segment seal, replacement creation, Manifest publication, residual
+execution, and final Record commit is completed in the
+[deep-phase macOS follow-up](maintenance-rotation-deep-phases-macos-2026-07-23.md). That evidence
+localizes rotation execution mainly to replacement creation and leaves shortening the compaction
+publication lease as a separately instrumented next decision.

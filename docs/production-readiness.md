@@ -151,6 +151,13 @@ implementation or design document alone is not sufficient.
   of forced-overlap latency to the intentional publication wait. In seven 1 GiB churn samples,
   exactly one of 16 rotations waits, all 16 commit, final Segment count remains four, and background
   cost is 2.5% median throughput with a 0.6% median p99 increase.
+  The subsequent
+  [deep-phase macOS matrix](benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md)
+  separates seal, replacement creation, Manifest publication, residual execution, and final Record
+  commit. Replacement creation accounts for 65--72% of forced rotation execution, while final
+  Record commit is about 0.3 ms. Its corrected full-Worker quiescence sweep completes all 224 churn
+  rotations and final Records and retains four versus 22 Segments; this noisier local run measures
+  -14.3% median throughput, +51.9% p95, and +2.2% p99 under aggressive 10 ms maintenance.
   These are exploratory local results, not release regression baselines.
   These local measurements are diagnostic baselines, not release claims;
   controlled-hardware CI evidence and an enforced tail-latency target remain pending.
