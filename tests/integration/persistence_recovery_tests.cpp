@@ -1074,6 +1074,19 @@ GLYPHA_TEST("blocked durable compaction lets an unrelated rotation wait and comm
             completion.wait_for(lock, std::chrono::milliseconds{100}, [&] { return rotation_finished; });
     }
 
+    auto in_flight_rotation_stats = (*runtime)->rotation_stats();
+    const auto stats_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (in_flight_rotation_stats.attempts == 0 &&
+           std::chrono::steady_clock::now() < stats_deadline) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        in_flight_rotation_stats = (*runtime)->rotation_stats();
+    }
+    GLYPHA_REQUIRE(in_flight_rotation_stats.attempts == 1);
+    GLYPHA_REQUIRE(in_flight_rotation_stats.committed == 0);
+    GLYPHA_REQUIRE(in_flight_rotation_stats.compaction_waits == 1);
+    GLYPHA_REQUIRE(in_flight_rotation_stats.final_record_commit_attempts == 0);
+    GLYPHA_REQUIRE(in_flight_rotation_stats.last_total_duration_ns == 0);
+
     blocked_build.release();
     writer.join();
     compactor.join();
@@ -1085,13 +1098,24 @@ GLYPHA_TEST("blocked durable compaction lets an unrelated rotation wait and comm
     GLYPHA_REQUIRE(rotation_stats.attempts == 1);
     GLYPHA_REQUIRE(rotation_stats.committed == 1);
     GLYPHA_REQUIRE(rotation_stats.compaction_waits == 1);
+    GLYPHA_REQUIRE(rotation_stats.final_record_commit_attempts == 1);
+    GLYPHA_REQUIRE(rotation_stats.final_record_commits == 1);
     GLYPHA_REQUIRE(rotation_stats.last_publication_wait_duration_ns >= 50'000'000);
+    GLYPHA_REQUIRE(rotation_stats.last_seal_duration_ns > 0);
+    GLYPHA_REQUIRE(rotation_stats.last_create_duration_ns > 0);
+    GLYPHA_REQUIRE(rotation_stats.last_manifest_publication_duration_ns > 0);
     GLYPHA_REQUIRE(rotation_stats.last_execution_duration_ns > 0);
+    GLYPHA_REQUIRE(rotation_stats.last_execution_duration_ns >=
+                   rotation_stats.last_seal_duration_ns + rotation_stats.last_create_duration_ns +
+                       rotation_stats.last_manifest_publication_duration_ns);
     GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns >=
                    rotation_stats.last_publication_wait_duration_ns);
     GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns >= rotation_stats.last_execution_duration_ns);
     GLYPHA_REQUIRE(rotation_stats.total_duration_ns == rotation_stats.last_total_duration_ns);
     GLYPHA_REQUIRE(rotation_stats.maximum_total_duration_ns == rotation_stats.last_total_duration_ns);
+    GLYPHA_REQUIRE(rotation_stats.last_final_record_commit_duration_ns > 0);
+    GLYPHA_REQUIRE(rotation_stats.total_final_record_commit_duration_ns ==
+                   rotation_stats.last_final_record_commit_duration_ns);
     GLYPHA_REQUIRE((*runtime)->healthy());
     GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 4);
     GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
@@ -1748,6 +1772,11 @@ GLYPHA_TEST("rotation space preflight fails before sealing the active Segment") 
     GLYPHA_REQUIRE(rotation_stats.attempts == 1);
     GLYPHA_REQUIRE(rotation_stats.committed == 0);
     GLYPHA_REQUIRE(rotation_stats.compaction_waits == 0);
+    GLYPHA_REQUIRE(rotation_stats.final_record_commit_attempts == 0);
+    GLYPHA_REQUIRE(rotation_stats.final_record_commits == 0);
+    GLYPHA_REQUIRE(rotation_stats.last_seal_duration_ns == 0);
+    GLYPHA_REQUIRE(rotation_stats.last_create_duration_ns == 0);
+    GLYPHA_REQUIRE(rotation_stats.last_manifest_publication_duration_ns == 0);
     GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns > 0);
     GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 1);
     GLYPHA_REQUIRE((*runtime)->manifest().segments.front().role == glyphastore::ManifestSegmentRole::active);

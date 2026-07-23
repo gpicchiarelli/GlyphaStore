@@ -103,9 +103,12 @@ dead, and dead-ratio Record-byte counters. The normal controller compares that r
 `max_copy_bytes_per_cycle` limit (128 MiB by default; zero means unlimited); pressure and emergency
 bypass both controls. Unread expired Records remain conservatively live until GET, recovery, or
 compaction validates their expiration. For durable Stores, `rotation` reports runtime-local
-attempt/commit/wait counters and last/total/maximum nanoseconds for publication wait, execution, and
-the complete rotation. Publication wait includes acquiring the Manifest serializer and any wait
-for an active compaction lease.
+attempt/commit/wait counters, post-rotation final-Record attempt/commit counters, and
+last/total/maximum nanoseconds for publication wait, Segment seal, replacement Segment creation,
+Manifest publication, aggregate execution, the complete rotation, and the final Record commit.
+Publication wait includes acquiring the Manifest serializer and any wait for an active compaction
+lease. Aggregate execution also includes planning, reader setup, and the in-memory catalog
+transition; subtracting the three named execution phases yields that residual.
 
 ## 9. Verification
 

@@ -81,15 +81,29 @@ struct DurableRotationStats {
     std::uint64_t attempts{};
     std::uint64_t committed{};
     std::uint64_t compaction_waits{};
+    std::uint64_t final_record_commit_attempts{};
+    std::uint64_t final_record_commits{};
     std::uint64_t last_publication_wait_duration_ns{};
     std::uint64_t total_publication_wait_duration_ns{};
     std::uint64_t maximum_publication_wait_duration_ns{};
+    std::uint64_t last_seal_duration_ns{};
+    std::uint64_t total_seal_duration_ns{};
+    std::uint64_t maximum_seal_duration_ns{};
+    std::uint64_t last_create_duration_ns{};
+    std::uint64_t total_create_duration_ns{};
+    std::uint64_t maximum_create_duration_ns{};
+    std::uint64_t last_manifest_publication_duration_ns{};
+    std::uint64_t total_manifest_publication_duration_ns{};
+    std::uint64_t maximum_manifest_publication_duration_ns{};
     std::uint64_t last_execution_duration_ns{};
     std::uint64_t total_execution_duration_ns{};
     std::uint64_t maximum_execution_duration_ns{};
     std::uint64_t last_total_duration_ns{};
     std::uint64_t total_duration_ns{};
     std::uint64_t maximum_total_duration_ns{};
+    std::uint64_t last_final_record_commit_duration_ns{};
+    std::uint64_t total_final_record_commit_duration_ns{};
+    std::uint64_t maximum_final_record_commit_duration_ns{};
 };
 
 struct MaintenanceSnapshot {

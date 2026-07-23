@@ -78,6 +78,25 @@ template <typename T> void atomic_observe_max(std::atomic<T>& destination, const
     }
 }
 
+[[nodiscard]] auto begin_atomic_stats_publication(std::atomic_uint64_t& version) noexcept
+    -> std::uint64_t {
+    auto current = version.load(std::memory_order_relaxed);
+    while (true) {
+        if ((current & 1U) != 0) {
+            current = version.load(std::memory_order_acquire);
+            continue;
+        }
+        if (version.compare_exchange_weak(current, current + 1U, std::memory_order_acquire,
+                                          std::memory_order_relaxed)) {
+            return current;
+        }
+    }
+}
+
+void end_atomic_stats_publication(std::atomic_uint64_t& version, const std::uint64_t previous) noexcept {
+    version.store(previous + 2U, std::memory_order_release);
+}
+
 template <typename Callback> class ScopeExit final {
   public:
     explicit ScopeExit(Callback callback) noexcept : callback_(std::move(callback)) {}
@@ -1418,25 +1437,38 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     manifest_publication_changed_.wait(publication_lock, [&] { return !compaction_publication_active_; });
     const auto execution_started = std::chrono::steady_clock::now();
     bool rotation_committed{};
+    std::uint64_t seal_ns{};
+    std::uint64_t create_ns{};
+    std::uint64_t manifest_publication_ns{};
     ScopeExit telemetry{[&, this]() noexcept {
         const auto finished = std::chrono::steady_clock::now();
         const auto publication_wait_ns = steady_duration_ns(rotation_started, execution_started);
         const auto execution_ns = steady_duration_ns(execution_started, finished);
         const auto total_ns = steady_duration_ns(rotation_started, finished);
-        rotation_stats_version_.fetch_add(1U, std::memory_order_acq_rel);
+        const auto previous_version = begin_atomic_stats_publication(rotation_stats_version_);
         if (rotation_committed) {
             rotations_committed_.fetch_add(1U, std::memory_order_relaxed);
         }
         last_rotation_publication_wait_ns_.store(publication_wait_ns, std::memory_order_relaxed);
         atomic_saturating_add(total_rotation_publication_wait_ns_, publication_wait_ns);
         atomic_observe_max(maximum_rotation_publication_wait_ns_, publication_wait_ns);
+        last_rotation_seal_ns_.store(seal_ns, std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_seal_ns_, seal_ns);
+        atomic_observe_max(maximum_rotation_seal_ns_, seal_ns);
+        last_rotation_create_ns_.store(create_ns, std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_create_ns_, create_ns);
+        atomic_observe_max(maximum_rotation_create_ns_, create_ns);
+        last_rotation_manifest_publication_ns_.store(manifest_publication_ns,
+                                                     std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_manifest_publication_ns_, manifest_publication_ns);
+        atomic_observe_max(maximum_rotation_manifest_publication_ns_, manifest_publication_ns);
         last_rotation_execution_ns_.store(execution_ns, std::memory_order_relaxed);
         atomic_saturating_add(total_rotation_execution_ns_, execution_ns);
         atomic_observe_max(maximum_rotation_execution_ns_, execution_ns);
         last_rotation_total_ns_.store(total_ns, std::memory_order_relaxed);
         atomic_saturating_add(total_rotation_ns_, total_ns);
         atomic_observe_max(maximum_rotation_total_ns_, total_ns);
-        rotation_stats_version_.fetch_add(1U, std::memory_order_release);
+        end_atomic_stats_publication(rotation_stats_version_, previous_version);
     }};
     const std::unique_lock catalog_lock{catalog_mutex_};
     const auto old_position =
@@ -1499,18 +1531,24 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         worker.cached_writable = true;
     }
 
-    if (worker.cached_file->selected_commit().commit.state != PersistedSegmentState::sealed) {
-        const auto sealed = worker.cached_file->seal();
-        if (!sealed.committed()) {
-            if (sealed.outcome == SegmentCommitOutcome::indeterminate) {
-                healthy_.store(false, std::memory_order_release);
+    {
+        const auto seal_started = std::chrono::steady_clock::now();
+        ScopeExit observe_seal{
+            [&]() noexcept { seal_ns = steady_elapsed_ns(seal_started); }};
+        if (worker.cached_file->selected_commit().commit.state != PersistedSegmentState::sealed) {
+            const auto sealed = worker.cached_file->seal();
+            if (!sealed.committed()) {
+                if (sealed.outcome == SegmentCommitOutcome::indeterminate) {
+                    healthy_.store(false, std::memory_order_release);
+                }
+                return mutation_failure(
+                    sealed.outcome == SegmentCommitOutcome::indeterminate
+                        ? DurableMutationOutcome::indeterminate
+                        : DurableMutationOutcome::not_committed,
+                    sealed.error.value_or(Error{ErrorCode::io_error, "Segment seal failed"}));
             }
-            return mutation_failure(sealed.outcome == SegmentCommitOutcome::indeterminate
-                                        ? DurableMutationOutcome::indeterminate
-                                        : DurableMutationOutcome::not_committed,
-                                    sealed.error.value_or(Error{ErrorCode::io_error, "Segment seal failed"}));
+            segments_[old_index].selected = worker.cached_file->selected_commit();
         }
-        segments_[old_index].selected = worker.cached_file->selected_commit();
     }
 
     auto sealed_generation = std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
@@ -1528,7 +1566,13 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         .generation = replacement_entry.generation,
         .owner_worker = replacement_entry.owner_worker,
     };
-    auto created = DurableSegmentFile::create(directory_, replacement_identity);
+    SegmentFileCreationResult created;
+    {
+        const auto create_started = std::chrono::steady_clock::now();
+        ScopeExit observe_create{
+            [&]() noexcept { create_ns = steady_elapsed_ns(create_started); }};
+        created = DurableSegmentFile::create(directory_, replacement_identity);
+    }
     if (!created.durable()) {
         if (created.outcome == SegmentFileCreationOutcome::indeterminate) {
             healthy_.store(false, std::memory_order_release);
@@ -1554,7 +1598,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         .selected = replacement_selected,
         .file = std::move(*replacement_reader),
     });
-    const auto published = directory_.publish_manifest(*next_manifest, options_.limits.max_manifest_bytes);
+    ManifestPublicationResult published;
+    {
+        const auto manifest_started = std::chrono::steady_clock::now();
+        ScopeExit observe_manifest{[&]() noexcept {
+            manifest_publication_ns = steady_elapsed_ns(manifest_started);
+        }};
+        published = directory_.publish_manifest(*next_manifest, options_.limits.max_manifest_bytes);
+    }
     if (!published.durable()) {
         healthy_.store(false, std::memory_order_release);
         return mutation_failure(
@@ -1591,6 +1642,14 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                                    const std::uint64_t key_hash, const std::uint64_t expire_at_ns,
                                    const ValueType type, const std::uint32_t flags) -> DurableMutationResult {
     auto exception_outcome = DurableMutationOutcome::not_committed;
+    std::optional<std::chrono::steady_clock::time_point> final_record_commit_started;
+    bool final_record_committed{};
+    ScopeExit final_record_telemetry{[&, this]() noexcept {
+        if (final_record_commit_started) {
+            record_rotation_final_commit(steady_elapsed_ns(*final_record_commit_started),
+                                         final_record_committed);
+        }
+    }};
     try {
         if (!healthy()) {
             return mutation_failure(DurableMutationOutcome::indeterminate,
@@ -1812,6 +1871,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     if (!rotated.committed()) {
                         return rotated;
                     }
+                    final_record_commit_started = std::chrono::steady_clock::now();
                     continue;
                 }
                 if (appended.outcome == SegmentCommitOutcome::indeterminate || !directory_.healthy()) {
@@ -1898,6 +1958,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             }
 
             if (strict_batch) {
+                final_record_committed = true;
                 return {.outcome = DurableMutationOutcome::committed,
                         .sequence = committed_sequence,
                         .error = std::nullopt};
@@ -1937,6 +1998,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                 }
                 worker.erase_hot_record(hashed.key);
             }
+            final_record_committed = true;
             return {.outcome = DurableMutationOutcome::committed,
                     .sequence = committed_sequence,
                     .error = std::nullopt};
@@ -2044,6 +2106,19 @@ auto DurableRuntimeCatalog::batch_stats() const -> std::vector<DurableBatchWorke
     return result;
 }
 
+void DurableRuntimeCatalog::record_rotation_final_commit(const std::uint64_t duration_ns,
+                                                         const bool committed) noexcept {
+    const auto previous_version = begin_atomic_stats_publication(rotation_stats_version_);
+    rotation_final_record_commit_attempts_.fetch_add(1U, std::memory_order_relaxed);
+    if (committed) {
+        rotation_final_record_commits_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    last_rotation_final_record_commit_ns_.store(duration_ns, std::memory_order_relaxed);
+    atomic_saturating_add(total_rotation_final_record_commit_ns_, duration_ns);
+    atomic_observe_max(maximum_rotation_final_record_commit_ns_, duration_ns);
+    end_atomic_stats_publication(rotation_stats_version_, previous_version);
+}
+
 auto DurableRuntimeCatalog::rotation_stats() const noexcept -> DurableRotationStats {
     while (true) {
         const auto before = rotation_stats_version_.load(std::memory_order_acquire);
@@ -2054,12 +2129,27 @@ auto DurableRuntimeCatalog::rotation_stats() const noexcept -> DurableRotationSt
             .attempts = rotation_attempts_.load(std::memory_order_relaxed),
             .committed = rotations_committed_.load(std::memory_order_relaxed),
             .compaction_waits = rotation_compaction_waits_.load(std::memory_order_relaxed),
+            .final_record_commit_attempts =
+                rotation_final_record_commit_attempts_.load(std::memory_order_relaxed),
+            .final_record_commits = rotation_final_record_commits_.load(std::memory_order_relaxed),
             .last_publication_wait_duration_ns =
                 last_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
             .total_publication_wait_duration_ns =
                 total_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
             .maximum_publication_wait_duration_ns =
                 maximum_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
+            .last_seal_duration_ns = last_rotation_seal_ns_.load(std::memory_order_relaxed),
+            .total_seal_duration_ns = total_rotation_seal_ns_.load(std::memory_order_relaxed),
+            .maximum_seal_duration_ns = maximum_rotation_seal_ns_.load(std::memory_order_relaxed),
+            .last_create_duration_ns = last_rotation_create_ns_.load(std::memory_order_relaxed),
+            .total_create_duration_ns = total_rotation_create_ns_.load(std::memory_order_relaxed),
+            .maximum_create_duration_ns = maximum_rotation_create_ns_.load(std::memory_order_relaxed),
+            .last_manifest_publication_duration_ns =
+                last_rotation_manifest_publication_ns_.load(std::memory_order_relaxed),
+            .total_manifest_publication_duration_ns =
+                total_rotation_manifest_publication_ns_.load(std::memory_order_relaxed),
+            .maximum_manifest_publication_duration_ns =
+                maximum_rotation_manifest_publication_ns_.load(std::memory_order_relaxed),
             .last_execution_duration_ns = last_rotation_execution_ns_.load(std::memory_order_relaxed),
             .total_execution_duration_ns = total_rotation_execution_ns_.load(std::memory_order_relaxed),
             .maximum_execution_duration_ns =
@@ -2067,6 +2157,12 @@ auto DurableRuntimeCatalog::rotation_stats() const noexcept -> DurableRotationSt
             .last_total_duration_ns = last_rotation_total_ns_.load(std::memory_order_relaxed),
             .total_duration_ns = total_rotation_ns_.load(std::memory_order_relaxed),
             .maximum_total_duration_ns = maximum_rotation_total_ns_.load(std::memory_order_relaxed),
+            .last_final_record_commit_duration_ns =
+                last_rotation_final_record_commit_ns_.load(std::memory_order_relaxed),
+            .total_final_record_commit_duration_ns =
+                total_rotation_final_record_commit_ns_.load(std::memory_order_relaxed),
+            .maximum_final_record_commit_duration_ns =
+                maximum_rotation_final_record_commit_ns_.load(std::memory_order_relaxed),
         };
         if (before == rotation_stats_version_.load(std::memory_order_acquire)) {
             return result;

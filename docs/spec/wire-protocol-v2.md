@@ -76,8 +76,9 @@ recorded). `READY` returns `OK` only while the server is ready to accept traffic
 down, Store admission open, durable catalog healthy, and maintenance is not in emergency or a sticky
 faulted state. `STATS` returns `OK` with a versioned line-oriented report (`version`, `live`, `ready`,
 connection counts, per-Worker durable mutation lane counters, batch counters, and maintenance
-snapshot fields, including durable rotation publication-wait/execution timings) while live; the
-payload is capped and may return `OVERLOADED` if it cannot fit the connection output budget. Failed
+snapshot fields, including durable rotation publication wait, Segment seal/create, Manifest
+publication, aggregate execution, and final Record commit timings) while live; the payload is
+capped and may return `OVERLOADED` if it cannot fit the connection output budget. Failed
 liveness/readiness/stats probes return `INTERNAL_ERROR` with an empty value. Treat `STATS` as a
 private-admin surface until ADR 0021/0022 authentication is enforced; it never returns TLS
 private-key material.

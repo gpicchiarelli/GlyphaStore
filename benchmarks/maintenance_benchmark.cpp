@@ -164,12 +164,19 @@ struct RotationSample {
     std::size_t repeat{};
     double rotation_seconds{};
     std::uint64_t publication_wait_ns{};
+    std::uint64_t seal_ns{};
+    std::uint64_t create_ns{};
+    std::uint64_t manifest_publication_ns{};
+    std::uint64_t other_execution_ns{};
     std::uint64_t execution_ns{};
     std::uint64_t accounted_total_ns{};
-    std::uint64_t residual_put_ns{};
+    std::uint64_t final_record_commit_ns{};
+    std::uint64_t measurement_residual_ns{};
     std::uint64_t rotation_attempts{};
     std::uint64_t rotations_committed{};
     std::uint64_t compaction_waits{};
+    std::uint64_t final_record_commit_attempts{};
+    std::uint64_t final_record_commits{};
     std::uint64_t maintenance_attempts{};
     std::uint64_t maintenance_completed{};
     std::uint64_t maintenance_useful{};
@@ -729,6 +736,16 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
     if (mode == Mode::background) {
         maintenance = settle_background_maintenance(*store, 1);
     }
+    const auto named_rotation_execution_ns =
+        maintenance.rotation.total_seal_duration_ns + maintenance.rotation.total_create_duration_ns +
+        maintenance.rotation.total_manifest_publication_duration_ns;
+    if (named_rotation_execution_ns > maintenance.rotation.total_execution_duration_ns ||
+        maintenance.rotation.attempts != maintenance.rotation.committed ||
+        maintenance.rotation.committed != maintenance.rotation.final_record_commit_attempts ||
+        maintenance.rotation.final_record_commit_attempts !=
+            maintenance.rotation.final_record_commits) {
+        throw std::runtime_error("foreground rotation phase telemetry is incomplete or inconsistent");
+    }
     require_status(store->close(), "Store close");
     store.reset();
     const auto segments_after = segment_count(directory.store());
@@ -883,15 +900,23 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         maintenance = settle_background_maintenance(*store, 1);
     }
     const auto rotation_stats = maintenance.rotation;
+    const auto named_execution_ns = rotation_stats.last_seal_duration_ns +
+                                    rotation_stats.last_create_duration_ns +
+                                    rotation_stats.last_manifest_publication_duration_ns;
+    const auto end_to_end_accounted_ns =
+        rotation_stats.last_total_duration_ns + rotation_stats.last_final_record_commit_duration_ns;
     if (rotation_stats.attempts != 1 || rotation_stats.committed != 1 ||
         rotation_stats.compaction_waits != (mode == Mode::disabled ? 0U : 1U) ||
-        rotation_stats.last_total_duration_ns > rotation_latency_ns) {
+        rotation_stats.final_record_commit_attempts != 1 || rotation_stats.final_record_commits != 1 ||
+        named_execution_ns > rotation_stats.last_execution_duration_ns ||
+        end_to_end_accounted_ns > rotation_latency_ns) {
         throw std::runtime_error(
             "forced-rotation telemetry validation failed: attempts=" +
             std::to_string(rotation_stats.attempts) +
             " committed=" + std::to_string(rotation_stats.committed) +
             " compaction_waits=" + std::to_string(rotation_stats.compaction_waits) +
-            " accounted_ns=" + std::to_string(rotation_stats.last_total_duration_ns) +
+            " final_commits=" + std::to_string(rotation_stats.final_record_commits) +
+            " accounted_ns=" + std::to_string(end_to_end_accounted_ns) +
             " wall_ns=" + std::to_string(rotation_latency_ns));
     }
     require_status(store->close(), "forced-rotation Store close");
@@ -909,12 +934,19 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         .repeat = repeat,
         .rotation_seconds = static_cast<double>(rotation_latency_ns) / 1'000'000'000.0,
         .publication_wait_ns = rotation_stats.last_publication_wait_duration_ns,
+        .seal_ns = rotation_stats.last_seal_duration_ns,
+        .create_ns = rotation_stats.last_create_duration_ns,
+        .manifest_publication_ns = rotation_stats.last_manifest_publication_duration_ns,
+        .other_execution_ns = rotation_stats.last_execution_duration_ns - named_execution_ns,
         .execution_ns = rotation_stats.last_execution_duration_ns,
         .accounted_total_ns = rotation_stats.last_total_duration_ns,
-        .residual_put_ns = rotation_latency_ns - rotation_stats.last_total_duration_ns,
+        .final_record_commit_ns = rotation_stats.last_final_record_commit_duration_ns,
+        .measurement_residual_ns = rotation_latency_ns - end_to_end_accounted_ns,
         .rotation_attempts = rotation_stats.attempts,
         .rotations_committed = rotation_stats.committed,
         .compaction_waits = rotation_stats.compaction_waits,
+        .final_record_commit_attempts = rotation_stats.final_record_commit_attempts,
+        .final_record_commits = rotation_stats.final_record_commits,
         .maintenance_attempts =
             mode == Mode::cooperative ? cooperative_stats.attempts : maintenance.compact_attempts,
         .maintenance_completed =
@@ -995,10 +1027,22 @@ void print_sample(const Sample& sample) {
     } else {
         std::cout << "none";
     }
+    const auto named_execution_ns = sample.rotation.total_seal_duration_ns +
+                                    sample.rotation.total_create_duration_ns +
+                                    sample.rotation.total_manifest_publication_duration_ns;
     std::cout << ',' << sample.rotation.attempts << ',' << sample.rotation.committed << ','
               << sample.rotation.compaction_waits << ','
+              << sample.rotation.final_record_commit_attempts << ','
+              << sample.rotation.final_record_commits << ','
               << microseconds(sample.rotation.total_publication_wait_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_seal_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_create_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_manifest_publication_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_execution_duration_ns - named_execution_ns) /
+                     1'000.0
+              << ','
               << microseconds(sample.rotation.total_execution_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_final_record_commit_duration_ns) / 1'000.0 << ','
               << microseconds(sample.rotation.maximum_total_duration_ns) / 1'000.0 << ','
               << sample.segments_after << '\n';
 }
@@ -1007,10 +1051,17 @@ void print_rotation_sample(const RotationSample& sample) {
     std::cout << mode_name(sample.mode) << ',' << sample.repeat << ',' << sample.rotation_seconds << ','
               << sample.rotation_seconds * 1'000.0 << ','
               << microseconds(sample.publication_wait_ns) / 1'000.0 << ','
+              << microseconds(sample.seal_ns) / 1'000.0 << ','
+              << microseconds(sample.create_ns) / 1'000.0 << ','
+              << microseconds(sample.manifest_publication_ns) / 1'000.0 << ','
+              << microseconds(sample.other_execution_ns) / 1'000.0 << ','
               << microseconds(sample.execution_ns) / 1'000.0 << ','
               << microseconds(sample.accounted_total_ns) / 1'000.0 << ','
-              << microseconds(sample.residual_put_ns) / 1'000.0 << ',' << sample.rotation_attempts << ','
-              << sample.rotations_committed << ',' << sample.compaction_waits << ','
+              << microseconds(sample.final_record_commit_ns) / 1'000.0 << ','
+              << microseconds(sample.measurement_residual_ns) / 1'000.0 << ','
+              << sample.rotation_attempts << ',' << sample.rotations_committed << ','
+              << sample.compaction_waits << ',' << sample.final_record_commit_attempts << ','
+              << sample.final_record_commits << ','
               << sample.maintenance_attempts << ','
               << sample.maintenance_completed << ',' << sample.maintenance_useful << ','
               << sample.maintenance_conflicts << ',' << sample.maintenance_bytes_copied << ','
@@ -1102,9 +1153,11 @@ int main(int argc, char** argv) {
         if (options.scenario == Scenario::forced_rotation) {
             std::cout << "# overlap=compaction intent publication releases a forced unrelated-Worker "
                          "rotation\n";
-            std::cout << "mode,repeat,rotation_s,rotation_ms,publication_wait_ms,execution_ms,"
-                         "accounted_total_ms,residual_put_ms,rotation_attempts,rotations_committed,"
-                         "compaction_waits,maintenance_attempts,"
+            std::cout << "mode,repeat,rotation_s,rotation_ms,publication_wait_ms,seal_ms,create_ms,"
+                         "manifest_publication_ms,other_execution_ms,execution_ms,accounted_total_ms,"
+                         "final_record_commit_ms,measurement_residual_ms,rotation_attempts,"
+                         "rotations_committed,compaction_waits,final_record_commit_attempts,"
+                         "final_record_commits,maintenance_attempts,"
                          "maintenance_completed,maintenance_useful,maintenance_conflicts,"
                          "maintenance_bytes_copied,segments_after\n";
             for (std::size_t warmup = 0; warmup < options.warmups; ++warmup) {
@@ -1135,8 +1188,12 @@ int main(int argc, char** argv) {
                      "maintenance_evaluations,maintenance_last_skip,candidate_worker,"
                      "candidate_sealed_bytes,candidate_live_bytes,candidate_dead_bytes,"
                      "candidate_dead_ratio_bp,rotation_attempts,rotations_committed,"
-                     "rotation_compaction_waits,rotation_total_publication_wait_ms,"
-                     "rotation_total_execution_ms,rotation_maximum_total_ms,segments_after\n";
+                     "rotation_compaction_waits,rotation_final_record_commit_attempts,"
+                     "rotation_final_record_commits,rotation_total_publication_wait_ms,"
+                     "rotation_total_seal_ms,rotation_total_create_ms,"
+                     "rotation_total_manifest_publication_ms,rotation_total_other_execution_ms,"
+                     "rotation_total_execution_ms,rotation_total_final_record_commit_ms,"
+                     "rotation_maximum_total_ms,segments_after\n";
 
         for (std::size_t warmup = 0; warmup < options.warmups; ++warmup) {
             const auto offset = warmup % selected.size();

@@ -801,6 +801,12 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_attempts=0\n") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_publication_wait_ns=0\n") !=
                       std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_seal_ns=0\n") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_create_ns=0\n") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_manifest_publication_ns=0\n") !=
+                      std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_final_record_commit_ns=0\n") !=
+                      std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_maximum_total_ns=0\n") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_candidate_dead_byte_ratio_bp=") != std::string_view::npos);
     static_cast<void>(::close(socket));

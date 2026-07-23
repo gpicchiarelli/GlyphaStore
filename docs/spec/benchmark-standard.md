@@ -46,7 +46,7 @@ Every sample validates operation counts, hits/misses, response IDs, status, and 
 | `store-parallel-*` | public Store scaling | all client operations and synchronization |
 | `store-durable-*` | persistence-mode path | explicitly named durability policy |
 | durable compaction | physical reclaim benefit/cost | public `Store::compact()` only; seed/flush/reopen/verification excluded |
-| concurrent maintenance | foreground cost, reclaim progress, and forced rotation phases for disabled/cooperative/background policy | mixed public GET/PUT calls only; preload/flush/close/reopen/verification excluded; forced rotation reports publication wait, execution, complete rotation, and residual PUT time separately |
+| concurrent maintenance | foreground cost, reclaim progress, and forced rotation phases for disabled/cooperative/background policy | mixed public GET/PUT calls only; preload/flush/close/reopen/verification excluded; forced rotation reports publication wait, Segment seal, replacement creation, Manifest publication, residual execution, complete rotation, final Record commit, and measurement residual separately |
 | server TCP | parser, loopback transport, executor, Store, response | validated request/response pipeline |
 
 Sequential/random describe key visitation order, not Worker distribution. Parallel distribution must be named:

@@ -66,8 +66,10 @@ Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`
 eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
 count, time since last useful compaction, candidate Worker, candidate sealed/live/dead Record bytes,
 and dead ratio in basis points. Durable snapshots also include rotation attempts, commits,
-compaction waits, and last/total/maximum publication-wait, execution, and total durations. Daemon
-`STATS` exports both candidate and rotation counters.
+compaction waits, final-Record attempts/commits, and last/total/maximum durations for publication
+wait, Segment seal, replacement Segment creation, Manifest publication, aggregate execution,
+complete rotation, and the post-rotation final Record commit. Daemon `STATS` exports both candidate
+and rotation counters.
 
 The live-byte counter means “currently Index-referenced,” not “guaranteed unexpired at observation
 time.” Expiry discovered by validated GET immediately updates it; cold, unread TTL entries remain
@@ -113,9 +115,11 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   measures condition-wait latency, product-default and aggressive idle CPU, and seven validated
   1 GiB churn samples. The
   [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) then
-  separates publication wait, rotation execution, and residual PUT time. Controlled APFS baselines
-  remain.
-- Finer rotation I/O telemetry. Publication wait, aggregate rotation execution, and total duration
-  are separated; Segment seal/create, Manifest publication, and post-rotation Record commit are not
-  individual runtime phases.
+  separates publication wait, rotation execution, and residual PUT time. Runtime telemetry now also
+  splits Segment seal, replacement creation, Manifest publication, residual in-memory execution,
+  and the post-rotation final Record commit; a clean controlled APFS baseline for these deeper
+  phases remains.
+- Shorter compaction publication leases. Measure the deeper rotation phases first; only then decide
+  whether replacement Segment construction should move before publication authority, with
+  generation revalidation/rebase at commit.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

@@ -209,6 +209,7 @@ class DurableRuntimeCatalog final {
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
                               std::uint32_t flags) -> DurableMutationResult;
     [[nodiscard]] auto rotate_active(RuntimeWorker& worker) -> DurableMutationResult;
+    void record_rotation_final_commit(std::uint64_t duration_ns, bool committed) noexcept;
     [[nodiscard]] auto prepare_get(const HashedKey& key, std::uint64_t now_ns) -> Result<PreparedRead>;
     [[nodiscard]] auto complete_get(PinnedRead read, const std::atomic_bool* cancelled = nullptr)
         -> Result<OwnedValue>;
@@ -233,15 +234,29 @@ class DurableRuntimeCatalog final {
     std::atomic_uint64_t rotation_attempts_{};
     std::atomic_uint64_t rotations_committed_{};
     std::atomic_uint64_t rotation_compaction_waits_{};
+    std::atomic_uint64_t rotation_final_record_commit_attempts_{};
+    std::atomic_uint64_t rotation_final_record_commits_{};
     std::atomic_uint64_t last_rotation_publication_wait_ns_{};
     std::atomic_uint64_t total_rotation_publication_wait_ns_{};
     std::atomic_uint64_t maximum_rotation_publication_wait_ns_{};
+    std::atomic_uint64_t last_rotation_seal_ns_{};
+    std::atomic_uint64_t total_rotation_seal_ns_{};
+    std::atomic_uint64_t maximum_rotation_seal_ns_{};
+    std::atomic_uint64_t last_rotation_create_ns_{};
+    std::atomic_uint64_t total_rotation_create_ns_{};
+    std::atomic_uint64_t maximum_rotation_create_ns_{};
+    std::atomic_uint64_t last_rotation_manifest_publication_ns_{};
+    std::atomic_uint64_t total_rotation_manifest_publication_ns_{};
+    std::atomic_uint64_t maximum_rotation_manifest_publication_ns_{};
     std::atomic_uint64_t last_rotation_execution_ns_{};
     std::atomic_uint64_t total_rotation_execution_ns_{};
     std::atomic_uint64_t maximum_rotation_execution_ns_{};
     std::atomic_uint64_t last_rotation_total_ns_{};
     std::atomic_uint64_t total_rotation_ns_{};
     std::atomic_uint64_t maximum_rotation_total_ns_{};
+    std::atomic_uint64_t last_rotation_final_record_commit_ns_{};
+    std::atomic_uint64_t total_rotation_final_record_commit_ns_{};
+    std::atomic_uint64_t maximum_rotation_final_record_commit_ns_{};
     std::mutex close_mutex_;
     std::optional<Error> close_error_;
     // Guarded by manifest_publication_mutex_. A compaction lease excludes

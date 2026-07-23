@@ -60,9 +60,12 @@ newly authoritative Manifest. It must not publish a third authority while the du
 compaction intent is active.
 
 Rotation telemetry adds no lock to this order. The runtime records the time to acquire publication
-authority and wait for the compaction lease separately from rotation execution using atomics. A
-short versioned atomic publication keeps completed duration aggregates coherent for readers without
-holding the Manifest serializer or a Worker mutex.
+authority and wait for the compaction lease separately from Segment seal, replacement creation,
+Manifest publication, aggregate rotation execution, and the final Record commit using atomics. A
+short compare-and-exchange writer gate serializes only updates to these atomic counters; versioned
+publication keeps completed duration aggregates coherent for readers without holding the Manifest
+serializer, catalog mutex, or a Worker mutex. Snapshot reads remain available while a rotation is
+blocked on the compaction lease.
 
 New nested locking requires updating this document and adding a test or static invariant that makes the order reviewable.
 
