@@ -105,9 +105,10 @@ Before treating automatic reclaim as production-tuned:
 
 1. expose no-gain planning work in `CompactionResult` and maintenance telemetry;
 2. decide whether unread TTL needs a bounded normal-mode probe independent of pressure;
-3. add a concurrent benchmark comparing maintenance disabled/cooperative/background under mixed
-   GET/PUT load, reporting throughput plus p50/p95/p99/max foreground latency;
-4. add long sealed-churn and idle-overhead workloads, then run a clean seven-repeat matrix on
+3. use the completed
+   [concurrent-maintenance matrix](concurrent-maintenance-2026-07-23.md) to address unrelated-Worker
+   rotation conflicts during compaction publication;
+4. add long sealed-churn and idle-overhead workloads, then run longer controlled matrices on
    controlled macOS/APFS and Linux ext4/XFS hosts with raw artifacts.
 
 Until those gates pass, durable compaction correctness remains ahead of reclaim-policy tuning. The

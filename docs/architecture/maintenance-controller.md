@@ -99,5 +99,11 @@ Manual and automatic compact share `compaction_mutex` with `try_to_lock`. A busy
   bounded normal-mode probe independent of pressure. The first
   isolated benefit/cost measurement is recorded in
   the [2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md);
-  concurrent foreground tail latency, idle overhead, and long sealed-churn efficacy remain.
+  the clean [concurrent-maintenance follow-up](../benchmarks/concurrent-maintenance-2026-07-23.md)
+  measures a roughly 18% median throughput cost and 54--57% p99 increase while useful reclaim
+  overlaps foreground work. Idle overhead, long sealed-churn efficacy, and controlled native
+  baselines remain.
+- Unrelated-Worker rotation availability during Manifest publication. The transaction currently
+  fails such a rotation fast with `sequence_conflict`; the concurrent benchmark's calibration
+  demonstrates foreground write rejection at that boundary.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

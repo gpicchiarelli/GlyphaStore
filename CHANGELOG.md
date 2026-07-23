@@ -20,6 +20,13 @@ public API exists.
 
 ## [Unreleased]
 
+- Add a reproducible concurrent-maintenance benchmark comparing disabled, cooperative, and
+  Store-owned background policy under a synchronized mixed GET/PUT workload. Record a clean
+  seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB
+  useful compaction without conflict, while median foreground throughput falls about 18% and p99
+  rises 54--57% versus disabled. Cooperative and background medians are effectively equal. A
+  rotation-forcing calibration also identifies unrelated-Worker fail-fast publication conflict as
+  the next availability target.
 - Enforce `dead_byte_ratio_bp_normal` for normal durable maintenance using exact per-Worker
   Index-referenced active/sealed Record-byte counters maintained across recovery, mutation, lazy
   expiry, rotation, compaction, and reopen. Observe the next round-robin candidate without scanning
@@ -37,7 +44,7 @@ public API exists.
   records, elapsed time, and effective scan/copy rates. Record the first seven-repeat exploratory
   macOS/APFS result and use it to drive the per-Worker dead-byte enforcement and finite normal copy
   limit above. No-gain work lacks public counters, unread TTL remains conservative under normal
-  policy, and concurrent foreground tail latency remains to be measured.
+  policy, and concurrent foreground cost is measured by the dedicated follow-up matrix.
 - Add the platform durability evidence matrix with cumulative E0–E4 claim levels, an honest
   APFS/Linux/BSD row inventory, artifact/promotion requirements, and a controlled power-loss
   campaign protocol. Add a portable collector that records source, OS, hardware class,

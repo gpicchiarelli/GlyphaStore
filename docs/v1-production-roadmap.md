@@ -276,8 +276,13 @@ selection materially changes compaction cost. Exact per-Worker Index-referenced 
 byte counters now enforce the inclusive normal threshold and select the same Worker for policy and
 automatic execution. A finite 128 MiB default now preflights that candidate's exact live bytes
 before normal automatic compaction (zero explicitly means unlimited; pressure/emergency bypass).
-No-gain observability, unread-TTL policy, foreground tail-latency
-measurement, and controlled native baselines remain open. A deterministic v1
+The clean
+[concurrent-maintenance benchmark](benchmarks/concurrent-maintenance-2026-07-23.md) now measures
+disabled/cooperative/background mixed GET/PUT cost: one useful 31.01 MiB compaction reduces median
+foreground throughput about 18% and raises p99 54--57%, while cooperative and background medians
+are effectively equal. Its rotation-forcing calibration exposes fail-fast rejection of an
+unrelated Worker's writes during Manifest publication. No-gain observability, unread-TTL policy,
+that publication-availability gap, and controlled native baselines remain open. A deterministic v1
 planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
@@ -414,7 +419,9 @@ post-compaction no-gain detection.
   is therefore measured. The isolated
   [benefit/cost matrix](benchmarks/durable-compaction-2026-07-23.md) covers TTL and four other
   useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
-  remaining open work is unread-TTL policy, foreground tail latency and long-churn benches,
+  the [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) measures
+  foreground tail cost and identifies unrelated-Worker rotation conflict during publication.
+  Remaining open work is unread-TTL policy, that availability gap, long-churn/idle benches,
   controlled native baselines, and native power-loss evidence under P0-08.
 
 ### Offline verification, backup, restore, and repair

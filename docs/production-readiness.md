@@ -133,9 +133,15 @@ implementation or design document alone is not sufficient.
   [durable compaction benefit/cost matrix](benchmarks/durable-compaction-2026-07-23.md) now measures
   high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts with reopen/model validation. It
   confirms useful physical reclaim but also exposes 1.6x--1.8x environmental variance on copy-heavy
-  paths and missing foreground p99 coverage. The resulting per-Worker sealed/live/dead counters now
+  paths. The resulting per-Worker sealed/live/dead counters now
   enforce the normal threshold and are exported in daemon `STATS`; unread TTL remains a conservative
-  policy gap. This is an exploratory local result, not a release regression baseline.
+  policy gap. A clean seven-repeat
+  [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) now supplies
+  foreground p50/p95/p99/max coverage: a useful 31.01 MiB compaction costs about 18% median
+  throughput and 54--57% p99 versus disabled, with no material median difference between
+  cooperative and background scheduling. Calibration also exposes unrelated-Worker rotation
+  rejection during Manifest publication. These are exploratory local results, not release
+  regression baselines.
   These local measurements are diagnostic baselines, not release claims;
   controlled-hardware CI evidence and an enforced tail-latency target remain pending.
 
