@@ -301,7 +301,8 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   forbidden. Live/hot backup remains open. `glyphastore_rebuild_index` still refuses offline Index
   rewrite; durable Indexes are rebuilt by Store recovery.
 - Live/hot backup and snapshot under concurrent writers remain open; the offline contract is in
-  [backup-restore](architecture/backup-restore.md).
+  [backup-restore](architecture/backup-restore.md). Operator procedures:
+  [backup-restore runbook](operations/backup-restore.md), [corruption-repair runbook](operations/corruption-repair.md).
 - Publish upgrade/downgrade rules for persistence v1 and test artifacts created by every released
   reader/writer. Worker-count changes and resharding require an offline, resumable, verified v1
   migration tool rather than an implicit open-time rewrite.
@@ -312,6 +313,7 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   one Worker or slow client cannot monopolize an executor.
 - Define graceful drain: stop accepting, bound the drain deadline, finish or classify committed
   writes, flush/close the Store, and only then exit. Test SIGINT/SIGTERM during every phase.
+  Operator procedure: [graceful-drain-and-overload runbook](operations/graceful-drain-and-overload.md).
 - Add liveness, readiness, structured logs, metrics, build/config dump, and an administrative
   diagnostic surface. Readiness must fail on sticky storage errors and during unsafe recovery.
   Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented; histogram export

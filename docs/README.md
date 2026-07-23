@@ -67,6 +67,7 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 
 ## Decisions, development, and operations
 
+- [Operations runbooks](operations/README.md) — graceful drain, overload, offline backup/restore, corruption repair
 - [ADR index and lifecycle](adr/README.md)
 - [Glossary](glossary.md)
 - [Code tour](development/code-tour.md)

@@ -32,6 +32,8 @@ Restore is the same verified copy from a backup directory into a new empty desti
 
 Offline repair that quarantines non-catalog anomalies into an explicit workspace is provided by
 `glyphastore_repair_store` (see [cli.md](../cli.md)); it never rewrites the source directory.
+Operator procedures: [backup-restore runbook](../operations/backup-restore.md),
+[corruption-repair runbook](../operations/corruption-repair.md).
 
 ## Failure modes
 

@@ -129,7 +129,7 @@ These gate “ready for real applications” more than additional SDKs:
 | --- | --- |
 | Security | Authn/authz, TLS, rate limits, audit, credential handling |
 | Observability | Structured logs, metrics, readiness, admin diagnostics, build info, connection/Worker stats |
-| Operations | Backup/restore/verify, drain, corruption, disk-full, upgrade/downgrade runbooks |
+| Operations | Backup/restore/verify, drain, corruption, disk-full, upgrade/downgrade runbooks — partial: [operations runbooks](../operations/README.md) |
 | Release compatibility | ABI/API policy, wire compatibility, signed artifacts, checksums, SBOM, reproducible builds, deprecation/support lifetime |
 | Stress / fault | Exhaustive socket/thread fault injection, continuous fuzz, soak, reconnect/shutdown stress, memory stability, power-loss/filesystem matrices |
 

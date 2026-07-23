@@ -5,6 +5,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Add operator runbooks under `docs/operations/` for graceful drain and overload (`HEALTH`/`READY`/`STATS`,
+  `--shutdown-drain-ms`), offline backup/restore (`glyphastore_backup_store`, `glyphastore_verify_store`),
+  and corruption detection/repair (`glyphastore_verify_store`, `glyphastore_inspect_segment`,
+  `glyphastore_repair_store` with quarantine outside the live store). Link from the documentation index,
+  production readiness, persistence roadmap, and architecture backup-restore guide.
 - Add fail-closed unread-TTL observability for pressure/emergency maintenance. When
   `unread_ttl_pressure_probe` is enabled (default), background evaluations under segment or
   free-space pressure, or emergency, perform a bounded sealed-Index probe of the round-robin

@@ -108,6 +108,9 @@ below has automated evidence. A design document or implementation alone does not
   lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging are
   open.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
+  Operator procedures: [operations runbooks](operations/README.md) (graceful drain/overload,
+  [backup-restore](operations/backup-restore.md), [corruption-repair](operations/corruption-repair.md)).
+  Formal staging/CI exercise remains open.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
   [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md).
