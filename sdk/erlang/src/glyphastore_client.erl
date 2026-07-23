@@ -430,19 +430,14 @@ plan_pipeline_items([Req | Rest], State, Worker0, Need, Acc, MaxBytes, StateAcc)
                 {error, Err} ->
                     {error, Err};
                 {ok, Owner, _Conn} ->
-                    case Worker0 of
-                        undefined -> ok;
-                        W when W =:= Owner -> ok;
-                        _ -> {error, glyphastore_error:invalid_argument(<<"every pipeline key must route to the same Worker">>)}
-                    end,
-                    Key = maps:get(key, Norm),
-                    Value = maps:get(value, Norm, <<>>),
-                    FrameLen = glyphastore_protocol:request_frame_size(Key, Value),
-                    MaxFrame = maps:get(maximum_frame_bytes, StateAcc#state.config),
                     case Worker0 =:= undefined orelse Worker0 =:= Owner of
                         false ->
                             {error, glyphastore_error:invalid_argument(<<"every pipeline key must route to the same Worker">>)};
                         true ->
+                            Key = maps:get(key, Norm),
+                            Value = maps:get(value, Norm, <<>>),
+                            FrameLen = glyphastore_protocol:request_frame_size(Key, Value),
+                            MaxFrame = maps:get(maximum_frame_bytes, StateAcc#state.config),
                             case FrameLen =< MaxFrame andalso FrameLen =< MaxBytes - Need of
                                 true ->
                                     {RequestId, State1} = bump_id(StateAcc),
@@ -672,7 +667,8 @@ worker_index(#state{worker_count = 0}, _Key) ->
 worker_index(#state{worker_count = WC, workers = Workers}, Key) ->
     case glyphastore_protocol:worker_for(Key, WC) of
         {ok, Worker} -> {ok, Worker, maps:get(Worker, Workers)};
-        {error, Err} -> {error, glyphastore_error:invalid_argument(Err)}
+        {error, {invalid_argument, Msg}} ->
+            {error, glyphastore_error:invalid_argument(Msg)}
     end.
 
 ensure_connected(Conn, State) ->
