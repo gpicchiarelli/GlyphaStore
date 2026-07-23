@@ -1,3 +1,0 @@
-# glyphastore Python client benchmark
-# sdk_version=0.1.0 runtime=sync execution=sequential workers=2 pipeline_pairs=32 operations=100000
-name=python_client_pipeline_read_after_write sdk_version=0.1.0 runtime=sync execution=sequential workers=2 pipeline_pairs=32 operations=100000 samples=7 median_seconds=1.054637584 min_seconds=1.048931333 max_seconds=1.062648500 median_ops_per_second=94819.302 min_ops_per_second=94104.495 max_ops_per_second=95335.125

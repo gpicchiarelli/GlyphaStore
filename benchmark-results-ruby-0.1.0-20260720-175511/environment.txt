@@ -1,9 +1,0 @@
-captured_at=2026-07-20T17:55:11Z
-git_sha=4ced21f3df2382afe661bc70b65fc7c8121c18e3
-ruby=ruby 3.3.7 (2025-01-15 revision be31f993d7) [arm64-darwin23]
-ruby_sdk_version=0.1.0
-glyphastored=/Users/gpicchiarelli/Documents/GlyphaStore/build/macos-native-release/glyphastored
-ops=100000 warmup=1 repeats=7
-workload=ordered PUT/GET pipeline read-after-write, value_size=64
-storage_mode=volatile
-note=publishes both sequential and threaded per-Worker pipelines concurrent modes

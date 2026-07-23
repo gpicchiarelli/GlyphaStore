@@ -1,3 +1,0 @@
-# glyphastore Go client benchmark
-# sdk_version=0.1.0 runtime=sync execution=concurrent workers=2 pipeline_pairs=1 operations=200000
-name=go_client_pipeline_read_after_write sdk_version=0.1.0 runtime=sync execution=concurrent workers=2 pipeline_pairs=1 operations=200000 samples=7 median_seconds=1.733273250 min_seconds=1.479099125 max_seconds=1.835516458 median_ops_per_second=115388.615 min_ops_per_second=108961.159 max_ops_per_second=135217.442
