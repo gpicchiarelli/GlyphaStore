@@ -226,8 +226,8 @@ sealed history as the atomic unit. Descriptor-relative intent publication, resta
 against exactly old or next authority, and online single- and multi-output crash/I/O fault matrices
 are implemented. Public `Store::compact()` uses a non-queuing Store-wide maintenance gate. Durable
 mutation lanes reject before enqueue when the maintenance emergency gate is armed. Official clients
-map wire `OVERLOADED` to `retryability=never`. Unread-TTL policy, controlled native benchmark
-baselines, and native power-loss certification remain open. Benchmark matrices:
+map wire `OVERLOADED` to `retryability=never`. Controlled native benchmark baselines and native
+power-loss certification remain open. Benchmark matrices:
 [durable compaction](benchmarks/durable-compaction-2026-07-23.md),
 [concurrent maintenance](benchmarks/concurrent-maintenance-2026-07-23.md).
 
@@ -285,9 +285,9 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
   the [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) measures
   foreground tail cost and identifies unrelated-Worker rotation conflict during publication.
-  Remaining open work is normal-mode unread-TTL scheduling, controlled native baselines, and native
-  power-loss evidence under P0-08. Pressure/emergency unread-TTL counting and STATS export are
-  closed; the publication-availability gap and no-gain observability counters are closed.
+  Normal unread-TTL scheduling is opt-in and fail-closed by default
+  (`unread_ttl_normal_scheduling`); pressure/emergency probe and telemetry are closed. Remaining
+  open work is controlled native baselines and native power-loss evidence under P0-08.
 
 ### Offline verification, backup, restore, and repair
 
@@ -299,8 +299,9 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   `glyphastore_repair_store` performs offline fail-closed repair into an explicit empty workspace
   (`store/` + `quarantine/` + audit): it never mutates the source, quarantines non-catalog anomalies,
   and refuses missing catalog or unsafe namespace entries. In-place destructive rewrite remains
-  forbidden. Live/hot backup remains open. `glyphastore_rebuild_index` still refuses offline Index
-  rewrite; durable Indexes are rebuilt by Store recovery.
+  forbidden. Live/hot backup remains open. `glyphastore_rebuild_index` permanently refuses offline
+  Index rewrite for durable v1 with an explicit recovery/repair operator path; durable Indexes are
+  rebuilt by Store recovery.
 - Live/hot backup and snapshot under concurrent writers remain open; the offline contract is in
   [backup-restore](architecture/backup-restore.md). Operator procedures:
   [backup-restore runbook](operations/backup-restore.md), [corruption-repair runbook](operations/corruption-repair.md).

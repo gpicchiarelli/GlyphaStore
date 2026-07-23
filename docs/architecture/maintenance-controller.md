@@ -80,8 +80,12 @@ conservatively live until GET, recovery, or compaction visits the Record. Under 
 emergency, an optional bounded probe (`unread_ttl_pressure_probe`, default on) reads sealed source
 Records for the round-robin candidate only and exports
 `candidate_unread_expired_sealed_record_{count,bytes}` plus `unread_ttl_probe_performed` in
-`MaintenanceObservation` / daemon `STATS`. Normal scheduling never probes and does not treat unread
-TTL as reclaim pressure.
+`MaintenanceObservation` / daemon `STATS`. Normal scheduling stays conservative by default
+(`unread_ttl_normal_scheduling`, default off): unread expired sealed puts remain Index-live for the
+inclusive dead-byte threshold until GET, recovery, pressure, or an explicit `Store::compact()` visit.
+When normal scheduling is enabled, normal evaluations also probe and add unread expired bytes to
+`candidate_scheduling_dead_byte_ratio_bp` for threshold decisions only; copy budget still uses exact
+Index-referenced live bytes and compaction still uses the sole `Store::compact()` path.
 
 Wire note: the Reactor maps `storage_exhausted` to `ResponseStatus::overloaded` (existing
 many-to-one collapse with admission limits). Official clients advertise `retryability=never` for
@@ -112,14 +116,14 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
 
 ## Explicitly deferred
 
-- Normal-mode unread-TTL probe and scheduling influence (pressure/emergency probe and telemetry
-  exist via `unread_ttl_pressure_probe`). Related matrices:
+- Per-second copy rate (`max_copy_bytes_per_sec`) and CPU window budgets (`max_cpu_ms_per_window`)
+  remain reserved placeholders; normal per-candidate copy limits are enforced.
+- Controlled-hardware baselines and native power-loss certification (owned by ADR 0015 compaction
+  transaction, not this scheduler). Related matrices:
   [durable compaction](../benchmarks/durable-compaction-2026-07-23.md),
   [concurrent maintenance](../benchmarks/concurrent-maintenance-2026-07-23.md),
   [rotation/idle/churn](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md),
   [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md),
   [deep-phase macOS](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md).
-  Controlled-hardware baselines remain a release gate.
 - Shorter compaction publication leases. Measure deep rotation phases first; only then decide
   whether replacement Segment construction should move before publication authority.
-- Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).
