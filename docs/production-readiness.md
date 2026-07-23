@@ -101,8 +101,10 @@ below has automated evidence. A design document or implementation alone does not
   The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
   flags plus documented file/environment precedence (`defaults < profile < file < env < CLI`).
   `--dump-config` prints the resolved effective settings and exits without listening. Normal
-  background compaction has a documented, daemon-configurable 128 MiB per-candidate copy limit.
-  Deployment profiles (`dev`, `embedded`, `production`) validate fail-closed before listen.
+  background compaction has a documented, daemon-configurable 128 MiB per-candidate copy limit plus
+  opt-in unread-TTL normal scheduling (default off). Per-second/CPU maintenance rate fields remain
+  reserved placeholders. Deployment profiles (`dev`, `embedded`, `production`) validate fail-closed
+  before listen.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
   lane/batch counters, and maintenance snapshot fields. Histogram export remains open. Structured
