@@ -59,17 +59,21 @@ Every implementation block below must preserve these rules:
 
 ### P0-01 — Make the daemon capable of v1 durability
 
-**Status:** partial. `Server::create` accepts a complete `StoreConfig`, requires Worker count to
-match executor count, and closes the Store from `join()`. The daemon exposes `volatile`,
-`durable-sync`, `durable-periodic`, and `durable-group` selection plus durable data-directory and
-open-policy controls. Durable `PUT`/`ERASE` leave the Reactor through bounded per-Worker FIFO lanes
-with count and byte admission, generation-safe completion, overload responses, queue-wait expiry
-before Store entry, per-lane metrics, and drain-before-Store-close shutdown (`--shutdown-drain-ms`,
-default 30s). Strict-group mode retains bounded concurrent producers. Wire `HEALTH`/`READY`/`STATS`
-expose liveness, readiness, and a bounded ASCII admin report. Daemon CLI exposes durable batch and
-resource caps; file/environment config precedence and deployment profiles (`dev`, `embedded`,
-`production`) validate fail-closed. Real-daemon wire-protocol SIGKILL coverage exists
-(`glyphastore_crash_daemon`). Operator guide:
+**Status:** software-complete for embedded and TCP daemon paths; histogram export and native
+power-loss certification remain open. `Server::create` accepts a complete `StoreConfig`, requires
+Worker count to match executor count, and closes the Store from `join()`. The daemon exposes
+`volatile`, `durable-sync`, `durable-periodic`, and `durable-group` selection plus durable
+data-directory and open-policy controls. Durable `PUT`/`ERASE` leave the Reactor through bounded
+per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
+queue-wait expiry before Store entry, per-lane metrics, and drain-before-Store-close shutdown
+(`--shutdown-drain-ms`, default 30s). Strict-group mode retains bounded concurrent producers. Wire
+`HEALTH`/`READY`/`STATS` expose liveness, readiness (including maintenance emergency), and a bounded
+ASCII admin report. Daemon CLI exposes durable batch, resource, and maintenance caps with
+`--dump-config` covering effective durable settings; file/environment config precedence and
+deployment profiles (`dev`, `embedded`, `production`) validate fail-closed before listen.
+Real-daemon wire-protocol SIGKILL coverage exists for post-ack PUT, pre-commit PUT, and post-ack ERASE
+(`glyphastore_crash_daemon`). Integration tests cover emergency-gate wire `OVERLOADED` rejection and
+durable wire ERASE through reopen. Operator guide:
 [durable TCP daemon](operations/durable-tcp-daemon.md). Histogram export remains open.
 
 **Required change:** validated `StoreConfig` into `Server`; CLI/configuration for data directory,

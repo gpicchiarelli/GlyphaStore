@@ -344,6 +344,18 @@ GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
     GLYPHA_REQUIRE(dump.find("log-format=human\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("bind=127.0.0.1\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("storage-mode=volatile\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("maintenance-min-eval-interval-ms=") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("max-manifest-bytes=") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("max-live-keys=") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("disk-read-queue-capacity=") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("group-min-records=") != std::string::npos);
+}
+
+GLYPHA_TEST("daemon config production profile requires data-dir for durable storage") {
+    const std::array arguments{"glyphastored", "--profile", "production"};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(!parsed.has_value());
+    GLYPHA_REQUIRE(parsed.error().message.find("data-dir") != std::string::npos);
 }
 
 GLYPHA_TEST("daemon dump-config cannot be set from a config file") {

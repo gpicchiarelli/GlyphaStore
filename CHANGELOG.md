@@ -5,6 +5,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Complete durable TCP daemon software path (P0-01). Extend `--dump-config` with maintenance
+  thresholds, durable resource defaults, disk-read settings, and group batch fields. Extend
+  `glyphastore_crash_daemon` with pre-commit PUT and post-ack ERASE checkpoints. Mark P0-01
+  software-complete; histogram export and E3/E4 power-loss remain open.
 - Add end-to-end operator guide for durable `glyphastored` deployments
   (`docs/operations/durable-tcp-daemon.md`): profile or explicit storage mode, data directory and
   open policy, resource/batch/maintenance flags, `HEALTH`/`READY`/`STATS` expectations, shutdown

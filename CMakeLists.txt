@@ -350,7 +350,7 @@ if(BUILD_TESTING)
 
     add_executable(glyphastore_crash_daemon tests/crash/crash_daemon.cpp)
     target_link_libraries(glyphastore_crash_daemon
-        PRIVATE GlyphaStore::client GlyphaStore::core glyphastore_project_options
+        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
     )
     glyphastore_set_warnings(glyphastore_crash_daemon)
     glyphastore_enable_hardening(glyphastore_crash_daemon)
@@ -361,10 +361,18 @@ if(BUILD_TESTING)
         COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-group)
     add_test(NAME glyphastore_crash_daemon_periodic
         COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-periodic)
+    add_test(NAME glyphastore_crash_daemon_pre_commit
+        COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-sync
+                --checkpoint pre-commit)
+    add_test(NAME glyphastore_crash_daemon_erase
+        COMMAND glyphastore_crash_daemon --daemon $<TARGET_FILE:glyphastored> --storage durable-sync
+                --checkpoint post-ack-erase)
     set_tests_properties(
         glyphastore_crash_daemon_sync
         glyphastore_crash_daemon_group
         glyphastore_crash_daemon_periodic
+        glyphastore_crash_daemon_pre_commit
+        glyphastore_crash_daemon_erase
         PROPERTIES TIMEOUT 120 LABELS "crash"
     )
 endif()
@@ -469,7 +477,7 @@ if(BUILD_TESTING)
     )
     add_test(NAME glyphastore_cli_rebuild_help COMMAND glyphastore_rebuild_index --help)
     set_tests_properties(glyphastore_cli_rebuild_help PROPERTIES
-        PASS_REGULAR_EXPRESSION "Rebuild a GlyphaStore index"
+        PASS_REGULAR_EXPRESSION "Offline Index rebuild is not supported"
     )
     add_test(NAME glyphastore_cli_rebuild_not_implemented
         COMMAND glyphastore_rebuild_index -- /tmp/does-not-matter.glypha

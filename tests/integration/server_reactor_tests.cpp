@@ -911,6 +911,155 @@ GLYPHA_TEST("server READY fails under maintenance emergency") {
     GLYPHA_REQUIRE(false);
 }
 
+GLYPHA_TEST("server rejects durable PUT and ERASE under maintenance emergency on wire") {
+    ServerTemporaryDirectory temporary;
+    glyphastore::DurableResourceLimits limits{};
+    limits.max_segment_count = 1;
+    limits.max_store_bytes = 4ULL * glyphastore::kSegmentSizeBytes;
+    limits.max_temporary_compaction_bytes = glyphastore::kSegmentSizeBytes;
+    {
+        auto seeded = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = temporary.store_path(),
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .durable_limits = limits,
+            .maintenance = {.mode = glyphastore::MaintenanceMode::cooperative},
+        });
+        GLYPHA_REQUIRE(seeded.has_value());
+        GLYPHA_REQUIRE((*seeded)->put("seed", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*seeded)->close().has_value());
+    }
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 2},
+                                            {.worker_config = {.explicit_count = 1},
+                                             .storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = temporary.store_path(),
+                                             .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                             .durable_limits = limits,
+                                             .maintenance = {
+                                                 .mode = glyphastore::MaintenanceMode::background,
+                                                 .min_eval_interval_ms = 60'000,
+                                                 .max_eval_interval_ms = 60'000,
+                                             }});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto emergency_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < emergency_deadline) {
+        const auto ready = probe_lifecycle(socket, glyphastore::server::RequestOpcode::ready, 422);
+        GLYPHA_REQUIRE(ready.has_value());
+        if (ready->decoded.frame.status == glyphastore::server::ResponseStatus::internal_error) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(!server.ready());
+
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 423,
+        .key = bytes("blocked-put"),
+        .value = bytes("blocked"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    const auto put_response = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+
+    const auto erase = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::erase,
+        .request_id = 424,
+        .key = bytes("seed"),
+    });
+    GLYPHA_REQUIRE(erase.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *erase));
+    const auto erase_frame = receive_response(socket);
+    const auto erase_response = glyphastore::server::decode_response(erase_frame);
+    GLYPHA_REQUIRE(erase_response.has_value());
+    GLYPHA_REQUIRE(erase_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("durable wire ERASE persists through reopen") {
+    ServerTemporaryDirectory temporary;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 2},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto port = server.port();
+
+    const auto socket = connect_to(port);
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 10,
+        .key = bytes("erase-me"),
+        .value = bytes("gone"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    const auto put_response = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto erase = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::erase,
+        .request_id = 11,
+        .key = bytes("erase-me"),
+    });
+    GLYPHA_REQUIRE(erase.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *erase));
+    const auto erase_frame = receive_response(socket);
+    const auto erase_response = glyphastore::server::decode_response(erase_frame);
+    GLYPHA_REQUIRE(erase_response.has_value());
+    GLYPHA_REQUIRE(erase_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    auto reopened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 2},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->start().has_value());
+    const auto probe_socket = connect_to((*reopened)->port());
+    GLYPHA_REQUIRE(probe_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(probe_socket, 0, 1));
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 12,
+        .key = bytes("erase-me"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(probe_socket, *get));
+    const auto get_frame = receive_response(probe_socket);
+    const auto get_response = glyphastore::server::decode_response(get_frame);
+    GLYPHA_REQUIRE(get_response.has_value());
+    GLYPHA_REQUIRE(get_response->frame.status == glyphastore::server::ResponseStatus::not_found);
+    static_cast<void>(::close(probe_socket));
+    (*reopened)->request_stop();
+    GLYPHA_REQUIRE((*reopened)->join().has_value());
+}
+
 GLYPHA_TEST("server shutdown stops accepting and closes idle connections") {
     auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 4});
     GLYPHA_REQUIRE(opened.has_value());
