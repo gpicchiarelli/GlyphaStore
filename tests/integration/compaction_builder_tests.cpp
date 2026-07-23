@@ -6,10 +6,13 @@
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <random>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -75,6 +78,29 @@ struct CopyWriteFailure {
         failure.fired = true;
         return glyphastore::fail(glyphastore::ErrorCode::io_error,
                                  "injected durable compaction copy failure");
+    }
+};
+
+struct GeneratedCompactionFailure {
+    glyphastore::FilesystemOperation target{};
+    std::size_t fail_on_matching_call{1};
+    std::size_t matching_calls{};
+    bool enabled{};
+    bool fired{};
+
+    static auto before(void* context, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& failure = *static_cast<GeneratedCompactionFailure*>(context);
+        if (!failure.enabled || operation != failure.target) {
+            return {};
+        }
+        ++failure.matching_calls;
+        if (failure.matching_calls != failure.fail_on_matching_call) {
+            return {};
+        }
+        failure.fired = true;
+        return glyphastore::fail(glyphastore::ErrorCode::io_error,
+                                 "injected generated-history compaction failure");
     }
 };
 
@@ -240,6 +266,7 @@ GLYPHA_TEST("durable compaction builder copies exact visible Records and preserv
         GLYPHA_REQUIRE(built.prepared->stats.expired_records_dropped == 1);
         GLYPHA_REQUIRE(!built.prepared->index.find("expired").has_value());
         GLYPHA_REQUIRE(built.prepared->index.find("active") == fixture.active);
+        GLYPHA_REQUIRE(built.prepared->active_live_record_bytes == fixture.active.size.value);
         const auto compacted_a = built.prepared->index.find("live-a");
         const auto compacted_replacement = built.prepared->index.find("replacement");
         GLYPHA_REQUIRE(compacted_a.has_value());
@@ -289,6 +316,7 @@ GLYPHA_TEST("durable compaction builder prepares zero-output retirement without 
         GLYPHA_REQUIRE(built.prepared->replacement_commits.empty());
         GLYPHA_REQUIRE(built.prepared->stats.records_copied == 0);
         GLYPHA_REQUIRE(built.prepared->index.find("active") == fixture.active);
+        GLYPHA_REQUIRE(built.prepared->active_live_record_bytes == fixture.active.size.value);
         next = built.prepared->plan.next_manifest;
         GLYPHA_REQUIRE(directory->publish_manifest(next).durable());
     }
@@ -351,9 +379,8 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
     GLYPHA_REQUIRE(runtime.has_value());
     const std::string hot_key{"active-hot"};
     const std::string hot_value{"cached"};
-    GLYPHA_REQUIRE((*runtime)
-                       ->put(std::as_bytes(std::span{hot_key}), std::as_bytes(std::span{hot_value}))
-                       .committed());
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{hot_key}), std::as_bytes(std::span{hot_value})).committed());
     GLYPHA_REQUIRE((*runtime)->hot_cache_stats()[0].resident_entries == 1);
     const auto result = (*runtime)->compact_worker(0, 100);
     GLYPHA_REQUIRE(result.compacted());
@@ -388,6 +415,359 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
     GLYPHA_REQUIRE((*reopened)->get("replacement", 100)->sequence == 4);
     GLYPHA_REQUIRE((*reopened)->get("active", 100)->sequence == 7);
     GLYPHA_REQUIRE((*reopened)->get(hot_key, 100)->sequence == 8);
+}
+
+GLYPHA_TEST("durable runtime rechecks the inclusive maintenance copy budget at snapshot") {
+    CompactionBuildDirectory temporary;
+    const auto old = build_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto observation = (*runtime)->maintenance_observation();
+    GLYPHA_REQUIRE(observation.has_value());
+    GLYPHA_REQUIRE(observation->candidate_live_record_bytes > 0);
+
+    const auto rejected = (*runtime)->compact_worker(0, 100, observation->candidate_live_record_bytes - 1U);
+    GLYPHA_REQUIRE(!rejected.compacted());
+    GLYPHA_REQUIRE(rejected.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+    GLYPHA_REQUIRE(rejected.error.has_value());
+    GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::sequence_conflict);
+    GLYPHA_REQUIRE((*runtime)->manifest() == old);
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+
+    const auto accepted = (*runtime)->compact_worker(0, 100, observation->candidate_live_record_bytes);
+    GLYPHA_REQUIRE(accepted.compacted());
+    GLYPHA_REQUIRE(accepted.stats.bytes_copied <= observation->candidate_live_record_bytes);
+}
+
+GLYPHA_TEST("durable runtime builds two compaction outputs and reopens every maximum Record") {
+    CompactionBuildDirectory temporary;
+    const glyphastore::Manifest manifest{
+        .store_id = {std::byte{0x61}, std::byte{0x62}, std::byte{0x63}},
+        .manifest_generation = 41,
+        .worker_count = 1,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{5},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+    constexpr auto kRecordCount = std::size_t{64};
+    std::vector<std::string> keys;
+    keys.reserve(kRecordCount);
+    for (std::size_t index = 0; index < kRecordCount; ++index) {
+        keys.push_back("multi-output-key-" + std::to_string(1'000U + index).substr(1));
+    }
+    GLYPHA_REQUIRE(keys.front().size() == keys.back().size());
+    const std::string value(
+        glyphastore::kMaxNormalRecordSize - glyphastore::kEncodedRecordHeaderSize - keys.front().size(), 'm');
+
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        std::size_t key_index{};
+        std::uint64_t sequence{1};
+        const std::vector<std::size_t> group_sizes{22, 21, 21};
+        for (std::size_t segment_index = 0; segment_index < group_sizes.size(); ++segment_index) {
+            const auto group_size = group_sizes[segment_index];
+            std::vector<TestRecord> records;
+            records.reserve(group_size);
+            for (std::size_t group_index = 0; group_index < group_size; ++group_index) {
+                records.push_back({.sequence = sequence++, .key = keys[key_index++], .value = value});
+            }
+            static_cast<void>(
+                create_records(*directory, manifest, manifest.segments[segment_index], records));
+        }
+        const std::vector<TestRecord> no_active_records;
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[3], no_active_records));
+        GLYPHA_REQUIRE(key_index == kRecordCount);
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto compacted = (*runtime)->compact_worker(0, 0);
+    GLYPHA_REQUIRE(compacted.compacted());
+    GLYPHA_REQUIRE(compacted.stats.source_index_records_verified == kRecordCount);
+    GLYPHA_REQUIRE(compacted.stats.records_copied == kRecordCount);
+    GLYPHA_REQUIRE(compacted.stats.bytes_copied == kRecordCount * glyphastore::kMaxNormalRecordSize);
+    const auto next = (*runtime)->manifest();
+    GLYPHA_REQUIRE(next.manifest_generation == manifest.manifest_generation + 1U);
+    GLYPHA_REQUIRE(next.segments.size() == 3);
+    GLYPHA_REQUIRE(next.segments[0].segment_id == glyphastore::SegmentId{1});
+    GLYPHA_REQUIRE(next.segments[0].generation == glyphastore::GenerationId{2});
+    GLYPHA_REQUIRE(next.segments[1].segment_id == glyphastore::SegmentId{2});
+    GLYPHA_REQUIRE(next.segments[1].generation == glyphastore::GenerationId{2});
+    GLYPHA_REQUIRE(next.segments[2] == manifest.segments[3]);
+    GLYPHA_REQUIRE((*runtime)->verify_index().has_value());
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == next);
+    GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
+    for (const auto& key : keys) {
+        const auto found = (*reopened)->get(key);
+        GLYPHA_REQUIRE(found.has_value());
+        GLYPHA_REQUIRE(found->bytes.size() == value.size());
+        GLYPHA_REQUIRE(found->bytes.front() == std::byte{0x6D});
+        GLYPHA_REQUIRE(found->bytes.back() == std::byte{0x6D});
+    }
+}
+
+GLYPHA_TEST("multi-seed durable compaction histories match their models before and after reopen") {
+    struct FaultCase {
+        std::uint64_t seed{};
+        glyphastore::FilesystemOperation operation{};
+        std::size_t occurrence{1};
+        bool expects_next_authority{};
+    };
+    constexpr std::array<std::uint64_t, 4> kSeeds{
+        0xC04F'AC71'0A5E'2026ULL,
+        0xC04F'AC71'0A5E'2027ULL,
+        0x51A7'E001'BADC'0FFEULL,
+        0xD15C'A4D0'5EED'0001ULL,
+    };
+    constexpr std::array<FaultCase, 5> kFaultCases{
+        FaultCase{.seed = 0xFA17'0000'0000'0001ULL,
+                  .operation = glyphastore::FilesystemOperation::write_compaction_intent},
+        FaultCase{.seed = 0xFA17'0000'0000'0002ULL,
+                  .operation = glyphastore::FilesystemOperation::write_record,
+                  .occurrence = 3},
+        FaultCase{.seed = 0xFA17'0000'0000'0003ULL,
+                  .operation = glyphastore::FilesystemOperation::sync_manifest},
+        FaultCase{.seed = 0xFA17'0000'0000'0004ULL,
+                  .operation = glyphastore::FilesystemOperation::remove_compaction_segment,
+                  .occurrence = 2,
+                  .expects_next_authority = true},
+        FaultCase{.seed = 0xFA17'0000'0000'0005ULL,
+                  .operation = glyphastore::FilesystemOperation::remove_compaction_intent,
+                  .expects_next_authority = true},
+    };
+    const auto run_seed = [](const std::uint64_t seed, const std::optional<FaultCase> fault) {
+        CompactionBuildDirectory temporary;
+        const glyphastore::Manifest manifest{
+            .store_id = {std::byte{0x71}, std::byte{0x72}, std::byte{0x73}},
+            .manifest_generation = 51,
+            .worker_count = 1,
+            .routing_epoch = 1,
+            .next_segment_id = glyphastore::SegmentId{5},
+            .next_segment_generation = glyphastore::GenerationId{1},
+            .segments =
+                {
+                    {.segment_id = glyphastore::SegmentId{1},
+                     .generation = glyphastore::GenerationId{1},
+                     .owner_worker = glyphastore::WorkerId{0},
+                     .role = glyphastore::ManifestSegmentRole::sealed},
+                    {.segment_id = glyphastore::SegmentId{2},
+                     .generation = glyphastore::GenerationId{1},
+                     .owner_worker = glyphastore::WorkerId{0},
+                     .role = glyphastore::ManifestSegmentRole::sealed},
+                    {.segment_id = glyphastore::SegmentId{3},
+                     .generation = glyphastore::GenerationId{1},
+                     .owner_worker = glyphastore::WorkerId{0},
+                     .role = glyphastore::ManifestSegmentRole::sealed},
+                    {.segment_id = glyphastore::SegmentId{4},
+                     .generation = glyphastore::GenerationId{1},
+                     .owner_worker = glyphastore::WorkerId{0},
+                     .role = glyphastore::ManifestSegmentRole::active},
+                },
+        };
+        constexpr auto kNowNs = std::uint64_t{1'000};
+        constexpr auto kKeyCount = std::size_t{32};
+        struct HistoryOperation {
+            std::uint64_t sequence{};
+            glyphastore::Opcode opcode{glyphastore::Opcode::put};
+            std::size_t key_index{};
+            std::string value;
+            std::uint64_t expire_at_ns{};
+        };
+        std::vector<std::string> keys;
+        keys.reserve(kKeyCount);
+        for (std::size_t index = 0; index < kKeyCount; ++index) {
+            keys.push_back("history-key-" + std::to_string(index));
+        }
+        std::vector<std::vector<HistoryOperation>> history(4);
+        std::vector<std::optional<std::string>> expected(kKeyCount);
+        std::vector<bool> latest_in_active(kKeyCount);
+        std::uint64_t next_sequence{1};
+        const auto append = [&](const std::size_t segment_index, const std::size_t key_index,
+                                const glyphastore::Opcode opcode, std::string value,
+                                const std::uint64_t expire_at_ns) {
+            history[segment_index].push_back({.sequence = next_sequence++,
+                                              .opcode = opcode,
+                                              .key_index = key_index,
+                                              .value = std::move(value),
+                                              .expire_at_ns = expire_at_ns});
+            latest_in_active[key_index] = segment_index == 3;
+            if (opcode == glyphastore::Opcode::erase || (expire_at_ns != 0 && expire_at_ns <= kNowNs)) {
+                expected[key_index].reset();
+            } else {
+                expected[key_index] = history[segment_index].back().value;
+            }
+        };
+
+        for (std::size_t key_index = 0; key_index < kKeyCount; ++key_index) {
+            append(0, key_index, glyphastore::Opcode::put, "baseline-" + std::to_string(key_index), 0);
+        }
+        std::mt19937_64 random{seed};
+        const auto append_generated = [&](const std::size_t segment_index, const std::size_t count,
+                                          const std::size_t key_space) {
+            for (std::size_t operation = 0; operation < count; ++operation) {
+                const auto key_index = static_cast<std::size_t>(random() % key_space);
+                const auto choice = random() % 6U;
+                if (choice == 0) {
+                    append(segment_index, key_index, glyphastore::Opcode::erase, {}, 0);
+                } else {
+                    const auto expiry = choice == 1 ? kNowNs - 1U : 0U;
+                    append(segment_index, key_index, glyphastore::Opcode::put,
+                           "value-" + std::to_string(next_sequence) + "-" + std::to_string(random()), expiry);
+                }
+            }
+        };
+        append_generated(0, 8, kKeyCount);
+        append_generated(1, 40, kKeyCount);
+        append_generated(2, 40, kKeyCount);
+        append_generated(3, 32, 8);
+
+        {
+            auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+            GLYPHA_REQUIRE(directory.has_value());
+            for (std::size_t segment_index = 0; segment_index < history.size(); ++segment_index) {
+                std::vector<TestRecord> records;
+                records.reserve(history[segment_index].size());
+                for (const auto& operation : history[segment_index]) {
+                    records.push_back({.sequence = operation.sequence,
+                                       .opcode = operation.opcode,
+                                       .key = keys[operation.key_index],
+                                       .value = operation.value,
+                                       .expire_at_ns = operation.expire_at_ns});
+                }
+                static_cast<void>(
+                    create_records(*directory, manifest, manifest.segments[segment_index], records));
+            }
+            GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+        }
+
+        const auto verify_model = [&](glyphastore::DurableRuntimeCatalog& runtime) {
+            for (std::size_t key_index = 0; key_index < kKeyCount; ++key_index) {
+                const auto found = runtime.get(keys[key_index], kNowNs);
+                if (expected[key_index]) {
+                    GLYPHA_REQUIRE(found.has_value());
+                    GLYPHA_REQUIRE(text(*found) == *expected[key_index]);
+                } else {
+                    GLYPHA_REQUIRE(!found.has_value());
+                    GLYPHA_REQUIRE(found.error().code == glyphastore::ErrorCode::not_found);
+                }
+            }
+        };
+        std::size_t expected_copied{};
+        for (std::size_t key_index = 0; key_index < kKeyCount; ++key_index) {
+            if (expected[key_index] && !latest_in_active[key_index]) {
+                ++expected_copied;
+            }
+        }
+        GLYPHA_REQUIRE(expected_copied > 0);
+
+        GeneratedCompactionFailure failure;
+        glyphastore::FilesystemHooks hooks;
+        if (fault) {
+            failure.target = fault->operation;
+            failure.fail_on_matching_call = fault->occurrence;
+            hooks = {.context = &failure, .before = &GeneratedCompactionFailure::before};
+        }
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), kNowNs, hooks);
+        GLYPHA_REQUIRE(runtime.has_value());
+        verify_model(**runtime);
+        failure.enabled = fault.has_value();
+        const auto compacted = (*runtime)->compact_worker(0, kNowNs);
+        if (fault) {
+            GLYPHA_REQUIRE(failure.fired);
+            GLYPHA_REQUIRE(!compacted.compacted());
+            GLYPHA_REQUIRE(compacted.error.has_value());
+            GLYPHA_REQUIRE(compacted.error->code == glyphastore::ErrorCode::io_error);
+            GLYPHA_REQUIRE(compacted.outcome == glyphastore::DurableCompactionOutcome::not_compacted ||
+                           compacted.outcome == glyphastore::DurableCompactionOutcome::recovery_required);
+            GLYPHA_REQUIRE((*runtime)->healthy() ==
+                           (compacted.outcome == glyphastore::DurableCompactionOutcome::not_compacted));
+            if ((*runtime)->healthy()) {
+                verify_model(**runtime);
+            }
+            runtime->reset();
+
+            auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), kNowNs);
+            GLYPHA_REQUIRE(recovered.has_value());
+            GLYPHA_REQUIRE((*recovered)->namespace_audit().clean());
+            GLYPHA_REQUIRE((*recovered)->verify_index().has_value());
+            verify_model(**recovered);
+            if (fault->expects_next_authority) {
+                auto expected_next = manifest;
+                ++expected_next.manifest_generation;
+                ++expected_next.segments[0].generation.value;
+                expected_next.segments.erase(expected_next.segments.begin() + 1,
+                                             expected_next.segments.end() - 1);
+                GLYPHA_REQUIRE((*recovered)->manifest() == expected_next);
+            } else {
+                GLYPHA_REQUIRE((*recovered)->manifest() == manifest);
+            }
+            return;
+        }
+        GLYPHA_REQUIRE(compacted.compacted());
+        GLYPHA_REQUIRE(compacted.stats.source_index_records_verified == expected_copied);
+        GLYPHA_REQUIRE(compacted.stats.records_copied == expected_copied);
+        verify_model(**runtime);
+        const auto next = (*runtime)->manifest();
+        GLYPHA_REQUIRE(next.manifest_generation == manifest.manifest_generation + 1U);
+        GLYPHA_REQUIRE(next.segments.size() == 2);
+        GLYPHA_REQUIRE(next.segments.front().generation == glyphastore::GenerationId{2});
+        GLYPHA_REQUIRE(next.segments.back() == manifest.segments.back());
+        runtime->reset();
+
+        auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), kNowNs);
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE((*reopened)->manifest() == next);
+        GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+        GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
+        verify_model(**reopened);
+    };
+    for (const auto seed : kSeeds) {
+        try {
+            run_seed(seed, std::nullopt);
+        } catch (const std::exception& exception) {
+            throw std::runtime_error("generated durable compaction seed " + std::to_string(seed) +
+                                     " failed: " + exception.what());
+        }
+    }
+    for (const auto& fault : kFaultCases) {
+        try {
+            run_seed(fault.seed, fault);
+        } catch (const std::exception& exception) {
+            throw std::runtime_error("faulted durable compaction seed " + std::to_string(fault.seed) +
+                                     " failed: " + exception.what());
+        }
+    }
 }
 
 GLYPHA_TEST("durable runtime fails closed when online compaction requires recovery") {

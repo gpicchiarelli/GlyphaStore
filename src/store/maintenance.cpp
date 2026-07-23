@@ -9,8 +9,8 @@
 namespace glyphastore {
 namespace {
 
-[[nodiscard]] auto clamp_interval_ms(const MaintenanceConfig& config, const bool use_min,
-                                     const bool use_max) -> std::uint32_t {
+[[nodiscard]] auto clamp_interval_ms(const MaintenanceConfig& config, const bool use_min, const bool use_max)
+    -> std::uint32_t {
     const auto min_ms = std::max<std::uint32_t>(config.min_eval_interval_ms, 1U);
     const auto max_ms = std::max(config.max_eval_interval_ms, min_ms);
     if (use_min) {
@@ -71,7 +71,8 @@ auto classify_maintenance_pressure(const MaintenanceObservation& observation,
     bool pressure = false;
     if (observation.max_segment_count > 0) {
         const auto threshold =
-            (observation.max_segment_count * static_cast<std::size_t>(config.segment_count_pressure_pct) + 99U) /
+            (observation.max_segment_count * static_cast<std::size_t>(config.segment_count_pressure_pct) +
+             99U) /
             100U;
         if (observation.segment_count >= threshold) {
             pressure = true;
@@ -98,7 +99,8 @@ auto validate_maintenance_config(const MaintenanceConfig& config) -> Status {
         return fail(ErrorCode::invalid_argument, "maintenance min_eval_interval_ms exceeds max");
     }
     if (config.max_segments_per_cycle == 0) {
-        return fail(ErrorCode::invalid_argument, "maintenance max_segments_per_cycle must be greater than zero");
+        return fail(ErrorCode::invalid_argument,
+                    "maintenance max_segments_per_cycle must be greater than zero");
     }
     if (config.segment_count_pressure_pct == 0 || config.segment_count_pressure_pct > 100) {
         return fail(ErrorCode::invalid_argument, "maintenance segment_count_pressure_pct must be in 1..100");
@@ -267,8 +269,8 @@ void MaintenanceController::publish_mutations_rejected_locked(const bool rejecte
 
 auto MaintenanceController::eval_interval_locked() const -> std::chrono::milliseconds {
     const bool under_pressure = aggressive_pressure(pressure_);
-    const bool backoff =
-        !under_pressure && consecutive_no_gain_ >= config_.max_no_gain_attempts && config_.max_no_gain_attempts > 0;
+    const bool backoff = !under_pressure && consecutive_no_gain_ >= config_.max_no_gain_attempts &&
+                         config_.max_no_gain_attempts > 0;
     return std::chrono::milliseconds{clamp_interval_ms(config_, under_pressure, backoff)};
 }
 
@@ -299,7 +301,6 @@ void MaintenanceController::evaluate_once() {
     bool auto_compact = false;
     MaintenanceConfig config{};
     std::uint64_t consecutive_no_gain = 0;
-    std::uint64_t bytes_copied_window = 0;
     {
         const std::lock_guard lock{mutex_};
         if (stop_requested_) {
@@ -310,7 +311,7 @@ void MaintenanceController::evaluate_once() {
         auto_compact = auto_compact_enabled_;
         config = config_;
         consecutive_no_gain = consecutive_no_gain_;
-        bytes_copied_window = bytes_copied_window_;
+        bytes_copied_window_ = 0;
     }
 
     MaintenanceObservation observation{};
@@ -382,8 +383,18 @@ void MaintenanceController::evaluate_once() {
         return;
     }
 
+    if (!under_pressure && observation.durable && observation.candidate_dead_byte_ratio_bp.has_value() &&
+        *observation.candidate_dead_byte_ratio_bp < config.dead_byte_ratio_bp_normal) {
+        const std::lock_guard lock{mutex_};
+        last_eval_duration_ns_ = elapsed_ns(eval_started);
+        record_skip(MaintenanceSkipReason::reclaim_threshold, MaintenanceState::idle,
+                    MaintenanceActivationReason::reclaim_threshold);
+        return;
+    }
+
     // Normal-only backoff. Under pressure/emergency, reclaim attempts continue despite no-gain streak.
-    if (!under_pressure && config.max_no_gain_attempts > 0 && consecutive_no_gain >= config.max_no_gain_attempts) {
+    if (!under_pressure && config.max_no_gain_attempts > 0 &&
+        consecutive_no_gain >= config.max_no_gain_attempts) {
         const std::lock_guard lock{mutex_};
         consecutive_no_gain_ = 0;
         last_eval_duration_ns_ = elapsed_ns(eval_started);
@@ -392,13 +403,12 @@ void MaintenanceController::evaluate_once() {
         return;
     }
 
-    if (!under_pressure && config.max_copy_bytes_per_cycle > 0 &&
-        bytes_copied_window >= config.max_copy_bytes_per_cycle) {
+    if (!under_pressure && observation.durable && config.max_copy_bytes_per_cycle > 0 &&
+        observation.candidate_live_record_bytes > config.max_copy_bytes_per_cycle) {
         const std::lock_guard lock{mutex_};
-        bytes_copied_window_ = 0;
         last_eval_duration_ns_ = elapsed_ns(eval_started);
-        record_skip(MaintenanceSkipReason::budget, MaintenanceState::suspended,
-                    MaintenanceActivationReason::budget_backoff);
+        record_skip(MaintenanceSkipReason::copy_budget, MaintenanceState::suspended,
+                    MaintenanceActivationReason::copy_budget);
         return;
     }
 
@@ -429,7 +439,8 @@ void MaintenanceController::evaluate_once() {
     }
 
     const auto compact_started = std::chrono::steady_clock::now();
-    auto result = compact();
+    const auto max_copy_bytes = under_pressure ? 0 : config.max_copy_bytes_per_cycle;
+    auto result = compact(observation.compaction_candidate_worker, max_copy_bytes);
     const auto compact_ns = elapsed_ns(compact_started);
     {
         const std::lock_guard lock{mutex_};
@@ -466,7 +477,7 @@ void MaintenanceController::evaluate_once() {
         ++compact_completed_;
         ++useful_compactions_;
         consecutive_no_gain_ = 0;
-        bytes_copied_window_ += result->bytes_copied;
+        bytes_copied_window_ = result->bytes_copied;
         total_bytes_copied_ += result->bytes_copied;
         total_expired_records_dropped_ += result->expired_records_dropped;
         last_useful_at_ = std::chrono::steady_clock::now();

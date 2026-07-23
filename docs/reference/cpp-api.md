@@ -92,6 +92,18 @@ Runs explicit compaction according to the storage mode's selection policy. Durab
 
 Compaction preserves logical key/value visibility and may change Record references and physical Segment identities. Volatile source bytes remain alive while an already returned internal snapshot retains shared ownership; durable compaction additionally preserves crash recovery authority.
 
+```cpp
+auto maintenance_snapshot() const -> MaintenanceSnapshot;
+```
+
+Returns a point-in-time copy of controller state and counters. For durable background maintenance,
+`last_observation` includes the selected round-robin Worker and its sealed, Index-referenced live,
+dead, and dead-ratio Record-byte counters. The normal controller compares that ratio to
+`dead_byte_ratio_bp_normal` and preflights live bytes against the inclusive
+`max_copy_bytes_per_cycle` limit (128 MiB by default; zero means unlimited); pressure and emergency
+bypass both controls. Unread expired Records remain conservatively live until GET, recovery, or
+compaction validates their expiration.
+
 ## 9. Verification
 
 ```cpp

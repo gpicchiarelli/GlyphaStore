@@ -3,19 +3,19 @@
 Status: roadmap
 Applies to: post-audit documentation work after 2026-07-19
 Owner: project maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-23
 
 The normative P0 foundation now exists. This roadmap tracks remaining evidence and operator-facing
 material; it cannot override specifications.
 
 | Priority | Document / update | Purpose | Audience | Suggested length | Dependencies | Estimate |
 |---|---|---|---|---:|---|---:|
-| P0 | Wire v2 golden fixtures and fixture commentary | Freeze canonical bytes for every opcode/status and boundaries | client authors, maintainers | 5–10 fixtures + 2 pages | wire v2 spec | 2–3 days |
-| P0 | Cross-SDK interoperability suite | Prove C++/Python/Perl PUT→GET matrices (binary, expiry, pipeline, errors, 1–8 Workers) | client authors, CI | harness + CI job | **done for 1/2/4 Workers** via `scripts/test-sdk-interop.sh`; 8 Workers / error-limit matrices remain | — |
-| P0 | Compaction intent v1 golden fixture | Freeze the last persistent codec without independent golden bytes | persistence maintainers | 1 fixture + 1 page | persistence v1 | 1 day |
+| P0 | Wire v2 golden fixtures and fixture commentary | Freeze canonical bytes for every opcode/status and boundaries | client authors, maintainers | **done:** independent request/response fixtures cover every current opcode/status and are verified across official SDKs | wire v2 spec | — |
+| P0 | Cross-SDK interoperability suite | Prove C++/Python/Perl/Go/Ruby PUT→GET matrices (binary, expiry, pipeline, errors, 1–8 Workers) | client authors, CI | **done:** 1/2/4/8-Worker cleartext matrix, every deterministic owner, structured `NOT_FOUND`, local 2 MiB rejection, pipeline, expiry, binary/empty values, plus the supported TLS subset | harness + CI job | — |
+| P0 | Compaction intent v1 golden fixture | Freeze the last persistent codec without independent golden bytes | persistence maintainers | **done:** canonical dual-Manifest fixture, independent generator/verifier, decode-only and exact encoder evidence | persistence v1 | — |
 | P0 | Error taxonomy ADR | Decide compatibility categories including format incompatibility and indeterminate outcomes | API/client maintainers | 4–6 pages | **done:** [ADR 0019](adr/0019-client-error-retry-timeout.md) + [client semantics v1](spec/client-semantics-v1.md) | — |
-| P0 | Platform durability evidence matrix | Record which filesystem/device guarantees were actually tested | release and storage maintainers | 6–10 pages | crash/power-loss campaign | 3–5 writing days after tests |
-| P0 | Recovery state-transition matrix | Enumerate every bootstrap, rotation, flush, and compaction interruption outcome | persistence maintainers | 10–15 pages | persistence v1, crash tests | 3–4 days |
+| P0 | Platform durability evidence matrix | Record which filesystem/device guarantees were actually tested | release and storage maintainers | **foundation done:** [E0–E4 evidence policy and matrix](architecture/platform-durability-evidence.md) plus a safe native E2 collector; pinned E3/E4 campaigns remain open | dedicated crash/power-loss infrastructure | campaign execution and review |
+| P0 | Recovery state-transition matrix | Enumerate every bootstrap, rotation, flush, and compaction interruption outcome | persistence maintainers | **done:** [normative v1 matrix](spec/recovery-state-matrix-v1.md) with authority, visibility, resume/fail-closed outcome, and evidence mapping | persistence v1, crash tests | — |
 | P1 | Operations handbook | Start/stop, signals, directories, limits, backup/restore constraints, metrics, incidents | operators | 20–30 pages | stable daemon configuration | 4–6 days |
 | P1 | Compatibility and migration manual | Turn format matrix into released-version upgrade/downgrade procedures | operators, release engineers | 10–15 pages | first released durable artifact | 3–4 days |
 | P1 | TCP client conformance guide | Give pseudocode, retry rules, malformed examples, and conformance vectors | client implementers | 12–18 pages | wire fixtures | 3 days |

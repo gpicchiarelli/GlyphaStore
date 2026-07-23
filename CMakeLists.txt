@@ -569,6 +569,24 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_benchmarks RELEASE ARGUMENTS
         --filter store-put-get --ops 200000 --warmup 1 --repeats 7
     )
+    add_executable(glyphastore_compaction_benchmark
+        benchmarks/compaction_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_compaction_benchmark
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    target_compile_definitions(
+        glyphastore_compaction_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_compaction_benchmark)
+    glyphastore_enable_hardening(glyphastore_compaction_benchmark)
+    glyphastore_enable_ipo(glyphastore_compaction_benchmark)
+    set_target_properties(glyphastore_compaction_benchmark PROPERTIES FOLDER "Benchmarks")
+    glyphastore_xcode_scheme(glyphastore_compaction_benchmark RELEASE ARGUMENTS
+        --repeats 3
+    )
     add_executable(glyphastore_server_benchmarks
         benchmarks/server_benchmark.cpp
         benchmarks/harness.cpp

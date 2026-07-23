@@ -1,3 +1,4 @@
+#include "glyphastore/persistence/compaction_intent.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/manifest.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
@@ -61,6 +62,20 @@ GLYPHA_TEST("format fixtures decode independently without encoder round-trip") {
     GLYPHA_REQUIRE(decoded_manifest.has_value());
     GLYPHA_REQUIRE(decoded_manifest->manifest_generation == 0x0102030405060708ULL);
     GLYPHA_REQUIRE(decoded_manifest->segments.size() == 3);
+
+    const auto intent_bytes =
+        glyphastore::test::read_hex_fixture(fixture_root() / "compaction_intent_v1.hex");
+    const auto decoded_intent = glyphastore::decode_compaction_intent(intent_bytes);
+    GLYPHA_REQUIRE(decoded_intent.has_value());
+    GLYPHA_REQUIRE(decoded_intent->worker_id == glyphastore::WorkerId{0});
+    GLYPHA_REQUIRE(decoded_intent->old_manifest.manifest_generation == 9);
+    GLYPHA_REQUIRE(decoded_intent->old_manifest.segments.size() == 4);
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.manifest_generation == 10);
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.size() == 2);
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().segment_id ==
+                   glyphastore::SegmentId{1});
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().generation ==
+                   glyphastore::GenerationId{2});
 
     const auto header_bytes = glyphastore::test::read_hex_fixture(fixture_root() / "segment_header_v1.hex");
     GLYPHA_REQUIRE(header_bytes.size() ==

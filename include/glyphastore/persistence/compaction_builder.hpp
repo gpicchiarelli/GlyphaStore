@@ -29,6 +29,7 @@ struct DurableCompactionCopyStats {
 struct PreparedDurableCompaction {
     DurableCompactionPlan plan;
     Index index;
+    std::uint64_t active_live_record_bytes{};
     std::vector<SelectedSegmentCommit> replacement_commits;
     DurableCompactionCopyStats stats;
 };

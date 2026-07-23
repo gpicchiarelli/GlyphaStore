@@ -11,7 +11,7 @@ options = {
   expire_at_ns: 0
 }
 parser = OptionParser.new do |opts|
-  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get>"
+  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit>"
   opts.on("--host HOST", String) { |v| options[:host] = v }
   opts.on("--port PORT", Integer) { |v| options[:port] = v }
   opts.on("--key-hex HEX", String) { |v| options[:key_hex] = v }
@@ -60,6 +60,25 @@ begin
     abort("pipeline outcomes failed") unless responses.length == 2 && responses[0].succeeded? && responses[1].succeeded?
     abort("pipeline value mismatch") unless responses[1].value == value
     puts to_hex(responses[1].value)
+  when "expect-not-found"
+    begin
+      client.get(key)
+    rescue GlyphaStore::Error => e
+      unless e.category == GlyphaStore::Category::NOT_FOUND &&
+             e.retryability == GlyphaStore::Retryability::NEW_ATTEMPT
+        abort("GET produced unexpected error: #{e.category}")
+      end
+    else
+      abort("GET unexpectedly found the key")
+    end
+  when "expect-frame-limit"
+    result = client.put("limit".b, "\xA5".b * config.maximum_frame_bytes)
+    unless result.rejected? &&
+           result.error&.category == GlyphaStore::Category::INVALID_ARGUMENT &&
+           result.error.bytes_sent.zero? &&
+           result.error.retryability == GlyphaStore::Retryability::NEVER
+      abort("oversized PUT did not produce the expected local rejection")
+    end
   else
     abort("unknown command: #{command}")
   end

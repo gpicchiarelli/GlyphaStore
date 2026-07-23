@@ -136,8 +136,7 @@ struct LifecycleProbeResponse final {
 
 auto probe_lifecycle(const int socket, const glyphastore::server::RequestOpcode opcode,
                      const std::uint64_t request_id) -> std::optional<LifecycleProbeResponse> {
-    const auto request =
-        glyphastore::server::encode_request({.opcode = opcode, .request_id = request_id});
+    const auto request = glyphastore::server::encode_request({.opcode = opcode, .request_id = request_id});
     if (!request || !send_all(socket, *request)) {
         return std::nullopt;
     }
@@ -799,6 +798,7 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(stats_text.find("version=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("connections_active=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_state=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_candidate_dead_byte_ratio_bp=") != std::string_view::npos);
     static_cast<void>(::close(socket));
 
     server.request_stop();
@@ -853,19 +853,18 @@ GLYPHA_TEST("server READY fails under maintenance emergency") {
         GLYPHA_REQUIRE((*seeded)->put("seed", bytes("value")).has_value());
         GLYPHA_REQUIRE((*seeded)->close().has_value());
     }
-    auto opened = glyphastore::server::Server::create(
-        {.port = 0, .maximum_connections = 2},
-        {.worker_config = {.explicit_count = 1},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = temporary.store_path(),
-         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
-         .durable_limits = limits,
-         .maintenance =
-             {
-                 .mode = glyphastore::MaintenanceMode::background,
-                 .min_eval_interval_ms = 60'000,
-                 .max_eval_interval_ms = 60'000,
-             }});
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 2},
+                                            {.worker_config = {.explicit_count = 1},
+                                             .storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = temporary.store_path(),
+                                             .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                             .durable_limits = limits,
+                                             .maintenance = {
+                                                 .mode = glyphastore::MaintenanceMode::background,
+                                                 .min_eval_interval_ms = 60'000,
+                                                 .max_eval_interval_ms = 60'000,
+                                             }});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
     GLYPHA_REQUIRE(server.start().has_value());

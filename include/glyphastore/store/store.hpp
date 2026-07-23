@@ -74,6 +74,8 @@ class Store final {
     struct Impl;
 
     explicit Store(std::unique_ptr<Impl> impl);
+    [[nodiscard]] auto compact_for_maintenance(std::optional<std::size_t> preferred_worker,
+                                               std::uint64_t max_copy_bytes) -> Result<CompactionResult>;
 
     std::unique_ptr<Impl> impl_;
 

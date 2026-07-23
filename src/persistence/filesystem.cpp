@@ -872,6 +872,7 @@ auto DataDirectory::retire_compaction_segments(const StoreId& store_id,
                                             .segment_id = entry.segment_id,
                                             .generation = entry.generation,
                                             .owner_worker = entry.owner_worker});
+        const auto temporary_name = '.' + name + ".tmp";
         if (auto allowed = before(FilesystemOperation::remove_compaction_segment); !allowed) {
             if (removed_any) {
                 health_->store(false, std::memory_order_release);
@@ -881,14 +882,27 @@ auto DataDirectory::retire_compaction_segments(const StoreId& store_id,
                                                      : CompactionSegmentRetirementOutcome::not_removed,
                                                  allowed.error());
         }
-        if (::unlinkat(directory_.get(), name.c_str(), 0) != 0) {
-            if (errno == ENOENT) {
-                continue;
-            }
+        bool removed_identity{};
+        if (::unlinkat(directory_.get(), temporary_name.c_str(), 0) == 0) {
+            removed_identity = true;
+        } else if (errno != ENOENT) {
             health_->store(false, std::memory_order_release);
             return compaction_retirement_failure(
                 CompactionSegmentRetirementOutcome::indeterminate,
-                persistence_system_error("unlinkat(compaction Segment)").error);
+                persistence_system_error("unlinkat(compaction Segment temporary)").error);
+        }
+        if (::unlinkat(directory_.get(), name.c_str(), 0) != 0) {
+            if (errno == ENOENT && !removed_identity) {
+                continue;
+            }
+            if (errno != ENOENT) {
+                health_->store(false, std::memory_order_release);
+                return compaction_retirement_failure(
+                    CompactionSegmentRetirementOutcome::indeterminate,
+                    persistence_system_error("unlinkat(compaction Segment)").error);
+            }
+        } else {
+            removed_identity = true;
         }
         removed_any = true;
         after(FilesystemOperation::remove_compaction_segment);

@@ -180,10 +180,11 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const
         -> Result<std::optional<std::size_t>>;
-    // Catalog-level sealed/free snapshot for MaintenanceController (shared lock only).
-    [[nodiscard]] auto maintenance_observation() const -> Result<MaintenanceObservation>;
-    [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns)
-        -> DurableCompactionResult;
+    // Catalog-level sealed/free snapshot and exact candidate live/dead byte counters.
+    [[nodiscard]] auto maintenance_observation(std::size_t start_worker = 0) const
+        -> Result<MaintenanceObservation>;
+    [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns,
+                                      std::uint64_t max_copy_bytes = 0) -> DurableCompactionResult;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
     void request_close_flush();

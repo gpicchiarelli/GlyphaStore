@@ -64,6 +64,23 @@ GLYPHA_TEST("daemon config environment names mirror long options") {
     GLYPHA_REQUIRE(glyphastore::server::environment_name_for_option("data-dir") == "GLYPHASTORE_DATA_DIR");
     GLYPHA_REQUIRE(glyphastore::server::environment_name_for_option("max-store-bytes") ==
                    "GLYPHASTORE_MAX_STORE_BYTES");
+    GLYPHA_REQUIRE(glyphastore::server::environment_name_for_option("maintenance-max-copy-bytes-per-cycle") ==
+                   "GLYPHASTORE_MAINTENANCE_MAX_COPY_BYTES_PER_CYCLE");
+}
+
+GLYPHA_TEST("daemon config CLI keeps workers distinct from maximum connections") {
+    const std::array arguments{
+        "glyphastored", "--workers", "4", "--max-connections", "42",
+    };
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->server.worker_count == 4);
+    GLYPHA_REQUIRE(parsed->server.maximum_connections == 42);
+
+    const std::array invalid_workers{"glyphastored", "--workers", "257"};
+    const auto invalid = parse(invalid_workers);
+    GLYPHA_REQUIRE(!invalid.has_value());
+    GLYPHA_REQUIRE(invalid.error().message.find("--workers") != std::string::npos);
 }
 
 GLYPHA_TEST("daemon config file rejects unknown keys and duplicates") {
@@ -105,6 +122,43 @@ GLYPHA_TEST("daemon config precedence is file then env then CLI") {
     GLYPHA_REQUIRE(parsed->server.port == 3003);
     GLYPHA_REQUIRE(parsed->server.worker_count == 3);
     GLYPHA_REQUIRE(parsed->quiet);
+}
+
+GLYPHA_TEST("daemon config resolves finite normal maintenance copy budget") {
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "maintenance.conf";
+    write_file(config, "maintenance-max-copy-bytes-per-cycle = 64MiB\n");
+
+    std::unordered_map<std::string, std::string> environment{
+        {"GLYPHASTORE_MAINTENANCE_MAX_COPY_BYTES_PER_CYCLE", "96MiB"},
+    };
+    const auto getenv_fn = [&environment](const std::string_view name) -> std::optional<std::string> {
+        const auto found = environment.find(std::string{name});
+        if (found == environment.end()) {
+            return std::nullopt;
+        }
+        return found->second;
+    };
+
+    const auto config_arg = config.string();
+    const std::array arguments{
+        "glyphastored", "--config", config_arg.c_str(), "--maintenance-max-copy-bytes-per-cycle", "128MiB",
+    };
+    const auto parsed = parse(arguments, getenv_fn);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->store.maintenance.max_copy_bytes_per_cycle ==
+                   glyphastore::kDefaultMaintenanceMaxCopyBytesPerCycle);
+    const auto dump = glyphastore::server::format_daemon_config_dump(*parsed);
+    GLYPHA_REQUIRE(dump.find("maintenance-max-copy-bytes-per-cycle=134217728\n") != std::string::npos);
+
+    const std::array unlimited_arguments{
+        "glyphastored",
+        "--maintenance-max-copy-bytes-per-cycle",
+        "0",
+    };
+    const auto unlimited = parse(unlimited_arguments);
+    GLYPHA_REQUIRE(unlimited.has_value());
+    GLYPHA_REQUIRE(unlimited->store.maintenance.max_copy_bytes_per_cycle == 0);
 }
 
 GLYPHA_TEST("daemon config CLI overrides env durable settings") {
@@ -176,8 +230,8 @@ GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
         return found->second;
     };
     const auto config_arg = config.string();
-    const std::array arguments{"glyphastored", "--config", config_arg.c_str(), "--dump-config", "--port",
-                               "3333"};
+    const std::array arguments{"glyphastored",  "--config", config_arg.c_str(),
+                               "--dump-config", "--port",   "3333"};
     const auto parsed = parse(arguments, getenv_fn);
     GLYPHA_REQUIRE(parsed.has_value());
     GLYPHA_REQUIRE(parsed->show_dump_config);

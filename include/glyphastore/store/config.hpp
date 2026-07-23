@@ -33,6 +33,7 @@ inline constexpr std::uint64_t kDefaultMaximumHotCacheBytes = 256ULL * 1024ULL *
 inline constexpr std::uint64_t kDefaultMaximumHotCacheBytesPerWorker = 64ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kDefaultMaximumHotCacheStagingBytesPerWorker = 16ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t kDefaultMaximumHotCacheEntriesPerWorker = 1'000'000;
+inline constexpr std::uint64_t kDefaultMaintenanceMaxCopyBytesPerCycle = 128ULL * 1024ULL * 1024ULL;
 
 struct DurableResourceLimits {
     std::uint64_t max_store_bytes{kDefaultMaximumDurableStoreBytes};
@@ -76,8 +77,10 @@ enum class MaintenanceMode : std::uint8_t {
 
 struct MaintenanceConfig {
     MaintenanceMode mode{MaintenanceMode::cooperative};
+    // Preflight limit for one normal-mode evaluation/compaction. Zero explicitly
+    // disables this limit; pressure and emergency always bypass it.
+    std::uint64_t max_copy_bytes_per_cycle{kDefaultMaintenanceMaxCopyBytesPerCycle};
     // Zero means "use implementation defaults" for rate/CPU budgets reserved for Phase 1+.
-    std::uint64_t max_copy_bytes_per_cycle{};
     std::uint64_t max_copy_bytes_per_sec{};
     std::uint32_t max_segments_per_cycle{1};
     std::uint32_t max_cpu_ms_per_window{};

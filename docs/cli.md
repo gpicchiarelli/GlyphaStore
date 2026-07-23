@@ -66,6 +66,12 @@ the server binds a socket. `--reuse-port` and `--no-reuse-port` are mutually exc
 decides whether per-executor listeners are available. Executor affinity is strict on supported Linux systems
 and advisory on macOS.
 
+`--maintenance-max-copy-bytes-per-cycle` bounds the exact Index-referenced live Record bytes of one
+normal background compaction. The daemon default is `128MiB`; a candidate exactly at the limit is
+allowed, `0` explicitly removes the limit, and pressure/emergency bypass it to recover capacity.
+The same setting is available as `maintenance-max-copy-bytes-per-cycle` in the config file and
+`GLYPHASTORE_MAINTENANCE_MAX_COPY_BYTES_PER_CYCLE` in the environment.
+
 ## Maintenance tools
 
 ```bash

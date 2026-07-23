@@ -189,12 +189,36 @@ expect_get() {
   fi
 }
 
-expect_missing() {
+expect_not_found_sdk() {
   local sdk="$1" port="$2" key_hex="$3"
-  if get_sdk "$sdk" "$port" "$key_hex" >/dev/null 2>&1; then
-    echo "expected missing key for $sdk" >&2
-    return 1
+  local extra=()
+  if [[ ${#tls_args[@]} -gt 0 ]]; then
+    extra=("${tls_args[@]}")
   fi
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${extra[@]+"${extra[@]}"}" expect-not-found --key-hex "$key_hex" ;;
+    python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-not-found --key-hex "$key_hex" ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
+    go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
+    *) return 1 ;;
+  esac
+}
+
+expect_frame_limit_sdk() {
+  local sdk="$1" port="$2"
+  local extra=()
+  if [[ ${#tls_args[@]} -gt 0 ]]; then
+    extra=("${tls_args[@]}")
+  fi
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
+    python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
+    go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" expect-frame-limit ;;
+    *) return 1 ;;
+  esac
 }
 
 make_tls_material() {
@@ -227,6 +251,14 @@ start_server() {
   local port_file="$2"
   local log_file="$3"
   shift 3
+  local resolved
+  resolved="$("$daemon" --dump-config --workers "$workers" --max-connections 4096)"
+  if ! grep -qx "workers=$workers" <<<"$resolved" ||
+      ! grep -qx "max-connections=4096" <<<"$resolved"; then
+    echo "glyphastored configuration mismatch for workers=$workers" >&2
+    echo "$resolved" >&2
+    return 1
+  fi
   "$daemon" --bind 127.0.0.1 --port 0 --workers "$workers" \
     --storage-mode volatile --executor-affinity --quiet \
     "$@" \
@@ -261,6 +293,18 @@ stop_server() {
   fi
 }
 
+active_port_file=""
+active_work=""
+cleanup_active_run() {
+  if [[ -n "$active_port_file" ]]; then
+    stop_server "$active_port_file"
+  fi
+  if [[ -n "$active_work" ]]; then
+    rm -rf "$active_work"
+  fi
+}
+trap cleanup_active_run EXIT
+
 run_matrix_for_workers() {
   local workers="$1"
   local mode="${2:-cleartext}" # cleartext | tls
@@ -268,6 +312,8 @@ run_matrix_for_workers() {
   work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-interop.XXXXXX")"
   local port_file="$work/port"
   local log_file="$work/server.log"
+  active_port_file="$port_file"
+  active_work="$work"
   local server_extra=()
   tls_args=()
 
@@ -324,6 +370,30 @@ run_matrix_for_workers() {
     expect_get "$sdk" "$port" "$empty_key" ""
   done
 
+  while IFS=: read -r owner route_key; do
+    local route_value
+    route_value="$(printf 'owner-%s-of-%s' "$owner" "$workers" | to_hex)"
+    echo "  cpp PUT → python GET (deterministic owner $owner)"
+    put_sdk cpp "$port" "$route_key" "$route_value"
+    expect_get python "$port" "$route_key" "$route_value"
+  done < <("$python" - "$workers" <<'PY'
+import sys
+
+workers = int(sys.argv[1])
+found = {}
+candidate = 0
+while len(found) < workers:
+    key = f"route-w{workers}-{candidate}".encode()
+    value = 14695981039346656037
+    for byte in key:
+        value = ((value ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
+    found.setdefault(value % workers, key.hex())
+    candidate += 1
+for owner in range(workers):
+    print(f"{owner}:{found[owner]}")
+PY
+)
+
   for sdk in "${writers[@]}"; do
     local pkey pval
     pkey="$(printf 'pipe-%s-%s-w%d' "$mode" "$sdk" "$workers" | to_hex)"
@@ -340,7 +410,17 @@ run_matrix_for_workers() {
   done
 
   if [[ "$mode" == "cleartext" ]]; then
-    local exp_key exp_val expire_at
+    local missing_key exp_key exp_val expire_at
+    missing_key="$(printf 'missing-%s-w%d' "$mode" "$workers" | to_hex)"
+    for sdk in "${readers[@]}"; do
+      echo "  $sdk structured NOT_FOUND"
+      expect_not_found_sdk "$sdk" "$port" "$missing_key"
+    done
+    for sdk in "${writers[@]}"; do
+      echo "  $sdk local 2MiB frame-limit rejection"
+      expect_frame_limit_sdk "$sdk" "$port"
+    done
+
     exp_key="$(printf 'exp-w%d' "$workers" | to_hex)"
     exp_val="$(printf 'soon' | to_hex)"
     expire_at="$("$python" - <<'PY'
@@ -352,15 +432,17 @@ PY
     put_sdk cpp "$port" "$exp_key" "$exp_val" "$expire_at"
     expect_get go "$port" "$exp_key" "$exp_val"
     sleep 0.6
-    expect_missing perl "$port" "$exp_key"
+    expect_not_found_sdk perl "$port" "$exp_key"
   fi
 
   stop_server "$port_file"
   rm -rf "$work"
+  active_port_file=""
+  active_work=""
   echo "mode=$mode workers=$workers OK"
 }
 
-workers_list=(1 2 4)
+workers_list=(1 2 4 8)
 if [[ "${INTEROP_WORKERS:-}" != "" ]]; then
   # shellcheck disable=SC2206
   workers_list=(${INTEROP_WORKERS})

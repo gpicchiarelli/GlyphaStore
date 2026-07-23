@@ -149,7 +149,10 @@ thread that may call `compact()` under Phase 3 normal/pressure/emergency budgets
 `put`/`erase` return `storage_exhausted` until capacity recovers (embedded Store). On the TCP path the
 Reactor maps that to `OVERLOADED`; official clients report `retryability=never`. `glyphastored`
 defaults to
-`background`. See [maintenance controller](maintenance-controller.md).
+`background`. Normal background maintenance preflights the selected durable Worker's exact
+Index-referenced live bytes against `max_copy_bytes_per_cycle` (128 MiB default, inclusive; zero
+means unlimited); pressure and emergency bypass the limit. See
+[maintenance controller](maintenance-controller.md).
 
 ## Compatibility policy
 

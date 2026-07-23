@@ -157,6 +157,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         }
         std::vector<IndexEntry> source_entries;
         source_entries.reserve(entries.size());
+        std::uint64_t active_live_record_bytes{};
         for (auto& entry : entries) {
             const auto key_hash = hash_key(entry.key);
             const HashedKey hashed{.key = entry.key, .hash = key_hash};
@@ -180,6 +181,12 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                                 "durable compaction active Index key conflicted"}
                                         : inserted.error());
             }
+            if (entry.record.size.value >
+                std::numeric_limits<std::uint64_t>::max() - active_live_record_bytes) {
+                return failure(Error{ErrorCode::arithmetic_overflow,
+                                     "durable compaction active live Record byte count overflows uint64_t"});
+            }
+            active_live_record_bytes += entry.record.size.value;
         }
         entries = {};
 
@@ -444,6 +451,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         return {.outcome = DurableCompactionBuildOutcome::prepared,
                 .prepared = PreparedDurableCompaction{.plan = std::move(*plan),
                                                       .index = std::move(prepared_index),
+                                                      .active_live_record_bytes = active_live_record_bytes,
                                                       .replacement_commits = std::move(replacement_commits),
                                                       .stats = copy_stats},
                 .error = std::nullopt};

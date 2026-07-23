@@ -30,6 +30,8 @@ enum class MaintenanceSkipReason : std::uint8_t {
     store_closed,
     sequence_conflict,
     policy_deferred,
+    reclaim_threshold,
+    copy_budget,
 };
 
 enum class MaintenancePressureLevel : std::uint8_t {
@@ -49,13 +51,21 @@ enum class MaintenanceActivationReason : std::uint8_t {
     budget_backoff,
     policy_deferred,
     no_candidate,
+    reclaim_threshold,
+    copy_budget,
 };
 
-// Read-only physical observation for scheduling (no Worker Index access).
+// Read-only physical observation for scheduling. Candidate byte counters are
+// exact published Record extents; no Worker Index scan is performed here.
 struct MaintenanceObservation {
     bool durable{};
     std::size_t segment_count{};
     std::size_t sealed_segment_count{};
+    std::optional<std::size_t> compaction_candidate_worker{};
+    std::uint64_t candidate_sealed_record_bytes{};
+    std::uint64_t candidate_live_record_bytes{};
+    std::uint64_t candidate_dead_record_bytes{};
+    std::optional<std::uint32_t> candidate_dead_byte_ratio_bp{};
     std::size_t max_segment_count{};
     std::uint64_t reserved_free_bytes{};
     // Bytes required in addition to reserved_free_bytes to create/rotate one Segment
@@ -78,6 +88,7 @@ struct MaintenanceSnapshot {
     std::uint64_t skips{};
     std::uint64_t suspend_count{};
     std::uint64_t consecutive_no_gain{};
+    // Bytes copied by the current/most recently completed evaluation cycle.
     std::uint64_t bytes_copied_window{};
     std::uint64_t total_bytes_copied{};
     std::uint64_t last_bytes_copied{};

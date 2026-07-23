@@ -494,12 +494,13 @@ GLYPHA_TEST("durable get lazily reclaims expired Index entries on hot and cold p
         limits.max_hot_cache_staging_bytes_per_worker = 0;
         limits.max_hot_cache_entries_per_worker = 0;
         clock->set(199);
-        auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
-                                                .storage_mode = glyphastore::StorageMode::durable_sync,
-                                                .data_directory = path,
-                                                .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
-                                                .durable_limits = limits,
-                                                .clock = clock});
+        auto opened =
+            glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                      .storage_mode = glyphastore::StorageMode::durable_sync,
+                                      .data_directory = path,
+                                      .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                      .durable_limits = limits,
+                                      .clock = clock});
         GLYPHA_REQUIRE(opened.has_value());
         auto& store = **opened;
         GLYPHA_REQUIRE(store.put("expired-cold", bytes("cold"), 200).has_value());
@@ -1200,6 +1201,35 @@ GLYPHA_TEST("close during blocked background compact drains then joins") {
         GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
     }
 
+    {
+        auto thresholded = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = path,
+            .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+            .maintenance =
+                {
+                    .mode = glyphastore::MaintenanceMode::background,
+                    .min_eval_interval_ms = 60'000,
+                    .max_eval_interval_ms = 60'000,
+                },
+        });
+        GLYPHA_REQUIRE(thresholded.has_value());
+        const auto threshold_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (std::chrono::steady_clock::now() < threshold_deadline) {
+            const auto snapshot = (*thresholded)->maintenance_snapshot();
+            if (snapshot.last_skip_reason == glyphastore::MaintenanceSkipReason::reclaim_threshold) {
+                GLYPHA_REQUIRE(snapshot.last_observation.candidate_dead_byte_ratio_bp == 0);
+                GLYPHA_REQUIRE(snapshot.compact_attempts == 0);
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        GLYPHA_REQUIRE((*thresholded)->maintenance_snapshot().last_skip_reason ==
+                       glyphastore::MaintenanceSkipReason::reclaim_threshold);
+        GLYPHA_REQUIRE((*thresholded)->close().has_value());
+    }
+
     BlockingRecordRead blocked_build;
     auto opened = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},
@@ -1211,9 +1241,10 @@ GLYPHA_TEST("close during blocked background compact drains then joins") {
                 .mode = glyphastore::MaintenanceMode::background,
                 .min_eval_interval_ms = 60'000,
                 .max_eval_interval_ms = 60'000,
+                .dead_byte_ratio_bp_normal = 0,
             },
-        .filesystem_hooks =
-            {.file_io = {.context = &blocked_build, .read_some_at = &BlockingRecordRead::read_some_at}},
+        .filesystem_hooks = {.file_io = {.context = &blocked_build,
+                                         .read_some_at = &BlockingRecordRead::read_some_at}},
     });
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;

@@ -545,12 +545,40 @@ struct DurableRuntimeCatalog::RuntimeWorker {
 
     explicit RuntimeWorker(RecoveredWorkerState recovered)
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
-          next_sequence(recovered.next_sequence), active_segment(recovered.active_segment) {}
+          next_sequence(recovered.next_sequence), active_segment(recovered.active_segment),
+          active_live_record_bytes(recovered.active_live_record_bytes),
+          sealed_live_record_bytes(recovered.sealed_live_record_bytes) {}
+
+    [[nodiscard]] auto update_live_record_bytes(const std::optional<RecordRef>& previous,
+                                                const std::optional<RecordRef>& current) -> Status {
+        auto active = active_live_record_bytes.load(std::memory_order_relaxed);
+        auto sealed = sealed_live_record_bytes.load(std::memory_order_relaxed);
+        if (previous) {
+            auto& bytes = previous->segment_id == active_segment ? active : sealed;
+            if (bytes < previous->size.value) {
+                return fail(ErrorCode::corrupted_data, "durable Worker live Record byte counter underflow");
+            }
+            bytes -= previous->size.value;
+        }
+        if (current) {
+            auto& bytes = current->segment_id == active_segment ? active : sealed;
+            if (current->size.value > std::numeric_limits<std::uint64_t>::max() - bytes) {
+                return fail(ErrorCode::arithmetic_overflow,
+                            "durable Worker live Record byte counter overflow");
+            }
+            bytes += current->size.value;
+        }
+        active_live_record_bytes.store(active, std::memory_order_release);
+        sealed_live_record_bytes.store(sealed, std::memory_order_release);
+        return {};
+    }
 
     WorkerId worker_id;
     Index index;
     SequenceNumber next_sequence;
     SegmentId active_segment;
+    std::atomic_uint64_t active_live_record_bytes{};
+    std::atomic_uint64_t sealed_live_record_bytes{};
     std::mutex mutex;
     std::optional<DurableSegmentFile> cached_file;
     bool cached_writable{};
@@ -925,6 +953,10 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
             if (!published) {
                 return publication_failed(published.error());
             }
+            if (auto counted = worker.update_live_record_bytes(published->previous, mutation->reference);
+                !counted) {
+                return publication_failed(counted.error());
+            }
             if (mutation->hot_record.empty()) {
                 worker.erase_hot_record(mutation->key);
             } else if (auto hot_published = worker.publish_hot_record(
@@ -933,7 +965,10 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
                 return publication_failed(hot_published.error());
             }
         } else {
-            static_cast<void>(worker.index.erase_no_compact(hashed));
+            const auto erased = worker.index.erase_no_compact(hashed);
+            if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+                return publication_failed(counted.error());
+            }
             worker.erase_hot_record(mutation->key);
         }
         mutation->completed = true;
@@ -1204,7 +1239,11 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                     // Index-only lazy reclaim: drop the expired live entry so budgets and later
                     // GETs do not keep paying for a key that can never become visible again.
                     // Compaction remains the durable TTL cleanup path (no tombstone here).
-                    static_cast<void>(worker.index.erase_no_compact(key));
+                    const auto erased = worker.index.erase_no_compact(key);
+                    if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
+                        !counted) {
+                        return fail_closed(counted.error());
+                    }
                     worker.erase_hot_record(key.key);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
@@ -1308,7 +1347,11 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                         const HashedKey key{.key = read.key_, .hash = read.key_hash_};
                         const auto current = worker.index.find(key);
                         if (current && *current == read.reference_) {
-                            static_cast<void>(worker.index.erase_no_compact(key));
+                            const auto erased = worker.index.erase_no_compact(key);
+                            if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
+                                !counted) {
+                                return fail_closed(counted.error());
+                            }
                             worker.erase_hot_record(key.key);
                         }
                     }
@@ -1368,6 +1411,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     }
     const auto old_index = static_cast<std::size_t>(old_position - manifest_.segments.begin());
     const auto old_entry = *old_position;
+    const auto active_live_record_bytes = worker.active_live_record_bytes.load(std::memory_order_relaxed);
+    const auto sealed_live_record_bytes = worker.sealed_live_record_bytes.load(std::memory_order_relaxed);
+    if (active_live_record_bytes > std::numeric_limits<std::uint64_t>::max() - sealed_live_record_bytes) {
+        return mutation_failure(DurableMutationOutcome::not_committed,
+                                Error{ErrorCode::arithmetic_overflow,
+                                      "durable rotation live Record byte count overflows uint64_t"});
+    }
+    const auto next_sealed_live_record_bytes = sealed_live_record_bytes + active_live_record_bytes;
     auto next_manifest = rotation_manifest(manifest_, old_entry, options_.limits);
     if (!next_manifest) {
         return mutation_failure(DurableMutationOutcome::not_committed, next_manifest.error());
@@ -1478,6 +1529,8 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     generation_pins_[old_index] = std::move(sealed_generation);
     generation_pins_.push_back(std::move(replacement_generation));
     worker.active_segment = replacement_segment_id;
+    worker.active_live_record_bytes.store(0, std::memory_order_release);
+    worker.sealed_live_record_bytes.store(next_sealed_live_record_bytes, std::memory_order_release);
     worker.cached_file.emplace(std::move(*created.file));
     worker.cached_writable = true;
     for (auto current = worker.hot_records.begin(); current != worker.hot_records.end();) {
@@ -1815,6 +1868,13 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .sequence = committed_sequence,
                             .error = published.error()};
                 }
+                if (auto counted = worker.update_live_record_bytes(published->previous, reference);
+                    !counted) {
+                    healthy_.store(false, std::memory_order_release);
+                    return {.outcome = DurableMutationOutcome::committed,
+                            .sequence = committed_sequence,
+                            .error = counted.error()};
+                }
                 if (prepared_hot_record.empty()) {
                     worker.erase_hot_record(hashed.key);
                 } else if (auto hot_published =
@@ -1826,7 +1886,13 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .error = hot_published.error()};
                 }
             } else {
-                static_cast<void>(worker.index.erase_no_compact(hashed));
+                const auto erased = worker.index.erase_no_compact(hashed);
+                if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+                    healthy_.store(false, std::memory_order_release);
+                    return {.outcome = DurableMutationOutcome::committed,
+                            .sequence = committed_sequence,
+                            .error = counted.error()};
+                }
                 worker.erase_hot_record(hashed.key);
             }
             return {.outcome = DurableMutationOutcome::committed,
@@ -1988,7 +2054,12 @@ auto DurableRuntimeCatalog::next_compaction_worker(const std::size_t start_worke
     return candidate;
 }
 
-auto DurableRuntimeCatalog::maintenance_observation() const -> Result<MaintenanceObservation> {
+auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_worker) const
+    -> Result<MaintenanceObservation> {
+    if (start_worker >= workers_.size()) {
+        return fail(ErrorCode::invalid_argument,
+                    "maintenance compaction cursor is outside the durable runtime");
+    }
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
@@ -2003,10 +2074,59 @@ auto DurableRuntimeCatalog::maintenance_observation() const -> Result<Maintenanc
         .max_segment_count = options_.limits.max_segment_count,
         .reserved_free_bytes = options_.limits.reserved_free_bytes,
     };
-    for (const auto& entry : manifest_.segments) {
+    if (segments_.size() != manifest_.segments.size()) {
+        return fail(ErrorCode::corrupted_data, "maintenance observation catalog metadata is not aligned");
+    }
+    auto best_distance = workers_.size();
+    for (std::size_t index = 0; index < manifest_.segments.size(); ++index) {
+        const auto& entry = manifest_.segments[index];
         if (entry.role == ManifestSegmentRole::sealed) {
             ++observation.sealed_segment_count;
+            const auto owner = static_cast<std::size_t>(entry.owner_worker.value);
+            if (owner >= workers_.size()) {
+                return fail(ErrorCode::corrupted_data, "sealed Segment owner is outside the durable runtime");
+            }
+            const auto distance =
+                owner >= start_worker ? owner - start_worker : workers_.size() - start_worker + owner;
+            if (distance < best_distance) {
+                observation.compaction_candidate_worker = owner;
+                best_distance = distance;
+            }
         }
+    }
+    if (observation.compaction_candidate_worker) {
+        const auto candidate = *observation.compaction_candidate_worker;
+        for (std::size_t index = 0; index < manifest_.segments.size(); ++index) {
+            const auto& entry = manifest_.segments[index];
+            if (entry.role != ManifestSegmentRole::sealed || entry.owner_worker.value != candidate) {
+                continue;
+            }
+            const auto committed_end = segments_[index].selected.commit.committed_end;
+            if (committed_end < kSegmentHeaderReservedBytes || committed_end > kSegmentSizeBytes) {
+                return fail(ErrorCode::corrupted_data,
+                            "sealed Segment committed extent is outside v1 bounds");
+            }
+            const auto record_bytes = static_cast<std::uint64_t>(committed_end - kSegmentHeaderReservedBytes);
+            if (record_bytes >
+                std::numeric_limits<std::uint64_t>::max() - observation.candidate_sealed_record_bytes) {
+                return fail(ErrorCode::arithmetic_overflow,
+                            "maintenance sealed Record byte count overflows uint64_t");
+            }
+            observation.candidate_sealed_record_bytes += record_bytes;
+        }
+        observation.candidate_live_record_bytes =
+            workers_[candidate]->sealed_live_record_bytes.load(std::memory_order_acquire);
+        if (observation.candidate_live_record_bytes > observation.candidate_sealed_record_bytes) {
+            return fail(ErrorCode::corrupted_data,
+                        "maintenance live Record bytes exceed sealed committed bytes");
+        }
+        observation.candidate_dead_record_bytes =
+            observation.candidate_sealed_record_bytes - observation.candidate_live_record_bytes;
+        observation.candidate_dead_byte_ratio_bp =
+            observation.candidate_sealed_record_bytes == 0
+                ? 10'000U
+                : static_cast<std::uint32_t>(observation.candidate_dead_record_bytes * 10'000U /
+                                             observation.candidate_sealed_record_bytes);
     }
     // Match rotate_active: require_durable_available_space(kSegmentSizeBytes + next_manifest_bytes).
     const auto next_count = observation.segment_count + 1U;
@@ -2027,8 +2147,8 @@ auto DurableRuntimeCatalog::maintenance_observation() const -> Result<Maintenanc
     return observation;
 }
 
-auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const std::uint64_t now_ns)
-    -> DurableCompactionResult {
+auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const std::uint64_t now_ns,
+                                           const std::uint64_t max_copy_bytes) -> DurableCompactionResult {
     bool recovery_required{};
     DurableCompactionCopyStats stats{};
     const auto notify_fail_closed = [&] {
@@ -2078,6 +2198,12 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             if (!worker.pending_group_mutations.empty() || worker.batch_closing) {
                 return failure(Error{ErrorCode::sequence_conflict,
                                      "durable compaction cannot snapshot a pending group publication"});
+            }
+            const auto sealed_live_record_bytes =
+                worker.sealed_live_record_bytes.load(std::memory_order_relaxed);
+            if (max_copy_bytes > 0 && sealed_live_record_bytes > max_copy_bytes) {
+                return failure(Error{ErrorCode::sequence_conflict,
+                                     "durable compaction candidate exceeds its maintenance copy budget"});
             }
             snapshot = manifest_;
             snapshot_next_sequence = worker.next_sequence;
@@ -2334,6 +2460,9 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             segments_ = std::move(next_segments);
             generation_pins_ = std::move(next_generation_pins);
             worker.index = std::move(prepared.index);
+            worker.active_live_record_bytes.store(prepared.active_live_record_bytes,
+                                                  std::memory_order_release);
+            worker.sealed_live_record_bytes.store(stats.bytes_copied, std::memory_order_release);
             commit_gate.clear_locked();
         } catch (...) {
             if (worker_lock.owns_lock()) {

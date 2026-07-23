@@ -3,7 +3,7 @@
 Status: maintained quality policy
 Applies to: all supported builds
 Owner: maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-23
 
 ## 1. Principles
 
@@ -50,11 +50,17 @@ Inject failure before and after every durability ordering boundary. Each checkpo
 
 Crash tests retain failing directories or a reproducible artifact description. Recovery must produce the same outcome regardless of file enumeration order.
 
+Native evidence uses the levels, row metadata, promotion rules, and safe process-kill collector in
+the [platform durability evidence matrix](../architecture/platform-durability-evidence.md). A
+hosted-runner pass without a pinned filesystem row must not be reported as power-loss or release
+certification.
+
 ## 6. CI tiers
 
 1. Per change: build, unit/integration/property tests, formatting.
 2. Required extended: ASan/UBSan and TSan.
-3. Nightly: fuzz smoke, crash matrix, broader compilers/platforms.
+3. Nightly: fuzz smoke, crash matrix, opt-in exhaustive and randomized compaction matrices, broader
+   compilers/platforms.
 4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence.
 
 Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy.
@@ -74,3 +80,21 @@ Line coverage is diagnostic, not the acceptance metric. Review must map each nor
 ```
 
 Run focused binaries while iterating, then the repository workflow appropriate to the change before handoff.
+
+Run the long multi-output profile separately; together with `glyphastore_crash_sync`, it covers all
+154 persistence checkpoints and every one of the 64 Record copies:
+
+```sh
+build/macos-debug/glyphastore_crash_persistence --mode copy-matrix
+build/macos-debug/glyphastore_crash_persistence --mode random-matrix
+```
+
+To retain attributable E2 evidence from a configured build, run:
+
+```sh
+scripts/collect-durability-evidence.sh \
+  --output /path/to/new/evidence-directory \
+  --build-dir build/macos-debug \
+  --probe-path . \
+  --run process-kill
+```

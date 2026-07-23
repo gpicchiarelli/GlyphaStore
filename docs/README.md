@@ -44,6 +44,7 @@ format, acknowledgement point, ownership rule, or compatibility guarantee.
 | [Native wire protocol v2](spec/wire-protocol-v2.md) | Client/server framing and session semantics |
 | [Client semantics v1](spec/client-semantics-v1.md) | Portable errors, retry, timeouts, late responses |
 | [Persistence v1](spec/persistence-v1.md) | Complete durable namespace, binary formats, checksums, authority |
+| [Recovery state-transition matrix v1](spec/recovery-state-matrix-v1.md) | Exact restart outcomes for bootstrap, commit/flush, rotation, and compaction |
 | [Benchmark standard](spec/benchmark-standard.md) | Workload and result semantics |
 | [Public C++ API](reference/cpp-api.md) | Supported API contracts and error behavior |
 | [C++ TCP client API](reference/cpp-client-api.md) | Client routing, mutation outcomes, lifecycle, and SDK contract |
@@ -54,6 +55,8 @@ The documents in `docs/architecture/` explain rationale, implementation state, a
 algorithms. Their stable rules are summarized by the specifications above. In particular:
 
 - `durability-recovery.md` explains commit and recovery ordering;
+- `platform-durability-evidence.md` defines E0–E4 evidence claims, native storage rows, and artifact
+  provenance;
 - `segment-format.md` and `manifest-format.md` provide detailed v1 field tables;
 - `durable-runtime-catalog.md` describes the implemented durable runtime;
 - `durable-compaction.md` describes whole-Worker durable compaction;
@@ -71,6 +74,7 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - [Threat model](security/threat-model.md)
 - [Security implementation roadmap](security/roadmap.md)
 - [TLS performance note](security/tls-performance.md)
+- [Durable compaction exploratory benchmark](benchmarks/durable-compaction-2026-07-23.md)
 - [Documentation roadmap](documentation-roadmap.md)
 - [Production readiness](production-readiness.md)
 - [Persistence v1 roadmap](v1-production-roadmap.md)

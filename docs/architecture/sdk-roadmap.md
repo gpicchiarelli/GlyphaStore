@@ -38,12 +38,13 @@ sidecar / development only until authentication and TLS exist.
 ### 1. Cross-SDK interoperability suite (highest SDK gap) — **done for alpha matrix**
 
 `scripts/test-sdk-interop.sh` starts a volatile `glyphastored` and proves PUT→GET across
-C++ / Python / Perl / Go (and same-SDK) for binary keys, empty values, per-SDK pipelines, and short
-TTL expiry on Workers 1 / 2 / 4. Wire golden fixtures are verified and compared to vendored SDK
-copies in the same script and in CI.
+C++ / Python / Perl / Go / Ruby (including every pair) for binary keys, empty values, per-SDK
+pipelines, and short TTL expiry on Workers 1 / 2 / 4 / 8. Deterministic routing keys exercise every
+Worker owner. Every SDK must also preserve structured `not_found` semantics and reject an oversized
+2 MiB request locally with a known-rejected, zero-byte-send outcome. Wire golden fixtures are
+verified and compared to vendored SDK copies in the same script and in CI.
 
-Still desirable later: 8 Workers, explicit limit/error matrices, and released-artifact cross-version
-compat.
+Still desirable later: released-artifact cross-version compatibility.
 
 ### 2. Normative wire and client semantics — **client errors/retry/timeouts done**
 
@@ -139,7 +140,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 ## Recommended order
 
 1. Shared wire golden vectors (C++ / Python / Perl). **(CI verify + vendored cmp)**
-2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4)**
+2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4/8 + structured error/limit matrix)**
 3. Perl monotonic clock + thread/fork contract docs. **(done)**
 4. Normative errors, retry, and timeout specification. **([client semantics v1](../spec/client-semantics-v1.md), [ADR 0019](../adr/0019-client-error-retry-timeout.md))**
 5. Multi-Worker `batch` API on every official client. **(done)**

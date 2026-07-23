@@ -23,6 +23,8 @@ struct RecoveredWorkerState {
     SequenceNumber next_sequence;
     SegmentId active_segment;
     bool active_requires_rotation{};
+    std::uint64_t active_live_record_bytes{};
+    std::uint64_t sealed_live_record_bytes{};
 };
 
 struct DurableRecoveryStats {

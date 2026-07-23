@@ -83,8 +83,8 @@ Silent semantic drift is not.
 
 ### 2.5 Interop, packaging, ops evidence
 
-- [ ] `scripts/test-ruby-client.sh` (unit + fake-server integration)
-- [ ] Interop CLI + row in `scripts/test-sdk-interop.sh` (C++/Python/Perl/Go/**Ruby**, Workers 1/2/4)
+- [x] `scripts/test-ruby-client.sh` (unit + fake-server integration)
+- [x] Interop CLI + row in `scripts/test-sdk-interop.sh` (C++/Python/Perl/Go/**Ruby**, Workers 1/2/4/8 plus structured error/limit evidence)
 - [ ] CI job (or extension of `sdk-clients`) on supported Rubies
 - [ ] Gem packaging (`glyphastore` or `glypha_store` — name frozen before first publish)
 - [ ] README: fork/thread contract, private-network warning, performance guidance
@@ -119,7 +119,7 @@ Order is intentional: codec → errors → session → CRUD → pipeline → bat
 | 1.8 | `execute_pipeline` positional outcomes | done |
 | 1.9 | `execute_batch` | done |
 | 1.10 | Thread / fork contract documented | done (README) |
-| 1.11 | Interop CLI + matrix | done (Workers 1/2/4) |
+| 1.11 | Interop CLI + matrix | done (Workers 1/2/4/8 + structured error/limit cases) |
 | 1.12 | Fake-server fault tests | done (core cases); broaden in 0.2 |
 
 **Exit (Phase 1):** green `test-ruby-client.sh`, green interop row including Ruby, semantics coverage
@@ -257,7 +257,7 @@ Scripts (repo root, mirror peers):
 Ruby `0.1.0` may be published when:
 
 1. Phase 1 exit criteria are green in CI.
-2. Interop matrix includes Ruby alongside C++/Python/Perl/Go for Workers 1/2/4.
+2. Interop matrix includes Ruby alongside C++/Python/Perl/Go for Workers 1/2/4/8.
 3. README states private-network posture, fork/thread contract, and pipeline guidance.
 4. Client semantics conformance §9 is explicitly checked (fixtures, outcomes, monotonic deadlines,
    retry limits).

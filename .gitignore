@@ -37,6 +37,7 @@ __pycache__/
 .mypy_cache/
 sanitizer-*.log
 benchmark-results/
+/benchmark-results-*/
 
 # Native SDK packaging artifacts
 sdk/python/dist/

@@ -282,6 +282,8 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
         if (auto reserved = index.reserve(latest.size()); !reserved) {
             return unexpected(reserved.error());
         }
+        std::uint64_t active_live_record_bytes{};
+        std::uint64_t sealed_live_record_bytes{};
         for (const auto& [key, record] : latest) {
             if (record.deleted) {
                 ++recovery_stats.rebuild.tombstones;
@@ -295,6 +297,13 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
             if (auto inserted = index.insert_or_assign(hashed, record.reference); !inserted) {
                 return unexpected(inserted.error());
             }
+            auto& live_bytes = record.reference.segment_id == active_segment ? active_live_record_bytes
+                                                                             : sealed_live_record_bytes;
+            if (record.reference.size.value > std::numeric_limits<std::uint64_t>::max() - live_bytes) {
+                return fail(ErrorCode::arithmetic_overflow,
+                            "durable recovery live Record byte count overflows uint64_t");
+            }
+            live_bytes += record.reference.size.value;
             ++recovery_stats.rebuild.records_visible;
         }
 
@@ -307,6 +316,8 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
             .next_sequence = SequenceNumber{context.maximum_sequence.value + 1},
             .active_segment = active_segment,
             .active_requires_rotation = active_requires_rotation,
+            .active_live_record_bytes = active_live_record_bytes,
+            .sealed_live_record_bytes = sealed_live_record_bytes,
         });
     }
 

@@ -23,8 +23,12 @@ sole compaction primitives (ADR 0015).
 
 In `background`, the controller:
 
-1. Observes catalog-level stats (`MaintenanceObservation`) without touching Worker Index or mutable
-   Segments. Observation still runs when auto-compact is disabled so emergency admission stays honest.
+1. Observes catalog-level stats (`MaintenanceObservation`) without scanning Worker Indexes or
+   reading Segment Records. Recovery and already-serialized Index publication, lazy expiry,
+   rotation, and compaction maintain exact active/sealed Index-referenced byte counters. The
+   observation selects the next round-robin Worker with sealed history and reports its sealed,
+   live, dead, and dead-ratio counters. Observation still runs when auto-compact is disabled so
+   emergency admission stays honest.
 2. Classifies pressure via `classify_maintenance_pressure` (highest severity wins):
    - **emergency** when `segment_count >= max_segment_count`, or when available free bytes cannot
      cover `reserved_free_bytes + rotate_additional_bytes` (create/rotate at risk; catalog sets
@@ -33,8 +37,15 @@ In `background`, the controller:
    - **free-space pressure** when `available_free_bytes <= reserved_free_bytes + free_bytes_pressure_margin`
      and emergency does not already apply. With default margin `0`, free-space pressure is only
      reachable when margin is raised above rotate headroom.
-3. **Normal** policy: skip `no_candidate`; backoff after `max_no_gain_attempts`; honor
-   `max_copy_bytes_per_cycle`; mid eval interval.
+3. **Normal** policy: skip `no_candidate`; skip a candidate whose dead ratio is below the inclusive
+   `dead_byte_ratio_bp_normal` threshold; backoff after `max_no_gain_attempts`; preflight the
+   candidate's exact Index-referenced live Record bytes against `max_copy_bytes_per_cycle`; mid eval
+   interval. The selected Worker identity is passed to the automatic compact call so policy and
+   execution address the same round-robin candidate. The default limit is 128 MiB per evaluation
+   (at most one compaction); equality is allowed and zero explicitly disables the limit. A rejected
+   candidate reports `copy_budget`, distinct from no-gain `budget_backoff`. The durable runtime
+   rechecks the same inclusive limit while holding the Worker snapshot lock; growth between
+   observation and snapshot returns a finite `sequence_conflict` before scan or copy.
 4. **Pressure / emergency** policy: use `min_eval_interval_ms`; continue compact attempts despite
    no-gain / copy budgets; record activation reason (`segment_pressure` / `free_space_pressure` /
    `emergency_capacity`).
@@ -53,7 +64,12 @@ In `background`, the controller:
 
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
 eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
-count, and time since last useful compaction.
+count, time since last useful compaction, candidate Worker, candidate sealed/live/dead Record bytes,
+and dead ratio in basis points. Daemon `STATS` exports the candidate counters.
+
+The live-byte counter means “currently Index-referenced,” not “guaranteed unexpired at observation
+time.” Expiry discovered by validated GET immediately updates it; cold, unread TTL entries remain
+conservatively live until GET, recovery, or a pressure-triggered compaction visits the Record.
 
 Wire note: the Reactor maps `storage_exhausted` to `ResponseStatus::overloaded` (existing
 many-to-one collapse with admission limits). Official clients advertise `retryability=never` for
@@ -79,6 +95,9 @@ Manual and automatic compact share `compaction_mutex` with `try_to_lock`. A busy
 
 ## Explicitly deferred
 
-- Production reclaim benches (idle overhead vs cooperative; long sealed-churn reclaim efficacy).
-- Multi-output randomized crash histories and power-loss certification (owned by ADR 0015 compaction
-  transaction, not this scheduler).
+- Production reclaim tuning: expose rejected-plan work and decide whether unread TTL needs a
+  bounded normal-mode probe independent of pressure. The first
+  isolated benefit/cost measurement is recorded in
+  the [2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md);
+  concurrent foreground tail latency, idle overhead, and long sealed-churn efficacy remain.
+- Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

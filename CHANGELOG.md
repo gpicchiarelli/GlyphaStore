@@ -12,14 +12,74 @@
   caches stable by immutable identity, and fails closed when restart recovery is required. Public
   `Store::compact()` maintenance now selects Workers round-robin without a background thread or
   queued concurrent requests, skips exact no-gain layouts, executes at most one transaction per
-  call, and returns copy statistics. Automatic policy and the complete online kill matrix remain
-  open.
+  call, and returns copy statistics. Production reclaim tuning and native power-loss certification
+  remain open.
 
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.
 
 ## [Unreleased]
 
+- Enforce `dead_byte_ratio_bp_normal` for normal durable maintenance using exact per-Worker
+  Index-referenced active/sealed Record-byte counters maintained across recovery, mutation, lazy
+  expiry, rotation, compaction, and reopen. Observe the next round-robin candidate without scanning
+  its Index, pass that exact Worker to automatic compaction, retain pressure/emergency threshold
+  bypass, and export candidate sealed/live/dead bytes plus basis-point ratio through
+  `MaintenanceSnapshot` and daemon `STATS`.
+- Make `max_copy_bytes_per_cycle` a preventive per-candidate limit for normal durable background
+  maintenance instead of an after-the-fact accumulated counter. Set a finite 128 MiB default
+  derived from the first compaction matrix, allow equality, define zero as explicitly unlimited,
+  retain pressure/emergency bypass, report a distinct `copy_budget` policy reason, and expose the
+  setting through daemon CLI/config/environment plus `--dump-config`.
+- Add a dedicated public `Store::compact()` benchmark with high/medium/low reclaim, copy-heavy,
+  50% TTL, and no-gain workloads. Each fresh-Store sample closes, reopens, verifies the Index, and
+  checks its complete key model; CSV output includes segment/byte reclamation, copied and expired
+  records, elapsed time, and effective scan/copy rates. Record the first seven-repeat exploratory
+  macOS/APFS result and use it to drive the per-Worker dead-byte enforcement and finite normal copy
+  limit above. No-gain work lacks public counters, unread TTL remains conservative under normal
+  policy, and concurrent foreground tail latency remains to be measured.
+- Add the platform durability evidence matrix with cumulative E0–E4 claim levels, an honest
+  APFS/Linux/BSD row inventory, artifact/promotion requirements, and a controlled power-loss
+  campaign protocol. Add a portable collector that records source, OS, hardware class,
+  filesystem/mount, toolchain, commands, results, and SHA-256 provenance while limiting itself
+  explicitly to metadata or process-kill evidence.
+- Extend compaction recovery beyond the single-output fixture: interrupt rollback between two
+  replacement unlinks and roll-forward between three source unlinks, then prove that an ordinary
+  reopen preserves the selected manifest authority and completes every remaining cleanup. Add the
+  same two-output cleanup transitions to the SIGKILL harness. Exercise the online multi-output path
+  end to end with 64
+  maximum-size live Records compacted from three sources into two replacements and reopened. Add
+  four reproducible model histories covering 608 total PUT/ERASE/TTL operations; each reports its
+  seed and must agree before compaction, after installation, and after reopen. Add five faulted
+  seeds covering another 760 operations across intent, Record-copy, Manifest-sync, source-retirement,
+  and intent-removal failures, with exact outcome/health/authority and reopen-model checks. Replace
+  the minimal online crash seed with a deterministic 30-operation PUT/ERASE/TTL history and verify
+  its complete eight-key model after every one of the 25 compaction SIGKILL checkpoints. Add 15
+  differential online 3-to-2 SIGKILL checkpoints for second-replacement creation, its final Record
+  and data/seal commits, shifted Manifest/retirement directory syncs, and the third source unlink,
+  bringing the sync matrix to 91 occurrence-specific checkpoints. Make rollback remove both the
+  canonical and partial temporary name for every obsolete replacement identity so a crash during
+  second-output creation reopens with the old authority and a clean namespace. Batch the immutable
+  source seed at Segment seal and add an opt-in `copy-matrix` covering the remaining 63
+  `write_record` occurrences; together the standard and exhaustive profiles kill after all 154
+  distinct checkpoints, including every one of the 64 maximum-size Record copies. Add an opt-in
+  `random-matrix` with four reproducible 96-operation PUT/overwrite/ERASE/TTL histories. Across 36
+  process kills it checks nine old/next-authority checkpoint classes per seed and verifies the
+  complete 64-value maximum-size model after recovery.
+- Add the normative persistence-v1 recovery state-transition matrix covering bootstrap,
+  mutation/flush, rotation, compaction, ordinary rejection rules, and the exact automated evidence
+  attached to each restart outcome. Make repeated bootstrap/rotation directory and commit
+  checkpoints occurrence-specific, and verify the post-rotation mutation's absent/optional/present
+  recovery boundary instead of only preserving the seed key.
+- Add the independently generated Compaction Intent v1 golden fixture, bind the production encoder
+  and decoder to its canonical dual-Manifest transition, and close the final persistent-codec
+  fixture gap in the compatibility and readiness matrices.
+- Fix daemon CLI option dispatch so `--workers` and `--max-connections` retain their distinct
+  values, and make the SDK interoperability matrix verify the server's effective configuration.
+  Expand that matrix through 8 Workers with deterministic owner coverage, structured `NOT_FOUND`,
+  and uniform local 2 MiB frame-limit rejection across C++, Python, Perl, Go, and Ruby. Stabilize
+  background-maintenance tests under sanitizers, restore the strict Perl quality gate, and document
+  the completed cross-SDK wire-v2 golden-fixture coverage.
 - Add an installable synchronous C++ wire-v2 client with per-Worker bound connections, explicit
   committed/rejected/indeterminate mutation outcomes, canonical independent wire fixtures, and a
   public-client TCP benchmark mode. Split the public filesystem fault-hook types from persistence

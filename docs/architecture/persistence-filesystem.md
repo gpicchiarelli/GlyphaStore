@@ -96,16 +96,11 @@ rename may already have happened after RPC replay. The implementation therefore 
 `renameat` failure conservatively as indeterminate rather than claiming that the old name won.
 Do not deploy durable mode on NFS, SMB, FUSE, overlay, or another remote/user-space filesystem.
 
-| Platform/filesystem | Deterministic faults and process kill | Real power cut | Durable status |
-|---|---|---|---|
-| macOS/APFS | exercised locally and in hosted CI, whose exact storage stack is not pinned | pending | experimental, not certified |
-| Linux/ext4, XFS, btrfs | hosted Linux CI exists but does not pin and certify each filesystem/mount row | pending | experimental, not certified |
-| FreeBSD/UFS, ZFS | native runner pending | pending | architectural target only |
-| OpenBSD/FFS | native runner pending | pending | architectural target only |
-| NFS, SMB, FUSE, overlay, other network/user-space storage | deliberately outside the local-filesystem contract | not accepted | unsupported |
-
-Certification requires a pinned OS, filesystem and mount configuration, repeated device/VM power
-cuts at every checkpoint, post-boot filesystem health inspection, and v1 recovery verification.
+The maintained [platform durability evidence matrix](platform-durability-evidence.md) separates
+deterministic faults (E1), process-kill/reopen tests (E2), controlled device/VM reset (E3), and
+release certification (E4). No native filesystem row is currently E3/E4 certified. Hosted CI is a
+regression signal unless an artifact pins and records the actual filesystem, mount, device/cache
+class, reset mechanism, and recovery result.
 
 ## Manifest publication state machine
 

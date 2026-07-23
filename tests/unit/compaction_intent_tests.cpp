@@ -2,10 +2,12 @@
 #include "glyphastore/persistence/compaction_intent.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/segment_header.hpp"
+#include "hex_fixture.hpp"
 #include "test.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <span>
 
 namespace {
@@ -64,7 +66,7 @@ auto intent_fixture() -> glyphastore::DurableCompactionIntent {
 
 } // namespace
 
-GLYPHA_TEST("compaction intent round trips both exact manifest authorities") {
+GLYPHA_TEST("compaction intent v1 matches its independent golden fixture") {
     const auto intent = intent_fixture();
     const auto encoded = glyphastore::encode_compaction_intent(intent);
     GLYPHA_REQUIRE(encoded.has_value());
@@ -74,7 +76,11 @@ GLYPHA_TEST("compaction intent round trips both exact manifest authorities") {
     GLYPHA_REQUIRE(next_size.has_value());
     GLYPHA_REQUIRE(encoded->size() == glyphastore::kCompactionIntentHeaderBytes + *old_size + *next_size);
 
-    const auto decoded = glyphastore::decode_compaction_intent(*encoded);
+    const auto fixture = glyphastore::test::read_hex_fixture(
+        std::filesystem::path{GLYPHASTORE_SOURCE_DIR} / "tests/fixtures/compaction_intent_v1.hex");
+    GLYPHA_REQUIRE(*encoded == fixture);
+
+    const auto decoded = glyphastore::decode_compaction_intent(fixture);
     GLYPHA_REQUIRE(decoded.has_value());
     GLYPHA_REQUIRE(*decoded == intent);
 }

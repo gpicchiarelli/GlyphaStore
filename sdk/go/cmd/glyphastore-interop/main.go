@@ -2,6 +2,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gpicchiarelli/GlyphaStore/sdk/go/client"
+	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
 )
 
 func main() {
@@ -25,7 +27,7 @@ func main() {
 	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
 	flag.Parse()
 	if *port == 0 || flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get> [tls flags...]")
+		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]")
 		os.Exit(2)
 	}
 	command := flag.Arg(0)
@@ -88,6 +90,22 @@ func main() {
 			fail(fmt.Errorf("pipeline value mismatch"))
 		}
 		fmt.Println(hex.EncodeToString(responses[1].Value))
+	case "expect-not-found":
+		_, err := c.Get(key)
+		structured, ok := err.(*client.Error)
+		if !ok || structured.Category != client.CategoryNotFound ||
+			structured.Retryability != client.RetryNewAttempt {
+			fail(fmt.Errorf("GET did not produce structured not_found: %v", err))
+		}
+	case "expect-frame-limit":
+		value := bytes.Repeat([]byte{0xA5}, protocol.MaxFrameBytes)
+		result := c.Put([]byte("limit"), value, 0)
+		structured, ok := result.Err.(*client.Error)
+		if result.Outcome != client.MutationRejected || !ok ||
+			structured.Category != client.CategoryInvalidArgument || structured.BytesSent != 0 ||
+			structured.Retryability != client.RetryNever {
+			fail(fmt.Errorf("oversized PUT did not produce the expected local rejection: %v", result.Err))
+		}
 	default:
 		fail(fmt.Errorf("unknown command %q", command))
 	}

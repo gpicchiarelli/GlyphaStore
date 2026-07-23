@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
 from glyphastore import (  # noqa: E402
     Client,
     ClientConfig,
+    GlyphaError,
+    MutationOutcome,
     PipelineOpcode,
     PipelineRequest,
 )
@@ -35,7 +37,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="GlyphaStore Python interop helper")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("command", choices=("put", "get", "erase", "pipeline-put-get"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "put",
+            "get",
+            "erase",
+            "pipeline-put-get",
+            "expect-not-found",
+            "expect-frame-limit",
+        ),
+    )
     parser.add_argument("--key-hex", default="")
     parser.add_argument("--value-hex", default="")
     parser.add_argument("--expire-at-ns", type=int, default=0)
@@ -80,6 +92,28 @@ def main() -> int:
                 print(f"erase not committed: {result}", file=sys.stderr)
                 return 1
             return 0
+        if args.command == "expect-not-found":
+            try:
+                client.get(key)
+            except GlyphaError as error:
+                if error.category == "not_found" and error.retryability == "new_attempt":
+                    return 0
+                print(f"unexpected GET error: {error.category}", file=sys.stderr)
+                return 1
+            print("GET unexpectedly found the key", file=sys.stderr)
+            return 1
+        if args.command == "expect-frame-limit":
+            result = client.put(b"limit", bytes([0xA5]) * config.maximum_frame_bytes)
+            if (
+                result.outcome is MutationOutcome.REJECTED
+                and result.error is not None
+                and result.error.category == "invalid_argument"
+                and result.error.bytes_sent == 0
+                and result.error.retryability == "never"
+            ):
+                return 0
+            print(f"unexpected frame-limit result: {result}", file=sys.stderr)
+            return 1
         responses = client.execute_pipeline(
             [
                 PipelineRequest(PipelineOpcode.PUT, key, value),

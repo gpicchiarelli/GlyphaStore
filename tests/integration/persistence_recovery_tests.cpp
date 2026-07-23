@@ -1553,9 +1553,8 @@ GLYPHA_TEST("zero hot-cache budget falls back to pinned active-Segment reads for
     GLYPHA_REQUIRE(!(*runtime)->get(overwrite_key).has_value());
 
     const std::string ttl_key{"cold-ttl"};
-    GLYPHA_REQUIRE((*runtime)
-                       ->put(std::as_bytes(std::span{ttl_key}), std::as_bytes(std::span{first}), 100)
-                       .committed());
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{ttl_key}), std::as_bytes(std::span{first}), 100).committed());
     GLYPHA_REQUIRE((*runtime)->get(ttl_key, 99).has_value());
     const auto expired = (*runtime)->get(ttl_key, 100);
     GLYPHA_REQUIRE(!expired.has_value());
@@ -1811,13 +1810,34 @@ GLYPHA_TEST("durable runtime rotates a full active Segment before committing the
         const auto visible = (*runtime)->get(next_key);
         GLYPHA_REQUIRE(visible.has_value());
         GLYPHA_REQUIRE(visible->bytes.size() == maximum_value.size());
+
+        const auto observation = (*runtime)->maintenance_observation(0);
+        GLYPHA_REQUIRE(observation.has_value());
+        GLYPHA_REQUIRE(observation->compaction_candidate_worker == 0);
+        GLYPHA_REQUIRE(observation->candidate_sealed_record_bytes ==
+                       63ULL * glyphastore::kMaxNormalRecordSize);
+        GLYPHA_REQUIRE(observation->candidate_live_record_bytes == glyphastore::kMaxNormalRecordSize);
+        GLYPHA_REQUIRE(observation->candidate_dead_record_bytes == 62ULL * glyphastore::kMaxNormalRecordSize);
+        GLYPHA_REQUIRE(observation->candidate_dead_byte_ratio_bp ==
+                       static_cast<std::uint32_t>(62ULL * 10'000ULL / 63ULL));
+
+        GLYPHA_REQUIRE((*runtime)
+                           ->put(std::as_bytes(std::span{fill_key}), std::as_bytes(std::span{maximum_value}))
+                           .committed());
+        const auto overwritten = (*runtime)->maintenance_observation(0);
+        GLYPHA_REQUIRE(overwritten.has_value());
+        GLYPHA_REQUIRE(overwritten->candidate_live_record_bytes == 0);
+        GLYPHA_REQUIRE(overwritten->candidate_dead_record_bytes ==
+                       overwritten->candidate_sealed_record_bytes);
+        GLYPHA_REQUIRE(overwritten->candidate_dead_byte_ratio_bp == 10'000);
     }
 
     auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE((*reopened)->active_segment(0)->value == 2);
-    GLYPHA_REQUIRE((*reopened)->next_sequence(0)->value == 65);
+    GLYPHA_REQUIRE((*reopened)->next_sequence(0)->value == 66);
     GLYPHA_REQUIRE((*reopened)->get(next_key).has_value());
+    GLYPHA_REQUIRE((*reopened)->get(fill_key).has_value());
 }
 
 GLYPHA_TEST("durable group closes a pending batch before rotating a full Segment") {

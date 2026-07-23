@@ -6,6 +6,9 @@ certification and the remaining gates are tracked in the
 [persistence v1 production roadmap](../v1-production-roadmap.md). Normative terms such as **must**,
 **must not**, and **may** describe required alpha behavior.
 
+The consolidated normative mapping from every durable intermediate state to its exact restart
+outcome is the [recovery state-transition matrix v1](../spec/recovery-state-matrix-v1.md).
+
 ## Storage modes
 
 `Store` creation selects exactly one storage mode:

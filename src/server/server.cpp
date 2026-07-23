@@ -276,8 +276,8 @@ void Server::request_stop() noexcept {
     try {
         const std::lock_guard lock{shutdown_mutex_};
         if (!shutdown_deadline_.has_value()) {
-            shutdown_deadline_ = std::chrono::steady_clock::now() +
-                                 std::chrono::milliseconds{config_.shutdown_drain_ms};
+            shutdown_deadline_ =
+                std::chrono::steady_clock::now() + std::chrono::milliseconds{config_.shutdown_drain_ms};
         }
     } catch (...) {
         // Keep stop_requested set; unbounded drain is safer than failing stop.
@@ -411,6 +411,25 @@ auto Server::stats_report() const -> Result<std::string> {
         out += '\n';
         out += "useful_compactions=";
         out += std::to_string(maintenance.useful_compactions);
+        out += '\n';
+        out += "maintenance_candidate_worker=";
+        if (maintenance.last_observation.compaction_candidate_worker) {
+            out += std::to_string(*maintenance.last_observation.compaction_candidate_worker);
+        } else {
+            out += "none";
+        }
+        out += "\nmaintenance_candidate_sealed_record_bytes=";
+        out += std::to_string(maintenance.last_observation.candidate_sealed_record_bytes);
+        out += "\nmaintenance_candidate_live_record_bytes=";
+        out += std::to_string(maintenance.last_observation.candidate_live_record_bytes);
+        out += "\nmaintenance_candidate_dead_record_bytes=";
+        out += std::to_string(maintenance.last_observation.candidate_dead_record_bytes);
+        out += "\nmaintenance_candidate_dead_byte_ratio_bp=";
+        if (maintenance.last_observation.candidate_dead_byte_ratio_bp) {
+            out += std::to_string(*maintenance.last_observation.candidate_dead_byte_ratio_bp);
+        } else {
+            out += "none";
+        }
         out += '\n';
 
         for (const auto& lane : durable_mutation_stats()) {

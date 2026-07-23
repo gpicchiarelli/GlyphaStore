@@ -9,8 +9,13 @@ runtime now installs the prepared manifest, commit catalog, and Worker Index ato
 old sources, and fails closed whenever restart must complete recovery. Explicit Store-level
 scheduling is available through `Store::compact()`. An optional Store-owned
 [MaintenanceController](maintenance-controller.md) (ADR 0023) may observe and schedule that primitive
-under explicit modes and budgets; Phase 0 scaffolding does not yet invoke automatic compact. The
-complete online kill/fault matrix for compaction remains certification work.
+under explicit modes and budgets. The single-output online kill/fault matrix is complete.
+Multi-output recovery now covers partial replacement rollback and partial source retirement; the
+differential online SIGKILL matrix covers every persistence transition unique to a second
+replacement. An opt-in exhaustive profile covers every individual Record-copy occurrence.
+An additional fixed-seed profile exercises randomized multi-output PUT/overwrite/ERASE/TTL
+histories across old- and next-authority checkpoints. Native power-loss campaigns remain
+certification work.
 
 ## Why the complete sealed history is one unit
 
@@ -173,6 +178,12 @@ amplification limits. A Store-local try-lock rejects a concurrent maintenance re
 queuing it. This bounds shutdown: `close()` either sees no compaction or waits only for the one
 already admitted transaction to finish.
 
+The first public-path benefit/cost measurement is the
+[2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md). It
+validates high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts through close/reopen and
+full model checks. It is exploratory evidence from a dirty macOS/APFS build; foreground tail
+latency, controlled cross-platform runs, and automatic-policy tuning remain release work.
+
 When `StoreConfig::maintenance.mode` is `background`, a Store-owned
 [MaintenanceController](maintenance-controller.md) may run one evaluation thread and invoke
 `Store::compact()` under Phase 1 normal-policy budgets. The controller shares the same non-queuing
@@ -188,5 +199,32 @@ Index. A complementary pre-operation I/O-fault matrix covers the same 25 boundar
 runtime outcome/health and clean reopen. Allocator interposition enumerates every allocation observed
 by the online transaction and reopens after each failure. Existing tests also cover tombstone
 non-resurrection, TTL reclamation, zero-output compaction, generation/resource limits, and repeated
-compaction. Multi-output, larger randomized histories and native power-loss evidence remain required
-before P0-08 can be certified across all supported platforms.
+compaction. An online end-to-end case compacts 64 maximum-size live Records from three sealed
+sources into exactly two replacements, verifies every rebuilt reference, and reopens every value.
+Four independent fixed-seed histories apply 608 total PUT/ERASE/expiring-PUT operations across 32
+keys, three sealed sources, and the active Segment; each sequential model must agree before
+compaction, after in-memory installation, and after ordinary reopen. A failure reports the exact
+reproduction seed. Five additional seeds combine another 760 operations with occurrence-specific
+I/O failure before intent write, during the third Record copy, at Manifest synchronization, during
+the second source unlink, and before intent removal. Each case verifies the returned outcome,
+healthy/fail-closed state, selected old/next authority, clean namespace, and the same model after
+reopen.
+Two-output recovery additionally injects a failure and SIGKILL after each partial replacement
+rollback and partial source retirement position, then proves idempotent cleanup of every remaining
+identity. Rollback removes both the canonical and partially created temporary name for each obsolete
+replacement identity, including a crash during creation of the second output. The single-output
+online SIGKILL scenario now seeds a fixed 30-operation
+PUT/ERASE/expiring-PUT history across two sealed sources and the active Segment; the same eight-key
+model must survive every one of its 25 persistence checkpoints. A complementary 15-checkpoint
+online 3-to-2 scenario covers the transitions not present in that single-output transaction:
+second-replacement preallocation/header/sync/rename, its directory sync, the final of 64 maximum-size
+Record writes, its distinct data and seal commits, the shifted Manifest/retirement/intent directory
+syncs, and the third source unlink. The separate `copy-matrix` kills after each of the other 63
+Record writes, so the two profiles cover every one of the 64 copies and 154 distinct checkpoints in
+total. The source seed batches pending Records and makes them durable at seal so exhaustive evidence
+does not add a sync per seed Record. The `random-matrix` adds four reproducible 96-operation
+histories, each combining PUT, overwrite, ERASE, expired PUT, and restoration while retaining
+exactly 64 maximum-size live values. It SIGKILL-tests nine checkpoint classes per seed: durable
+intent, early/middle/final copy, second-output creation and seal, Manifest authority change,
+partial source retirement, and final cleanup. Native power-loss evidence remains before P0-08 can
+be certified across all supported platforms.

@@ -3,6 +3,7 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "test.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 #include <filesystem>
 #include <string>
@@ -95,6 +96,50 @@ auto compaction_manifests() -> std::pair<glyphastore::Manifest, glyphastore::Man
     return {std::move(old), std::move(next)};
 }
 
+auto multi_output_compaction_manifests() -> std::pair<glyphastore::Manifest, glyphastore::Manifest> {
+    glyphastore::Manifest old{
+        .store_id = {std::byte{0x81}, std::byte{0x82}, std::byte{0x83}},
+        .manifest_generation = 31,
+        .worker_count = 1,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{5},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+    auto next = old;
+    ++next.manifest_generation;
+    next.segments = {
+        {.segment_id = glyphastore::SegmentId{1},
+         .generation = glyphastore::GenerationId{2},
+         .owner_worker = glyphastore::WorkerId{0},
+         .role = glyphastore::ManifestSegmentRole::sealed},
+        {.segment_id = glyphastore::SegmentId{2},
+         .generation = glyphastore::GenerationId{2},
+         .owner_worker = glyphastore::WorkerId{0},
+         .role = glyphastore::ManifestSegmentRole::sealed},
+        old.segments.back(),
+    };
+    return {std::move(old), std::move(next)};
+}
+
 auto identity(const glyphastore::Manifest& manifest, const glyphastore::ManifestSegmentEntry& entry)
     -> glyphastore::SegmentHeaderIdentity {
     return {.store_id = manifest.store_id,
@@ -113,8 +158,8 @@ void create_segment(glyphastore::DataDirectory& directory, const glyphastore::Ma
     }
 }
 
-void prepare_interrupted_compaction(const std::filesystem::path& path, const bool publish_next) {
-    const auto [old, next] = compaction_manifests();
+void prepare_interrupted_compaction(const std::filesystem::path& path, const glyphastore::Manifest& old,
+                                    const glyphastore::Manifest& next, const bool publish_next) {
     auto directory = glyphastore::DataDirectory::open_and_lock(path);
     GLYPHA_REQUIRE(directory.has_value());
     GLYPHA_REQUIRE(directory->publish_manifest(old).durable());
@@ -124,15 +169,29 @@ void prepare_interrupted_compaction(const std::filesystem::path& path, const boo
     const glyphastore::DurableCompactionIntent intent{
         .worker_id = glyphastore::WorkerId{0}, .old_manifest = old, .next_manifest = next};
     GLYPHA_REQUIRE(directory->publish_compaction_intent(intent).durable());
-    create_segment(*directory, next, next.segments.front());
+    for (const auto& entry : next.segments) {
+        if (std::find(old.segments.begin(), old.segments.end(), entry) == old.segments.end()) {
+            create_segment(*directory, next, entry);
+        }
+    }
     if (publish_next) {
         GLYPHA_REQUIRE(directory->publish_manifest(next).durable());
     }
 }
 
+void prepare_interrupted_compaction(const std::filesystem::path& path, const bool publish_next) {
+    const auto [old, next] = compaction_manifests();
+    prepare_interrupted_compaction(path, old, next, publish_next);
+}
+
 auto segment_path(const std::filesystem::path& directory, const glyphastore::Manifest& manifest,
                   const glyphastore::ManifestSegmentEntry& entry) -> std::filesystem::path {
     return directory / glyphastore::segment_filename(identity(manifest, entry));
+}
+
+auto segment_temporary_path(const std::filesystem::path& directory, const glyphastore::Manifest& manifest,
+                            const glyphastore::ManifestSegmentEntry& entry) -> std::filesystem::path {
+    return directory / ('.' + glyphastore::segment_filename(identity(manifest, entry)) + ".tmp");
 }
 
 } // namespace
@@ -165,6 +224,80 @@ GLYPHA_TEST("compaction recovery retires exact sources when the next manifest wi
     GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), old, old.segments[0])));
     GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), old, old.segments[1])));
     GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments.front())));
+}
+
+GLYPHA_TEST("multi-output compaction rollback resumes after a partial replacement unlink") {
+    CompactionRecoveryDirectory temporary;
+    const auto [old, next] = multi_output_compaction_manifests();
+    prepare_interrupted_compaction(temporary.path(), old, next, false);
+    OneShotRecoveryFailure failure{.target = glyphastore::FilesystemOperation::remove_compaction_segment,
+                                   .fail_on_matching_call = 2};
+
+    const auto interrupted = glyphastore::DurableRuntimeCatalog::open_existing(
+        temporary.path(), 0, {.context = &failure, .before = &OneShotRecoveryFailure::before});
+    GLYPHA_REQUIRE(!interrupted.has_value());
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), next, next.segments[0])));
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments[1])));
+    for (std::size_t index = 0; index < 3; ++index) {
+        GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), old, old.segments[index])));
+    }
+
+    auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(recovered.has_value());
+    GLYPHA_REQUIRE((*recovered)->manifest() == old);
+    GLYPHA_REQUIRE((*recovered)->namespace_audit().clean());
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), next, next.segments[0])));
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), next, next.segments[1])));
+}
+
+GLYPHA_TEST("multi-output compaction rollback removes a partially created second replacement") {
+    CompactionRecoveryDirectory temporary;
+    const auto [old, next] = multi_output_compaction_manifests();
+    prepare_interrupted_compaction(temporary.path(), old, next, false);
+    const auto second_final = segment_path(temporary.path(), next, next.segments[1]);
+    const auto second_temporary = segment_temporary_path(temporary.path(), next, next.segments[1]);
+    std::filesystem::rename(second_final, second_temporary);
+
+    auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(recovered.has_value());
+    GLYPHA_REQUIRE((*recovered)->manifest() == old);
+    GLYPHA_REQUIRE((*recovered)->namespace_audit().clean());
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), next, next.segments[0])));
+    GLYPHA_REQUIRE(!std::filesystem::exists(second_final));
+    GLYPHA_REQUIRE(!std::filesystem::exists(second_temporary));
+}
+
+GLYPHA_TEST("multi-output compaction retirement resumes after a partial source unlink") {
+    CompactionRecoveryDirectory temporary;
+    const auto [old, next] = multi_output_compaction_manifests();
+    prepare_interrupted_compaction(temporary.path(), old, next, true);
+    OneShotRecoveryFailure failure{.target = glyphastore::FilesystemOperation::remove_compaction_segment,
+                                   .fail_on_matching_call = 3};
+
+    const auto interrupted = glyphastore::DurableRuntimeCatalog::open_existing(
+        temporary.path(), 0, {.context = &failure, .before = &OneShotRecoveryFailure::before});
+    GLYPHA_REQUIRE(!interrupted.has_value());
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), old, old.segments[0])));
+    GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), old, old.segments[1])));
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), old, old.segments[2])));
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments[0])));
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments[1])));
+
+    auto recovered = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(recovered.has_value());
+    GLYPHA_REQUIRE((*recovered)->manifest() == next);
+    GLYPHA_REQUIRE((*recovered)->namespace_audit().clean());
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    for (std::size_t index = 0; index < 3; ++index) {
+        GLYPHA_REQUIRE(!std::filesystem::exists(segment_path(temporary.path(), old, old.segments[index])));
+    }
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments[0])));
+    GLYPHA_REQUIRE(std::filesystem::exists(segment_path(temporary.path(), next, next.segments[1])));
 }
 
 GLYPHA_TEST("compaction recovery rejects a manifest outside both intent authorities") {

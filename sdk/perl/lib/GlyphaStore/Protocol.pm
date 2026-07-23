@@ -106,22 +106,29 @@ sub encode_request_hot {
     return _pack_request($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker);
 }
 
-sub _validate_request_fields {
+sub _validate_data_request_fields {
     my ($opcode, $key_len, $value_len, $expire, $target_worker) = @_;
-    if ($opcode == OP_INIT && ($key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
-        die "INIT request cannot carry key, value, expiry, or target_worker\n";
-    }
-    if ($opcode == OP_PING && ($key_len || $expire || $target_worker != NO_WORKER)) {
-        die "PING request cannot carry key, expiry, or target_worker\n";
-    }
     if ($opcode == OP_GET && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
         die "GET request requires a key and cannot carry value, expiry, or target_worker\n";
     }
     if ($opcode == OP_PUT && (!$key_len || $target_worker != NO_WORKER)) {
         die "PUT request requires a key and cannot carry target_worker\n";
     }
-    if ($opcode == OP_ERASE && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+    if ($opcode == OP_ERASE
+        && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER))
+    {
         die "ERASE request requires a key and cannot carry value, expiry, or target_worker\n";
+    }
+    return;
+}
+
+sub _validate_control_request_fields {
+    my ($opcode, $key_len, $value_len, $expire, $target_worker) = @_;
+    if ($opcode == OP_INIT && ($key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        die "INIT request cannot carry key, value, expiry, or target_worker\n";
+    }
+    if ($opcode == OP_PING && ($key_len || $expire || $target_worker != NO_WORKER)) {
+        die "PING request cannot carry key, expiry, or target_worker\n";
     }
     if ($opcode == OP_BIND_WORKER && ($key_len || $value_len || $expire)) {
         die "BIND_WORKER request cannot carry key, value, or expiry\n";
@@ -130,9 +137,21 @@ sub _validate_request_fields {
         die "BIND_WORKER request requires an explicit target_worker\n";
     }
     if (($opcode == OP_HEALTH || $opcode == OP_READY || $opcode == OP_STATS)
-        && ($key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        && ($key_len || $value_len || $expire || $target_worker != NO_WORKER))
+    {
         die "lifecycle probe cannot carry key, value, expiry, or target_worker\n";
     }
+    return;
+}
+
+sub _validate_request_fields {
+    my ($opcode, $key_len, $value_len, $expire, $target_worker) = @_;
+    if ($opcode >= OP_GET && $opcode <= OP_ERASE) {
+        _validate_data_request_fields($opcode, $key_len, $value_len, $expire, $target_worker);
+        return;
+    }
+    _validate_control_request_fields($opcode, $key_len, $value_len, $expire, $target_worker);
+    return;
 }
 
 sub _pack_request {

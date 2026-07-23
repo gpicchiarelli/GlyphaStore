@@ -49,14 +49,24 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 7. `Store::close()` stops maintenance wake, waits for admitted operations (including in-flight
    compact), joins the controller, then proceeds with existing flush/runtime teardown.
 8. Policies must not introduce unbounded queues; emergency never buffers rejected mutations.
+9. Normal durable scheduling uses exact published per-Worker Index-referenced sealed/live/dead
+   Record-byte counters. It skips below `dead_byte_ratio_bp_normal`, while pressure/emergency bypass
+   the threshold and pass the observed Worker identity to the existing compact transaction.
+10. One normal evaluation preflights that candidate's exact live Record bytes against the inclusive
+    `max_copy_bytes_per_cycle` limit. The default is 128 MiB; zero explicitly means unlimited.
+    Pressure/emergency bypass the limit because reclaim is then capacity-preserving work. The
+    durable transaction rechecks the limit at its locked snapshot boundary; concurrent growth
+    fails with `sequence_conflict` before scanning or copying.
 
 ## Consequences
 
 Positive: clear lifecycle and config surface; daemon path ready for autosufficient reclaim; no format
 change; compact remains the ground-truth transaction; emergency fails closed on capacity.
 
-Negative / deferred: production reclaim benches remain follow-up. Background mode adds one Store
-thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015.
+Negative / deferred: unread TTL remains conservatively live until GET, recovery, or an aggressive
+pressure compaction; production foreground-latency and long-churn benches remain follow-up.
+Background mode adds one Store thread when enabled. Durable compaction crash/I/O matrices remain
+under ADR 0015.
 
 ## Compatibility and migration
 
@@ -67,11 +77,14 @@ thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015
 ## Verification
 
 - Unit tests: cooperative starts no thread; background starts and joins on close; invalid intervals
-  rejected; close with background mode is clean; pressure continues under no-gain budget; emergency
+  rejected; the normal threshold is inclusive; pressure bypasses it and selects the observed
+  Worker; the normal copy limit rejects one byte over, accepts equality, and is bypassed under
+  pressure; close with background mode is clean; pressure continues under no-gain budget; emergency
   rejects put/erase with `storage_exhausted` and recovers when watermarks clear; emergency gate
   survives compact fault; close/flush under emergency remain correct.
 - Integration: durable catalog-driven emergency; Store close during blocked background compact drains
-  then joins; manual `compact()` still works; concurrent compact still returns `sequence_conflict`.
+  then joins; recovery, rotation, overwrite, and reopen preserve candidate byte counters; manual
+  `compact()` still works; concurrent compact still returns `sequence_conflict`.
 - Remaining before claiming production automatic reclaim efficacy: production benches (not lifecycle).
 
 Phase 5: emergency reclaim faults must not latch auto-compact off while the mutation gate is armed;

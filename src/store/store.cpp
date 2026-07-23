@@ -391,7 +391,7 @@ struct Store::Impl {
     std::shared_ptr<const StoreClock> clock;
     std::atomic<std::uint64_t> latest_now_ns{};
     std::mutex compaction_mutex;
-    std::size_t next_compaction_worker{};
+    std::atomic_size_t next_compaction_worker{};
     std::unique_ptr<MaintenanceController> maintenance;
     std::atomic<LifecycleState> lifecycle{LifecycleState::open};
     mutable std::mutex lifecycle_mutex;
@@ -463,10 +463,13 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         auto store = std::unique_ptr<Store>(new Store(std::move(impl)));
         store->impl_->maintenance = std::make_unique<MaintenanceController>(config.maintenance);
         Store* const raw = store.get();
-        store->impl_->maintenance->bind_compact([raw]() -> Result<CompactionResult> { return raw->compact(); });
-        store->impl_->maintenance->bind_observe([]() -> Result<MaintenanceObservation> {
-            return MaintenanceObservation{.durable = false};
-        });
+        store->impl_->maintenance->bind_compact(
+            [raw](const std::optional<std::size_t> preferred_worker,
+                  const std::uint64_t max_copy_bytes) -> Result<CompactionResult> {
+                return raw->compact_for_maintenance(preferred_worker, max_copy_bytes);
+            });
+        store->impl_->maintenance->bind_observe(
+            []() -> Result<MaintenanceObservation> { return MaintenanceObservation{.durable = false}; });
         store->impl_->maintenance->start();
         return store;
     }
@@ -523,12 +526,17 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     auto store = std::unique_ptr<Store>(new Store(std::move(impl)));
     store->impl_->maintenance = std::make_unique<MaintenanceController>(config.maintenance);
     Store* const raw = store.get();
-    store->impl_->maintenance->bind_compact([raw]() -> Result<CompactionResult> { return raw->compact(); });
+    store->impl_->maintenance->bind_compact(
+        [raw](const std::optional<std::size_t> preferred_worker,
+              const std::uint64_t max_copy_bytes) -> Result<CompactionResult> {
+            return raw->compact_for_maintenance(preferred_worker, max_copy_bytes);
+        });
     store->impl_->maintenance->bind_observe([raw]() -> Result<MaintenanceObservation> {
         if (!raw->impl_ || !raw->impl_->durable_runtime) {
             return fail(ErrorCode::unavailable, "durable runtime is unavailable");
         }
-        return raw->impl_->durable_runtime->maintenance_observation();
+        return raw->impl_->durable_runtime->maintenance_observation(
+            raw->impl_->next_compaction_worker.load(std::memory_order_relaxed));
     });
     store->impl_->maintenance->start();
     return store;
@@ -696,7 +704,12 @@ auto Store::flush() -> Status try {
     return internal_failure();
 }
 
-auto Store::compact() -> Result<CompactionResult> try {
+auto Store::compact() -> Result<CompactionResult> {
+    return compact_for_maintenance(std::nullopt, 0);
+}
+
+auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_worker,
+                                    const std::uint64_t max_copy_bytes) -> Result<CompactionResult> try {
     Impl::OperationGuard operation{*impl_, impl_->control_shard()};
     if (!operation) {
         return closed_store();
@@ -708,8 +721,9 @@ auto Store::compact() -> Result<CompactionResult> try {
     if (impl_->volatile_runtime) {
         const auto now_ns = impl_->now_ns();
         for (std::size_t attempted = 0; attempted < impl_->worker_count_value; ++attempted) {
-            const auto worker_index = impl_->next_compaction_worker;
-            impl_->next_compaction_worker = (worker_index + 1U) % impl_->worker_count_value;
+            const auto worker_index = impl_->next_compaction_worker.load(std::memory_order_relaxed);
+            impl_->next_compaction_worker.store((worker_index + 1U) % impl_->worker_count_value,
+                                                std::memory_order_relaxed);
             auto result = impl_->volatile_runtime->workers.worker(worker_index).compact(now_ns);
             if (!result) {
                 return unexpected(result.error());
@@ -721,9 +735,26 @@ auto Store::compact() -> Result<CompactionResult> try {
         return CompactionResult{};
     }
 
+    if (preferred_worker) {
+        if (*preferred_worker >= impl_->worker_count_value) {
+            return fail(ErrorCode::invalid_argument, "maintenance compaction Worker is outside the Store");
+        }
+        impl_->next_compaction_worker.store((*preferred_worker + 1U) % impl_->worker_count_value,
+                                            std::memory_order_relaxed);
+        auto result =
+            impl_->durable_runtime->compact_worker(*preferred_worker, impl_->now_ns(), max_copy_bytes);
+        if (result.outcome == DurableCompactionOutcome::not_beneficial ||
+            (result.outcome == DurableCompactionOutcome::not_compacted && result.error.has_value() &&
+             result.error->code == ErrorCode::not_found)) {
+            return CompactionResult{};
+        }
+        return public_compaction_result(*preferred_worker, std::move(result));
+    }
+
     std::optional<std::size_t> first_candidate;
     for (;;) {
-        auto candidate = impl_->durable_runtime->next_compaction_worker(impl_->next_compaction_worker);
+        auto candidate = impl_->durable_runtime->next_compaction_worker(
+            impl_->next_compaction_worker.load(std::memory_order_relaxed));
         if (!candidate) {
             return unexpected(candidate.error());
         }
@@ -734,8 +765,9 @@ auto Store::compact() -> Result<CompactionResult> try {
         if (!first_candidate) {
             first_candidate = worker_index;
         }
-        impl_->next_compaction_worker = (worker_index + 1U) % impl_->worker_count_value;
-        auto result = impl_->durable_runtime->compact_worker(worker_index, impl_->now_ns());
+        impl_->next_compaction_worker.store((worker_index + 1U) % impl_->worker_count_value,
+                                            std::memory_order_relaxed);
+        auto result = impl_->durable_runtime->compact_worker(worker_index, impl_->now_ns(), 0);
         if (result.outcome == DurableCompactionOutcome::not_beneficial) {
             continue;
         }

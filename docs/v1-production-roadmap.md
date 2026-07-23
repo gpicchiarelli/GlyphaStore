@@ -86,7 +86,8 @@ occupancy, close reasons, failures, and commit duration; histogram export remain
 surface task. Daemon CLI now
 exposes durable batch and resource caps (`--sync-interval-ms`, `--group-max-*`, `--max-store-bytes`,
 `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, `--max-temporary-compaction-bytes`)
-with fail-closed volatile rejection. Real-daemon wire-protocol SIGKILL coverage exists for
+with fail-closed volatile rejection, plus the normal background
+`--maintenance-max-copy-bytes-per-cycle` limit. Real-daemon wire-protocol SIGKILL coverage exists for
 post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
 (`glyphastore_crash_daemon`). File/environment config precedence is implemented (`--config` /
 `GLYPHASTORE_CONFIG`, `GLYPHASTORE_*` mirrors of long options, defaults < file < env < CLI).
@@ -228,11 +229,14 @@ regression from Worker-local live-key admission.
 
 ### P0-07 — Complete the failure matrix beyond process termination
 
-**Status:** deterministic in-process coverage is implemented; hardware/filesystem certification is
-still open. v1 process-kill tests cover bootstrap, put, periodic/group put, and rotation checkpoints,
-and each run is isolated by process and start-time suffix. Instance-local raw I/O seams now force
-short `pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS` without global
-test state. Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows
+**Status:** deterministic in-process coverage and the evidence-collection foundation are
+implemented; hardware/filesystem certification is still open. v1 process-kill tests cover
+bootstrap, put, periodic/group put, and rotation checkpoints, and each run is isolated by process
+and start-time suffix. Instance-local raw I/O seams now force short `pread`/`pwrite`, `EINTR`,
+synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS` without global test state. The
+[platform durability evidence matrix](architecture/platform-durability-evidence.md) defines
+cumulative E0–E4 claims, exact per-row provenance, promotion rules, and a safe collector for native
+E2 artifacts. Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows
 cannot be established by an in-process seam and remain release blockers.
 
 **Required change:** add deterministic short-write/read, `EINTR`, delayed writeback `EIO`, `ENOSPC`,
@@ -254,8 +258,10 @@ links, and unlisted entries without adopting or repairing them.
 The SIGKILL bootstrap matrix now begins at data-directory creation and parent-directory sync.
 Periodic and group crash matrices also completed concurrently with isolated namespaces and markers.
 The filesystem contract now prominently marks NFS, SMB, FUSE, overlay, and other remote/user-space
-storage unsupported and records explicit APFS/Linux/BSD certification rows. VM/block-device
-power-cut automation and pinned native mount rows remain before this P0 item can be complete.
+storage unsupported. The evidence matrix now records the honest current state for APFS,
+ext4/XFS/btrfs, UFS/ZFS, and FFS and prevents hosted runners from being mistaken for certified
+storage rows. VM/block-device power-cut automation, repeated E3 campaigns, and reviewed E4 release
+artifacts remain before this P0 item can be complete.
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 
@@ -263,7 +269,15 @@ power-cut automation and pinned native mount rows remain before this P0 item can
 with an optional Store-owned [MaintenanceController](architecture/maintenance-controller.md)
 (ADR 0023). Automatic reclaim policy through Phase 3 (budgets, pressure, emergency mutation reject)
 is implemented, including Phase 4 lifecycle fail-closed (emergency gate survives reclaim fault;
-close drains blocked background compact). Production reclaim benches remain open. A deterministic v1
+close drains blocked background compact). The first
+[durable compaction benefit/cost benchmark](benchmarks/durable-compaction-2026-07-23.md) now covers
+six public-path reclaim classes with seven verified repeats. It shows that normal-mode dead-byte
+selection materially changes compaction cost. Exact per-Worker Index-referenced sealed/live/dead
+byte counters now enforce the inclusive normal threshold and select the same Worker for policy and
+automatic execution. A finite 128 MiB default now preflights that candidate's exact live bytes
+before normal automatic compaction (zero explicitly means unlimited; pressure/emergency bypass).
+No-gain observability, unread-TTL policy, foreground tail-latency
+measurement, and controlled native baselines remain open. A deterministic v1
 planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
@@ -292,8 +306,15 @@ runs without Worker, catalog, or publication mutexes under a Worker-local commit
 Store-wide maintenance gate, selects Workers round-robin, skips exact no-gain layouts, executes at
 most one transaction per call, and reports copy statistics. The online single-output crash and I/O
 fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
-syncs and unlinks; allocator interposition reopens after every observed allocation failure. Automatic
-policy, multi-output randomized crash histories, and native power-loss certification remain open.
+syncs and unlinks; allocator interposition reopens after every observed allocation failure.
+Multi-output recovery now proves resumable partial rollback across two replacements and resumable
+partial retirement across three sources with both injected failures and occurrence-specific
+SIGKILL. A differential online 3-to-2 matrix now covers the 15 transitions unique to second-output
+creation, data/seal commits, Manifest publication, third-source retirement, and shifted directory
+syncs while preserving 64 maximum-size values under the exact old/next authority. Rollback also
+removes a partially created replacement temporary by exact identity. Production reclaim policy and
+concurrent-load tuning, controlled native benchmark baselines, and native power-loss certification
+remain open.
 Durable mutation lanes reject before enqueue when the maintenance emergency gate is armed (no doomed
 buffered work). Official clients map wire `OVERLOADED` to `retryability=never`.
 
@@ -320,17 +341,37 @@ post-unlink directory sync, duplicate intent, bounded read, reopen, and namespac
 Integration recovery tests cover old-authority rollback, next-authority roll-forward, rejection of
 an unrelated manifest or Segment, failure before retirement, partial source unlink, indeterminate
 retirement sync, both intent-removal boundaries, and successful idempotent completion on the next
-reopen.
+reopen. Two-output cases additionally interrupt rollback after the first replacement and
+roll-forward after the second of three source removals, preserving the selected authority and
+finishing every remaining identity on the next reopen. The crash harness repeats those cleanup
+positions with SIGKILL after every replacement/source unlink and both directory-sync phases.
 Builder tests cover exact sequence and value preservation, superseded/tombstoned Record omission,
 TTL reclamation, active-reference preservation, zero-output retirement, non-spanning layout
 fragmentation, intent-aware peak-space accounting, and rollback after an injected post-intent copy
 failure. Runtime integration tests cover atomic in-memory installation and source retirement,
-restart visibility, fail-closed rollback after an online post-intent failure, preservation of
+including an end-to-end 64-maximum-Record transaction that reclaims three sealed sources into
+exactly two replacements and reopens every rebuilt reference, restart visibility, fail-closed
+rollback after an online post-intent failure, preservation of
 another Worker's cached descriptor when catalog positions shift, and artificially blocked Phase B
 where same-Worker GET, PUT, erase, and TTL update complete before the stale build rolls back with
 `sequence_conflict`. A forced unrelated rotation returns conflict without waiting; a blocked final
 manifest sync proves that reads and other-Worker writes continue without any Worker, catalog, or
 publication mutex held. Close during Phase B rolls the old authority back to a clean reopen.
+Four additional fixed-seed model histories mix 608 total PUT, ERASE, expired PUT, overwrite, and
+active-Segment decisions across 32 keys. Every model agrees before compaction, after installation,
+and after reopen, and failures report the exact reproduction seed. Five further seeds inject
+pre-operation I/O failures at intent write, the third Record copy, Manifest sync, the second source
+unlink, and intent removal. Across another 760 operations they verify outcome, runtime health,
+old/next authority selection, namespace cleanup, and model agreement on reopen.
+The 25-checkpoint online SIGKILL scenario now uses its own deterministic 30-operation history across
+eight keys, two sealed sources, and the active Segment, checking the complete model after every
+restart. The 15-checkpoint differential multi-output scenario exercises a real 3-to-2 build and
+checks all 64 maximum-size values plus clean namespace recovery before and after Manifest authority
+changes. An opt-in 63-checkpoint `copy-matrix` covers every remaining `write_record` occurrence;
+together the standard and exhaustive profiles cover all 64 Record copies and 154 distinct
+persistence checkpoints. A four-seed `random-matrix` adds 36 process-kill recoveries over
+384 logical PUT/overwrite/ERASE/TTL operations and nine representative authority, copy,
+second-output, publication, retirement, and cleanup boundaries.
 Public integration tests additionally cover no-op maintenance without sealed history, rejection on
 volatile and closed Stores, restart visibility, one-Worker-per-call round-robin progress, and
 post-compaction no-gain detection.
@@ -370,8 +411,11 @@ post-compaction no-gain detection.
   of a reclaimed expired key are Index misses. Sealed durable compaction drops Index-resident expired
   puts (`expired_records_dropped` on `CompactionResult` / `MaintenanceSnapshot`); active-Segment
   expired Index entries remain until GET reclaim or recovery. Physical TTL cleanup of sealed history
-  is therefore measured; remaining open work is production reclaim benches and multi-output crash
-  evidence under P0-08.
+  is therefore measured. The isolated
+  [benefit/cost matrix](benchmarks/durable-compaction-2026-07-23.md) covers TTL and four other
+  useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
+  remaining open work is unread-TTL policy, foreground tail latency and long-churn benches,
+  controlled native baselines, and native power-loss evidence under P0-08.
 
 ### Offline verification, backup, restore, and repair
 
@@ -497,7 +541,8 @@ Primary references:
 - Partition sanitizer work so ASan/UBSan, TSan, and crash matrices are independently attributable.
   Add MSan only with a fully instrumented supported toolchain.
 - Add filesystem jobs for ext4/XFS/btrfs, APFS, UFS/ZFS/FFS where available, with mount metadata in
-  artifacts. Add disk quota and tiny block-device jobs.
+  artifacts. Use `scripts/collect-durability-evidence.sh` for attributable E2 process-kill artifacts,
+  then separate controlled E3 reset infrastructure. Add disk quota and tiny block-device jobs.
 
 ### Build, hardening, and supply chain
 

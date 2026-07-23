@@ -18,7 +18,8 @@ namespace glyphastore {
 // Store-owned optional scheduler. Phase 3: normal + pressure + emergency mutation gate.
 class MaintenanceController final {
   public:
-    using CompactCallback = std::function<Result<CompactionResult>()>;
+    using CompactCallback = std::function<Result<CompactionResult>(
+        std::optional<std::size_t> preferred_worker, std::uint64_t max_copy_bytes)>;
     using ObserveCallback = std::function<Result<MaintenanceObservation>()>;
 
     explicit MaintenanceController(MaintenanceConfig config);

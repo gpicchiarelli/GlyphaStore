@@ -20,12 +20,12 @@ and wire versions advance together.
 | Commit slot | 1 | Exact v1, independently validated | Emits v1 | Both slots in the Segment header fixture | Internal codec complete |
 | Record | 1 | Exact canonical v1 only | Emits v1 | [`record_v1.hex`](../../tests/fixtures/record_v1.hex) | Internal codec complete |
 | Bootstrap intent | 1 | Exact Manifest v1 | Emits canonical Manifest v1 | Bootstrap and recovery integration tests | Integrated; shares Manifest codec |
-| Compaction intent | 1 | Exact v1 only | Emits v1 | Unit and interrupted-compaction recovery tests | Integrated; golden fixture pending |
-| Native wire protocol | 2 | Exact v2 only | Emits v2 | Round-trip and malformed-frame tests | Experimental; golden fixture pending |
+| Compaction intent | 1 | Exact v1 only | Emits v1 | [`compaction_intent_v1.hex`](../../tests/fixtures/compaction_intent_v1.hex), decode-only compatibility, exact encoder, and interrupted-recovery tests | Internal codec complete |
+| Native wire protocol | 2 | Exact v2 only | Emits v2 | [`wire_requests_v2.hex`](../../tests/fixtures/wire_requests_v2.hex), [`wire_responses_v2.hex`](../../tests/fixtures/wire_responses_v2.hex), malformed-frame tests, and cross-SDK fixture verification | Experimental codec complete; cross-release evidence pending |
 
 For persistent codecs, “exact” means that unknown required versions, sizes, flags, and non-zero
-reserved bytes are rejected. Wire v2 requires senders to zero flags and reserved fields, while the
-current receiver ignores them; this behavior is fixed in the wire specification until versioned.
+reserved bytes are rejected. Wire v2 likewise rejects non-zero flags/reserved fields and
+non-canonical opcode-specific key, value, expiry, and target-Worker combinations.
 Record v1 additionally requires the minimal 8-byte-aligned extent and zero alignment padding, so
 one logical Record cannot have multiple correctly checksummed encodings.
 
@@ -66,9 +66,11 @@ separate operator workflows and cannot be inferred from ordinary open.
 
 ## Evidence boundary
 
-The persistent fixtures are emitted independently by `scripts/generate_format_fixtures.py` and
-validated by decode-only tests in `tests/unit/format_compatibility_tests.cpp`. Those tests also
-exercise durable Store artifact round-trip reopen and on-disk Segment header prefixes. They do not
-yet prove compatibility across released binaries or wire-protocol golden fixtures. Crash recovery
+The persistent fixtures, including the complete dual-Manifest compaction intent, are emitted
+independently by `scripts/generate_format_fixtures.py` and validated by decode-only tests in
+`tests/unit/format_compatibility_tests.cpp`. Exact encoder tests bind production output to the same
+canonical bytes. Those tests also exercise durable Store artifact round-trip reopen and on-disk
+Segment header prefixes. They do not yet prove compatibility across released binaries. Wire fixtures are generated independently,
+verified against the C++ codec, and compared byte-for-byte with every official SDK. Crash recovery
 evidence for the persistent v1 runtime lives in the `glyphastore_crash_persistence` CTest target and
 the [durability and recovery contract](durability-recovery.md).

@@ -108,15 +108,29 @@ Both embedded manifests are decoded normally and must describe a legal, single-g
 
 The magic bytes are intentionally readable but are not enough to identify a valid intent; version, size, checksum, Store identity, generations, and both manifests must all validate.
 
+The canonical [`compaction_intent_v1.hex`](../../tests/fixtures/compaction_intent_v1.hex) fixture
+captures a Worker 0 transition from Manifest generation 9 to 10. Three sealed source Segments become
+one generation-incremented replacement while the active Segment remains unchanged. The independent
+format generator verifies the outer checksum, both embedded Manifest checksums, header bindings,
+immutable catalog metadata, and the canonical sealed-set replacement.
+
 ## 8. Bootstrap intent
 
 `.glyphastore.bootstrap` contains exactly the canonical initial Manifest v1 bytes; it has no wrapper or separate codec. Its filename and directory state provide the intent context. Recovery may complete or clean bootstrap only through the documented creation state machine and only after validating that manifest and every referenced initial Segment.
 
 ## 9. Publication rules
 
+The exact restart outcome for every bootstrap, mutation/flush, rotation, and compaction phase is
+normative in the [recovery state-transition matrix v1](recovery-state-matrix-v1.md).
+
 Stable files are never incrementally rewritten as a namespace transaction. Publication uses a temporary file in the same directory, complete write, required file synchronization, atomic rename, and required directory synchronization.
 
-Record bytes are ordered before the commit slot that authorizes them. Segment creation is durable before a manifest can reference it. A manifest that removes old segments is durable before those segments may be deleted. Exact filesystem primitives and supported-platform assumptions are defined in [Persistence filesystem](../architecture/persistence-filesystem.md).
+Record bytes are ordered before the commit slot that authorizes them. Outside initial bootstrap,
+Segment creation is durable before a Manifest can reference it. Bootstrap may publish its initial
+Manifest first only while the identical durable bootstrap intent authorizes creation of every
+missing exact pristine Segment. A Manifest that removes old Segments is durable before those
+Segments may be deleted. Exact filesystem primitives and supported-platform assumptions are
+defined in [Persistence filesystem](../architecture/persistence-filesystem.md).
 
 ## 10. Durability modes
 

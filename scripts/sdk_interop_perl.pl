@@ -41,7 +41,8 @@ GetOptions(
 ) or die "invalid arguments\n";
 my $command = shift @ARGV // '';
 die "--port and command are required\n"
-  if !$options{port} || $command !~ /\A(?:put|get|erase|pipeline-put-get)\z/;
+  if !$options{port}
+  || $command !~ /\A(?:put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit)\z/;
 
 my $key   = parse_hex($options{key_hex});
 my $value = parse_hex($options{value_hex});
@@ -68,6 +69,27 @@ elsif ($command eq 'get') {
 elsif ($command eq 'erase') {
     my $result = $client->erase($key);
     die "erase not committed\n" if $result->{outcome} ne 'committed';
+}
+elsif ($command eq 'expect-not-found') {
+    my $found = eval {
+        $client->get($key);
+        1;
+    };
+    die "GET unexpectedly found the key\n" if $found;
+    my $error = $@;
+    die "GET did not produce structured not_found\n"
+      if ref($error) ne 'GlyphaStore::Error'
+      || $error->category ne 'not_found'
+      || $error->retryability ne 'new_attempt';
+}
+elsif ($command eq 'expect-frame-limit') {
+    my $result = $client->put('limit', "\xA5" x $client->{maximum_frame_bytes});
+    die "oversized PUT did not produce the expected local rejection\n"
+      if $result->{outcome} ne 'rejected'
+      || ref($result->{error}) ne 'GlyphaStore::Error'
+      || $result->{error}->category ne 'invalid_argument'
+      || $result->{error}->bytes_sent != 0
+      || $result->{error}->retryability ne 'never';
 }
 else {
     my $responses = $client->execute_pipeline(

@@ -6,6 +6,9 @@ Worker, restored next sequences, and explicit rotation requirements. The public 
 this state into the [durable runtime catalog](durable-runtime-catalog.md) after completing only
 validated bootstrap or rotation intents.
 
+The authoritative mapping of intermediate bootstrap, commit/flush, rotation, and compaction states
+to restart outcomes is the [recovery state-transition matrix v1](../spec/recovery-state-matrix-v1.md).
+
 ## Recovery pipeline
 
 `recover_durable_state` performs no repair and publishes no files:

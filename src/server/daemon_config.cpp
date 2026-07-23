@@ -40,6 +40,7 @@ enum OptionId : std::size_t {
     data_directory,
     durable_open_mode,
     maintenance_mode,
+    maintenance_max_copy_bytes_per_cycle,
     sync_interval_ms,
     group_max_records,
     group_max_bytes,
@@ -61,7 +62,11 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{version, "version", 'V', cli::OptionArity::none, {}, "Show version information and exit"},
     cli::OptionSpec{config, "config", '\0', cli::OptionArity::required, "PATH",
                     "Load settings from PATH (defaults < file < env < CLI)"},
-    cli::OptionSpec{dump_config, "dump-config", '\0', cli::OptionArity::none, {},
+    cli::OptionSpec{dump_config,
+                    "dump-config",
+                    '\0',
+                    cli::OptionArity::none,
+                    {},
                     "Print the resolved effective configuration and exit without listening"},
     cli::OptionSpec{bind, "bind", 'b', cli::OptionArity::required, "IPv4",
                     "Bind to an IPv4 address (default: 127.0.0.1; non-loopback is "
@@ -96,11 +101,19 @@ constexpr std::array kOptionSpecs{
                     "Bound connection and durable mutation drain after stop (default: 30000; 0 "
                     "unbounded). Stop accepting, close idle connections, expire queued pre-Store "
                     "work as unavailable on timeout"},
-    cli::OptionSpec{reuse_port, "reuse-port", '\0', cli::OptionArity::none, {},
+    cli::OptionSpec{reuse_port,
+                    "reuse-port",
+                    '\0',
+                    cli::OptionArity::none,
+                    {},
                     "Enable per-executor SO_REUSEPORT listeners where supported"},
-    cli::OptionSpec{no_reuse_port, "no-reuse-port", '\0', cli::OptionArity::none, {},
-                    "Disable SO_REUSEPORT listeners"},
-    cli::OptionSpec{executor_affinity, "executor-affinity", '\0', cli::OptionArity::none, {},
+    cli::OptionSpec{
+        no_reuse_port, "no-reuse-port", '\0', cli::OptionArity::none, {}, "Disable SO_REUSEPORT listeners"},
+    cli::OptionSpec{executor_affinity,
+                    "executor-affinity",
+                    '\0',
+                    cli::OptionArity::none,
+                    {},
                     "Request executor CPU affinity where supported"},
     cli::OptionSpec{storage_mode, "storage-mode", '\0', cli::OptionArity::required, "MODE",
                     "Use volatile, durable-sync, durable-periodic, or durable-group storage"},
@@ -110,6 +123,9 @@ constexpr std::array kOptionSpecs{
                     "Use open-or-create, create-new, or open-existing (default: open-or-create)"},
     cli::OptionSpec{maintenance_mode, "maintenance-mode", '\0', cli::OptionArity::required, "MODE",
                     "Use cooperative, background (default), or disabled Store maintenance scheduling"},
+    cli::OptionSpec{maintenance_max_copy_bytes_per_cycle, "maintenance-max-copy-bytes-per-cycle", '\0',
+                    cli::OptionArity::required, "BYTES",
+                    "Limit one normal maintenance compaction (default: 128MiB; 0 disables)"},
     cli::OptionSpec{sync_interval_ms, "sync-interval-ms", '\0', cli::OptionArity::required, "MILLISECONDS",
                     "Durable-periodic flush interval (default: 1000)"},
     cli::OptionSpec{group_max_records, "group-max-records", '\0', cli::OptionArity::required, "COUNT",
@@ -129,8 +145,8 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{max_temporary_compaction_bytes, "max-temporary-compaction-bytes", '\0',
                     cli::OptionArity::required, "BYTES",
                     "Cap temporary durable compaction peak bytes (default: 1GiB)"},
-    cli::OptionSpec{quiet, "quiet", 'q', cli::OptionArity::none, {},
-                    "Suppress normal startup and shutdown messages"},
+    cli::OptionSpec{
+        quiet, "quiet", 'q', cli::OptionArity::none, {}, "Suppress normal startup and shutdown messages"},
     cli::OptionSpec{tls_cert, "tls-cert", '\0', cli::OptionArity::required, "PATH",
                     "PEM certificate chain for TLS 1.3 (requires --tls-key; TLS-only on --port unless "
                     "--tls-port)"},
@@ -154,9 +170,17 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
     return nullptr;
 }
 
+[[nodiscard]] auto find_spec(const std::size_t id) -> const cli::OptionSpec* {
+    for (const auto& spec : kOptionSpecs) {
+        if (spec.id == id) {
+            return &spec;
+        }
+    }
+    return nullptr;
+}
+
 [[nodiscard]] auto trim(std::string_view text) -> std::string_view {
-    while (!text.empty() &&
-           std::isspace(static_cast<unsigned char>(text.front())) != 0) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front())) != 0) {
         text.remove_prefix(1);
     }
     while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back())) != 0) {
@@ -196,19 +220,21 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
 [[nodiscard]] auto settings_from_parsed(const cli::ParsedArguments& parsed) -> Result<SettingMap> {
     SettingMap settings;
     for (const auto& option : parsed.options) {
-        const auto& spec = kOptionSpecs[option.id];
+        const auto* spec = find_spec(option.id);
+        if (spec == nullptr) {
+            return fail(ErrorCode::internal_error, "parsed daemon option has no matching specification");
+        }
         if (option.id == help || option.id == version || option.id == config || option.id == dump_config) {
             continue;
         }
-        if (spec.arity == cli::OptionArity::none) {
-            settings.emplace(std::string{spec.long_name}, "true");
+        if (spec->arity == cli::OptionArity::none) {
+            settings.emplace(std::string{spec->long_name}, "true");
         } else {
-            settings.emplace(std::string{spec.long_name}, std::string{option.value});
+            settings.emplace(std::string{spec->long_name}, std::string{option.value});
         }
     }
     if (settings.contains("reuse-port") && settings.contains("no-reuse-port")) {
-        return fail(ErrorCode::invalid_argument,
-                    "--reuse-port and --no-reuse-port are mutually exclusive");
+        return fail(ErrorCode::invalid_argument, "--reuse-port and --no-reuse-port are mutually exclusive");
     }
     return settings;
 }
@@ -301,21 +327,22 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     };
 
     std::size_t parsed_port = options.server.port;
-    if (auto status = set_size_option(port, "--port", 0, std::numeric_limits<std::uint16_t>::max(),
-                                      parsed_port);
+    if (auto status =
+            set_size_option(port, "--port", 0, std::numeric_limits<std::uint16_t>::max(), parsed_port);
         !status) {
         return unexpected(status.error());
     }
     options.server.port = static_cast<std::uint16_t>(parsed_port);
 
     constexpr auto maximum_size = std::numeric_limits<std::size_t>::max();
-    if (auto status = set_size_option(workers, "--workers", 1, kMaximumWorkerCount, options.server.worker_count);
+    if (auto status =
+            set_size_option(workers, "--workers", 1, kMaximumWorkerCount, options.server.worker_count);
         !status) {
         return unexpected(status.error());
     }
-    if (auto status = set_size_option(maximum_connections, "--max-connections", 1,
-                                      std::numeric_limits<std::uint32_t>::max(),
-                                      options.server.maximum_connections);
+    if (auto status =
+            set_size_option(maximum_connections, "--max-connections", 1,
+                            std::numeric_limits<std::uint32_t>::max(), options.server.maximum_connections);
         !status) {
         return unexpected(status.error());
     }
@@ -339,14 +366,13 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
         !status) {
         return unexpected(status.error());
     }
-    if (auto status = set_size_option(durable_mutation_queue_capacity, "--durable-mutation-queue-capacity",
-                                      1, std::size_t{1} << 30U,
-                                      options.server.durable_mutation_queue_capacity);
+    if (auto status = set_size_option(durable_mutation_queue_capacity, "--durable-mutation-queue-capacity", 1,
+                                      std::size_t{1} << 30U, options.server.durable_mutation_queue_capacity);
         !status) {
         return unexpected(status.error());
     }
-    if (auto status = set_byte_size_option(durable_mutation_queue_bytes, "--durable-mutation-queue-bytes",
-                                           1, maximum_size, options.server.durable_mutation_queue_bytes);
+    if (auto status = set_byte_size_option(durable_mutation_queue_bytes, "--durable-mutation-queue-bytes", 1,
+                                           maximum_size, options.server.durable_mutation_queue_bytes);
         !status) {
         return unexpected(status.error());
     }
@@ -370,8 +396,7 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
     options.server.shutdown_drain_ms = static_cast<std::uint32_t>(shutdown_drain_ms);
     if (parsed->has(reuse_port) && parsed->has(no_reuse_port)) {
-        return fail(ErrorCode::invalid_argument,
-                    "--reuse-port and --no-reuse-port are mutually exclusive");
+        return fail(ErrorCode::invalid_argument, "--reuse-port and --no-reuse-port are mutually exclusive");
     }
     if (parsed->has(reuse_port)) {
         options.server.reuse_port = true;
@@ -419,16 +444,24 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
         } else if (*mode == "disabled") {
             options.store.maintenance.mode = MaintenanceMode::disabled;
         } else {
-            return fail(ErrorCode::invalid_argument,
-                        "unknown --maintenance-mode: " + std::string{*mode});
+            return fail(ErrorCode::invalid_argument, "unknown --maintenance-mode: " + std::string{*mode});
         }
     }
+    std::size_t maintenance_copy_bytes =
+        static_cast<std::size_t>(options.store.maintenance.max_copy_bytes_per_cycle);
+    if (auto status = set_byte_size_option(maintenance_max_copy_bytes_per_cycle,
+                                           "--maintenance-max-copy-bytes-per-cycle", 0, maximum_size,
+                                           maintenance_copy_bytes);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.store.maintenance.max_copy_bytes_per_cycle = maintenance_copy_bytes;
 
-    const bool has_batch_or_resource =
-        parsed->has(sync_interval_ms) || parsed->has(group_max_records) || parsed->has(group_max_bytes) ||
-        parsed->has(group_max_wait_ms) || parsed->has(max_store_bytes) || parsed->has(reserved_free_bytes) ||
-        parsed->has(max_segments) || parsed->has(max_hot_cache_bytes) ||
-        parsed->has(max_temporary_compaction_bytes);
+    const bool has_batch_or_resource = parsed->has(sync_interval_ms) || parsed->has(group_max_records) ||
+                                       parsed->has(group_max_bytes) || parsed->has(group_max_wait_ms) ||
+                                       parsed->has(max_store_bytes) || parsed->has(reserved_free_bytes) ||
+                                       parsed->has(max_segments) || parsed->has(max_hot_cache_bytes) ||
+                                       parsed->has(max_temporary_compaction_bytes);
     const bool durable = options.store.storage_mode != StorageMode::volatile_memory;
     if (durable && !options.store.data_directory) {
         return fail(ErrorCode::invalid_argument, "--data-dir is required for durable storage");
@@ -487,14 +520,15 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
 
     std::size_t store_bytes = static_cast<std::size_t>(options.store.durable_limits.max_store_bytes);
-    if (auto status = set_byte_size_option(max_store_bytes, "--max-store-bytes", 1, maximum_size, store_bytes);
+    if (auto status =
+            set_byte_size_option(max_store_bytes, "--max-store-bytes", 1, maximum_size, store_bytes);
         !status) {
         return unexpected(status.error());
     }
     options.store.durable_limits.max_store_bytes = store_bytes;
     std::size_t reserved_bytes = static_cast<std::size_t>(options.store.durable_limits.reserved_free_bytes);
-    if (auto status =
-            set_byte_size_option(reserved_free_bytes, "--reserved-free-bytes", 0, maximum_size, reserved_bytes);
+    if (auto status = set_byte_size_option(reserved_free_bytes, "--reserved-free-bytes", 0, maximum_size,
+                                           reserved_bytes);
         !status) {
         return unexpected(status.error());
     }
@@ -505,17 +539,16 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
         return unexpected(status.error());
     }
     std::size_t hot_cache_bytes = static_cast<std::size_t>(options.store.durable_limits.max_hot_cache_bytes);
-    if (auto status =
-            set_byte_size_option(max_hot_cache_bytes, "--max-hot-cache-bytes", 0, maximum_size, hot_cache_bytes);
+    if (auto status = set_byte_size_option(max_hot_cache_bytes, "--max-hot-cache-bytes", 0, maximum_size,
+                                           hot_cache_bytes);
         !status) {
         return unexpected(status.error());
     }
     options.store.durable_limits.max_hot_cache_bytes = hot_cache_bytes;
     std::size_t temporary_bytes =
         static_cast<std::size_t>(options.store.durable_limits.max_temporary_compaction_bytes);
-    if (auto status = set_byte_size_option(max_temporary_compaction_bytes,
-                                           "--max-temporary-compaction-bytes", 1, maximum_size,
-                                           temporary_bytes);
+    if (auto status = set_byte_size_option(max_temporary_compaction_bytes, "--max-temporary-compaction-bytes",
+                                           1, maximum_size, temporary_bytes);
         !status) {
         return unexpected(status.error());
     }
@@ -560,8 +593,8 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     return value;
 }
 
-[[nodiscard]] auto ingest_setting(SettingMap& settings, const std::string_view key,
-                                  std::string value, const std::string_view where) -> Status {
+[[nodiscard]] auto ingest_setting(SettingMap& settings, const std::string_view key, std::string value,
+                                  const std::string_view where) -> Status {
     if (key == "help" || key == "version" || key == "config" || key == "dump-config") {
         return fail(ErrorCode::invalid_argument,
                     std::string{where} + " cannot set '" + std::string{key} + "'");
@@ -678,6 +711,8 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += open_mode_name(options.store.durable_open_mode);
     out += "\nmaintenance-mode=";
     out += maintenance_mode_name(options.store.maintenance.mode);
+    out += "\nmaintenance-max-copy-bytes-per-cycle=";
+    out += std::to_string(options.store.maintenance.max_copy_bytes_per_cycle);
     out += "\nsync-interval-ms=";
     out += std::to_string(options.store.durable_periodic.sync_interval_ms);
     out += "\ngroup-max-records=";
@@ -716,8 +751,8 @@ auto environment_name_for_option(const std::string_view long_name) -> std::strin
     std::string name = "GLYPHASTORE_";
     name.reserve(name.size() + long_name.size());
     for (const char character : long_name) {
-        name.push_back(character == '-' ? '_'
-                                        : static_cast<char>(std::toupper(static_cast<unsigned char>(character))));
+        name.push_back(
+            character == '-' ? '_' : static_cast<char>(std::toupper(static_cast<unsigned char>(character))));
     }
     return name;
 }
@@ -739,9 +774,9 @@ auto load_daemon_config_file(const std::filesystem::path& path)
         }
         const auto separator = trimmed.find('=');
         if (separator == std::string_view::npos) {
-            return fail(ErrorCode::invalid_argument,
-                        "config " + path.string() + " line " + std::to_string(line_number) +
-                            ": expected key = value");
+            return fail(ErrorCode::invalid_argument, "config " + path.string() + " line " +
+                                                         std::to_string(line_number) +
+                                                         ": expected key = value");
         }
         const auto key = trim(trimmed.substr(0, separator));
         auto value_view = trim(trimmed.substr(separator + 1));
@@ -757,8 +792,7 @@ auto load_daemon_config_file(const std::filesystem::path& path)
     if (settings.contains("reuse-port") && settings.at("reuse-port") == "true" &&
         settings.contains("no-reuse-port") && settings.at("no-reuse-port") == "true") {
         return fail(ErrorCode::invalid_argument,
-                    "config " + path.string() +
-                        ": reuse-port and no-reuse-port are mutually exclusive");
+                    "config " + path.string() + ": reuse-port and no-reuse-port are mutually exclusive");
     }
     return settings;
 }

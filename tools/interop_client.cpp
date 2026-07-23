@@ -69,7 +69,9 @@ void usage(const char* program) {
            "[--server-name NAME] [--insecure-skip-verify]\n"
         << "    put --key-hex HEX --value-hex HEX [--expire-at-ns N]\n  " << program
         << " ... get --key-hex HEX\n  " << program << " ... erase --key-hex HEX\n  " << program
-        << " ... pipeline-put-get --key-hex HEX --value-hex HEX\n";
+        << " ... pipeline-put-get --key-hex HEX --value-hex HEX\n  " << program
+        << " ... expect-not-found --key-hex HEX\n  " << program
+        << " ... expect-frame-limit\n";
 }
 
 [[nodiscard]] auto require_flag(const int argc, char** argv, int& index, const char* name)
@@ -125,7 +127,8 @@ int main(int argc, char** argv) try {
             tls.server_name = std::string{require_flag(argc, argv, index, "--server-name")};
         } else if (arg == "--insecure-skip-verify") {
             tls.insecure_skip_verify = true;
-        } else if (arg == "put" || arg == "get" || arg == "erase" || arg == "pipeline-put-get") {
+        } else if (arg == "put" || arg == "get" || arg == "erase" || arg == "pipeline-put-get" ||
+                   arg == "expect-not-found" || arg == "expect-frame-limit") {
             command = std::string{arg};
         } else {
             std::cerr << "unknown argument: " << arg << '\n';
@@ -139,8 +142,9 @@ int main(int argc, char** argv) try {
         return 2;
     }
 
-    auto client = glyphastore::client::Client::connect(
-        {.host = host, .port = port, .tls = std::move(tls)});
+    glyphastore::client::ClientConfig config{.host = host, .port = port, .tls = std::move(tls)};
+    const auto maximum_frame_bytes = config.maximum_frame_bytes;
+    auto client = glyphastore::client::Client::connect(std::move(config));
     if (!client) {
         std::cerr << "connect failed: " << client.error().message << '\n';
         return 1;
@@ -197,6 +201,28 @@ int main(int argc, char** argv) try {
             return 1;
         }
         std::cout << to_hex((*responses)[1].value) << '\n';
+        return 0;
+    }
+    if (command == "expect-not-found") {
+        const auto missing = client->get(key);
+        if (missing || missing.error().code != glyphastore::ErrorCode::not_found ||
+            missing.error().category != "not_found" || missing.error().retryability != "new_attempt") {
+            std::cerr << "GET did not produce the expected structured not_found error\n";
+            return 1;
+        }
+        return 0;
+    }
+    if (command == "expect-frame-limit") {
+        const std::vector<std::byte> oversized(maximum_frame_bytes, std::byte{0xA5});
+        const auto limit_key = parse_hex("6c696d6974");
+        const auto rejected = client->put(limit_key, oversized);
+        if (rejected.outcome != glyphastore::client::MutationOutcome::rejected ||
+            !rejected.error.has_value() || rejected.error->category != "invalid_argument" ||
+            rejected.error->bytes_sent != 0 ||
+            rejected.error->retryability != "never") {
+            std::cerr << "oversized PUT did not produce the expected local frame-limit rejection\n";
+            return 1;
+        }
         return 0;
     }
 
