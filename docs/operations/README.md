@@ -12,6 +12,7 @@ in [cli.md](../cli.md), [wire protocol v2](../spec/wire-protocol-v2.md), and
 
 | Runbook | When to use |
 |---|---|
+| [Durable TCP daemon](durable-tcp-daemon.md) | End-to-end durable `glyphastored` setup: profile/mode, flags, probes, drain, offline ops |
 | [Graceful drain and overload](graceful-drain-and-overload.md) | Rolling restart, deploy, capacity pressure, `OVERLOADED` responses |
 | [Backup and restore](backup-restore.md) | Planned copy, migration to new host, disaster recovery from verified backup |
 | [Corruption detection and repair](corruption-repair.md) | Startup failure, verify errors, namespace anomalies, post-incident salvage |

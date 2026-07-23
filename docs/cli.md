@@ -16,6 +16,9 @@ GlyphaStore command-line programs share one strict parser and a common operation
 
 ## Server
 
+Operator guide for durable deployments: [durable TCP daemon](operations/durable-tcp-daemon.md)
+(profile/mode selection, resource flags, `HEALTH`/`READY`/`STATS`, drain, offline backup pointers).
+
 ```bash
 glyphastored --bind 127.0.0.1 --port 7379 --workers 4
 glyphastored --config /etc/glyphastore/daemon.conf

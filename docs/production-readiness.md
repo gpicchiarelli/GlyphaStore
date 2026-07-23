@@ -111,7 +111,8 @@ below has automated evidence. A design document or implementation alone does not
   JSON-lines lifecycle logging (`--log-format json`) covers start/listen, readiness transitions,
   shutdown drain, maintenance emergency/fault, and executor failure.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
-  Operator procedures: [operations runbooks](operations/README.md) (graceful drain/overload,
+  Operator procedures: [operations runbooks](operations/README.md) including the end-to-end
+  [durable TCP daemon guide](operations/durable-tcp-daemon.md) (graceful drain/overload,
   [backup-restore](operations/backup-restore.md), [corruption-repair](operations/corruption-repair.md)).
   Formal staging/CI exercise remains open.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.

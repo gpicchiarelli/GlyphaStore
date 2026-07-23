@@ -5,6 +5,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Add end-to-end operator guide for durable `glyphastored` deployments
+  (`docs/operations/durable-tcp-daemon.md`): profile or explicit storage mode, data directory and
+  open policy, resource/batch/maintenance flags, `HEALTH`/`READY`/`STATS` expectations, shutdown
+  drain, offline backup/verify/repair pointers, and explicit unsupported claims (live backup,
+  power-loss certification pending). Link from operations index, CLI reference, production readiness,
+  and v1 production roadmap.
 - Close durable unread-TTL normal-mode policy fail-closed. Default scheduling stays conservative
   (Index-referenced dead bytes only). Opt-in `unread_ttl_normal_scheduling` probes unread expired
   sealed puts during normal evaluations and adds them to `candidate_scheduling_dead_byte_ratio_bp`

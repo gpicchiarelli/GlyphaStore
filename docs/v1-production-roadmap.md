@@ -69,7 +69,8 @@ default 30s). Strict-group mode retains bounded concurrent producers. Wire `HEAL
 expose liveness, readiness, and a bounded ASCII admin report. Daemon CLI exposes durable batch and
 resource caps; file/environment config precedence and deployment profiles (`dev`, `embedded`,
 `production`) validate fail-closed. Real-daemon wire-protocol SIGKILL coverage exists
-(`glyphastore_crash_daemon`). Histogram export remains open.
+(`glyphastore_crash_daemon`). Operator guide:
+[durable TCP daemon](operations/durable-tcp-daemon.md). Histogram export remains open.
 
 **Required change:** validated `StoreConfig` into `Server`; CLI/configuration for data directory,
 open policy, durability policy, batch limits, and recovery policy. Durable writes must leave the
