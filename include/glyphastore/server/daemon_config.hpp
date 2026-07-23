@@ -24,6 +24,8 @@ struct DaemonOptions {
     StoreConfig store{
         .maintenance = {.mode = MaintenanceMode::background},
     };
+    // Empty when no named deployment profile was selected.
+    std::string deployment_profile{};
     bool show_help{};
     bool show_version{};
     bool show_dump_config{};
@@ -41,8 +43,9 @@ using DaemonEnvironmentLookup =
 // Stable ASCII dump of the fully resolved effective configuration (paths only for TLS files).
 [[nodiscard]] auto format_daemon_config_dump(const DaemonOptions& options) -> std::string;
 
-// Precedence: defaults < config file < environment < CLI.
+// Precedence: defaults < deployment profile < config file < environment < CLI.
 // --config / GLYPHASTORE_CONFIG select the file; the file cannot set config=.
+// --profile / GLYPHASTORE_PROFILE / profile= select dev, embedded, or production.
 [[nodiscard]] auto parse_daemon_options(int argc, char* const argv[],
                                         DaemonEnvironmentLookup getenv_fn = {})
     -> Result<DaemonOptions>;

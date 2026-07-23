@@ -20,6 +20,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Add fail-closed daemon deployment profiles (`dev`, `embedded`, `production`) with precedence
+  `defaults < profile < file < env < CLI`. Unknown profile names fail before listen; `--dump-config`
+  prints the selected profile plus resolved settings.
 - Normatively specify duplicate `request_id` and reconnect semantics for wire protocol v2. `request_id`
   is correlation-only with no server deduplication; transport loss requires re-`INIT`/`BIND_WORKER`;
   mutations with bytes sent remain indeterminate until application reconciliation. Update

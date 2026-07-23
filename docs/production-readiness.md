@@ -168,11 +168,12 @@ implementation or design document alone is not sufficient.
 - [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
   Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
   The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
-  flags plus documented file/environment precedence (`defaults < file < env < CLI`, `--config` /
+  flags plus documented file/environment precedence (`defaults < profile < file < env < CLI`, `--config` /
   `GLYPHASTORE_CONFIG`, unknown keys fail closed). `--dump-config` prints the resolved effective
   settings and exits without listening. Normal background compaction has a documented,
   daemon-configurable 128 MiB per-candidate copy limit with explicit unlimited and pressure bypass
-  semantics. Deployment profiles remain pending.
+  semantics. Deployment profiles (`dev`, `embedded`, `production`) are implemented with fail-closed
+  validation before listen.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
   lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging remain

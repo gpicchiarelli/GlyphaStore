@@ -19,6 +19,7 @@ enum OptionId : std::size_t {
     help,
     version,
     config,
+    profile,
     dump_config,
     bind,
     port,
@@ -61,7 +62,9 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{help, "help", 'h', cli::OptionArity::none, {}, "Show this help message and exit"},
     cli::OptionSpec{version, "version", 'V', cli::OptionArity::none, {}, "Show version information and exit"},
     cli::OptionSpec{config, "config", '\0', cli::OptionArity::required, "PATH",
-                    "Load settings from PATH (defaults < file < env < CLI)"},
+                    "Load settings from PATH (defaults < profile < file < env < CLI)"},
+    cli::OptionSpec{profile, "profile", '\0', cli::OptionArity::required, "NAME",
+                    "Apply a deployment profile preset: dev, embedded, or production"},
     cli::OptionSpec{dump_config,
                     "dump-config",
                     '\0',
@@ -161,6 +164,16 @@ constexpr std::array kOptionSpecs{
 
 using SettingMap = std::map<std::string, std::string, std::less<>>;
 
+[[nodiscard]] auto take_profile_name(SettingMap& settings) -> std::optional<std::string> {
+    const auto found = settings.find("profile");
+    if (found == settings.end()) {
+        return std::nullopt;
+    }
+    auto name = found->second;
+    settings.erase(found);
+    return name;
+}
+
 [[nodiscard]] auto find_spec(const std::string_view long_name) -> const cli::OptionSpec* {
     for (const auto& spec : kOptionSpecs) {
         if (spec.long_name == long_name) {
@@ -194,6 +207,40 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
         character = static_cast<char>(std::tolower(static_cast<unsigned char>(character)));
     }
     return text;
+}
+
+[[nodiscard]] auto deployment_profile_settings(const std::string_view name) -> Result<SettingMap> {
+    if (name.empty()) {
+        return fail(ErrorCode::invalid_argument, "deployment profile must not be empty");
+    }
+    const auto lowered = ascii_lower(std::string{name});
+    if (lowered == "dev") {
+        return SettingMap{
+            {"storage-mode", "volatile"},
+            {"maintenance-mode", "disabled"},
+        };
+    }
+    if (lowered == "embedded") {
+        return SettingMap{
+            {"storage-mode", "durable-periodic"},
+            {"maintenance-mode", "background"},
+            {"workers", "1"},
+            {"max-store-bytes", "1073741824"},
+            {"reserved-free-bytes", "67108864"},
+            {"max-segments", "32"},
+            {"max-hot-cache-bytes", "67108864"},
+            {"max-temporary-compaction-bytes", "268435456"},
+        };
+    }
+    if (lowered == "production") {
+        return SettingMap{
+            {"storage-mode", "durable-periodic"},
+            {"maintenance-mode", "background"},
+        };
+    }
+    return fail(ErrorCode::invalid_argument,
+                "unknown deployment profile: " + std::string{name} +
+                    " (expected dev, embedded, or production)");
 }
 
 [[nodiscard]] auto parse_bool_token(const std::string_view text, const std::string_view where)
@@ -256,7 +303,8 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
 }
 
 [[nodiscard]] auto materialize_from_settings(SettingMap settings, const bool show_help,
-                                             const bool show_version) -> Result<DaemonOptions> {
+                                             const bool show_version,
+                                             std::string deployment_profile) -> Result<DaemonOptions> {
     std::vector<std::string> storage;
     storage.reserve(settings.size() * 2U + 1U);
     storage.emplace_back("glyphastored");
@@ -290,6 +338,7 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
 
     DaemonOptions options;
+    options.deployment_profile = std::move(deployment_profile);
     options.show_help = show_help;
     options.show_version = show_version;
     options.quiet = parsed->has(quiet);
@@ -671,7 +720,9 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     std::string out;
     out.reserve(2048);
     out += "GlyphaStore/config\n";
-    out += "bind=";
+    out += "profile=";
+    out += options.deployment_profile;
+    out += "\nbind=";
     out += options.server.bind_address;
     out += "\nport=";
     out += std::to_string(options.server.port);
@@ -802,7 +853,8 @@ auto load_daemon_environment(const DaemonEnvironmentLookup& getenv_fn)
     const DaemonEnvironmentLookup& lookup = getenv_fn ? getenv_fn : DaemonEnvironmentLookup{default_getenv};
     SettingMap settings;
     for (const auto& spec : kOptionSpecs) {
-        if (spec.id == help || spec.id == version || spec.id == config || spec.id == dump_config) {
+        if (spec.id == help || spec.id == version || spec.id == config || spec.id == profile ||
+            spec.id == dump_config) {
             continue;
         }
         const auto env_name = environment_name_for_option(spec.long_name);
@@ -856,27 +908,52 @@ auto parse_daemon_options(const int argc, char* const argv[], DaemonEnvironmentL
         config_path = std::filesystem::path{*from_env};
     }
 
-    SettingMap merged;
+    SettingMap file_settings;
     if (config_path) {
-        auto file_settings = load_daemon_config_file(*config_path);
-        if (!file_settings) {
-            return unexpected(file_settings.error());
+        auto loaded = load_daemon_config_file(*config_path);
+        if (!loaded) {
+            return unexpected(loaded.error());
         }
-        apply_layer(merged, *file_settings);
+        file_settings = std::move(*loaded);
     }
     auto env_settings = load_daemon_environment(lookup);
     if (!env_settings) {
         return unexpected(env_settings.error());
     }
-    apply_layer(merged, *env_settings);
-
     auto cli_settings = settings_from_parsed(*parsed_cli);
     if (!cli_settings) {
         return unexpected(cli_settings.error());
     }
+
+    std::optional<std::string> resolved_profile;
+    if (auto from_file = take_profile_name(file_settings)) {
+        resolved_profile = std::move(*from_file);
+    }
+    if (const auto from_env = lookup("GLYPHASTORE_PROFILE")) {
+        if (from_env->empty()) {
+            return fail(ErrorCode::invalid_argument, "GLYPHASTORE_PROFILE must not be empty");
+        }
+        resolved_profile = *from_env;
+    }
+    if (auto from_cli = take_profile_name(*cli_settings)) {
+        resolved_profile = std::move(*from_cli);
+    }
+
+    SettingMap merged;
+    if (resolved_profile) {
+        auto profile_settings = deployment_profile_settings(*resolved_profile);
+        if (!profile_settings) {
+            return unexpected(profile_settings.error());
+        }
+        apply_layer(merged, *profile_settings);
+        *resolved_profile = ascii_lower(std::move(*resolved_profile));
+    }
+    apply_layer(merged, file_settings);
+    apply_layer(merged, *env_settings);
     apply_layer(merged, *cli_settings);
 
-    auto options = materialize_from_settings(std::move(merged), false, false);
+    auto options = materialize_from_settings(std::move(merged), false, false,
+                                             resolved_profile.value_or(std::string{}));
     if (!options) {
         return unexpected(options.error());
     }

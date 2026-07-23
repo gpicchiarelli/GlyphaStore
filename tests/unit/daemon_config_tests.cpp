@@ -98,6 +98,78 @@ GLYPHA_TEST("daemon config file rejects unknown keys and duplicates") {
     GLYPHA_REQUIRE(duplicate_result.error().message.find("duplicates") != std::string::npos);
 }
 
+GLYPHA_TEST("daemon config rejects unknown deployment profiles before listen") {
+    const std::array arguments{"glyphastored", "--profile", "staging"};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(!parsed.has_value());
+    GLYPHA_REQUIRE(parsed.error().message.find("unknown deployment profile") != std::string::npos);
+
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "profile.conf";
+    write_file(config, "profile = mystery\n");
+    const auto config_arg = config.string();
+    const std::array from_file{"glyphastored", "--config", config_arg.c_str()};
+    const auto file_result = parse(from_file);
+    GLYPHA_REQUIRE(!file_result.has_value());
+    GLYPHA_REQUIRE(file_result.error().message.find("unknown deployment profile") != std::string::npos);
+}
+
+GLYPHA_TEST("daemon config deployment profile precedence is profile then file then env then CLI") {
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "profile-precedence.conf";
+    write_file(config, "profile = dev\nport = 1001\nstorage-mode = durable-sync\n");
+
+    std::unordered_map<std::string, std::string> environment{
+        {"GLYPHASTORE_PROFILE", "embedded"},
+        {"GLYPHASTORE_PORT", "2002"},
+        {"GLYPHASTORE_STORAGE_MODE", "durable-group"},
+    };
+    const auto getenv_fn = [&environment](const std::string_view name) -> std::optional<std::string> {
+        const auto found = environment.find(std::string{name});
+        if (found == environment.end()) {
+            return std::nullopt;
+        }
+        return found->second;
+    };
+
+    const auto config_arg = config.string();
+    const std::array arguments{
+        "glyphastored", "--config", config_arg.c_str(), "--profile", "production", "--port", "3003",
+        "--storage-mode", "volatile",
+    };
+    const auto parsed = parse(arguments, getenv_fn);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->deployment_profile == "production");
+    GLYPHA_REQUIRE(parsed->server.port == 3003);
+    GLYPHA_REQUIRE(parsed->store.storage_mode == glyphastore::StorageMode::volatile_memory);
+}
+
+GLYPHA_TEST("daemon config embedded profile applies constrained durable defaults") {
+    ConfigTemporaryDirectory temporary;
+    const auto data_dir = temporary.path() / "store";
+    const auto data_arg = data_dir.string();
+    const std::array arguments{
+        "glyphastored", "--profile", "embedded", "--data-dir", data_arg.c_str(),
+    };
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->deployment_profile == "embedded");
+    GLYPHA_REQUIRE(parsed->store.storage_mode == glyphastore::StorageMode::durable_periodic);
+    GLYPHA_REQUIRE(parsed->server.worker_count == 1);
+    GLYPHA_REQUIRE(parsed->store.durable_limits.max_store_bytes == 1'073'741'824);
+    GLYPHA_REQUIRE(parsed->store.durable_limits.max_segment_count == 32);
+    GLYPHA_REQUIRE(parsed->store.maintenance.mode == glyphastore::MaintenanceMode::background);
+}
+
+GLYPHA_TEST("daemon config dev profile disables maintenance and keeps volatile storage") {
+    const std::array arguments{"glyphastored", "--profile", "dev"};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->deployment_profile == "dev");
+    GLYPHA_REQUIRE(parsed->store.storage_mode == glyphastore::StorageMode::volatile_memory);
+    GLYPHA_REQUIRE(parsed->store.maintenance.mode == glyphastore::MaintenanceMode::disabled);
+}
+
 GLYPHA_TEST("daemon config precedence is file then env then CLI") {
     ConfigTemporaryDirectory temporary;
     const auto config = temporary.path() / "daemon.conf";
@@ -240,6 +312,7 @@ GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
     GLYPHA_REQUIRE(parsed->quiet);
     const auto dump = glyphastore::server::format_daemon_config_dump(*parsed);
     GLYPHA_REQUIRE(dump.starts_with("GlyphaStore/config\n"));
+    GLYPHA_REQUIRE(dump.find("profile=\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("port=3333\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("workers=2\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("quiet=true\n") != std::string::npos);

@@ -90,8 +90,8 @@ with fail-closed volatile rejection, plus the normal background
 `--maintenance-max-copy-bytes-per-cycle` limit. Real-daemon wire-protocol SIGKILL coverage exists for
 post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
 (`glyphastore_crash_daemon`). File/environment config precedence is implemented (`--config` /
-`GLYPHASTORE_CONFIG`, `GLYPHASTORE_*` mirrors of long options, defaults < file < env < CLI).
-Deployment profiles remain open.
+`GLYPHASTORE_CONFIG`, `GLYPHASTORE_*` mirrors of long options, defaults < profile < file < env < CLI).
+Deployment profiles (`dev`, `embedded`, `production`) are implemented with fail-closed validation.
 
 **Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
 data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch

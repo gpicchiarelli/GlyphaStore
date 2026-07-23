@@ -19,21 +19,32 @@ GlyphaStore command-line programs share one strict parser and a common operation
 ```bash
 glyphastored --bind 127.0.0.1 --port 7379 --workers 4
 glyphastored --config /etc/glyphastore/daemon.conf
-glyphastored --dump-config --config /etc/glyphastore/daemon.conf
+glyphastored --profile embedded --data-dir /var/lib/glyphastore --dump-config
 glyphastored --port 0 --workers 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
 glyphastored --help
 ```
 
 ### Configuration precedence
 
-Settings resolve as **defaults < config file < environment < CLI**. Unknown keys, empty values,
-duplicate keys in one file, and conflicting `--reuse-port` / `--no-reuse-port` (or their env/file
-equivalents) fail closed before the process listens. Deployment profiles remain a separate follow-up.
+Settings resolve as **defaults < deployment profile < config file < environment < CLI**. Unknown
+keys, unknown profile names, empty values, duplicate keys in one file, and conflicting
+`--reuse-port` / `--no-reuse-port` (or their env/file equivalents) fail closed before the process
+listens.
+
+- `--profile NAME` or `GLYPHASTORE_PROFILE=NAME` or `profile = NAME` in a config file selects one of
+  the built-in deployment presets (`dev`, `embedded`, `production`). Profile selection follows the
+  same file/env/CLI precedence as other settings; the profile's preset values sit between hardcoded
+  defaults and file/env/CLI overrides.
+- `dev` keeps volatile storage and disables background maintenance for local iteration.
+- `embedded` selects `durable-periodic` with constrained resource caps suited to sidecar or
+  single-node embedded deployments.
+- `production` selects `durable-periodic` with background maintenance and the standard durable
+  resource defaults; operators still must supply `--data-dir` (or equivalent) before listen.
 
 - `--config PATH` or `GLYPHASTORE_CONFIG=PATH` selects a settings file. The file cannot set `config`,
   `help`, or `version`.
-- `--dump-config` prints the fully resolved effective settings (`GlyphaStore/config` ASCII key=value)
-  after the same validation used before listen, then exits without binding or opening a Store. TLS
+- `--dump-config` prints the fully resolved effective settings (`GlyphaStore/config` ASCII key=value,
+  including the selected deployment profile) after the same validation used before listen, then exits without binding or opening a Store. TLS
   settings appear as paths only. The flag is CLI-only (not settable from file or environment).
 - File keys are the long option names without `--` (`port = 7379`, `storage-mode = durable-sync`,
   `quiet = true`). Lines may be blank or start with `#`. Values may be quoted with `"..."`.
