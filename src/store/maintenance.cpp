@@ -231,6 +231,7 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .compact_attempts = compact_attempts_,
         .compact_completed = compact_completed_,
         .useful_compactions = useful_compactions_,
+        .sequence_conflicts = sequence_conflicts_,
         .skips = skips_,
         .suspend_count = suspend_count_,
         .consecutive_no_gain = consecutive_no_gain_,
@@ -453,6 +454,7 @@ void MaintenanceController::evaluate_once() {
                 record_skip(MaintenanceSkipReason::store_closed, MaintenanceState::idle,
                             MaintenanceActivationReason::none);
             } else if (result.error().code == ErrorCode::sequence_conflict) {
+                ++sequence_conflicts_;
                 record_skip(MaintenanceSkipReason::sequence_conflict, MaintenanceState::idle, activation);
             } else {
                 // Preserve emergency rejection. While the gate is armed, keep auto-compact enabled

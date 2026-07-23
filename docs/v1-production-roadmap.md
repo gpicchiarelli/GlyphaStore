@@ -304,9 +304,10 @@ source identity, and generation pins still match; concurrent mutation instead tr
 old-authority rollback and preserves the mutation. It installs the prepared manifest, commit
 catalog, and Index atomically, releases data locks before retiring sources, removes the intent, and
 fails closed only when recovery is genuinely required. A logical manifest-publication lease makes
-rotation or another compaction fail fast instead of waiting behind the build, while immutable
-generation pins let readers continue across catalog entry removal. Final manifest write/sync also
-runs without Worker, catalog, or publication mutexes under a Worker-local commit gate. Public
+another compaction fail fast; rotation now waits on a condition variable, rebuilds from the
+resulting authority, and commits without exposing a third Manifest state. Immutable generation pins
+let readers continue across catalog entry removal. Final manifest write/sync also runs without
+Worker, catalog, or publication mutexes under a Worker-local commit gate. Public
 `Store::compact()` now uses a non-queuing
 Store-wide maintenance gate, selects Workers round-robin, skips exact no-gain layouts, executes at
 most one transaction per call, and reports copy statistics. The online single-output crash and I/O
@@ -359,7 +360,8 @@ exactly two replacements and reopens every rebuilt reference, restart visibility
 rollback after an online post-intent failure, preservation of
 another Worker's cached descriptor when catalog positions shift, and artificially blocked Phase B
 where same-Worker GET, PUT, erase, and TTL update complete before the stale build rolls back with
-`sequence_conflict`. A forced unrelated rotation returns conflict without waiting; a blocked final
+`sequence_conflict`. A forced unrelated rotation now waits for the lease, commits against the
+compacted authority, and survives reopen; a blocked final
 manifest sync proves that reads and other-Worker writes continue without any Worker, catalog, or
 publication mutex held. Close during Phase B rolls the old authority back to a clean reopen.
 Four additional fixed-seed model histories mix 608 total PUT, ERASE, expired PUT, overwrite, and

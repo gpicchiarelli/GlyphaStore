@@ -412,6 +412,9 @@ auto Server::stats_report() const -> Result<std::string> {
         out += "useful_compactions=";
         out += std::to_string(maintenance.useful_compactions);
         out += '\n';
+        out += "maintenance_sequence_conflicts=";
+        out += std::to_string(maintenance.sequence_conflicts);
+        out += '\n';
         out += "maintenance_candidate_worker=";
         if (maintenance.last_observation.compaction_candidate_worker) {
             out += std::to_string(*maintenance.last_observation.compaction_candidate_worker);

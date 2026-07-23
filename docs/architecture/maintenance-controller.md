@@ -93,6 +93,11 @@ that still want backoff-retry for true admission overload must opt in explicitly
 Manual and automatic compact share `compaction_mutex` with `try_to_lock`. A busy gate returns
 `sequence_conflict`. There is no compaction queue.
 
+The automatic candidate cursor advances when a Worker is observed, not only when compaction starts.
+Threshold, copy-budget, or other policy skips therefore cannot pin evaluation to one Worker and
+starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
+`maintenance_sequence_conflicts` count compact attempts rejected by concurrent state change.
+
 ## Explicitly deferred
 
 - Production reclaim tuning: expose rejected-plan work and decide whether unread TTL needs a
@@ -103,7 +108,6 @@ Manual and automatic compact share `compaction_mutex` with `try_to_lock`. A busy
   measures a roughly 18% median throughput cost and 54--57% p99 increase while useful reclaim
   overlaps foreground work. Idle overhead, long sealed-churn efficacy, and controlled native
   baselines remain.
-- Unrelated-Worker rotation availability during Manifest publication. The transaction currently
-  fails such a rotation fast with `sequence_conflict`; the concurrent benchmark's calibration
-  demonstrates foreground write rejection at that boundary.
+- Rotation latency during Manifest publication. Unrelated rotation now waits and commits rather
+  than returning `sequence_conflict`; controlled latency and churn evidence remain required.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

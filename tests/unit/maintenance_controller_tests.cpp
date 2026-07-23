@@ -223,6 +223,46 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     unlimited_controller.stop();
 }
 
+GLYPHA_TEST("maintenance telemetry counts sequence conflicts") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+
+    glyphastore::MaintenanceController controller{config};
+    controller.bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 3,
+            .sealed_segment_count = 2,
+            .compaction_candidate_worker = 0,
+            .candidate_sealed_record_bytes = 2'000,
+            .candidate_live_record_bytes = 1'000,
+            .candidate_dead_record_bytes = 1'000,
+            .candidate_dead_byte_ratio_bp = 5'000,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller.bind_compact([](const std::optional<std::size_t>,
+                               const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        return glyphastore::fail(glyphastore::ErrorCode::sequence_conflict, "injected maintenance conflict");
+    });
+    controller.start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline && controller.snapshot().sequence_conflicts == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    const auto snapshot = controller.snapshot();
+    GLYPHA_REQUIRE(snapshot.compact_attempts == 1);
+    GLYPHA_REQUIRE(snapshot.sequence_conflicts == 1);
+    GLYPHA_REQUIRE(snapshot.skips == 1);
+    GLYPHA_REQUIRE(snapshot.last_skip_reason == glyphastore::MaintenanceSkipReason::sequence_conflict);
+    controller.stop();
+}
+
 GLYPHA_TEST("cooperative store starts no maintenance thread") {
     auto store = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},

@@ -1390,13 +1390,8 @@ auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult
 }
 
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutationResult {
-    const std::lock_guard publication_lock{manifest_publication_mutex_};
-    if (compaction_publication_active_) {
-        return mutation_failure(
-            DurableMutationOutcome::not_committed,
-            Error{ErrorCode::sequence_conflict,
-                  "durable rotation conflicts with an active compaction publication lease"});
-    }
+    std::unique_lock publication_lock{manifest_publication_mutex_};
+    manifest_publication_changed_.wait(publication_lock, [&] { return !compaction_publication_active_; });
     const std::unique_lock catalog_lock{catalog_mutex_};
     const auto old_position =
         std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), worker.active_segment,
@@ -2256,8 +2251,11 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
 
             explicit PublicationLease(DurableRuntimeCatalog& owner) noexcept : runtime(owner) {}
             ~PublicationLease() {
-                const std::lock_guard lock{runtime.manifest_publication_mutex_};
-                runtime.compaction_publication_active_ = false;
+                {
+                    const std::lock_guard lock{runtime.manifest_publication_mutex_};
+                    runtime.compaction_publication_active_ = false;
+                }
+                runtime.manifest_publication_changed_.notify_all();
             }
 
             PublicationLease(const PublicationLease&) = delete;

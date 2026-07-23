@@ -20,6 +20,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Replace fail-fast unrelated-Worker rotation during a durable compaction lease with condition-based
+  serialization: the rotation now waits, rebuilds from the newly published Manifest, commits, and
+  survives reopen without changing persistence v1. Advance the automatic round-robin cursor for
+  every observed candidate so a below-threshold Worker cannot starve reclaimable peers, and expose
+  a cumulative maintenance sequence-conflict counter through snapshots and daemon `STATS`.
 - Add a reproducible concurrent-maintenance benchmark comparing disabled, cooperative, and
   Store-owned background policy under a synchronized mixed GET/PUT workload. Record a clean
   seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB

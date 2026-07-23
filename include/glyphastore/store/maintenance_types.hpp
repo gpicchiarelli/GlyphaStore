@@ -85,6 +85,7 @@ struct MaintenanceSnapshot {
     std::uint64_t compact_attempts{};
     std::uint64_t compact_completed{};
     std::uint64_t useful_compactions{};
+    std::uint64_t sequence_conflicts{};
     std::uint64_t skips{};
     std::uint64_t suspend_count{};
     std::uint64_t consecutive_no_gain{};

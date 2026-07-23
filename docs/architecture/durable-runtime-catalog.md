@@ -34,12 +34,13 @@ Online compaction briefly snapshots one target Worker, owns copied Index entries
 generation pins, then performs replacement I/O without the Worker or catalog lock. Publication
 try-locks the Worker, takes the catalog lock, and succeeds only if sequence, batch, manifest, source,
 and pin tokens still match; otherwise the prepared old-authority transaction is durably rolled back.
-A logical publication lease makes rotations and concurrent compactions fail fast without retaining
-the physical serializer during replacement I/O. Final manifest I/O also holds no Worker, catalog, or
-publication mutex: a Worker-local commit gate rejects target mutations, lets reads continue, and
-makes flush wait with its mutex released. After durable publication, the allocation-free in-memory
-switch refreshes commit metadata for other Workers before clearing that gate. No third manifest
-authority can appear while the lease exists.
+A logical publication lease makes a second compaction fail fast and makes rotation wait without
+retaining the physical serializer during replacement I/O. The waiting rotation releases the
+publication mutex, then rebuilds its transition from the newly published authority. Final manifest
+I/O also holds no Worker, catalog, or publication mutex: a Worker-local commit gate rejects target
+mutations, lets reads continue, and makes flush wait with its mutex released. After durable
+publication, the allocation-free in-memory switch refreshes commit metadata for other Workers
+before clearing that gate. No third manifest authority can appear while the lease exists.
 
 A cold read acquires both its `RecordRef` and a shared pin of the exact Segment generation while the
 Worker and catalog locks are held. It then releases both locks before positional I/O, decoding,
@@ -142,7 +143,7 @@ manifest and namespace recovery selects and validates the completed state.
 
 Tests cover binary reads, expiration, concurrent readers, a deliberately blocked cold `pread` that
 does not block a same-Worker mutation, blocked compaction build and manifest-sync concurrency,
-fail-fast unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
+waiting and restart-durable unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
 preflighted long-key publication, puts/replacements/tombstones across restart, sealed-active
 completion, and exact prepared-replacement adoption. A separate allocator-interposition executable
 fails every allocation observed in native put, update, erase, owning-read, strict-group, and rotation

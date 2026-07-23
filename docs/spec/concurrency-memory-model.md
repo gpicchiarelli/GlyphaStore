@@ -23,7 +23,7 @@ Store callers may invoke public operations concurrently unless a method explicit
 | Durable Worker Index, active file, hot records, group state | that durable Worker's mutex | never accessed concurrently without the mutex |
 | Volatile global segment namespace | `GlobalSegmentManager` mutex | snapshots are copied while locked |
 | Durable segment catalog | catalog shared mutex | readers take shared; namespace mutation takes exclusive |
-| Manifest publication | manifest-publication mutex | serializes generations, rotations, and compaction publication |
+| Manifest publication | manifest-publication mutex + condition variable | serializes generations; rotation waits for an active compaction lease |
 | Public compaction | Store compaction mutex | only one compaction attempt runs at once |
 | Store lifecycle admission | sharded atomic counters | one shard per Worker plus one control shard |
 | Flush scheduling state | coordinator mutex and condition variables | callback executes after releasing this mutex |
@@ -51,6 +51,13 @@ For the volatile runtime, the allowed nested order is Worker mutex, then global 
 Verification that must observe all Workers locks Worker mutexes in ascending Worker identifier order. No ordinary key operation locks all Workers.
 
 The flush coordinator's internal mutex is not part of this storage lock order: it protects request/generation state only. Its callback is invoked with that mutex released, preventing condition-state waits from enclosing filesystem or Worker work.
+
+A rotation that reaches a compaction publication lease waits on the publication condition variable
+while retaining only its owning Worker mutex. The wait releases the publication mutex. An
+unrelated-Worker compaction can therefore finish; a same-Worker compaction uses its final try-lock
+to roll back before waking the rotation. The rotation then constructs its transition from the
+newly authoritative Manifest. It must not publish a third authority while the dual-Manifest
+compaction intent is active.
 
 New nested locking requires updating this document and adding a test or static invariant that makes the order reviewable.
 

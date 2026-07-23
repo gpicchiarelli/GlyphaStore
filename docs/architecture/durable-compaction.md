@@ -167,9 +167,11 @@ final audit also run unlocked.
 Persistence v1 admits exactly the old and next manifest authorities. A Store-wide logical
 publication lease preserves that invariant without holding the publication mutex through intent
 installation, replacement creation, manifest I/O, or retirement. Rotation and a second compaction
-take the physical serializer only long enough to observe the lease and return a finite
-`sequence_conflict`; ordinary operations on other Workers continue. This removes the former
-catalog-equivalent head-of-line block without changing any v1 on-disk byte.
+take the physical serializer only long enough to observe the lease. A second compaction returns a
+finite `sequence_conflict`; rotation waits on a condition variable, then builds from the newly
+authoritative Manifest and commits. The wait avoids rejected writes but can extend the latency of
+the owning Worker; it does not permit a third manifest authority. Ordinary non-rotating operations
+on other Workers continue. This keeps persistence v1 unchanged.
 
 The public `Store::compact()` scheduler is cooperative and creates no background thread by itself.
 It examines eligible Workers in round-robin order, skips exact layouts that would reclaim no physical

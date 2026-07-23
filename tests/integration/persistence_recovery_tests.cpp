@@ -999,7 +999,7 @@ GLYPHA_TEST("blocked durable compaction build permits same-Worker reads and muta
     GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
 }
 
-GLYPHA_TEST("blocked durable compaction makes an unrelated rotation fail fast") {
+GLYPHA_TEST("blocked durable compaction lets an unrelated rotation wait and commit") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();
     const std::vector entries{
@@ -1071,21 +1071,31 @@ GLYPHA_TEST("blocked durable compaction makes an unrelated rotation fail fast") 
     {
         std::unique_lock lock{completion_mutex};
         rotation_completed_during_build =
-            completion.wait_for(lock, std::chrono::seconds{2}, [&] { return rotation_finished; });
+            completion.wait_for(lock, std::chrono::milliseconds{100}, [&] { return rotation_finished; });
     }
 
     blocked_build.release();
     writer.join();
     compactor.join();
 
-    GLYPHA_REQUIRE(rotation_completed_during_build);
-    GLYPHA_REQUIRE(rotation.outcome == glyphastore::DurableMutationOutcome::not_committed);
-    GLYPHA_REQUIRE(rotation.error.has_value());
-    GLYPHA_REQUIRE(rotation.error->code == glyphastore::ErrorCode::sequence_conflict);
+    GLYPHA_REQUIRE(!rotation_completed_during_build);
+    GLYPHA_REQUIRE(rotation.committed());
     GLYPHA_REQUIRE(compaction.compacted());
     GLYPHA_REQUIRE((*runtime)->healthy());
-    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 3);
+    GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 4);
     GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
+    const auto visible = (*runtime)->get(rotating_key);
+    GLYPHA_REQUIRE(visible.has_value());
+    GLYPHA_REQUIRE(owned_text(*visible) == "value");
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto durable = (*reopened)->get(rotating_key);
+    GLYPHA_REQUIRE(durable.has_value());
+    GLYPHA_REQUIRE(owned_text(*durable) == "value");
+    GLYPHA_REQUIRE((*reopened)->manifest().segments.size() == 4);
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
 }
 
 GLYPHA_TEST("compaction manifest sync holds no Worker or catalog mutex") {

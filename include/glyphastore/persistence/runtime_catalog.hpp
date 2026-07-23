@@ -230,9 +230,11 @@ class DurableRuntimeCatalog final {
     std::optional<Error> close_error_;
     // Guarded by manifest_publication_mutex_. A compaction lease excludes
     // manifest-changing rotations without keeping the serializer locked while
-    // replacement Records are scanned and copied.
+    // replacement Records are scanned and copied. Rotations wait for the lease
+    // and then rebuild from the newly published authority.
     bool compaction_publication_active_{};
     std::mutex manifest_publication_mutex_;
+    std::condition_variable manifest_publication_changed_;
     mutable std::shared_mutex catalog_mutex_;
 
     friend class detail::StoreAccess;

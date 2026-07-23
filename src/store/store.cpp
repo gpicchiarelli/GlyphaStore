@@ -535,8 +535,14 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         if (!raw->impl_ || !raw->impl_->durable_runtime) {
             return fail(ErrorCode::unavailable, "durable runtime is unavailable");
         }
-        return raw->impl_->durable_runtime->maintenance_observation(
+        auto observation = raw->impl_->durable_runtime->maintenance_observation(
             raw->impl_->next_compaction_worker.load(std::memory_order_relaxed));
+        if (observation && observation->compaction_candidate_worker) {
+            raw->impl_->next_compaction_worker.store((*observation->compaction_candidate_worker + 1U) %
+                                                         raw->impl_->worker_count_value,
+                                                     std::memory_order_relaxed);
+        }
+        return observation;
     });
     store->impl_->maintenance->start();
     return store;

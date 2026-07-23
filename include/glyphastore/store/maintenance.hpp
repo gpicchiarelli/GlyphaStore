@@ -66,6 +66,7 @@ class MaintenanceController final {
     std::uint64_t compact_attempts_{};
     std::uint64_t compact_completed_{};
     std::uint64_t useful_compactions_{};
+    std::uint64_t sequence_conflicts_{};
     std::uint64_t skips_{};
     std::uint64_t suspend_count_{};
     std::uint64_t consecutive_no_gain_{};
