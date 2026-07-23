@@ -85,7 +85,7 @@ class Server final {
     std::atomic<bool> started_{};
     std::atomic<bool> failed_{};
     std::atomic<bool> shutdown_drain_timed_out_{};
-    std::mutex failure_mutex_;
+    mutable std::mutex failure_mutex_;
     std::optional<Error> failure_;
     std::mutex shutdown_mutex_;
     std::optional<std::chrono::steady_clock::time_point> shutdown_deadline_{};

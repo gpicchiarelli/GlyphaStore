@@ -82,8 +82,22 @@ if [[ -z "$ruby_bin" ]]; then
 fi
 ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
 export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
-chmod +x "$ruby_helper" 2>/dev/null || true
-chmod +x "$py_helper" "$pl_helper" 2>/dev/null || true
+erlang_helper="${GLYPHASTORE_ERLANG_INTEROP:-}"
+erlang_ready=0
+if [[ -z "$erlang_helper" ]]; then
+  erlang_helper="$root/sdk/erlang/scripts/glyphastore-interop.escript"
+fi
+if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+  (cd "$root/sdk/erlang" && rebar3 compile >/dev/null)
+  erlang_ready=1
+elif [[ "${INTEROP_REQUIRE_ERLANG:-0}" == "1" ]]; then
+  echo "missing Erlang/OTP and rebar3 for interop (set INTEROP_REQUIRE_ERLANG=0 to skip)" >&2
+  exit 1
+else
+  echo "note: Erlang SDK interop skipped (install OTP + rebar3 to include erlang in matrix)" >&2
+fi
+chmod +x "$ruby_helper" "$py_helper" "$pl_helper" 2>/dev/null || true
+chmod +x "$erlang_helper" 2>/dev/null || true
 
 # Optional TLS client flags populated by run_matrix_for_workers when mode=tls.
 tls_args=()
@@ -105,6 +119,10 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
   fi
   if ! cmp -s "$root/tests/fixtures/$fixture" "$root/sdk/ruby/test/fixtures/$fixture"; then
     echo "Ruby vendored fixture drift: $fixture (run scripts/sync-sdk-fixtures.sh)" >&2
+    exit 1
+  fi
+  if ! cmp -s "$root/tests/fixtures/$fixture" "$root/sdk/erlang/test/fixtures/$fixture"; then
+    echo "Erlang vendored fixture drift: $fixture (run scripts/sync-sdk-fixtures.sh)" >&2
     exit 1
   fi
 done
@@ -159,6 +177,7 @@ get_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" get ;;
+    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" get ;;
     *) return 1 ;;
   esac
 }
@@ -175,6 +194,7 @@ pipeline_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     *) return 1 ;;
   esac
 }
@@ -201,6 +221,7 @@ expect_not_found_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
+    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
     *) return 1 ;;
   esac
 }
@@ -217,6 +238,7 @@ expect_frame_limit_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" expect-frame-limit ;;
+    erlang) escript "$erlang_helper" --port "$port" expect-frame-limit ;;
     *) return 1 ;;
   esac
 }
@@ -322,6 +344,10 @@ run_matrix_for_workers() {
   if [[ "$mode" == "cleartext" ]]; then
     writers+=(ruby)
     readers+=(ruby)
+    if [[ "$erlang_ready" == "1" ]]; then
+      writers+=(erlang)
+      readers+=(erlang)
+    fi
   fi
 
   echo "== interop mode=$mode workers=$workers =="
