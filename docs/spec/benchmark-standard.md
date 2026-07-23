@@ -116,6 +116,9 @@ A change is a plausible regression only when it repeats across runs and exceeds 
 ./scripts/dev.sh benchmark-durable --ops 20000 --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-compaction --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-maintenance --warmup 1 --repeats 7
+./scripts/dev.sh benchmark-maintenance --scenario forced-rotation --warmup 1 --repeats 7
+./scripts/dev.sh benchmark-maintenance --scenario idle --warmup 0 --repeats 7
+./scripts/dev.sh benchmark-maintenance --scenario churn --warmup 0 --repeats 7
 ./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 --pipeline 32 --executor-affinity --warmup 1 --repeats 7
 ```
 
