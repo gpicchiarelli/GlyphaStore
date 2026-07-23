@@ -36,6 +36,7 @@
 namespace {
 
 using Clock = std::chrono::steady_clock;
+constexpr std::size_t kBenchmarkWorkerCount{2};
 
 enum class Mode : std::uint8_t {
     disabled,
@@ -416,7 +417,7 @@ class TemporaryDirectory final {
     const bool default_idle_intervals =
         options.scenario == Scenario::idle && !options.maintenance_interval_set;
     glyphastore::StoreConfig config{
-        .worker_config = {.explicit_count = 2},
+        .worker_config = {.explicit_count = kBenchmarkWorkerCount},
         .storage_mode = glyphastore::StorageMode::durable_periodic,
         .data_directory = directory,
         .durable_open_mode = open_mode,
@@ -559,16 +560,22 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
 }
 
 [[nodiscard]] auto settle_background_maintenance(glyphastore::Store& store,
-                                                 const std::uint64_t minimum_useful)
+                                                 const std::uint64_t minimum_useful,
+                                                 const std::uint64_t worker_count)
     -> glyphastore::MaintenanceSnapshot {
     const auto deadline = Clock::now() + std::chrono::seconds{5};
     auto stable_since = Clock::now();
-    std::uint64_t observed_useful{};
     auto snapshot = store.maintenance_snapshot();
+    auto observed_useful = snapshot.useful_compactions;
+    auto observed_conflicts = snapshot.sequence_conflicts;
+    auto stable_evaluation_start = snapshot.evaluation_cycles;
     while (Clock::now() < deadline) {
         snapshot = store.maintenance_snapshot();
-        if (snapshot.useful_compactions != observed_useful) {
+        if (snapshot.useful_compactions != observed_useful ||
+            snapshot.sequence_conflicts != observed_conflicts) {
             observed_useful = snapshot.useful_compactions;
+            observed_conflicts = snapshot.sequence_conflicts;
+            stable_evaluation_start = snapshot.evaluation_cycles;
             stable_since = Clock::now();
         }
         const bool quiescent = snapshot.state != glyphastore::MaintenanceState::evaluating &&
@@ -579,7 +586,13 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
             !observation.compaction_candidate_worker ||
             (observation.candidate_dead_byte_ratio_bp &&
              *observation.candidate_dead_byte_ratio_bp < 5'000U);
+        if (!quiescent || !no_reclaimable_candidate) {
+            stable_evaluation_start = snapshot.evaluation_cycles;
+            stable_since = Clock::now();
+        }
+        const auto stable_evaluations = snapshot.evaluation_cycles - stable_evaluation_start;
         if (snapshot.useful_compactions >= minimum_useful && quiescent && no_reclaimable_candidate &&
+            stable_evaluations >= worker_count &&
             Clock::now() - stable_since >= std::chrono::milliseconds{100}) {
             return snapshot;
         }
@@ -734,7 +747,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
 
     auto maintenance = store->maintenance_snapshot();
     if (mode == Mode::background) {
-        maintenance = settle_background_maintenance(*store, 1);
+        maintenance = settle_background_maintenance(*store, 1, kBenchmarkWorkerCount);
     }
     const auto named_rotation_execution_ns =
         maintenance.rotation.total_seal_duration_ns + maintenance.rotation.total_create_duration_ns +
@@ -897,7 +910,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
 
     auto maintenance = store->maintenance_snapshot();
     if (mode == Mode::background) {
-        maintenance = settle_background_maintenance(*store, 1);
+        maintenance = settle_background_maintenance(*store, 1, kBenchmarkWorkerCount);
     }
     const auto rotation_stats = maintenance.rotation;
     const auto named_execution_ns = rotation_stats.last_seal_duration_ns +
