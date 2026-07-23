@@ -5,6 +5,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Add fail-closed JSON-lines structured logging for `glyphastored` lifecycle events (`start`, `listen`,
+  `ready`, `maintenance_emergency`, `maintenance_fault`, `shutdown_begin`, `shutdown_drain_begin`,
+  `shutdown_drain_end`, `stopped`, `executor_failure`). Opt in with `--log-format json` (default
+  `human` keeps legacy stdout/stderr). Structured fields are bounded, omit secrets, and `--quiet`
+  suppresses only the normal startup/shutdown lifecycle lines.
 - Add operator runbooks under `docs/operations/` for graceful drain and overload (`HEALTH`/`READY`/`STATS`,
   `--shutdown-drain-ms`), offline backup/restore (`glyphastore_backup_store`, `glyphastore_verify_store`),
   and corruption detection/repair (`glyphastore_verify_store`, `glyphastore_inspect_segment`,

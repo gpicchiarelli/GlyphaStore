@@ -289,6 +289,31 @@ GLYPHA_TEST("daemon config GLYPHASTORE_CONFIG selects the file") {
     GLYPHA_REQUIRE(parsed->server.port == 4242);
 }
 
+GLYPHA_TEST("daemon config resolves log-format from CLI env and file") {
+    ConfigTemporaryDirectory temporary;
+    const auto config = temporary.path() / "log-format.conf";
+    write_file(config, "log-format = human\nport = 7370\n");
+    std::unordered_map<std::string, std::string> environment{{"GLYPHASTORE_LOG_FORMAT", "json"}};
+    const auto getenv_fn = [&environment](const std::string_view name) -> std::optional<std::string> {
+        const auto found = environment.find(std::string{name});
+        if (found == environment.end()) {
+            return std::nullopt;
+        }
+        return found->second;
+    };
+    const auto config_arg = config.string();
+    const std::array arguments{"glyphastored", "--config", config_arg.c_str(), "--log-format", "json"};
+    const auto parsed = parse(arguments, getenv_fn);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->log_format == glyphastore::server::DaemonLogFormat::json);
+    GLYPHA_REQUIRE(parsed->server.port == 7370);
+
+    const std::array invalid{"glyphastored", "--log-format", "yaml"};
+    const auto rejected = parse(invalid);
+    GLYPHA_REQUIRE(!rejected.has_value());
+    GLYPHA_REQUIRE(rejected.error().message.find("human or json") != std::string::npos);
+}
+
 GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
     ConfigTemporaryDirectory temporary;
     const auto config = temporary.path() / "dump.conf";
@@ -316,6 +341,7 @@ GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
     GLYPHA_REQUIRE(dump.find("port=3333\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("workers=2\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("quiet=true\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("log-format=human\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("bind=127.0.0.1\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("storage-mode=volatile\n") != std::string::npos);
 }

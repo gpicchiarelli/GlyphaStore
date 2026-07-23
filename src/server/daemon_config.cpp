@@ -42,6 +42,8 @@ enum OptionId : std::size_t {
     durable_open_mode,
     maintenance_mode,
     maintenance_max_copy_bytes_per_cycle,
+    maintenance_unread_ttl_pressure_probe,
+    maintenance_unread_ttl_normal_scheduling,
     sync_interval_ms,
     group_max_records,
     group_max_bytes,
@@ -129,6 +131,12 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{maintenance_max_copy_bytes_per_cycle, "maintenance-max-copy-bytes-per-cycle", '\0',
                     cli::OptionArity::required, "BYTES",
                     "Limit one normal maintenance compaction (default: 128MiB; 0 disables)"},
+    cli::OptionSpec{maintenance_unread_ttl_pressure_probe, "maintenance-unread-ttl-pressure-probe", '\0',
+                    cli::OptionArity::required, "BOOL",
+                    "Probe unread expired sealed puts under pressure/emergency (default: true)"},
+    cli::OptionSpec{maintenance_unread_ttl_normal_scheduling, "maintenance-unread-ttl-normal-scheduling",
+                    '\0', cli::OptionArity::required, "BOOL",
+                    "Include unread expired sealed puts in normal dead-byte threshold (default: false)"},
     cli::OptionSpec{sync_interval_ms, "sync-interval-ms", '\0', cli::OptionArity::required, "MILLISECONDS",
                     "Durable-periodic flush interval (default: 1000)"},
     cli::OptionSpec{group_max_records, "group-max-records", '\0', cli::OptionArity::required, "COUNT",
@@ -506,6 +514,26 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
     options.store.maintenance.max_copy_bytes_per_cycle = maintenance_copy_bytes;
 
+    if (parsed->has(maintenance_unread_ttl_pressure_probe)) {
+        if (const auto value = parsed->value(maintenance_unread_ttl_pressure_probe)) {
+            if (auto enabled = parse_bool_token(*value, "--maintenance-unread-ttl-pressure-probe"); enabled) {
+                options.store.maintenance.unread_ttl_pressure_probe = *enabled;
+            } else {
+                return unexpected(enabled.error());
+            }
+        }
+    }
+    if (parsed->has(maintenance_unread_ttl_normal_scheduling)) {
+        if (const auto value = parsed->value(maintenance_unread_ttl_normal_scheduling)) {
+            if (auto enabled = parse_bool_token(*value, "--maintenance-unread-ttl-normal-scheduling");
+                enabled) {
+                options.store.maintenance.unread_ttl_normal_scheduling = *enabled;
+            } else {
+                return unexpected(enabled.error());
+            }
+        }
+    }
+
     const bool has_batch_or_resource = parsed->has(sync_interval_ms) || parsed->has(group_max_records) ||
                                        parsed->has(group_max_bytes) || parsed->has(group_max_wait_ms) ||
                                        parsed->has(max_store_bytes) || parsed->has(reserved_free_bytes) ||
@@ -764,6 +792,10 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += maintenance_mode_name(options.store.maintenance.mode);
     out += "\nmaintenance-max-copy-bytes-per-cycle=";
     out += std::to_string(options.store.maintenance.max_copy_bytes_per_cycle);
+    out += "\nmaintenance-unread-ttl-pressure-probe=";
+    out += options.store.maintenance.unread_ttl_pressure_probe ? "true" : "false";
+    out += "\nmaintenance-unread-ttl-normal-scheduling=";
+    out += options.store.maintenance.unread_ttl_normal_scheduling ? "true" : "false";
     out += "\nsync-interval-ms=";
     out += std::to_string(options.store.durable_periodic.sync_interval_ms);
     out += "\ngroup-max-records=";

@@ -25,8 +25,9 @@ Open release gates (summary):
 - Cross-Segment sequence validation is implemented; released-artifact and native-platform evidence
   remain to accumulate.
 - Durable compaction has crash-safe publication/retirement and `Store::compact()` scheduling;
-  unread-TTL policy, controlled native baselines, and power-loss certification remain open.
-- Embedded durable resource policy is implemented; some daemon compaction-time enforcement remains.
+  controlled native baselines and power-loss certification remain open (software policy closed).
+- Embedded durable resource policy is implemented; per-candidate normal copy limits are enforced
+  in the daemon; per-second/CPU maintenance rate limits remain reserved placeholders.
 - Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification.
 - Offline inspect/verify/backup/repair tools exist; offline Index rebuild is refused; live/hot
   backup, auth, and release provenance remain open.
@@ -317,7 +318,9 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
 - Add liveness, readiness, structured logs, metrics, build/config dump, and an administrative
   diagnostic surface. Readiness must fail on sticky storage errors and during unsafe recovery.
   Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented; histogram export
-  and structured logging remain open.
+  remains open. Structured JSON-lines lifecycle logging (`--log-format json`) is implemented for
+  start/listen, readiness transitions, shutdown drain, maintenance emergency/fault, and executor
+  failure; metrics histogram export remains open.
 - Add wire golden fixtures, reserved-bit validation, opcode-specific key/value/expiry constraints,
   stable error mapping, and compatibility tests. Duplicate `request_id` guidance (correlation-only;
   no server deduplication) and reconnect semantics (re-`INIT`/`BIND_WORKER`; indeterminate

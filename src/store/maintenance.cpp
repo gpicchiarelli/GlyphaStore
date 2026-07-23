@@ -87,6 +87,17 @@ auto classify_maintenance_pressure(const MaintenanceObservation& observation,
     return pressure ? MaintenancePressureLevel::pressure : MaintenancePressureLevel::normal;
 }
 
+auto scheduling_dead_byte_ratio_bp(const MaintenanceObservation& observation) noexcept
+    -> std::optional<std::uint32_t> {
+    if (!observation.candidate_dead_byte_ratio_bp || observation.candidate_sealed_record_bytes == 0) {
+        return observation.candidate_dead_byte_ratio_bp;
+    }
+    const auto effective_dead = observation.candidate_dead_record_bytes +
+                                observation.candidate_unread_expired_sealed_record_bytes;
+    const auto capped = std::min(effective_dead, observation.candidate_sealed_record_bytes);
+    return static_cast<std::uint32_t>(capped * 10'000U / observation.candidate_sealed_record_bytes);
+}
+
 auto validate_maintenance_config(const MaintenanceConfig& config) -> Status {
     if (config.mode != MaintenanceMode::cooperative && config.mode != MaintenanceMode::background &&
         config.mode != MaintenanceMode::disabled) {
@@ -362,8 +373,11 @@ void MaintenanceController::evaluate_once() {
                 return;
             }
         }
-        if (config.unread_ttl_pressure_probe && aggressive_pressure(pressure_) && observe &&
-            observation.durable && observation.compaction_candidate_worker.has_value()) {
+        const bool probe_unread_ttl =
+            observe && observation.durable && observation.compaction_candidate_worker.has_value() &&
+            ((config.unread_ttl_pressure_probe && aggressive_pressure(pressure_)) ||
+             (config.unread_ttl_normal_scheduling && pressure_ == MaintenancePressureLevel::normal));
+        if (probe_unread_ttl) {
             if (auto probed = observe(MaintenanceObserveRequest{.probe_unread_expired_ttl = true})) {
                 observation.unread_ttl_probe_performed = probed->unread_ttl_probe_performed;
                 observation.candidate_unread_expired_sealed_record_count =
@@ -390,6 +404,12 @@ void MaintenanceController::evaluate_once() {
                 }
                 return;
             }
+        }
+        observation.candidate_scheduling_dead_byte_ratio_bp = scheduling_dead_byte_ratio_bp(observation);
+        {
+            const std::lock_guard lock{mutex_};
+            last_observation_.candidate_scheduling_dead_byte_ratio_bp =
+                observation.candidate_scheduling_dead_byte_ratio_bp;
         }
         if (!auto_compact || !compact) {
             const std::lock_guard lock{mutex_};
@@ -419,13 +439,17 @@ void MaintenanceController::evaluate_once() {
         return;
     }
 
-    if (!under_pressure && observation.durable && observation.candidate_dead_byte_ratio_bp.has_value() &&
-        *observation.candidate_dead_byte_ratio_bp < config.dead_byte_ratio_bp_normal) {
-        const std::lock_guard lock{mutex_};
-        last_eval_duration_ns_ = elapsed_ns(eval_started);
-        record_skip(MaintenanceSkipReason::reclaim_threshold, MaintenanceState::idle,
-                    MaintenanceActivationReason::reclaim_threshold);
-        return;
+    if (!under_pressure && observation.durable) {
+        const auto scheduling_bp = observation.candidate_scheduling_dead_byte_ratio_bp
+                                       ? *observation.candidate_scheduling_dead_byte_ratio_bp
+                                       : observation.candidate_dead_byte_ratio_bp;
+        if (scheduling_bp && *scheduling_bp < config.dead_byte_ratio_bp_normal) {
+            const std::lock_guard lock{mutex_};
+            last_eval_duration_ns_ = elapsed_ns(eval_started);
+            record_skip(MaintenanceSkipReason::reclaim_threshold, MaintenanceState::idle,
+                        MaintenanceActivationReason::reclaim_threshold);
+            return;
+        }
     }
 
     // Normal-only backoff. Under pressure/emergency, reclaim attempts continue despite no-gain streak.

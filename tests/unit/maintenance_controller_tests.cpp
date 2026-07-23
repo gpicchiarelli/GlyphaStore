@@ -1172,3 +1172,112 @@ GLYPHA_TEST("normal evaluation skips unread TTL probe") {
     GLYPHA_REQUIRE(!controller.snapshot().last_observation.unread_ttl_probe_performed);
     controller.stop();
 }
+
+GLYPHA_TEST("normal unread TTL scheduling probes and lowers reclaim threshold") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 5'000;
+    config.unread_ttl_normal_scheduling = true;
+
+    glyphastore::MaintenanceController controller{config};
+    auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe(
+        [](glyphastore::MaintenanceObserveRequest request)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+            glyphastore::MaintenanceObservation observation{
+                .durable = true,
+                .segment_count = 10,
+                .sealed_segment_count = 2,
+                .compaction_candidate_worker = 0,
+                .candidate_sealed_record_bytes = 10'000,
+                .candidate_live_record_bytes = 6'500,
+                .candidate_dead_record_bytes = 3'500,
+                .candidate_dead_byte_ratio_bp = 3'500,
+                .max_segment_count = 100,
+                .reserved_free_bytes = 1'024,
+                .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+            };
+            if (request.probe_unread_expired_ttl) {
+                observation.unread_ttl_probe_performed = true;
+                observation.candidate_unread_expired_sealed_record_count = 1;
+                observation.candidate_unread_expired_sealed_record_bytes = 2'000;
+            }
+            observation.candidate_scheduling_dead_byte_ratio_bp =
+                glyphastore::scheduling_dead_byte_ratio_bp(observation);
+            return observation;
+        });
+    controller.bind_compact([compact_calls](const std::optional<std::size_t>,
+                                            const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        compact_calls->fetch_add(1, std::memory_order_relaxed);
+        return glyphastore::CompactionResult{.compacted = true, .bytes_copied = 1};
+    });
+    controller.start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snapshot = controller.snapshot();
+        if (snapshot.compact_completed > 0) {
+            GLYPHA_REQUIRE(snapshot.last_observation.unread_ttl_probe_performed);
+            GLYPHA_REQUIRE(snapshot.last_observation.candidate_scheduling_dead_byte_ratio_bp == 5'500);
+            GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) >= 1);
+            controller.stop();
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}
+
+GLYPHA_TEST("normal unread TTL scheduling disabled keeps conservative threshold") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 5'000;
+    config.unread_ttl_normal_scheduling = false;
+
+    glyphastore::MaintenanceController controller{config};
+    auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe(
+        [](glyphastore::MaintenanceObserveRequest request)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+            if (request.probe_unread_expired_ttl) {
+                return glyphastore::fail(glyphastore::ErrorCode::internal_error, "unexpected probe");
+            }
+            return glyphastore::MaintenanceObservation{
+                .durable = true,
+                .segment_count = 10,
+                .sealed_segment_count = 2,
+                .compaction_candidate_worker = 0,
+                .candidate_sealed_record_bytes = 10'000,
+                .candidate_live_record_bytes = 6'500,
+                .candidate_dead_record_bytes = 3'500,
+                .candidate_dead_byte_ratio_bp = 3'500,
+                .candidate_scheduling_dead_byte_ratio_bp = 3'500,
+                .max_segment_count = 100,
+                .reserved_free_bytes = 1'024,
+                .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+            };
+        });
+    controller.bind_compact([compact_calls](const std::optional<std::size_t>,
+                                            const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        compact_calls->fetch_add(1, std::memory_order_relaxed);
+        return glyphastore::CompactionResult{.compacted = true, .bytes_copied = 1};
+    });
+    controller.start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snapshot = controller.snapshot();
+        if (snapshot.skips > 0 &&
+            snapshot.last_skip_reason == glyphastore::MaintenanceSkipReason::reclaim_threshold) {
+            GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 0);
+            controller.stop();
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}

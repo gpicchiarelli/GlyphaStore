@@ -93,8 +93,14 @@ struct MaintenanceConfig {
     std::uint64_t free_bytes_pressure_margin{};
     // When true (default), pressure/emergency evaluations probe the candidate
     // Worker's sealed Index for unread expired puts and populate observation
-    // counters. Normal mode never probes; scheduling stays conservative there.
+    // counters.
     bool unread_ttl_pressure_probe{true};
+    // When false (default), normal scheduling stays conservative: unread expired
+    // sealed puts remain Index-live until GET, recovery, or pressure. When true,
+    // normal evaluations also probe and treat unread expired bytes as reclaimable
+    // dead space for the inclusive dead-byte threshold only (same Store::compact()
+    // path; copy budget still uses exact Index-referenced live bytes).
+    bool unread_ttl_normal_scheduling{false};
 
     auto operator==(const MaintenanceConfig&) const -> bool = default;
 };

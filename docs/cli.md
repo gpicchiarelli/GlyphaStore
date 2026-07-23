@@ -69,6 +69,17 @@ creation, Manifest publication, and final Record commit)
 while live. Failed probes return `INTERNAL_ERROR`. `--quiet`
 suppresses normal startup and shutdown messages, but never suppresses errors.
 
+Structured lifecycle logging is opt-in via `--log-format json` (or `log-format = json` in a config
+file, or `GLYPHASTORE_LOG_FORMAT=json`). Default `human` keeps the legacy one-line startup/shutdown
+messages on stdout and errors on stderr. JSON mode emits one object per line on stderr with stable
+`event` names: `start`, `listen`, `ready`, `maintenance_emergency`, `maintenance_fault`,
+`shutdown_begin`, `shutdown_drain_begin`, `shutdown_drain_end`, `stopped`, and `executor_failure`.
+Fields are bounded (256-byte string cap), omit TLS paths and other secrets, and include only bind
+address, ports, executor count, storage mode, readiness reason, maintenance pressure/state, and
+sanitized error codes/messages. `--quiet` suppresses the normal `start`/`listen`/`stopped` JSON
+events but never suppresses readiness loss, maintenance emergency/fault, shutdown drain, or error
+events.
+
 Important server controls include bounded connection counts, handoff queues, event batches, and per-connection
 input/output buffers. Durable deployments also expose batch and resource caps:
 `--sync-interval-ms`, `--group-max-records` / `--group-max-bytes` / `--group-max-wait-ms`,
@@ -164,6 +175,11 @@ without writing a usable store. Live/hot repair is not supported.
 
 ### `glyphastore_rebuild_index`
 
-The offline rewrite tool is not implemented for durable v1. Durable Indexes are rebuilt by ordinary
-Store recovery. Invoking the tool with Segment paths exits `1` with an explicit error. Help and
-version remain available.
+Durable v1 does not persist a separate Index artifact. Indexes rebuild from committed Segments
+during Store recovery. This offline rewrite tool permanently refuses Segment-only input with an
+explicit operator path:
+
+1. Reopen or restart the Store on the data directory (ordinary recovery).
+2. For offline catalog repair, use `glyphastore_repair_store` with an explicit empty workspace.
+
+Help and version remain available. Do not use this tool for durable v1 operations.

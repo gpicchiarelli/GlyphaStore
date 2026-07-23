@@ -373,13 +373,13 @@ auto Server::ready() const noexcept -> bool {
     if (!live()) {
         return false;
     }
-    if (stop_requested_.load(std::memory_order_acquire)) {
+    if (stop_requested()) {
         return false;
     }
-    if (!detail::StoreAccess::operational(*store_)) {
+    if (!store_operational()) {
         return false;
     }
-    const auto snapshot = store_->maintenance_snapshot();
+    const auto snapshot = maintenance_snapshot();
     if (snapshot.mutations_rejected) {
         return false;
     }
@@ -387,6 +387,19 @@ auto Server::ready() const noexcept -> bool {
         return false;
     }
     return true;
+}
+
+auto Server::store_operational() const noexcept -> bool {
+    return detail::StoreAccess::operational(*store_);
+}
+
+auto Server::maintenance_snapshot() const -> MaintenanceSnapshot {
+    return store_->maintenance_snapshot();
+}
+
+auto Server::first_failure() const -> std::optional<Error> {
+    const std::lock_guard lock{failure_mutex_};
+    return failure_;
 }
 
 auto Server::stats_report() const -> Result<std::string> {
@@ -539,6 +552,12 @@ auto Server::stats_report() const -> Result<std::string> {
         out += "\nmaintenance_candidate_dead_byte_ratio_bp=";
         if (maintenance.last_observation.candidate_dead_byte_ratio_bp) {
             out += std::to_string(*maintenance.last_observation.candidate_dead_byte_ratio_bp);
+        } else {
+            out += "none";
+        }
+        out += "\nmaintenance_candidate_scheduling_dead_byte_ratio_bp=";
+        if (maintenance.last_observation.candidate_scheduling_dead_byte_ratio_bp) {
+            out += std::to_string(*maintenance.last_observation.candidate_scheduling_dead_byte_ratio_bp);
         } else {
             out += "none";
         }

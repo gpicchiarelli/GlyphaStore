@@ -64,7 +64,7 @@ struct MaintenanceObserveRequest {
 
 // Read-only physical observation for scheduling. Candidate byte counters are
 // exact published Record extents. Unread TTL probes are optional and run only
-// when explicitly requested (pressure/emergency policy under ADR 0023).
+// when explicitly requested (pressure/emergency or opt-in normal scheduling).
 struct MaintenanceObservation {
     bool durable{};
     std::size_t segment_count{};
@@ -74,6 +74,10 @@ struct MaintenanceObservation {
     std::uint64_t candidate_live_record_bytes{};
     std::uint64_t candidate_dead_record_bytes{};
     std::optional<std::uint32_t> candidate_dead_byte_ratio_bp{};
+    // Inclusive dead-byte ratio used for normal reclaim_threshold decisions.
+    // Equals candidate_dead_byte_ratio_bp unless a probe counted unread expired
+    // sealed puts and unread_ttl_normal_scheduling is enabled.
+    std::optional<std::uint32_t> candidate_scheduling_dead_byte_ratio_bp{};
     bool unread_ttl_probe_performed{};
     std::uint64_t candidate_unread_expired_sealed_record_count{};
     std::uint64_t candidate_unread_expired_sealed_record_bytes{};
@@ -162,6 +166,9 @@ struct MaintenanceSnapshot {
 [[nodiscard]] auto classify_maintenance_pressure(const MaintenanceObservation& observation,
                                                  const MaintenanceConfig& config) noexcept
     -> MaintenancePressureLevel;
+
+[[nodiscard]] auto scheduling_dead_byte_ratio_bp(const MaintenanceObservation& observation) noexcept
+    -> std::optional<std::uint32_t>;
 
 // Shared diagnostic text for Store::put/erase rejected under emergency.
 inline constexpr std::string_view kMaintenanceEmergencyMutationMessage =

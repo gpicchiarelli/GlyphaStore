@@ -200,6 +200,7 @@ endif()
 add_library(glyphastore_server_core
     src/server/connection_handoff.cpp
     src/server/daemon_config.cpp
+    src/server/daemon_log.cpp
     src/server/disk_read_executor.cpp
     src/server/durable_mutation_executor.cpp
     src/server/reactor.cpp
@@ -268,6 +269,7 @@ if(BUILD_TESTING)
         tests/unit/store_repair_tests.cpp
         tests/unit/cli_arguments_tests.cpp
         tests/unit/daemon_config_tests.cpp
+        tests/unit/daemon_log_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/client_tests.cpp

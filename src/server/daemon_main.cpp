@@ -1,5 +1,6 @@
 #include "cli/arguments.hpp"
 #include "glyphastore/server/daemon_config.hpp"
+#include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/server/tls.hpp"
 
@@ -38,6 +39,67 @@ void print_help(const std::string_view program) {
                                  "[OPTIONS]", glyphastore::server::daemon_option_specs());
 }
 
+void emit_human_listen(const std::string_view program, const glyphastore::server::DaemonOptions& arguments,
+                       const glyphastore::server::Server& server) {
+    std::cout << program << ": listening address=" << arguments.server.bind_address
+              << " executors=" << server.executor_count()
+              << " storage=" << glyphastore::server::storage_mode_name(arguments.store.storage_mode);
+    if (server.cleartext_port() != 0 && server.tls_port() != 0) {
+        std::cout << " cleartext_port=" << server.cleartext_port() << " tls_port=" << server.tls_port()
+                  << " transport=cleartext+tls1.3 backend=" << glyphastore::server::tls_backend_name();
+        if (arguments.server.tls.mtls_enabled()) {
+            std::cout << " auth=mtls";
+        } else {
+            std::cout << " auth=none";
+        }
+    } else if (server.tls_port() != 0) {
+        std::cout << " port=" << server.tls_port()
+                  << " transport=tls1.3 backend=" << glyphastore::server::tls_backend_name();
+        if (arguments.server.tls.mtls_enabled()) {
+            std::cout << " auth=mtls";
+        } else {
+            std::cout << " auth=none";
+        }
+    } else {
+        std::cout << " port=" << server.port() << " (cleartext; no authentication)";
+    }
+    std::cout << '\n';
+}
+
+void observe_lifecycle(const glyphastore::server::Server& server, glyphastore::server::DaemonLog& log,
+                     bool& was_ready, bool& was_emergency, bool& was_fault) {
+    if (!log.structured()) {
+        return;
+    }
+    const auto snapshot = server.maintenance_snapshot();
+    const bool is_ready = server.ready();
+    if (is_ready && !was_ready) {
+        log.emit_ready(true);
+    } else if (!is_ready && was_ready) {
+        log.emit_ready(false, glyphastore::server::classify_ready_loss(server));
+    }
+    was_ready = is_ready;
+
+    if (snapshot.mutations_rejected && !was_emergency) {
+        log.emit_maintenance_emergency(snapshot.pressure);
+        was_emergency = true;
+    } else if (!snapshot.mutations_rejected) {
+        was_emergency = false;
+    }
+
+    const bool faulted =
+        snapshot.state == glyphastore::MaintenanceState::faulted && snapshot.last_error.has_value();
+    if (faulted && !was_fault) {
+        log.emit_maintenance_fault(snapshot.state,
+                                   std::string{glyphastore::server::daemon_error_code_name(
+                                       snapshot.last_error->code)},
+                                   snapshot.last_error->message);
+        was_fault = true;
+    } else if (!faulted) {
+        was_fault = false;
+    }
+}
+
 } // namespace
 
 int main(const int argc, char** argv) try {
@@ -60,6 +122,9 @@ int main(const int argc, char** argv) try {
         std::cout << glyphastore::server::format_daemon_config_dump(*arguments);
         return 0;
     }
+
+    glyphastore::server::DaemonLog log{arguments->log_format, program, arguments->quiet};
+    log.emit_start();
 
     auto server = glyphastore::server::Server::create(arguments->server, arguments->store);
     if (!server) {
@@ -86,41 +151,49 @@ int main(const int argc, char** argv) try {
                      "or use TLS-only (--tls-cert/--tls-key without --tls-port; OpenBSD uses LibreSSL; "
                      "docs/security/roadmap.md)\n";
     }
-    if (!arguments->quiet) {
-        std::cout << program << ": listening address=" << arguments->server.bind_address
-                  << " executors=" << (*server)->executor_count()
-                  << " storage=" << glyphastore::server::storage_mode_name(arguments->store.storage_mode);
-        if ((*server)->cleartext_port() != 0 && (*server)->tls_port() != 0) {
-            std::cout << " cleartext_port=" << (*server)->cleartext_port()
-                      << " tls_port=" << (*server)->tls_port()
-                      << " transport=cleartext+tls1.3 backend=" << glyphastore::server::tls_backend_name();
-            if (arguments->server.tls.mtls_enabled()) {
-                std::cout << " auth=mtls";
-            } else {
-                std::cout << " auth=none";
-            }
-        } else if ((*server)->tls_port() != 0) {
-            std::cout << " port=" << (*server)->tls_port()
-                      << " transport=tls1.3 backend=" << glyphastore::server::tls_backend_name();
-            if (arguments->server.tls.mtls_enabled()) {
-                std::cout << " auth=mtls";
-            } else {
-                std::cout << " auth=none";
-            }
-        } else {
-            std::cout << " port=" << (*server)->port() << " (cleartext; no authentication)";
-        }
-        std::cout << '\n';
+    if (log.structured()) {
+        log.emit_listen(arguments->server.bind_address, (*server)->cleartext_port(), (*server)->tls_port(),
+                        (*server)->executor_count(),
+                        glyphastore::server::storage_mode_name(arguments->store.storage_mode));
+    } else if (!arguments->quiet) {
+        emit_human_listen(program, *arguments, **server);
     }
+
+    bool was_ready = (*server)->ready();
+    bool was_emergency = (*server)->maintenance_snapshot().mutations_rejected;
+    bool was_fault = (*server)->maintenance_snapshot().state == glyphastore::MaintenanceState::faulted &&
+                     (*server)->maintenance_snapshot().last_error.has_value();
+    if (log.structured() && was_ready) {
+        log.emit_ready(true);
+    }
+
     while (g_stop_signal == 0 && (*server)->healthy()) {
+        observe_lifecycle(**server, log, was_ready, was_emergency, was_fault);
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
+
+    const bool executor_failure = !(*server)->healthy();
+    if (executor_failure) {
+        if (const auto failure = (*server)->first_failure(); failure.has_value()) {
+            if (log.structured()) {
+                log.emit_executor_failure(
+                    glyphastore::server::daemon_error_code_name(failure->code), failure->message);
+            }
+        }
+    }
+
+    log.emit_shutdown_begin(static_cast<int>(g_stop_signal), executor_failure);
     (*server)->request_stop();
+    log.emit_shutdown_drain_begin(arguments->server.shutdown_drain_ms);
     if (auto stopped = (*server)->join(); !stopped) {
+        log.emit_shutdown_drain_end((*server)->shutdown_drain_timed_out(), true);
         std::cerr << program << ": error: reactor failure: " << stopped.error().message << '\n';
         return 1;
     }
-    if (!arguments->quiet) {
+    log.emit_shutdown_drain_end((*server)->shutdown_drain_timed_out(), false);
+    if (log.structured()) {
+        log.emit_stopped(static_cast<int>(g_stop_signal));
+    } else if (!arguments->quiet) {
         std::cout << program << ": stopped";
         if (g_stop_signal != 0) {
             std::cout << " signal=" << g_stop_signal;

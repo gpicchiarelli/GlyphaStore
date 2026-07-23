@@ -51,11 +51,20 @@ class Server final {
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return !failed_.load(std::memory_order_acquire);
     }
+    [[nodiscard]] auto stop_requested() const noexcept -> bool {
+        return stop_requested_.load(std::memory_order_acquire);
+    }
+    [[nodiscard]] auto shutdown_drain_timed_out() const noexcept -> bool {
+        return shutdown_drain_timed_out_.load(std::memory_order_acquire);
+    }
     // Process liveness: started and no executor failure has been recorded.
     [[nodiscard]] auto live() const noexcept -> bool;
     // Traffic readiness: live, not shutting down, Store admission open, durable catalog healthy,
     // and maintenance is not in emergency or a sticky faulted state.
     [[nodiscard]] auto ready() const noexcept -> bool;
+    [[nodiscard]] auto store_operational() const noexcept -> bool;
+    [[nodiscard]] auto maintenance_snapshot() const -> MaintenanceSnapshot;
+    [[nodiscard]] auto first_failure() const -> std::optional<Error>;
     // Bounded ASCII admin report (version, live/ready, connections, lane/batch, maintenance).
     // Read-only; fails closed when not live or when the report would exceed the size budget.
     [[nodiscard]] auto stats_report() const -> Result<std::string>;

@@ -105,8 +105,9 @@ below has automated evidence. A design document or implementation alone does not
   Deployment profiles (`dev`, `embedded`, `production`) validate fail-closed before listen.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
-  lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging are
-  open.
+  lane/batch counters, and maintenance snapshot fields. Histogram export remains open. Structured
+  JSON-lines lifecycle logging (`--log-format json`) covers start/listen, readiness transitions,
+  shutdown drain, maintenance emergency/fault, and executor failure.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
   Operator procedures: [operations runbooks](operations/README.md) (graceful drain/overload,
   [backup-restore](operations/backup-restore.md), [corruption-repair](operations/corruption-repair.md)).

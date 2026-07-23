@@ -1,0 +1,10 @@
+{application, glyphastore, [
+    {description, "GlyphaStore wire protocol v2 TCP client"},
+    {vsn, "0.1.0"},
+    {modules, []},
+    {registered, []},
+    {applications, [kernel, stdlib, crypto]},
+    {env, []},
+    {licenses, ["BSD-3-Clause"]},
+    {links, [{"GitHub", "https://github.com/gpicchiarelli/GlyphaStore"}]}
+]}.

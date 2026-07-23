@@ -23,7 +23,10 @@ constexpr std::array kOptionSpecs{
 void print_help(const std::string_view program) {
     glyphastore::cli::write_help(
         std::cout, program,
-        "Rebuild a GlyphaStore index from Segment files (not yet implemented for durable v1).",
+        "Offline Index rebuild is not supported for durable persistence v1.\n"
+        "Durable Indexes are rebuilt from committed Segments during Store recovery.\n"
+        "Operator path: open or restart the Store on the data directory, or use\n"
+        "glyphastore_repair_store for offline catalog repair into an explicit workspace.",
         "[OPTIONS] <SEGMENT-FILE>...", kOptionSpecs);
 }
 
@@ -50,9 +53,11 @@ int main(const int argc, char** argv) try {
                   << " --help' for more information.\n";
         return 2;
     }
-    std::cerr << program
-              << ": error: durable v1 Index rebuild is performed by Store recovery; this offline "
-                 "rewrite tool is not implemented yet\n";
+    std::cerr << program << ": error: durable v1 does not persist a separate Index artifact\n"
+              << program << ": note: reopen the Store data directory to rebuild Indexes from "
+                 "committed Segments\n"
+              << program << ": note: for offline catalog repair use glyphastore_repair_store with an "
+                 "explicit empty workspace\n";
     return 1;
 } catch (const std::exception& exception) {
     const auto program = glyphastore::cli::executable_name(argc > 0 ? argv[0] : "glyphastore_rebuild_index");
