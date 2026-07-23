@@ -29,9 +29,12 @@ public API exists.
   seven-repeat macOS/APFS follow-up, all forced rotations commit without foreground errors; the
   serialized boundary costs about 2.5x median latency, product-default idle duty is about 0.0018%,
   and seven 1 GiB churn samples finish with four Segments instead of 22 at a 2.9% median throughput
-  cost. Add lock-free runtime rotation telemetry for attempts, commits, compaction waits, and
+  cost. Add atomic runtime rotation telemetry for attempts, commits, compaction waits, and
   last/total/maximum publication-wait, execution, and total durations; surface it through
-  `MaintenanceSnapshot`, daemon `STATS`, and phase-aware maintenance CSV.
+  `MaintenanceSnapshot`, daemon `STATS`, and phase-aware maintenance CSV. The clean macOS matrix
+  attributes 71--75% of forced-overlap latency to publication wait; under 1 GiB churn only one of
+  16 rotations waits, all commit, and background maintenance retains four versus 22 Segments at a
+  2.5% median throughput cost.
 - Add a reproducible concurrent-maintenance benchmark comparing disabled, cooperative, and
   Store-owned background policy under a synchronized mixed GET/PUT workload. Record a clean
   seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB

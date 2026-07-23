@@ -111,7 +111,10 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   overlaps foreground work. The second
   [rotation/idle/churn follow-up](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md)
   measures condition-wait latency, product-default and aggressive idle CPU, and seven validated
-  1 GiB churn samples. Controlled native baselines remain.
+  1 GiB churn samples. The
+  [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) then
+  separates publication wait, rotation execution, and residual PUT time. Controlled APFS baselines
+  remain.
 - Finer rotation I/O telemetry. Publication wait, aggregate rotation execution, and total duration
   are separated; Segment seal/create, Manifest publication, and post-rotation Record commit are not
   individual runtime phases.

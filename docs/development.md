@@ -60,7 +60,8 @@ Local maintenance investigations and their raw CSV are retained in:
 
 - [durable compaction benefit/cost](benchmarks/durable-compaction-2026-07-23.md);
 - [mixed foreground maintenance](benchmarks/concurrent-maintenance-2026-07-23.md);
-- [forced rotation, idle overhead, and sustained churn](benchmarks/maintenance-rotation-idle-churn-2026-07-23.md).
+- [forced rotation, idle overhead, and sustained churn](benchmarks/maintenance-rotation-idle-churn-2026-07-23.md);
+- [macOS durable rotation phase attribution](benchmarks/maintenance-rotation-phases-macos-2026-07-23.md).
 
 Cleartext vs TLS 1.3 tax on the Go pipeline harness:
 `./scripts/benchmark_tls_tax.sh` (see [TLS performance note](security/tls-performance.md)).

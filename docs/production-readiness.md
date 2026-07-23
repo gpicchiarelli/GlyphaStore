@@ -146,6 +146,11 @@ implementation or design document alone is not sufficient.
   forced-boundary latency. Product-default idle process CPU duty measures about 0.0018%; under
   seven validated 1 GiB churn samples, background maintenance holds the final Store to four
   Segments instead of 22 at a 2.9% median throughput cost and no material median p99 change.
+  A phase-instrumented
+  [macOS follow-up](benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) attributes 71--75%
+  of forced-overlap latency to the intentional publication wait. In seven 1 GiB churn samples,
+  exactly one of 16 rotations waits, all 16 commit, final Segment count remains four, and background
+  cost is 2.5% median throughput with a 0.6% median p99 increase.
   These are exploratory local results, not release regression baselines.
   These local measurements are diagnostic baselines, not release claims;
   controlled-hardware CI evidence and an enforced tail-latency target remain pending.

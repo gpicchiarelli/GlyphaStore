@@ -129,3 +129,8 @@ The next performance work should instrument rotation phases and wait duration se
 the same matrix on controlled macOS/APFS and Linux ext4/XFS runners. A persistence-format redesign
 for truly concurrent Manifest authorities is justified only if the measured forced-boundary wait
 violates a product latency objective; the current v1 serialization is the simpler safe contract.
+
+The first half of that follow-up is complete in the
+[macOS rotation-phase matrix](maintenance-rotation-phases-macos-2026-07-23.md): 71–75% of forced
+overlap latency is publication wait, while sustained 1 GiB churn makes only one of 16 rotations
+wait and retains the same deterministic four-Segment reclaim result.
