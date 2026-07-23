@@ -65,7 +65,9 @@ In `background`, the controller:
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
 eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
 count, time since last useful compaction, candidate Worker, candidate sealed/live/dead Record bytes,
-and dead ratio in basis points. Daemon `STATS` exports the candidate counters.
+and dead ratio in basis points. Durable snapshots also include rotation attempts, commits,
+compaction waits, and last/total/maximum publication-wait, execution, and total durations. Daemon
+`STATS` exports both candidate and rotation counters.
 
 The live-byte counter means “currently Index-referenced,” not “guaranteed unexpired at observation
 time.” Expiry discovered by validated GET immediately updates it; cold, unread TTL entries remain
@@ -110,6 +112,7 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   [rotation/idle/churn follow-up](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md)
   measures condition-wait latency, product-default and aggressive idle CPU, and seven validated
   1 GiB churn samples. Controlled native baselines remain.
-- Rotation phase and condition-wait telemetry. The aggregate forced-overlap latency is measured,
-  but build, intent/publication wait, rotation I/O, and flush time are not yet separated.
+- Finer rotation I/O telemetry. Publication wait, aggregate rotation execution, and total duration
+  are separated; Segment seal/create, Manifest publication, and post-rotation Record commit are not
+  individual runtime phases.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

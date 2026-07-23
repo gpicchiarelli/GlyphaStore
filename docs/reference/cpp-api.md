@@ -102,7 +102,10 @@ dead, and dead-ratio Record-byte counters. The normal controller compares that r
 `dead_byte_ratio_bp_normal` and preflights live bytes against the inclusive
 `max_copy_bytes_per_cycle` limit (128 MiB by default; zero means unlimited); pressure and emergency
 bypass both controls. Unread expired Records remain conservatively live until GET, recovery, or
-compaction validates their expiration.
+compaction validates their expiration. For durable Stores, `rotation` reports runtime-local
+attempt/commit/wait counters and last/total/maximum nanoseconds for publication wait, execution, and
+the complete rotation. Publication wait includes acquiring the Manifest serializer and any wait
+for an active compaction lease.
 
 ## 9. Verification
 

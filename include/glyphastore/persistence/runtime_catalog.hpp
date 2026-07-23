@@ -176,6 +176,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto recovery_stats() const noexcept -> const DurableRecoveryStats&;
     [[nodiscard]] auto hot_cache_stats() const -> std::vector<DurableHotCacheWorkerStats>;
     [[nodiscard]] auto batch_stats() const -> std::vector<DurableBatchWorkerStats>;
+    [[nodiscard]] auto rotation_stats() const noexcept -> DurableRotationStats;
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;
     [[nodiscard]] auto active_segment(std::size_t worker_index) const -> Result<SegmentId>;
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const
@@ -226,6 +227,21 @@ class DurableRuntimeCatalog final {
     bool dedicated_commit_executor_{};
     std::atomic_bool healthy_{true};
     std::atomic_bool closed_{false};
+    // Even values expose a complete rotation telemetry publication; odd means
+    // the short atomic update block is in progress.
+    mutable std::atomic_uint64_t rotation_stats_version_{};
+    std::atomic_uint64_t rotation_attempts_{};
+    std::atomic_uint64_t rotations_committed_{};
+    std::atomic_uint64_t rotation_compaction_waits_{};
+    std::atomic_uint64_t last_rotation_publication_wait_ns_{};
+    std::atomic_uint64_t total_rotation_publication_wait_ns_{};
+    std::atomic_uint64_t maximum_rotation_publication_wait_ns_{};
+    std::atomic_uint64_t last_rotation_execution_ns_{};
+    std::atomic_uint64_t total_rotation_execution_ns_{};
+    std::atomic_uint64_t maximum_rotation_execution_ns_{};
+    std::atomic_uint64_t last_rotation_total_ns_{};
+    std::atomic_uint64_t total_rotation_ns_{};
+    std::atomic_uint64_t maximum_rotation_total_ns_{};
     std::mutex close_mutex_;
     std::optional<Error> close_error_;
     // Guarded by manifest_publication_mutex_. A compaction lease excludes

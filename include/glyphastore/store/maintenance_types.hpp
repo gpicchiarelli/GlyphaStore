@@ -74,6 +74,24 @@ struct MaintenanceObservation {
     std::optional<std::uint64_t> available_free_bytes{};
 };
 
+// Runtime-local rotation telemetry. Publication wait includes time acquiring
+// the Manifest serializer and any condition wait for an active compaction
+// lease; execution begins only after that authority is available.
+struct DurableRotationStats {
+    std::uint64_t attempts{};
+    std::uint64_t committed{};
+    std::uint64_t compaction_waits{};
+    std::uint64_t last_publication_wait_duration_ns{};
+    std::uint64_t total_publication_wait_duration_ns{};
+    std::uint64_t maximum_publication_wait_duration_ns{};
+    std::uint64_t last_execution_duration_ns{};
+    std::uint64_t total_execution_duration_ns{};
+    std::uint64_t maximum_execution_duration_ns{};
+    std::uint64_t last_total_duration_ns{};
+    std::uint64_t total_duration_ns{};
+    std::uint64_t maximum_total_duration_ns{};
+};
+
 struct MaintenanceSnapshot {
     MaintenanceState state{MaintenanceState::stopped};
     bool thread_running{};
@@ -99,6 +117,7 @@ struct MaintenanceSnapshot {
     std::uint64_t last_eval_duration_ns{};
     std::uint64_t last_compact_duration_ns{};
     std::uint64_t ns_since_last_useful_compaction{};
+    DurableRotationStats rotation{};
     MaintenanceSkipReason last_skip_reason{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation{};
     std::optional<Error> last_error{};

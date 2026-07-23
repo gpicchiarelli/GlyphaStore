@@ -78,12 +78,31 @@ template <typename T> void atomic_observe_max(std::atomic<T>& destination, const
     }
 }
 
+template <typename Callback> class ScopeExit final {
+  public:
+    explicit ScopeExit(Callback callback) noexcept : callback_(std::move(callback)) {}
+    ~ScopeExit() noexcept {
+        callback_();
+    }
+    ScopeExit(const ScopeExit&) = delete;
+    auto operator=(const ScopeExit&) -> ScopeExit& = delete;
+
+  private:
+    Callback callback_;
+};
+
+template <typename Callback> ScopeExit(Callback) -> ScopeExit<Callback>;
+
+[[nodiscard]] auto steady_duration_ns(const std::chrono::steady_clock::time_point start,
+                                      const std::chrono::steady_clock::time_point end) noexcept
+    -> std::uint64_t {
+    const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
+}
+
 [[nodiscard]] auto steady_elapsed_ns(const std::chrono::steady_clock::time_point start) noexcept
     -> std::uint64_t {
-    const auto count =
-        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
-            .count();
-    return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
+    return steady_duration_ns(start, std::chrono::steady_clock::now());
 }
 
 struct HotRecordEntry {
@@ -1390,8 +1409,35 @@ auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult
 }
 
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutationResult {
+    const auto rotation_started = std::chrono::steady_clock::now();
+    rotation_attempts_.fetch_add(1U, std::memory_order_relaxed);
     std::unique_lock publication_lock{manifest_publication_mutex_};
+    if (compaction_publication_active_) {
+        rotation_compaction_waits_.fetch_add(1U, std::memory_order_relaxed);
+    }
     manifest_publication_changed_.wait(publication_lock, [&] { return !compaction_publication_active_; });
+    const auto execution_started = std::chrono::steady_clock::now();
+    bool rotation_committed{};
+    ScopeExit telemetry{[&, this]() noexcept {
+        const auto finished = std::chrono::steady_clock::now();
+        const auto publication_wait_ns = steady_duration_ns(rotation_started, execution_started);
+        const auto execution_ns = steady_duration_ns(execution_started, finished);
+        const auto total_ns = steady_duration_ns(rotation_started, finished);
+        rotation_stats_version_.fetch_add(1U, std::memory_order_acq_rel);
+        if (rotation_committed) {
+            rotations_committed_.fetch_add(1U, std::memory_order_relaxed);
+        }
+        last_rotation_publication_wait_ns_.store(publication_wait_ns, std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_publication_wait_ns_, publication_wait_ns);
+        atomic_observe_max(maximum_rotation_publication_wait_ns_, publication_wait_ns);
+        last_rotation_execution_ns_.store(execution_ns, std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_execution_ns_, execution_ns);
+        atomic_observe_max(maximum_rotation_execution_ns_, execution_ns);
+        last_rotation_total_ns_.store(total_ns, std::memory_order_relaxed);
+        atomic_saturating_add(total_rotation_ns_, total_ns);
+        atomic_observe_max(maximum_rotation_total_ns_, total_ns);
+        rotation_stats_version_.fetch_add(1U, std::memory_order_release);
+    }};
     const std::unique_lock catalog_lock{catalog_mutex_};
     const auto old_position =
         std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), worker.active_segment,
@@ -1536,6 +1582,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
             ++current;
         }
     }
+    rotation_committed = true;
     return {.outcome = DurableMutationOutcome::committed, .sequence = std::nullopt, .error = std::nullopt};
 }
 
@@ -1995,6 +2042,36 @@ auto DurableRuntimeCatalog::batch_stats() const -> std::vector<DurableBatchWorke
         });
     }
     return result;
+}
+
+auto DurableRuntimeCatalog::rotation_stats() const noexcept -> DurableRotationStats {
+    while (true) {
+        const auto before = rotation_stats_version_.load(std::memory_order_acquire);
+        if ((before & 1U) != 0) {
+            continue;
+        }
+        const DurableRotationStats result{
+            .attempts = rotation_attempts_.load(std::memory_order_relaxed),
+            .committed = rotations_committed_.load(std::memory_order_relaxed),
+            .compaction_waits = rotation_compaction_waits_.load(std::memory_order_relaxed),
+            .last_publication_wait_duration_ns =
+                last_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
+            .total_publication_wait_duration_ns =
+                total_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
+            .maximum_publication_wait_duration_ns =
+                maximum_rotation_publication_wait_ns_.load(std::memory_order_relaxed),
+            .last_execution_duration_ns = last_rotation_execution_ns_.load(std::memory_order_relaxed),
+            .total_execution_duration_ns = total_rotation_execution_ns_.load(std::memory_order_relaxed),
+            .maximum_execution_duration_ns =
+                maximum_rotation_execution_ns_.load(std::memory_order_relaxed),
+            .last_total_duration_ns = last_rotation_total_ns_.load(std::memory_order_relaxed),
+            .total_duration_ns = total_rotation_ns_.load(std::memory_order_relaxed),
+            .maximum_total_duration_ns = maximum_rotation_total_ns_.load(std::memory_order_relaxed),
+        };
+        if (before == rotation_stats_version_.load(std::memory_order_acquire)) {
+            return result;
+        }
+    }
 }
 
 auto DurableRuntimeCatalog::next_sequence(const std::size_t worker_index) const -> Result<SequenceNumber> {

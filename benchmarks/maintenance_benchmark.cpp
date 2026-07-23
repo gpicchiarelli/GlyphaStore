@@ -155,6 +155,7 @@ struct Sample {
     std::uint64_t maintenance_evaluations{};
     glyphastore::MaintenanceSkipReason maintenance_last_skip{};
     glyphastore::MaintenanceObservation maintenance_observation{};
+    glyphastore::DurableRotationStats rotation{};
     std::size_t segments_after{};
 };
 
@@ -162,6 +163,13 @@ struct RotationSample {
     Mode mode{};
     std::size_t repeat{};
     double rotation_seconds{};
+    std::uint64_t publication_wait_ns{};
+    std::uint64_t execution_ns{};
+    std::uint64_t accounted_total_ns{};
+    std::uint64_t residual_put_ns{};
+    std::uint64_t rotation_attempts{};
+    std::uint64_t rotations_committed{};
+    std::uint64_t compaction_waits{};
     std::uint64_t maintenance_attempts{};
     std::uint64_t maintenance_completed{};
     std::uint64_t maintenance_useful{};
@@ -559,7 +567,12 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         const bool quiescent = snapshot.state != glyphastore::MaintenanceState::evaluating &&
                                snapshot.state != glyphastore::MaintenanceState::compacting &&
                                snapshot.state != glyphastore::MaintenanceState::draining;
-        if (snapshot.useful_compactions >= minimum_useful && quiescent &&
+        const auto& observation = snapshot.last_observation;
+        const bool no_reclaimable_candidate =
+            !observation.compaction_candidate_worker ||
+            (observation.candidate_dead_byte_ratio_bp &&
+             *observation.candidate_dead_byte_ratio_bp < 5'000U);
+        if (snapshot.useful_compactions >= minimum_useful && quiescent && no_reclaimable_candidate &&
             Clock::now() - stable_since >= std::chrono::milliseconds{100}) {
             return snapshot;
         }
@@ -751,6 +764,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
             cooperative ? glyphastore::MaintenanceSkipReason::none : maintenance.last_skip_reason,
         .maintenance_observation =
             cooperative ? glyphastore::MaintenanceObservation{} : maintenance.last_observation,
+        .rotation = maintenance.rotation,
         .segments_after = segments_after,
     };
 }
@@ -868,6 +882,18 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
     if (mode == Mode::background) {
         maintenance = settle_background_maintenance(*store, 1);
     }
+    const auto rotation_stats = maintenance.rotation;
+    if (rotation_stats.attempts != 1 || rotation_stats.committed != 1 ||
+        rotation_stats.compaction_waits != (mode == Mode::disabled ? 0U : 1U) ||
+        rotation_stats.last_total_duration_ns > rotation_latency_ns) {
+        throw std::runtime_error(
+            "forced-rotation telemetry validation failed: attempts=" +
+            std::to_string(rotation_stats.attempts) +
+            " committed=" + std::to_string(rotation_stats.committed) +
+            " compaction_waits=" + std::to_string(rotation_stats.compaction_waits) +
+            " accounted_ns=" + std::to_string(rotation_stats.last_total_duration_ns) +
+            " wall_ns=" + std::to_string(rotation_latency_ns));
+    }
     require_status(store->close(), "forced-rotation Store close");
     store.reset();
     const auto segments_after = segment_count(directory.store());
@@ -882,6 +908,13 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         .mode = mode,
         .repeat = repeat,
         .rotation_seconds = static_cast<double>(rotation_latency_ns) / 1'000'000'000.0,
+        .publication_wait_ns = rotation_stats.last_publication_wait_duration_ns,
+        .execution_ns = rotation_stats.last_execution_duration_ns,
+        .accounted_total_ns = rotation_stats.last_total_duration_ns,
+        .residual_put_ns = rotation_latency_ns - rotation_stats.last_total_duration_ns,
+        .rotation_attempts = rotation_stats.attempts,
+        .rotations_committed = rotation_stats.committed,
+        .compaction_waits = rotation_stats.compaction_waits,
         .maintenance_attempts =
             mode == Mode::cooperative ? cooperative_stats.attempts : maintenance.compact_attempts,
         .maintenance_completed =
@@ -962,12 +995,23 @@ void print_sample(const Sample& sample) {
     } else {
         std::cout << "none";
     }
-    std::cout << ',' << sample.segments_after << '\n';
+    std::cout << ',' << sample.rotation.attempts << ',' << sample.rotation.committed << ','
+              << sample.rotation.compaction_waits << ','
+              << microseconds(sample.rotation.total_publication_wait_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.total_execution_duration_ns) / 1'000.0 << ','
+              << microseconds(sample.rotation.maximum_total_duration_ns) / 1'000.0 << ','
+              << sample.segments_after << '\n';
 }
 
 void print_rotation_sample(const RotationSample& sample) {
     std::cout << mode_name(sample.mode) << ',' << sample.repeat << ',' << sample.rotation_seconds << ','
-              << sample.rotation_seconds * 1'000.0 << ',' << sample.maintenance_attempts << ','
+              << sample.rotation_seconds * 1'000.0 << ','
+              << microseconds(sample.publication_wait_ns) / 1'000.0 << ','
+              << microseconds(sample.execution_ns) / 1'000.0 << ','
+              << microseconds(sample.accounted_total_ns) / 1'000.0 << ','
+              << microseconds(sample.residual_put_ns) / 1'000.0 << ',' << sample.rotation_attempts << ','
+              << sample.rotations_committed << ',' << sample.compaction_waits << ','
+              << sample.maintenance_attempts << ','
               << sample.maintenance_completed << ',' << sample.maintenance_useful << ','
               << sample.maintenance_conflicts << ',' << sample.maintenance_bytes_copied << ','
               << sample.segments_after << '\n';
@@ -1058,7 +1102,9 @@ int main(int argc, char** argv) {
         if (options.scenario == Scenario::forced_rotation) {
             std::cout << "# overlap=compaction intent publication releases a forced unrelated-Worker "
                          "rotation\n";
-            std::cout << "mode,repeat,rotation_s,rotation_ms,maintenance_attempts,"
+            std::cout << "mode,repeat,rotation_s,rotation_ms,publication_wait_ms,execution_ms,"
+                         "accounted_total_ms,residual_put_ms,rotation_attempts,rotations_committed,"
+                         "compaction_waits,maintenance_attempts,"
                          "maintenance_completed,maintenance_useful,maintenance_conflicts,"
                          "maintenance_bytes_copied,segments_after\n";
             for (std::size_t warmup = 0; warmup < options.warmups; ++warmup) {
@@ -1088,7 +1134,9 @@ int main(int argc, char** argv) {
                      "maintenance_conflicts,maintenance_bytes_copied,maintenance_skips,"
                      "maintenance_evaluations,maintenance_last_skip,candidate_worker,"
                      "candidate_sealed_bytes,candidate_live_bytes,candidate_dead_bytes,"
-                     "candidate_dead_ratio_bp,segments_after\n";
+                     "candidate_dead_ratio_bp,rotation_attempts,rotations_committed,"
+                     "rotation_compaction_waits,rotation_total_publication_wait_ms,"
+                     "rotation_total_execution_ms,rotation_maximum_total_ms,segments_after\n";
 
         for (std::size_t warmup = 0; warmup < options.warmups; ++warmup) {
             const auto offset = warmup % selected.size();

@@ -790,7 +790,11 @@ auto Store::maintenance_snapshot() const -> MaintenanceSnapshot {
     if (!impl_ || !impl_->maintenance) {
         return MaintenanceSnapshot{};
     }
-    return impl_->maintenance->snapshot();
+    auto snapshot = impl_->maintenance->snapshot();
+    if (impl_->durable_runtime) {
+        snapshot.rotation = impl_->durable_runtime->rotation_stats();
+    }
+    return snapshot;
 }
 
 auto Store::close() -> Status try { return impl_->close(); } catch (const std::bad_alloc&) {

@@ -1081,6 +1081,17 @@ GLYPHA_TEST("blocked durable compaction lets an unrelated rotation wait and comm
     GLYPHA_REQUIRE(!rotation_completed_during_build);
     GLYPHA_REQUIRE(rotation.committed());
     GLYPHA_REQUIRE(compaction.compacted());
+    const auto rotation_stats = (*runtime)->rotation_stats();
+    GLYPHA_REQUIRE(rotation_stats.attempts == 1);
+    GLYPHA_REQUIRE(rotation_stats.committed == 1);
+    GLYPHA_REQUIRE(rotation_stats.compaction_waits == 1);
+    GLYPHA_REQUIRE(rotation_stats.last_publication_wait_duration_ns >= 50'000'000);
+    GLYPHA_REQUIRE(rotation_stats.last_execution_duration_ns > 0);
+    GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns >=
+                   rotation_stats.last_publication_wait_duration_ns);
+    GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns >= rotation_stats.last_execution_duration_ns);
+    GLYPHA_REQUIRE(rotation_stats.total_duration_ns == rotation_stats.last_total_duration_ns);
+    GLYPHA_REQUIRE(rotation_stats.maximum_total_duration_ns == rotation_stats.last_total_duration_ns);
     GLYPHA_REQUIRE((*runtime)->healthy());
     GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 4);
     GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
@@ -1733,6 +1744,11 @@ GLYPHA_TEST("rotation space preflight fails before sealing the active Segment") 
     GLYPHA_REQUIRE(!rejected.committed());
     GLYPHA_REQUIRE(rejected.error.has_value());
     GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::storage_exhausted);
+    const auto rotation_stats = (*runtime)->rotation_stats();
+    GLYPHA_REQUIRE(rotation_stats.attempts == 1);
+    GLYPHA_REQUIRE(rotation_stats.committed == 0);
+    GLYPHA_REQUIRE(rotation_stats.compaction_waits == 0);
+    GLYPHA_REQUIRE(rotation_stats.last_total_duration_ns > 0);
     GLYPHA_REQUIRE((*runtime)->manifest().segments.size() == 1);
     GLYPHA_REQUIRE((*runtime)->manifest().segments.front().role == glyphastore::ManifestSegmentRole::active);
     runtime->reset();
