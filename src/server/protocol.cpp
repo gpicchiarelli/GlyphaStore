@@ -100,6 +100,8 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         return ResponseStatus::wrong_owner;
     case static_cast<std::uint16_t>(ResponseStatus::not_bound):
         return ResponseStatus::not_bound;
+    case static_cast<std::uint16_t>(ResponseStatus::permission_denied):
+        return ResponseStatus::permission_denied;
     default:
         return fail(ErrorCode::invalid_record, "response contains an unknown status");
     }

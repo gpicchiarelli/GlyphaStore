@@ -34,7 +34,8 @@ enum class ResponseStatus : std::uint16_t {
     not_found = 4,
     overloaded = 5,
     wrong_owner = 6,
-    not_bound = 7
+    not_bound = 7,
+    permission_denied = 8
 };
 
 struct RequestView {

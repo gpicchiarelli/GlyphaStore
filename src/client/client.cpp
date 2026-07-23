@@ -448,6 +448,11 @@ struct WorkerConnection {
     case server::ResponseStatus::not_bound:
         error = {ErrorCode::unavailable, "server connection is not bound to a worker"};
         break;
+    case server::ResponseStatus::permission_denied:
+        error = {ErrorCode::invalid_argument, "server denied the request"};
+        error.category = "permission_denied";
+        error.retryability = "never";
+        break;
     case server::ResponseStatus::ok:
         return {ErrorCode::internal_error, "unexpected successful response mapping"};
     }

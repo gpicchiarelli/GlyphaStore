@@ -93,7 +93,7 @@ def response_corpus() -> bytes:
     return b"".join(
         response(status, 100 + status, value=b"GlyphaStore/2" if status == 0 else b"",
                  owner_worker=2 if status == 6 else NO_WORKER)
-        for status in range(8)
+        for status in range(9)
     )
 
 
@@ -147,7 +147,7 @@ def verify_requests(data: bytes) -> None:
 
 def verify_responses(data: bytes) -> None:
     frames = split_frames(data, RESPONSE_HEADER_BYTES)
-    if len(frames) != 8:
+    if len(frames) != 9:
         raise ValueError("response corpus must contain every protocol-v2 status")
     for expected_status, frame in enumerate(frames):
         frame_size, version, status, request_id, value_size = struct.unpack_from("<IHHQI", frame, 0)
