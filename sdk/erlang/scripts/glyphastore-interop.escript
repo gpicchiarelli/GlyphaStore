@@ -13,7 +13,7 @@ add_beam_path() ->
     true = code:add_patha(Beam).
 
 parse_args(Opts, []) ->
-    maps:merge(#{command => undefined}, Opts);
+    maps:merge(#{command => undefined, tls => false}, Opts);
 parse_args(Opts, ["--host", Host | Rest]) ->
     parse_args(Opts#{host => Host}, Rest);
 parse_args(Opts, ["--port", Port | Rest]) ->
@@ -24,6 +24,18 @@ parse_args(Opts, ["--value-hex", Hex | Rest]) ->
     parse_args(Opts#{value_hex => Hex}, Rest);
 parse_args(Opts, ["--expire-at-ns", Expire | Rest]) ->
     parse_args(Opts#{expire_at_ns => list_to_integer(Expire)}, Rest);
+parse_args(Opts, ["--tls" | Rest]) ->
+    parse_args(Opts#{tls => true}, Rest);
+parse_args(Opts, ["--tls-ca", Path | Rest]) ->
+    parse_args(Opts#{tls_ca => Path}, Rest);
+parse_args(Opts, ["--tls-cert", Path | Rest]) ->
+    parse_args(Opts#{tls_cert => Path}, Rest);
+parse_args(Opts, ["--tls-key", Path | Rest]) ->
+    parse_args(Opts#{tls_key => Path}, Rest);
+parse_args(Opts, ["--server-name", Name | Rest]) ->
+    parse_args(Opts#{server_name => Name}, Rest);
+parse_args(Opts, ["--insecure-skip-verify" | Rest]) ->
+    parse_args(Opts#{insecure_skip_verify => true}, Rest);
 parse_args(Opts, [Command | Rest]) ->
     parse_args(Opts#{command => Command}, Rest).
 
@@ -43,13 +55,45 @@ run(#{command := Command} = Opts) ->
     Key = parse_hex(maps:get(key_hex, Opts, "")),
     Value = parse_hex(maps:get(value_hex, Opts, "")),
     Expire = maps:get(expire_at_ns, Opts, 0),
-    Config = glyphastore_util:merge_config(#{host => Host, port => Port}),
-    {ok, Client} = glyphastore_client:connect(Config),
-    try
-        dispatch(Client, Command, Key, Value, Expire, Config)
-    after
-        glyphastore_client:close(Client)
+    Config0 = #{host => Host, port => Port},
+    Config1 = maybe_tls(Config0, Opts),
+    Config = glyphastore_util:merge_config(Config1),
+    case glyphastore_client:connect(Config) of
+        {ok, Client} ->
+            try
+                dispatch(Client, Command, Key, Value, Expire, Config)
+            after
+                glyphastore_client:close(Client)
+            end;
+        {error, Err} ->
+            fail(Err)
     end.
+
+maybe_tls(Config, #{tls := true} = Opts) ->
+    TLS0 = #{enable => true},
+    TLS1 = case maps:get(tls_ca, Opts, undefined) of
+               undefined -> TLS0;
+               CA -> TLS0#{ca_file => CA}
+           end,
+    TLS2 = case maps:get(tls_cert, Opts, undefined) of
+               undefined -> TLS1;
+               Cert -> TLS1#{cert_file => Cert}
+           end,
+    TLS3 = case maps:get(tls_key, Opts, undefined) of
+               undefined -> TLS2;
+               Key -> TLS2#{key_file => Key}
+           end,
+    TLS4 = case maps:get(server_name, Opts, undefined) of
+               undefined -> TLS3;
+               Name -> TLS3#{server_name => Name}
+           end,
+    TLS5 = case maps:get(insecure_skip_verify, Opts, false) of
+               true -> TLS4#{insecure_skip_verify => true};
+               false -> TLS4
+           end,
+    Config#{tls => TLS5};
+maybe_tls(Config, _Opts) ->
+    Config.
 
 dispatch(Client, "put", Key, Value, Expire, _Config) ->
     case glyphastore_client:put(Client, Key, Value, #{expire_at_ns => Expire}) of
@@ -123,4 +167,7 @@ fail(Term) ->
     halt(1).
 
 usage() ->
-    io:format(standard_error, "Usage: glyphastore-interop --port N <put|get|...>~n", []).
+    io:format(standard_error,
+              "Usage: glyphastore-interop --port N [--tls --tls-ca PATH --server-name NAME] "
+              "<put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit>~n",
+              []).

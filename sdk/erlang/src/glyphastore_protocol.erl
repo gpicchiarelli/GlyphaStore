@@ -23,6 +23,7 @@
     status_overloaded/0,
     status_wrong_owner/0,
     status_not_bound/0,
+    status_permission_denied/0,
     request_frame_size/2,
     encode_request/6,
     decode_request/2,
@@ -56,6 +57,7 @@
 -define(ST_OVERLOADED, 5).
 -define(ST_WRONG_OWNER, 6).
 -define(ST_NOT_BOUND, 7).
+-define(ST_PERMISSION_DENIED, 8).
 
 -define(FNV_OFFSET, 14695981039346656037).
 -define(FNV_PRIME, 1099511628211).
@@ -84,6 +86,7 @@ status_not_found() -> ?ST_NOT_FOUND.
 status_overloaded() -> ?ST_OVERLOADED.
 status_wrong_owner() -> ?ST_WRONG_OWNER.
 status_not_bound() -> ?ST_NOT_BOUND.
+status_permission_denied() -> ?ST_PERMISSION_DENIED.
 
 -spec request_frame_size(binary(), binary()) -> non_neg_integer().
 request_frame_size(Key, Value) ->
@@ -362,7 +365,7 @@ valid_opcode(Opcode) when Opcode >= ?OP_INIT, Opcode =< ?OP_STATS ->
 valid_opcode(_) ->
     false.
 
-valid_status(Status) when Status >= ?ST_OK, Status =< ?ST_NOT_BOUND ->
+valid_status(Status) when Status >= ?ST_OK, Status =< ?ST_PERMISSION_DENIED ->
     true;
 valid_status(_) ->
     false.

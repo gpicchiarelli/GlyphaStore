@@ -1,9 +1,11 @@
 -module(glyphastore_fake_server).
 -export([start/1, stop/1, port/1]).
 
+-include("glyphastore_protocol.hrl").
+
 start(Opts) ->
     Parent = self(),
-    Pid = spawn_link(fun() -> server(Parent, Opts) end),
+    Pid = spawn(fun() -> server(Parent, Opts) end),
     receive
         {glyphastore_fake_server, ready, Port} ->
             {ok, #{pid => Pid, port => Port}}
@@ -20,7 +22,7 @@ server(Parent, Opts) ->
     Internal = maps:get(internal_error_on_put, Opts, false),
     Drop = maps:get(drop_after_mutation, Opts, false),
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, 0}, {reuseaddr, true}]),
-    {port, Port} = inet:sockname(Listen),
+    {ok, {_Addr, Port}} = inet:sockname(Listen),
     Parent ! {glyphastore_fake_server, ready, Port},
     accept_loop(Listen, Workers, Internal, Drop).
 
@@ -49,14 +51,14 @@ handle_request(Socket, Workers, Internal, Drop, Bound, Store, Request) ->
         owner_worker => case Bound of undefined -> 0; _ -> Bound end
     },
     case maps:get(opcode, Request) of
-        Op when Op =:= glyphastore_protocol:opcode_init() ->
+        ?GS_OP_INIT ->
             reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{value => glyphastore_protocol:identity(), owner_worker => glyphastore_protocol:no_worker()}),
             client_loop(Socket, Workers, Internal, Drop, Bound, Store);
-        Op when Op =:= glyphastore_protocol:opcode_bind_worker() ->
+        ?GS_OP_BIND ->
             NewBound = maps:get(target_worker, Request),
             reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => NewBound}),
             client_loop(Socket, Workers, Internal, Drop, NewBound, Store);
-        Op when Op =:= glyphastore_protocol:opcode_put() ->
+        ?GS_OP_PUT ->
             case Internal of
                 true ->
                     reply(Socket, glyphastore_protocol:status_internal_error(), Request, Meta#{owner_worker => Bound}),
@@ -70,7 +72,7 @@ handle_request(Socket, Workers, Internal, Drop, Bound, Store, Request) ->
                         false -> client_loop(Socket, Workers, Internal, Drop, Bound, Store#{Key => Value})
                     end
             end;
-        Op when Op =:= glyphastore_protocol:opcode_get() ->
+        ?GS_OP_GET ->
             Key = maps:get(key, Request),
             case maps:get(Key, Store, undefined) of
                 undefined ->
@@ -80,11 +82,11 @@ handle_request(Socket, Workers, Internal, Drop, Bound, Store, Request) ->
                     reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => Bound, value => Value}),
                     client_loop(Socket, Workers, Internal, Drop, Bound, Store)
             end;
-        Op when Op =:= glyphastore_protocol:opcode_erase() ->
+        ?GS_OP_ERASE ->
             Key = maps:get(key, Request),
             reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => Bound}),
             client_loop(Socket, Workers, Internal, Drop, Bound, maps:remove(Key, Store));
-        Op when Op =:= glyphastore_protocol:opcode_ping() ->
+        ?GS_OP_PING ->
             reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{value => maps:get(value, Request)}),
             client_loop(Socket, Workers, Internal, Drop, Bound, Store);
         _ ->

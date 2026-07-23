@@ -187,6 +187,7 @@ send_chunk(#state{socket = Socket, use_ssl = true}, Frame, Sent, Total, TimeoutM
             {error, transport(iolist_to_binary([<<"request send failed: ">>, atom_to_binary(Reason, utf8)])), Sent}
     end;
 send_chunk(#state{socket = Socket, use_ssl = false}, Frame, Sent, Total, TimeoutMs) ->
+    ok = inet:setopts(Socket, [{send_timeout, TimeoutMs}]),
     case gen_tcp:send(Socket, binary_part(Frame, Sent, Total - Sent)) of
         ok -> {ok, Total};
         {error, closed} -> {error, closed, Sent};

@@ -46,8 +46,9 @@ From the repository root:
 
 Optional TLS 1.3 is supported when the `ssl` application is available (standard OTP).
 Cleartext remains the default. If `ssl` is missing, TLS connect fails closed with
-`unavailable` (same soft-exclude pattern as Perl without `IO::Socket::SSL`). Ruby and
-this client are cleartext-only in the default interop matrix until a TLS train lands.
+`unavailable` (same soft-exclude pattern as Perl without `IO::Socket::SSL`). The root interop
+harness includes Erlang in both cleartext and TLS matrices when OTP/rebar3 are available; Ruby
+remains cleartext-only until its Phase 3 TLS train.
 
 ```erlang
 Config = #{

@@ -23,7 +23,8 @@
     | unavailable
     | transport
     | protocol
-    | internal.
+    | internal
+    | permission_denied.
 
 -type retryability() :: never | same_request | new_attempt | reconcile_first.
 
@@ -80,6 +81,11 @@ overloaded(Message) ->
 -spec internal(binary()) -> error().
 internal(Message) -> new(internal, Message).
 
+-spec permission_denied(binary()) -> error().
+permission_denied(Message) ->
+    Err = new(permission_denied, Message),
+    Err#{retryability => never}.
+
 -spec from_status(non_neg_integer()) -> error().
 from_status(4) ->
     from_status_with(4, not_found(<<"key was not found">>));
@@ -89,6 +95,8 @@ from_status(7) ->
     from_status_with(7, unavailable(<<"server connection is not bound">>));
 from_status(6) ->
     from_status_with(6, protocol(<<"server rejected Worker routing">>));
+from_status(8) ->
+    from_status_with(8, permission_denied(<<"server denied the request">>));
 from_status(1) ->
     from_status_with(1, invalid_argument(<<"server rejected the request">>));
 from_status(2) ->
@@ -107,6 +115,8 @@ retryability_for(invalid_argument, false, false) ->
 retryability_for(transport, false, false) ->
     same_request;
 retryability_for(overloaded, _, _) ->
+    never;
+retryability_for(permission_denied, _, _) ->
     never;
 retryability_for(not_found, _, _) ->
     new_attempt;

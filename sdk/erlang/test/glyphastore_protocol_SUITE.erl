@@ -79,15 +79,15 @@ enc(Opcode, RequestId, Key, Value, Expire, Target) ->
     {ok, Frame} = glyphastore_protocol:encode_request(Opcode, RequestId, Key, Value, Expire, Target),
     Frame.
 
-fixture(Config, Name) ->
-    Dir = ?config(data_dir, Config),
-    Path = filename:join([Dir, "fixtures", Name]),
+fixture(_Config, Name) ->
+    SuiteDir = filename:dirname(?FILE),
+    Path = filename:join([SuiteDir, "fixtures", Name]),
     {ok, Bin} = file:read_file(Path),
     parse_hex(Bin).
 
 parse_hex(Bin) ->
-    Tokens = string:tokens(binary_to_list(Bin), "\n\r\t "),
-    list_to_binary([integer(X, 16) || X <- Tokens, X =/= ""]).
+    Tokens = [X || X <- string:tokens(binary_to_list(Bin), "\n\r\t "), X =/= ""],
+    binary:decode_hex(list_to_binary(lists:concat(Tokens))).
 
 frames(Corpus) ->
     frames(Corpus, []).

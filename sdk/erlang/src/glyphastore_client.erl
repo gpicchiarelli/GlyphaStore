@@ -1,6 +1,8 @@
 -module(glyphastore_client).
 -behaviour(gen_server).
 
+-include("glyphastore_protocol.hrl").
+
 -export([
     connect/1,
     close/1,
@@ -112,7 +114,7 @@ init(Config) ->
 handle_call(healthy, _From, State) -> {reply, State#state.healthy, State};
 handle_call(worker_count, _From, State) -> {reply, State#state.worker_count, State};
 handle_call(routing_epoch, _From, State) -> {reply, State#state.routing_epoch, State};
-handle_call({worker_for, Key}, _From, #state{worker_count = 0} = State) ->
+handle_call({worker_for, _Key}, _From, #state{worker_count = 0} = State) ->
     {reply, {error, glyphastore_error:unavailable(<<"client is not connected">>)}, State};
 handle_call({worker_for, Key}, _From, #state{worker_count = WC} = State) ->
     {reply, glyphastore_protocol:worker_for(Key, WC), State};
@@ -229,7 +231,7 @@ bump_id(State) ->
     Id = State#state.request_id,
     {Id, State#state{request_id = advance_id(Id)}}.
 
-do_read(Op, Key, Value, Opts, #state{healthy = false} = State) ->
+do_read(_Op, _Key, _Value, _Opts, #state{healthy = false} = State) ->
     {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
 do_read(Op, Key, Value, Opts, State) ->
     case resolve_deadline(State, Opts) of
@@ -276,7 +278,7 @@ handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
     case validate_response(Response, RequestId, Worker, State) of
         ok ->
             case maps:get(status, Response) of
-                S when S =:= glyphastore_protocol:status_ok() ->
+                ?GS_ST_OK ->
                     {{ok, maps:get(value, Response)}, State};
                 Status ->
                     Err = status_err(Status, OpName, RequestId, Worker, State),
@@ -294,7 +296,7 @@ retry_read(Err, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attem
         false -> {{error, Err}, State}
     end.
 
-do_mutate(Op, Key, Value, Expire, Opts, #state{healthy = false} = State) ->
+do_mutate(Op, _Key, _Value, _Expire, _Opts, #state{healthy = false} = State) ->
     {mutation_rejected(Op, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>), State), State};
 do_mutate(Op, Key, Value, Expire, Opts, State) ->
     OpName = atom_to_binary(Op, utf8),
@@ -311,7 +313,7 @@ do_mutate(Op, Key, Value, Expire, Opts, State) ->
     end.
 
 do_mutate_attempt(_Op, OpName, _K, _V, _E, _D, Worker, _C, State, 0) ->
-    Err = glyphastore_error:unavailable(<<"could not send mutation">>) |> annotate(OpName, undefined, Worker, State) |> enrich_mutation(rejected),
+    Err = enrich_mutation(annotate(glyphastore_error:unavailable(<<"could not send mutation">>), OpName, undefined, Worker, State), rejected),
     {#{outcome => rejected, error => Err}, State};
 do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, Attempts) ->
     case ensure_connected(Conn, State) of
@@ -328,7 +330,7 @@ do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State,
                             handle_mutate_send(SF, OpName, RequestId, Worker, Op, Key, Value, Expire, Deadline, Conn, State3, Attempts);
                         {error, Err} ->
                             glyphastore_conn:reset(Conn),
-                            Ann = annotate(Err, OpName, RequestId, Worker, State3) |> enrich_mutation(indeterminate),
+                            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State3), indeterminate),
                             {#{outcome => indeterminate, error => Ann}, State3}
                     end;
                 {{error, Err}, State3} ->
@@ -343,10 +345,10 @@ handle_mutate_send(SF, OpName, RequestId, Worker, Op, Key, Value, Expire, Deadli
         0 when Attempts > 1 ->
             do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, Attempts - 1);
         0 ->
-            Err = promote_send_sf(SF, OpName, RequestId, Worker, State, true) |> enrich_mutation(rejected),
+            Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), rejected),
             {#{outcome => rejected, error => Err}, State};
         _ ->
-            Err = promote_send_sf(SF, OpName, RequestId, Worker, State, true) |> enrich_mutation(indeterminate),
+            Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), indeterminate),
             {#{outcome => indeterminate, error => Err}, State}
     end.
 
@@ -354,25 +356,34 @@ handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State) ->
     case validate_response(Response, RequestId, Worker, State) of
         ok ->
             case maps:get(status, Response) of
-                S when S =:= glyphastore_protocol:status_ok() ->
+                ?GS_ST_OK ->
                     case maps:get(value, Response) of
                         <<>> -> {#{outcome => committed}, State};
                         _ ->
                             glyphastore_conn:reset(Conn),
-                            Err = glyphastore_error:protocol(<<"mutation response value must be empty">>) |> annotate(OpName, RequestId, Worker, State) |> enrich_mutation(indeterminate),
+                            Err = enrich_mutation(
+                                annotate(
+                                    glyphastore_error:protocol(<<"mutation response value must be empty">>),
+                                    OpName,
+                                    RequestId,
+                                    Worker,
+                                    State
+                                ),
+                                indeterminate
+                            ),
                             {#{outcome => indeterminate, error => Err}, State}
                     end;
-                Status when Status =:= glyphastore_protocol:status_internal_error() ->
-                    Err = status_err(Status, OpName, RequestId, Worker, State) |> enrich_mutation(indeterminate),
+                ?GS_ST_INTERNAL ->
+                    Err = enrich_mutation(status_err(?GS_ST_INTERNAL, OpName, RequestId, Worker, State), indeterminate),
                     {#{outcome => indeterminate, error => Err}, State};
                 Status ->
-                    Err = status_err(Status, OpName, RequestId, Worker, State) |> enrich_mutation(rejected),
+                    Err = enrich_mutation(status_err(Status, OpName, RequestId, Worker, State), rejected),
                     {State1, Final} = apply_unhealthy(Status, Err, State),
                     {#{outcome => rejected, error => Final}, State1}
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            Ann = annotate(Err, OpName, RequestId, Worker, State) |> enrich_mutation(indeterminate),
+            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State), indeterminate),
             {#{outcome => indeterminate, error => Ann}, State}
     end.
 
@@ -486,7 +497,7 @@ run_pipeline(Plan, Deadline, Worker, Conn, State, Count) ->
                     {{ok, mark_unresolved(Responses, 1, Err, 0, Metadata, byte_size(Output))}, State1}
             end;
         {{error, Err}, State1} ->
-            {{ok, mark_unresolved(Responses, 1, Err, 0, Metadata_from_plan(Plan), byte_size(iolist_to_binary([maps:get(frame, I) || I <- Plan])))}, State1}
+            {{ok, mark_unresolved(Responses, 1, Err, 0, metadata_from_plan(Plan), byte_size(iolist_to_binary([maps:get(frame, I) || I <- Plan])))}, State1}
     end.
 
 collect_pipeline([], _Idx, Responses, _Deadline, _Worker, _Conn, State, _Sent) ->
@@ -497,7 +508,7 @@ collect_pipeline([{RequestId, Req, _Begin} | Rest], Idx, Responses, Deadline, Wo
             case validate_response(Response, RequestId, Worker, State) of
                 ok ->
                     case maps:get(status, Response) of
-                        S when S =:= glyphastore_protocol:status_ok() ->
+                        ?GS_ST_OK ->
                             case pipeline_ok(Req, Response) of
                                 ok ->
                                     Responses1 = set_response(Responses, Idx, #{
@@ -752,16 +763,22 @@ retryable_read(_, _) -> false.
 
 apply_unhealthy(Status, Err, State) ->
     case Status of
-        S when S =:= glyphastore_protocol:status_wrong_owner(); S =:= glyphastore_protocol:status_not_bound() ->
+        ?GS_ST_WRONG_OWNER ->
             {State#state{healthy = false}, Err};
-        _ -> {State, Err}
+        ?GS_ST_NOT_BOUND ->
+            {State#state{healthy = false}, Err};
+        _ ->
+            {State, Err}
     end.
 
 maybe_unhealthy_state(Status, State) ->
     case Status of
-        S when S =:= glyphastore_protocol:status_wrong_owner(); S =:= glyphastore_protocol:status_not_bound() ->
+        ?GS_ST_WRONG_OWNER ->
             State#state{healthy = false};
-        _ -> State
+        ?GS_ST_NOT_BOUND ->
+            State#state{healthy = false};
+        _ ->
+            State
     end.
 
 normalize_pipeline_req(Req) ->
@@ -788,7 +805,7 @@ failed_response() -> #{outcome => failed}.
 set_response(List, Idx, Resp) ->
     lists:sublist(List, 1, Idx - 1) ++ [Resp] ++ lists:nthtail(Idx, List).
 
-frame_limit_err(FrameLen, MaxFrame, MaxBytes, Need) ->
+frame_limit_err(FrameLen, MaxFrame, _MaxBytes, _Need) ->
     case FrameLen > MaxFrame of
         true -> glyphastore_error:invalid_argument(<<"pipeline request exceeds the configured frame limit">>);
         false -> glyphastore_error:invalid_argument(<<"pipeline exceeds the configured aggregate byte limit">>)
@@ -805,10 +822,11 @@ pipeline_ok(Req, Response) ->
     end.
 
 pipeline_status_outcome(Req, Status) ->
-    case maps:get(op, Req) of
-        Op when (Op =:= put orelse Op =:= erase) andalso Status =:= glyphastore_protocol:status_internal_error() ->
+    case {maps:get(op, Req), Status} of
+        {Op, ?GS_ST_INTERNAL} when Op =:= put; Op =:= erase ->
             indeterminate;
-        _ -> failed
+        _ ->
+            failed
     end.
 
 pipeline_op(Req) ->
@@ -835,7 +853,7 @@ mutation_may_have_arrived(Idx, Metadata, BytesSent, TotalSent) ->
         maps:get(op, Req) =/= get andalso (BytesSent > Begin orelse TotalSent > Begin)
     end, lists:nthtail(Idx - 1, Metadata)).
 
-Metadata_from_plan(Plan) ->
+metadata_from_plan(Plan) ->
     [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan].
 
 build_tls_options(TLS, Host) ->
@@ -843,18 +861,36 @@ build_tls_options(TLS, Host) ->
         {module, ssl} ->
             SN = maps:get(server_name, TLS, Host),
             Verify = case maps:get(insecure_skip_verify, TLS, false) of true -> verify_none; false -> verify_peer end,
-            Opts = [{verify, Verify}, {server_name_indication, SN}, {versions, ['tlsv1.3']}],
+            Opts0 = [{verify, Verify}, {server_name_indication, SN}, {versions, ['tlsv1.3']}],
             case maps:get(ca_file, TLS, undefined) of
-                undefined -> {ok, Opts};
+                undefined ->
+                    finish_tls_options(TLS, Opts0);
                 CAFile ->
                     case file:read_file(CAFile) of
                         {ok, PEM} ->
                             case public_key:pem_decode(PEM) of
-                                [{_, Cert, _} | _] -> {ok, [{cacerts, [Cert]} | Opts]};
-                                _ -> {error, glyphastore_error:invalid_argument(<<"TLS CA file does not contain a usable certificate">>)}
+                                [{_, Cert, _} | _] ->
+                                    finish_tls_options(TLS, [{cacerts, [Cert]} | Opts0]);
+                                _ ->
+                                    {error, glyphastore_error:invalid_argument(<<"TLS CA file does not contain a usable certificate">>)}
                             end;
-                        {error, _} -> {error, glyphastore_error:invalid_argument(<<"cannot read TLS CA file">>)}
+                        {error, _} ->
+                            {error, glyphastore_error:invalid_argument(<<"cannot read TLS CA file">>)}
                     end
             end;
         _ -> {error, glyphastore_error:unavailable(<<"TLS requires the ssl application">>)}
+    end.
+
+finish_tls_options(TLS, Opts0) ->
+    Cert = maps:get(cert_file, TLS, undefined),
+    Key = maps:get(key_file, TLS, undefined),
+    case {Cert, Key} of
+        {undefined, undefined} ->
+            {ok, Opts0};
+        {undefined, _} ->
+            {error, glyphastore_error:invalid_argument(<<"TLS mTLS requires both cert_file and key_file">>)};
+        {_, undefined} ->
+            {error, glyphastore_error:invalid_argument(<<"TLS mTLS requires both cert_file and key_file">>)};
+        {CertFile, KeyFile} ->
+            {ok, [{certfile, CertFile}, {keyfile, KeyFile} | Opts0]}
     end.
