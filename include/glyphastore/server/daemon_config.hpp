@@ -27,6 +27,9 @@ struct DaemonOptions {
     };
     // Empty when no named deployment profile was selected.
     std::string deployment_profile{};
+    // Path echoed by --dump-config when --authz-map was set (policy lives on server.authz).
+    std::filesystem::path authz_map_path{};
+    bool secure_profile{};
     bool show_help{};
     bool show_version{};
     bool show_dump_config{};

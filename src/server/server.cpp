@@ -1,6 +1,7 @@
 #include "glyphastore/server/server.hpp"
 
 #include "glyphastore/server/disk_read_executor.hpp"
+#include "glyphastore/server/latency_histogram.hpp"
 #include "glyphastore/server/socket.hpp"
 #include "glyphastore/server/tls.hpp"
 #include "store/store_internal.hpp"
@@ -97,6 +98,8 @@ namespace {
         return "reclaim_threshold";
     case MaintenanceSkipReason::copy_budget:
         return "copy_budget";
+    case MaintenanceSkipReason::rate_budget:
+        return "rate_budget";
     }
     return "unknown";
 }
@@ -567,6 +570,10 @@ auto Server::stats_report() const -> Result<std::string> {
         out += std::to_string(maintenance.last_observation.candidate_unread_expired_sealed_record_count);
         out += "\nmaintenance_candidate_unread_expired_sealed_record_bytes=";
         out += std::to_string(maintenance.last_observation.candidate_unread_expired_sealed_record_bytes);
+        out += "\nmaintenance_rate_window_bytes_copied=";
+        out += std::to_string(maintenance.rate_window_bytes_copied);
+        out += "\nmaintenance_rate_window_cpu_ns=";
+        out += std::to_string(maintenance.rate_window_cpu_ns);
         out += '\n';
 
         for (const auto& lane : durable_mutation_stats()) {
@@ -591,6 +598,10 @@ auto Server::stats_report() const -> Result<std::string> {
             out += "].completed=";
             out += std::to_string(lane.completed);
             out += '\n';
+            append_latency_histogram(out, "lane[" + std::to_string(lane.worker_index) + "].queue_wait_ns",
+                                     lane.queue_wait_histogram);
+            append_latency_histogram(out, "lane[" + std::to_string(lane.worker_index) + "].service_ns",
+                                     lane.service_histogram);
             if (out.size() > kStatsBudgetBytes) {
                 return fail(ErrorCode::resource_exhausted, "stats report exceeds the bounded size budget");
             }

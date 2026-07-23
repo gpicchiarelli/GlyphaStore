@@ -202,6 +202,7 @@ pattern = re.compile(
     r"sdk_version=(?P<sdk_version>\S+)\s+"
     r"runtime=(?P<runtime>\S+)\s+"
     r"execution=(?P<execution>\S+)\s+"
+    r"(?:transport=(?P<transport>\S+)\s+)?"
     r"workers=(?P<workers>\d+)\s+"
     r"pipeline_pairs=(?P<pipeline_pairs>\d+)\s+"
     r"operations=(?P<operations>\d+)\s+"

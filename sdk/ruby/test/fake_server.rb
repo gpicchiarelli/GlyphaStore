@@ -6,10 +6,12 @@ require "glypha_store"
 class FakeServer
   attr_reader :port
 
-  def initialize(workers: 1, internal_error_on_put: false, drop_after_mutation: false)
+  def initialize(workers: 1, internal_error_on_put: false, drop_after_mutation: false,
+                 deny_data_plane: false)
     @workers = workers
     @internal_error_on_put = internal_error_on_put
     @drop_after_mutation = drop_after_mutation
+    @deny_data_plane = deny_data_plane
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr[1]
     @thread = Thread.new { accept_loop }
@@ -49,7 +51,10 @@ class FakeServer
         reply(socket, status: GlyphaStore::Protocol::Status::OK, request_id: request.request_id,
                       owner_worker: bound, worker_count: @workers, routing_epoch: 9)
       when GlyphaStore::Protocol::Opcode::PUT
-        if @internal_error_on_put
+        if @deny_data_plane
+          reply(socket, status: GlyphaStore::Protocol::Status::PERMISSION_DENIED, request_id: request.request_id,
+                        owner_worker: bound, worker_count: @workers, routing_epoch: 9)
+        elsif @internal_error_on_put
           reply(socket, status: GlyphaStore::Protocol::Status::INTERNAL_ERROR, request_id: request.request_id,
                         owner_worker: bound, worker_count: @workers, routing_epoch: 9)
         else
@@ -62,7 +67,10 @@ class FakeServer
           end
         end
       when GlyphaStore::Protocol::Opcode::GET
-        if store.key?(request.key)
+        if @deny_data_plane
+          reply(socket, status: GlyphaStore::Protocol::Status::PERMISSION_DENIED, request_id: request.request_id,
+                        owner_worker: bound, worker_count: @workers, routing_epoch: 9)
+        elsif store.key?(request.key)
           reply(socket, status: GlyphaStore::Protocol::Status::OK, request_id: request.request_id,
                         value: store[request.key], owner_worker: bound, worker_count: @workers, routing_epoch: 9)
         else

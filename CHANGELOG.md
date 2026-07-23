@@ -5,10 +5,19 @@ public API exists.
 
 ## [Unreleased]
 
+- Wire the consolidation slice so documented secure-profile / migrate / STATS surfaces match the
+  binary: CMake builds `authz.cpp`, `store_migrate.cpp`, `glyphastore_migrate_store`, and the orphan
+  unit tests; mTLS extracts principal (URI SAN → DNS SAN → CN); the reactor enforces
+  `--authz-map` with wire `PERMISSION_DENIED` (8); `--secure-profile` fails closed (no dual
+  `--tls-port`); durable lanes export `LatencyHistogram` needles plus
+  `maintenance_rate_window_*` in `STATS`; daemon CLI exposes
+  `--maintenance-max-copy-bytes-per-sec` / `--maintenance-max-cpu-ms-per-window` and extends
+  `--dump-config`. Document Ruby as an explicit cleartext exception to the TLS “same train”
+  policy until Ruby SDK Phase 3.
 - Complete durable TCP daemon software path (P0-01). Extend `--dump-config` with maintenance
   thresholds, durable resource defaults, disk-read settings, and group batch fields. Extend
   `glyphastore_crash_daemon` with pre-commit PUT and post-ack ERASE checkpoints. Mark P0-01
-  software-complete; histogram export and E3/E4 power-loss remain open.
+  software-complete; E3/E4 power-loss remain open (histogram export now wired into STATS).
 - Add end-to-end operator guide for durable `glyphastored` deployments
   (`docs/operations/durable-tcp-daemon.md`): profile or explicit storage mode, data directory and
   open policy, resource/batch/maintenance flags, `HEALTH`/`READY`/`STATS` expectations, shutdown

@@ -63,6 +63,7 @@ leak-*
 oom-*
 slow-unit-*
 timeout-*
+fuzz-artifacts/
 fuzz-corpus-local/
 
 # GlyphaStore runtime artifacts
@@ -70,3 +71,4 @@ fuzz-corpus-local/
 *.gwal
 *.gsf
 *.glyphatmp
+erl_crash.dump

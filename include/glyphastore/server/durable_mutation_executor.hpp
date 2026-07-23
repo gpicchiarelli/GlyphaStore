@@ -3,6 +3,7 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/server/bounded_mpsc_queue.hpp"
 #include "glyphastore/server/connection_token.hpp"
+#include "glyphastore/server/latency_histogram.hpp"
 #include "glyphastore/server/wakeup.hpp"
 #include "glyphastore/store/store.hpp"
 
@@ -44,6 +45,8 @@ struct DurableMutationWorkerStats final {
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
     std::uint64_t maximum_service_ns{};
+    LatencyHistogram queue_wait_histogram{};
+    LatencyHistogram service_histogram{};
 };
 
 struct DurableMutationTask final {

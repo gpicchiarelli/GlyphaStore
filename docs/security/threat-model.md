@@ -66,7 +66,7 @@ statement in §9 still applies for public / hostile exposure.
 | Memory exhaustion | configured resource preflight, bounded queues/caches | allocator fragmentation and many connections require limits |
 | Cross-tenant key access | none | multi-tenant deployment unsupported |
 | Cleartext eavesdropping | trusted bind / network boundary; optional TLS 1.3 outer transport when enabled | Enable TLS (ADR 0020) before non-loopback exposure; LibreSSL on OpenBSD |
-| Anonymous remote mutate | none on the wire (mTLS hook via `--tls-client-ca` only rejects missing client certs) | Principal extraction + capabilities (ADR 0021, ADR 0022) |
+| Anonymous remote mutate | mTLS + `--authz-map` / `--secure-profile` (default-deny; wire `PERMISSION_DENIED`) | Phase 5 quotas/rate limits still open before public bind |
 
 ## 5. Fail-closed requirement
 

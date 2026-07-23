@@ -11,6 +11,7 @@
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
+#include <openssl/x509v3.h>
 #endif
 
 namespace glyphastore::server {
@@ -65,6 +66,64 @@ namespace {
         return fail(ErrorCode::unavailable, "TLS handshake timed out");
     }
     return {};
+}
+
+[[nodiscard]] auto asn1_string_text(const ASN1_STRING* value) -> std::string {
+    if (value == nullptr || ASN1_STRING_length(value) <= 0) {
+        return {};
+    }
+    const auto* data = ASN1_STRING_get0_data(value);
+    if (data == nullptr) {
+        return {};
+    }
+    return std::string{reinterpret_cast<const char*>(data),
+                       static_cast<std::size_t>(ASN1_STRING_length(value))};
+}
+
+// URI SAN → DNS SAN → subject CN (secure-profile.md §2). Empty means reject.
+[[nodiscard]] auto extract_certificate_principal(X509* certificate) -> std::string {
+    if (certificate == nullptr) {
+        return {};
+    }
+    auto* sans = static_cast<GENERAL_NAMES*>(
+        X509_get_ext_d2i(certificate, NID_subject_alt_name, nullptr, nullptr));
+    if (sans != nullptr) {
+        std::string uri;
+        std::string dns;
+        const auto count = sk_GENERAL_NAME_num(sans);
+        for (int index = 0; index < count; ++index) {
+            const auto* name = sk_GENERAL_NAME_value(sans, index);
+            if (name == nullptr) {
+                continue;
+            }
+            if (name->type == GEN_URI && uri.empty()) {
+                uri = asn1_string_text(name->d.uniformResourceIdentifier);
+            } else if (name->type == GEN_DNS && dns.empty()) {
+                dns = asn1_string_text(name->d.dNSName);
+            }
+        }
+        GENERAL_NAMES_free(sans);
+        if (!uri.empty()) {
+            return uri;
+        }
+        if (!dns.empty()) {
+            return dns;
+        }
+    }
+
+    auto* subject = X509_get_subject_name(certificate);
+    if (subject == nullptr) {
+        return {};
+    }
+    const auto index = X509_NAME_get_index_by_NID(subject, NID_commonName, -1);
+    if (index < 0) {
+        return {};
+    }
+    const auto* entry = X509_NAME_get_entry(subject, index);
+    if (entry == nullptr) {
+        return {};
+    }
+    return asn1_string_text(X509_NAME_ENTRY_get_data(entry));
 }
 
 #endif
@@ -157,6 +216,7 @@ struct TlsContext::Impl {
 
 struct TlsSession::Impl {
     SSL* ssl{};
+    std::string peer_principal{};
 };
 
 TlsContext::TlsContext() : impl_(std::make_unique<Impl>()) {}
@@ -368,11 +428,22 @@ auto TlsContext::accept_socket(const int descriptor) const -> Result<std::unique
             SSL_free(ssl);
             return fail(ErrorCode::io_error, "mTLS required but peer certificate is missing");
         }
-        X509_free(peer);
         if (SSL_get_verify_result(ssl) != X509_V_OK) {
+            X509_free(peer);
             SSL_free(ssl);
             return fail(ErrorCode::io_error, "mTLS peer certificate verification failed");
         }
+        auto principal = extract_certificate_principal(peer);
+        X509_free(peer);
+        if (principal.empty()) {
+            SSL_free(ssl);
+            return fail(ErrorCode::io_error,
+                        "mTLS peer certificate has no usable principal (URI SAN, DNS SAN, or CN)");
+        }
+        auto session = std::unique_ptr<TlsSession>(new TlsSession(std::make_unique<TlsSession::Impl>()));
+        session->impl_->ssl = ssl;
+        session->impl_->peer_principal = std::move(principal);
+        return session;
     }
 
     auto session = std::unique_ptr<TlsSession>(new TlsSession(std::make_unique<TlsSession::Impl>()));
@@ -474,6 +545,13 @@ auto TlsSession::valid() const noexcept -> bool {
     return impl_ != nullptr && impl_->ssl != nullptr;
 }
 
+auto TlsSession::peer_principal() const noexcept -> std::string_view {
+    if (impl_ == nullptr) {
+        return {};
+    }
+    return impl_->peer_principal;
+}
+
 auto TlsSession::read(std::byte* data, const std::size_t size) -> Result<TlsIoResult> {
     if (!valid()) {
         return fail(ErrorCode::invalid_argument, "TLS session is not valid");
@@ -538,6 +616,9 @@ auto TlsSession::operator=(TlsSession&& other) noexcept -> TlsSession& {
 }
 auto TlsSession::valid() const noexcept -> bool {
     return false;
+}
+auto TlsSession::peer_principal() const noexcept -> std::string_view {
+    return {};
 }
 auto TlsSession::read(std::byte*, const std::size_t) -> Result<TlsIoResult> {
     return fail(ErrorCode::invalid_argument, "GlyphaStore was built without TLS support");

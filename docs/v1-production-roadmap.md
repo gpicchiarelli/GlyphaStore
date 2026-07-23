@@ -17,8 +17,8 @@ boundaries.
 
 Open release gates (summary):
 
-- Daemon durable mutations leave the reactor through bounded lanes; histogram export and further
-  operability surfaces remain open.
+- Daemon durable mutations leave the reactor through bounded lanes; STATS latency histograms and
+  maintenance rate-window needles are exported; further operability surfaces remain open.
 - Store-owned TTL time is implemented; long-running native-platform clock evidence is a release gate.
 - Exception translation, prepared hot-cache publication, and deterministic allocation-failure
   enumeration are implemented; native-platform evidence is a release gate.
@@ -26,11 +26,13 @@ Open release gates (summary):
   remain to accumulate.
 - Durable compaction has crash-safe publication/retirement and `Store::compact()` scheduling;
   controlled native baselines and power-loss certification remain open (software policy closed).
-- Embedded durable resource policy is implemented; per-candidate normal copy limits are enforced
-  in the daemon; per-second/CPU maintenance rate limits remain reserved placeholders.
-- Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification.
-- Offline inspect/verify/backup/repair tools exist; offline Index rebuild is refused; live/hot
-  backup, auth, and release provenance remain open.
+- Embedded durable resource policy is implemented; per-candidate normal copy limits and
+  per-second/CPU maintenance rate budgets are daemon-configurable (zero disables; pressure/emergency
+  bypass). Connection/handshake rate limits (Phase 5) remain open.
+- Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification (E3/E4 open).
+- Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; live/hot
+  backup and release provenance remain open. Secure-profile authn/authz is implemented; Phase 5
+  abuse controls remain open before public bind.
 
 Local throughput gains do not close these gates.
 
@@ -59,22 +61,24 @@ Every implementation block below must preserve these rules:
 
 ### P0-01 — Make the daemon capable of v1 durability
 
-**Status:** software-complete for embedded and TCP daemon paths; histogram export and native
-power-loss certification remain open. `Server::create` accepts a complete `StoreConfig`, requires
+**Status:** software-complete for embedded and TCP daemon paths; native power-loss certification
+(E3/E4) remains open. `Server::create` accepts a complete `StoreConfig`, requires
 Worker count to match executor count, and closes the Store from `join()`. The daemon exposes
 `volatile`, `durable-sync`, `durable-periodic`, and `durable-group` selection plus durable
 data-directory and open-policy controls. Durable `PUT`/`ERASE` leave the Reactor through bounded
 per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
-queue-wait expiry before Store entry, per-lane metrics, and drain-before-Store-close shutdown
+queue-wait expiry before Store entry, per-lane metrics (including `queue_wait_ns` / `service_ns`
+histograms), and drain-before-Store-close shutdown
 (`--shutdown-drain-ms`, default 30s). Strict-group mode retains bounded concurrent producers. Wire
 `HEALTH`/`READY`/`STATS` expose liveness, readiness (including maintenance emergency), and a bounded
-ASCII admin report. Daemon CLI exposes durable batch, resource, and maintenance caps with
-`--dump-config` covering effective durable settings; file/environment config precedence and
-deployment profiles (`dev`, `embedded`, `production`) validate fail-closed before listen.
-Real-daemon wire-protocol SIGKILL coverage exists for post-ack PUT, pre-commit PUT, and post-ack ERASE
-(`glyphastore_crash_daemon`). Integration tests cover emergency-gate wire `OVERLOADED` rejection and
-durable wire ERASE through reopen. Operator guide:
-[durable TCP daemon](operations/durable-tcp-daemon.md). Histogram export remains open.
+ASCII admin report with maintenance rate-window needles. Daemon CLI exposes durable batch, resource,
+and maintenance caps (including per-second/CPU rate budgets) with `--dump-config` covering effective
+durable settings; file/environment config precedence and deployment profiles (`dev`, `embedded`,
+`production`) validate fail-closed before listen. Secure-profile authn/authz (`--authz-map`,
+`--secure-profile`) is wired. Real-daemon wire-protocol SIGKILL coverage exists for post-ack PUT,
+pre-commit PUT, and post-ack ERASE (`glyphastore_crash_daemon`). Integration tests cover
+emergency-gate wire `OVERLOADED` rejection and durable wire ERASE through reopen. Operator guide:
+[durable TCP daemon](operations/durable-tcp-daemon.md).
 
 **Required change:** validated `StoreConfig` into `Server`; CLI/configuration for data directory,
 open policy, durability policy, batch limits, and recovery policy. Durable writes must leave the
@@ -323,10 +327,11 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   Operator procedure: [graceful-drain-and-overload runbook](operations/graceful-drain-and-overload.md).
 - Add liveness, readiness, structured logs, metrics, build/config dump, and an administrative
   diagnostic surface. Readiness must fail on sticky storage errors and during unsafe recovery.
-  Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented; histogram export
-  remains open. Structured JSON-lines lifecycle logging (`--log-format json`) is implemented for
+  Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented, including durable
+  lane latency histograms (`queue_wait_ns` / `service_ns`) and `maintenance_rate_window_*` needles.
+  Structured JSON-lines lifecycle logging (`--log-format json`) is implemented for
   start/listen, readiness transitions, shutdown drain, maintenance emergency/fault, and executor
-  failure; metrics histogram export remains open.
+  failure.
 - Add wire golden fixtures, reserved-bit validation, opcode-specific key/value/expiry constraints,
   stable error mapping, and compatibility tests. Duplicate `request_id` guidance (correlation-only;
   no server deduplication) and reconnect semantics (re-`INIT`/`BIND_WORKER`; indeterminate

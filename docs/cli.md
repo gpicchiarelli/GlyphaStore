@@ -114,15 +114,29 @@ glyphastored --bind 127.0.0.1 --port 7379 \
 glyphastored --bind 127.0.0.1 --port 7379 --tls-port 7380 \
   --tls-cert /etc/glyphastore/server.crt --tls-key /etc/glyphastore/server.key
 
-# mTLS hook (require client certs; principal mapping is Phase 3)
-glyphastored ... --tls-cert ... --tls-key ... --tls-client-ca /etc/glyphastore/clients-ca.crt
+# mTLS + authz (principal URI SAN → DNS SAN → CN; --authz-map default-deny)
+glyphastored ... --tls-cert ... --tls-key ... --tls-client-ca /etc/glyphastore/clients-ca.crt \
+  --authz-map /etc/glyphastore/authz.map
+
+# Fail-closed secure profile (TLS-only on --port; refuses --tls-port dual cleartext)
+glyphastored --secure-profile --bind 127.0.0.1 --port 7379 \
+  --tls-cert ... --tls-key ... --tls-client-ca ... --authz-map ...
 ```
 
 `--tls-cert` and `--tls-key` are both required when any TLS path is set. Without `--tls-port`, TLS
 makes `--port` TLS-only. With `--tls-port`, cleartext and TLS use distinct ports (collision fails
-closed). Cleartext remains the default when TLS flags are omitted. Authn/authz beyond the mTLS
-certificate check are not yet enforced.
+closed). `--secure-profile` requires TLS + mTLS + `--authz-map` and refuses `--tls-port`. Cleartext
+remains the default when TLS flags are omitted. Capability `admin` is a v1 convenience alias that
+implies `write` ⇒ `read`; data-plane opcodes use `read`/`write` (no separate admin-only opcodes yet).
 
+Maintenance rate budgets (distinct from connection rate limits / Phase 5 and from E3 power-loss):
+
+```bash
+glyphastored ... --maintenance-max-copy-bytes-per-sec 1048576 \
+  --maintenance-max-cpu-ms-per-window 25
+```
+
+Zero disables each budget; pressure/emergency bypass them.
 ## Maintenance tools
 
 ```bash

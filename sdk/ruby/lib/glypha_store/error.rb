@@ -39,7 +39,8 @@ module GlyphaStore
       return Retryability::NEVER if category == Category::INVALID_ARGUMENT && !mutation_sent
       return Retryability::SAME_REQUEST if category == Category::TRANSPORT && !mutation_sent
       return Retryability::NEVER if category == Category::OVERLOADED
-    return Retryability::NEW_ATTEMPT if category == Category::NOT_FOUND
+      return Retryability::NEVER if category == Category::PERMISSION_DENIED
+      return Retryability::NEW_ATTEMPT if category == Category::NOT_FOUND
       return Retryability::NEVER if category == Category::UNAVAILABLE
       return Retryability::RECONCILE_FIRST if mutation_sent
 

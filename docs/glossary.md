@@ -55,3 +55,7 @@ Terms in this glossary use their exact capitalization when they name an architec
 | write amplification | Physical bytes written divided by logical mutation bytes or, for the current compaction gate, preallocated replacement bytes divided by Segment bytes reclaimed. The chosen definition must accompany every metric. |
 | space amplification | Physical bytes retained divided by bytes required for the currently visible logical state. |
 | canonical encoding | Exactly one accepted byte representation for one logical object, including required zero padding and reserved fields. |
+| maintenance rate budget | Per-second copy (`max_copy_bytes_per_sec`) and CPU (`max_cpu_ms_per_window`) caps on **normal-mode Store compaction**. Distinct from Phase 5 connection/handshake rate limits and from E3/E4 power-loss certification. Zero disables; pressure/emergency bypass. |
+| secure profile | Opt-in fail-closed daemon posture: TLS 1.3 + mTLS + `--authz-map` default-deny; refuses dual cleartext (`--tls-port`). |
+| E2 / E3 / E4 durability | Evidence levels from [platform durability evidence](architecture/platform-durability-evidence.md). Current durable claim is **E2** (process-kill); E3/E4 sudden power-loss remain open. FreeBSD CI is a **portability** signal, not storage certification. |
+| fuzz / soak smoke | CI/default fuzz and `soak_daemon.sh` runs are short smoke gates, not continuous multi-hour proof. |

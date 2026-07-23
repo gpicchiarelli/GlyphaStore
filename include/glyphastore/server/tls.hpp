@@ -125,6 +125,9 @@ class TlsSession final {
     auto operator=(TlsSession&& other) noexcept -> TlsSession&;
 
     [[nodiscard]] auto valid() const noexcept -> bool;
+    // Stable mTLS principal (URI SAN → DNS SAN → CN). Empty when mTLS was not
+    // required or the peer certificate had no usable identity.
+    [[nodiscard]] auto peer_principal() const noexcept -> std::string_view;
     [[nodiscard]] auto read(std::byte* data, std::size_t size) -> Result<TlsIoResult>;
     [[nodiscard]] auto write(const std::byte* data, std::size_t size) -> Result<TlsIoResult>;
 

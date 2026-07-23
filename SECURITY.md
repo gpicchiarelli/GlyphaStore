@@ -42,12 +42,14 @@ the listener to untrusted networks until mTLS principals and capabilities are en
 
 The **secure profile** is specified in [docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
 [0020](docs/adr/0020-tls-outer-transport.md)–[0022](docs/adr/0022-authorization-capabilities.md).
-Phase 2 (outer TLS) is implemented; Phases 3–4 (authn/authz) remain open. **OpenBSD** is a
-first-class target (LibreSSL; later `pledge`/`unveil`). CI builds and tests the daemon against
-system LibreSSL
+Phase 2 (outer TLS) is implemented; Phases 3–4 (mTLS principals + `--authz-map` /
+`--secure-profile`) are implemented in the daemon and C++/Python/Perl/Go/Erlang clients. **Ruby**
+remains cleartext-only until its SDK Phase 3 (explicit exception to the “same train” TLS policy).
+**OpenBSD** is a first-class portability target (LibreSSL; later `pledge`/`unveil` remain open —
+not a durable storage certification). CI builds and tests the daemon against system LibreSSL
 ([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Until the full
 secure profile (TLS + mTLS + capabilities) is enabled in production deployments, treat the daemon as
-sidecar / private-network only.
+sidecar / private-network only. Phase 5 abuse controls remain open before public bind.
 
 Threat model: [docs/security/threat-model.md](docs/security/threat-model.md).
 

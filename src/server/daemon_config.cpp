@@ -1,6 +1,7 @@
 #include "glyphastore/server/daemon_config.hpp"
 
 #include "cli/arguments.hpp"
+#include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/tls.hpp"
 
 #include <array>
@@ -42,6 +43,8 @@ enum OptionId : std::size_t {
     durable_open_mode,
     maintenance_mode,
     maintenance_max_copy_bytes_per_cycle,
+    maintenance_max_copy_bytes_per_sec,
+    maintenance_max_cpu_ms_per_window,
     maintenance_unread_ttl_pressure_probe,
     maintenance_unread_ttl_normal_scheduling,
     sync_interval_ms,
@@ -59,6 +62,8 @@ enum OptionId : std::size_t {
     tls_key,
     tls_client_ca,
     tls_port,
+    authz_map,
+    secure_profile,
 };
 
 constexpr std::array kOptionSpecs{
@@ -132,6 +137,14 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{maintenance_max_copy_bytes_per_cycle, "maintenance-max-copy-bytes-per-cycle", '\0',
                     cli::OptionArity::required, "BYTES",
                     "Limit one normal maintenance compaction (default: 128MiB; 0 disables)"},
+    cli::OptionSpec{maintenance_max_copy_bytes_per_sec, "maintenance-max-copy-bytes-per-sec", '\0',
+                    cli::OptionArity::required, "BYTES",
+                    "Limit normal-mode compaction copy bytes per one-second window (default: 0=unlimited; "
+                    "pressure/emergency bypass)"},
+    cli::OptionSpec{maintenance_max_cpu_ms_per_window, "maintenance-max-cpu-ms-per-window", '\0',
+                    cli::OptionArity::required, "MILLISECONDS",
+                    "Limit normal-mode compaction wall time per one-second window (default: 0=unlimited; "
+                    "pressure/emergency bypass)"},
     cli::OptionSpec{maintenance_unread_ttl_pressure_probe, "maintenance-unread-ttl-pressure-probe", '\0',
                     cli::OptionArity::required, "BOOL",
                     "Probe unread expired sealed puts under pressure/emergency (default: true)"},
@@ -171,7 +184,16 @@ constexpr std::array kOptionSpecs{
                     "PEM CA for client certificates (enables mTLS; requires --tls-cert/--tls-key)"},
     cli::OptionSpec{tls_port, "tls-port", '\0', cli::OptionArity::required, "PORT",
                     "Listen for TLS on PORT while --port stays cleartext (requires --tls-cert/--tls-key; "
-                    "0=ephemeral)"},
+                    "0=ephemeral; incompatible with --secure-profile)"},
+    cli::OptionSpec{authz_map, "authz-map", '\0', cli::OptionArity::required, "PATH",
+                    "Static principal capability map (read/write/admin; enables default-deny authz)"},
+    cli::OptionSpec{secure_profile,
+                    "secure-profile",
+                    '\0',
+                    cli::OptionArity::none,
+                    {},
+                    "Fail-closed secure profile: require TLS+mTLS+--authz-map; refuse --tls-port dual "
+                    "cleartext"},
 };
 
 using SettingMap = std::map<std::string, std::string, std::less<>>;
@@ -525,6 +547,25 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
     options.store.maintenance.max_copy_bytes_per_cycle = maintenance_copy_bytes;
 
+    std::size_t maintenance_copy_bytes_per_sec =
+        static_cast<std::size_t>(options.store.maintenance.max_copy_bytes_per_sec);
+    if (auto status = set_byte_size_option(maintenance_max_copy_bytes_per_sec,
+                                           "--maintenance-max-copy-bytes-per-sec", 0, maximum_size,
+                                           maintenance_copy_bytes_per_sec);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.store.maintenance.max_copy_bytes_per_sec = maintenance_copy_bytes_per_sec;
+
+    std::size_t maintenance_cpu_ms = options.store.maintenance.max_cpu_ms_per_window;
+    if (auto status = set_size_option(maintenance_max_cpu_ms_per_window,
+                                      "--maintenance-max-cpu-ms-per-window", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), maintenance_cpu_ms);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.store.maintenance.max_cpu_ms_per_window = static_cast<std::uint32_t>(maintenance_cpu_ms);
+
     if (parsed->has(maintenance_unread_ttl_pressure_probe)) {
         if (const auto value = parsed->value(maintenance_unread_ttl_pressure_probe)) {
             if (auto enabled = parse_bool_token(*value, "--maintenance-unread-ttl-pressure-probe"); enabled) {
@@ -659,6 +700,31 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
             return unexpected(status.error());
         }
         options.server.tls_port = static_cast<std::uint16_t>(parsed_tls_port);
+    }
+    if (const auto path = parsed->value(authz_map)) {
+        if (path->empty()) {
+            return fail(ErrorCode::invalid_argument, "--authz-map must not be empty");
+        }
+        options.authz_map_path = std::filesystem::path{*path};
+        auto policy = AuthzPolicy::load_file(options.authz_map_path);
+        if (!policy) {
+            return unexpected(policy.error());
+        }
+        options.server.authz = std::move(*policy);
+    }
+    options.secure_profile = parsed->has(secure_profile);
+    if (options.secure_profile) {
+        if (!options.server.tls.requested() || !options.server.tls.mtls_enabled()) {
+            return fail(ErrorCode::invalid_argument,
+                        "--secure-profile requires --tls-cert/--tls-key and --tls-client-ca");
+        }
+        if (options.authz_map_path.empty() || !options.server.authz.enabled()) {
+            return fail(ErrorCode::invalid_argument, "--secure-profile requires --authz-map");
+        }
+        if (options.server.tls_port.has_value()) {
+            return fail(ErrorCode::invalid_argument,
+                        "--secure-profile refuses dual cleartext (--tls-port); use TLS-only on --port");
+        }
     }
     if (auto tls = validate_tls_config(options.server.tls); !tls) {
         return unexpected(tls.error());
@@ -803,6 +869,10 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += maintenance_mode_name(options.store.maintenance.mode);
     out += "\nmaintenance-max-copy-bytes-per-cycle=";
     out += std::to_string(options.store.maintenance.max_copy_bytes_per_cycle);
+    out += "\nmaintenance-max-copy-bytes-per-sec=";
+    out += std::to_string(options.store.maintenance.max_copy_bytes_per_sec);
+    out += "\nmaintenance-max-cpu-ms-per-window=";
+    out += std::to_string(options.store.maintenance.max_cpu_ms_per_window);
     out += "\nmaintenance-unread-ttl-pressure-probe=";
     out += options.store.maintenance.unread_ttl_pressure_probe ? "true" : "false";
     out += "\nmaintenance-unread-ttl-normal-scheduling=";
@@ -873,6 +943,14 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     if (options.server.tls_port.has_value()) {
         out += std::to_string(*options.server.tls_port);
     }
+    out += "\nauthz-map=";
+    out += options.authz_map_path.string();
+    out += "\nauthz-enabled=";
+    out += options.server.authz.enabled() ? "true" : "false";
+    out += "\nauthz-principals=";
+    out += std::to_string(options.server.authz.size());
+    out += "\nsecure-profile=";
+    out += options.secure_profile ? "true" : "false";
     out += '\n';
     return out;
 }

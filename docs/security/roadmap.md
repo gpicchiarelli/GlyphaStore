@@ -14,10 +14,11 @@ changes require ADRs and compatibility evidence first.
 
 1. **Correctness before exposure.** Fail-closed storage/recovery rules are never weakened for auth
    convenience.
-2. **Same train for all official SDKs.** When TLS or session auth lands, C++ / Python / Perl / Go
-   (and Ruby if released) ship in the **same release**. No SDK left on silent cleartext defaults
-   while others “go secure” ([sdk-roadmap.md](../architecture/sdk-roadmap.md),
-   [ruby-sdk-roadmap.md](../architecture/ruby-sdk-roadmap.md)).
+2. **Same train for all official SDKs.** When TLS or session auth lands, C++ / Python / Perl / Go /
+   Erlang ship in the **same release**. **Ruby is an explicit temporary exception:** it remains
+   cleartext-only until [ruby-sdk-roadmap](../architecture/ruby-sdk-roadmap.md) Phase 3; interop and
+   docs must not imply Ruby TLS. No other SDK may silently keep cleartext defaults while peers go
+   secure ([sdk-roadmap.md](../architecture/sdk-roadmap.md)).
 3. **Secure profiles fail closed.** A deployment that asks for TLS/auth must not fall back to
    cleartext or anonymous access by default.
 4. **OS/network boundary is not a product feature.** Loopback / private / sidecar remains the

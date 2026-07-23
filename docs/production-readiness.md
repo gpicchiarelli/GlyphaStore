@@ -90,14 +90,14 @@ below has automated evidence. A design document or implementation alone does not
   deterministically. Filesystem publication and mutation boundaries have deterministic pre/post
   failure matrices. Exhaustive socket, thread-creation, platform clock, and hardware power-cut
   failures are open.
-- [x] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
+- [x] Fuzz targets run in CI with retained seed corpora; CI does more than compile them (bounded smoke, not continuous multi-hour proof).
   Seed corpora live under `fuzz/corpus/<target>/`. `.github/workflows/sanitizers.yml` builds and
   executes each libFuzzer target with a bounded budget (60s on PR/push, 120s on the Monday schedule
   and manual dispatch). Longer soak and additional Manifest/Segment/intent corpora remain open.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
   CI-friendly entry point: `scripts/soak_daemon.sh` (default ~45s PUT/GET/reconnect/churn + drain)
-  exercised by `.github/workflows/ops-runbooks.yml` on PRs and a weekly 30-minute schedule. Multi-hour
-  hardware soak with RSS/rotation evidence remains a release gate.
+  exercised by `.github/workflows/ops-runbooks.yml` on PRs and a weekly 30-minute schedule as smoke.
+  Multi-hour hardware soak with RSS/rotation evidence remains a release gate.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
   Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous baseline.
   Weekly PGO smoke training includes durable open/put/reopen workloads. Local filters:
@@ -147,6 +147,8 @@ below has automated evidence. A design document or implementation alone does not
 - [x] CMake installs versioned package metadata and the supported `GlyphaStore::core` target.
 - [x] CI builds and runs an external consumer exclusively from the installed prefix.
 - [ ] Release CI covers supported compilers, architectures, operating systems, and optimized builds.
+  Tagged release-artifact CI (signed tarballs / provenance attach) remains deferred; current CI proves
+  build/test/install-consumer gates, not a full release-artifact pipeline.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
 - [x] Upgrade, downgrade, deprecation, support, and end-of-life policies are published for 0.x /
   persistence v1 (reopen rules, offline Worker migrate, no ABI before 1.0). Formal support windows

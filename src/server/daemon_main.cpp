@@ -143,12 +143,12 @@ int main(const int argc, char** argv) try {
         std::cerr << program << ": error: " << started.error().message << '\n';
         return 1;
     }
-    if (arguments->server.bind_address != "127.0.0.1" &&
+    if (arguments->server.bind_address != "127.0.0.1" && !arguments->secure_profile &&
         ((*server)->cleartext_port() != 0 || !arguments->server.tls.requested())) {
         std::cerr << program
                   << ": warning: bind address " << arguments->server.bind_address
                   << " exposes cleartext TCP with no authentication; restrict to a trusted network "
-                     "or use TLS-only (--tls-cert/--tls-key without --tls-port; OpenBSD uses LibreSSL; "
+                     "or use --secure-profile (TLS-only + mTLS + --authz-map; OpenBSD uses LibreSSL; "
                      "docs/security/roadmap.md)\n";
     }
     if (log.structured()) {

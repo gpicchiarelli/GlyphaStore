@@ -50,6 +50,8 @@ struct DurableMutationExecutor::Lane final {
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
     std::uint64_t maximum_service_ns{};
+    LatencyHistogram queue_wait_histogram{};
+    LatencyHistogram service_histogram{};
 };
 
 DurableMutationExecutor::DurableMutationExecutor(Store& store, const std::size_t worker_count,
@@ -171,7 +173,9 @@ auto DurableMutationExecutor::stats() const -> std::vector<DurableMutationWorker
                           .total_queue_wait_ns = lane.total_queue_wait_ns,
                           .maximum_queue_wait_ns = lane.maximum_queue_wait_ns,
                           .total_service_ns = lane.total_service_ns,
-                          .maximum_service_ns = lane.maximum_service_ns});
+                          .maximum_service_ns = lane.maximum_service_ns,
+                          .queue_wait_histogram = lane.queue_wait_histogram,
+                          .service_histogram = lane.service_histogram});
     }
     return result;
 }
@@ -266,6 +270,7 @@ void DurableMutationExecutor::run(const std::size_t worker_index) noexcept {
             queue_wait_ns = elapsed_ns(task->admitted_at, std::chrono::steady_clock::now());
             saturating_add(lane.total_queue_wait_ns, queue_wait_ns);
             lane.maximum_queue_wait_ns = std::max(lane.maximum_queue_wait_ns, queue_wait_ns);
+            lane.queue_wait_histogram.observe(queue_wait_ns);
         }
 
         DurableMutationCompletion completion{.connection = task->connection,
@@ -308,6 +313,9 @@ void DurableMutationExecutor::run(const std::size_t worker_index) noexcept {
             }
             saturating_add(lane.total_service_ns, service_ns);
             lane.maximum_service_ns = std::max(lane.maximum_service_ns, service_ns);
+            if (!expired) {
+                lane.service_histogram.observe(service_ns);
+            }
         }
 
         // Reactor admission caps all outstanding mutations at this ring's

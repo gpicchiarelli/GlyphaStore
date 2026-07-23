@@ -385,6 +385,9 @@ struct WorkerConnection {
         // (including maintenance emergency). Do not advertise success-seeking retry.
         return "never";
     }
+    if (category == "permission_denied") {
+        return "never";
+    }
     if (category == "not_found") {
         return "new_attempt";
     }
@@ -452,7 +455,8 @@ struct WorkerConnection {
         error = {ErrorCode::invalid_argument, "server denied the request"};
         error.category = "permission_denied";
         error.retryability = "never";
-        break;
+        error.wire_status = static_cast<std::uint16_t>(status);
+        return error;
     case server::ResponseStatus::ok:
         return {ErrorCode::internal_error, "unexpected successful response mapping"};
     }

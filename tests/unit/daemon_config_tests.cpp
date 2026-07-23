@@ -366,3 +366,57 @@ GLYPHA_TEST("daemon dump-config cannot be set from a config file") {
     GLYPHA_REQUIRE(!result.has_value());
     GLYPHA_REQUIRE(result.error().message.find("cannot set") != std::string::npos);
 }
+
+GLYPHA_TEST("daemon config maintenance rate budgets and secure-profile fail closed") {
+    const std::array rate_args{"glyphastored", "--maintenance-max-copy-bytes-per-sec", "1048576",
+                               "--maintenance-max-cpu-ms-per-window", "25"};
+    const auto rate = parse(rate_args);
+    GLYPHA_REQUIRE(rate.has_value());
+    GLYPHA_REQUIRE(rate->store.maintenance.max_copy_bytes_per_sec == 1'048'576U);
+    GLYPHA_REQUIRE(rate->store.maintenance.max_cpu_ms_per_window == 25U);
+    const auto dump = glyphastore::server::format_daemon_config_dump(*rate);
+    GLYPHA_REQUIRE(dump.find("maintenance-max-copy-bytes-per-sec=1048576\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("maintenance-max-cpu-ms-per-window=25\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("secure-profile=false\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("authz-enabled=false\n") != std::string::npos);
+
+    const std::array insecure{"glyphastored", "--secure-profile"};
+    const auto missing = parse(insecure);
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().message.find("secure-profile") != std::string::npos);
+
+    ConfigTemporaryDirectory temporary;
+    const auto map_path = temporary.path() / "authz.map";
+    write_file(map_path, "reader.example read\n");
+    const auto map_arg = map_path.string();
+    const std::array dual{"glyphastored",
+                          "--secure-profile",
+                          "--tls-cert",
+                          "missing.crt",
+                          "--tls-key",
+                          "missing.key",
+                          "--tls-client-ca",
+                          "missing-ca.crt",
+                          "--authz-map",
+                          map_arg.c_str(),
+                          "--tls-port",
+                          "7380"};
+    const auto dual_result = parse(dual);
+    GLYPHA_REQUIRE(!dual_result.has_value());
+}
+
+GLYPHA_TEST("daemon config authz-map enables default-deny policy") {
+    ConfigTemporaryDirectory temporary;
+    const auto map_path = temporary.path() / "authz.map";
+    write_file(map_path, "writer.example write\n");
+    const auto map_arg = map_path.string();
+    const std::array arguments{"glyphastored", "--authz-map", map_arg.c_str()};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->server.authz.enabled());
+    GLYPHA_REQUIRE(parsed->server.authz.size() == 1);
+    GLYPHA_REQUIRE(parsed->authz_map_path == map_path);
+    const auto dump = glyphastore::server::format_daemon_config_dump(*parsed);
+    GLYPHA_REQUIRE(dump.find("authz-enabled=true\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("authz-principals=1\n") != std::string::npos);
+}

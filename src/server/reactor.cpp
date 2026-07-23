@@ -145,6 +145,8 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     }
     current->tls.reset();
     current->socket.reset();
+    current->principal.clear();
+    current->capabilities = Capability::none;
     current->input.clear();
     current->input_offset = 0;
     current->output.clear();
@@ -220,6 +222,15 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
                 continue;
             }
             handoff.tls = std::move(*session);
+            if (tls_->mtls_enabled()) {
+                handoff.principal = std::string{handoff.tls->peer_principal()};
+                if (handoff.principal.empty()) {
+                    continue;
+                }
+            }
+        }
+        if (config_.authz.enabled()) {
+            handoff.capabilities = config_.authz.capabilities_for(handoff.principal);
         }
         if (auto adopted = adopt_connection(std::move(handoff)); !adopted) {
             return adopted;
@@ -239,6 +250,8 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     auto& current = connections_[slot];
     current.socket = std::move(handoff.socket);
     current.tls = std::move(handoff.tls);
+    current.principal = std::move(handoff.principal);
+    current.capabilities = handoff.capabilities;
     current.input = std::move(handoff.input);
     current.input_offset = 0;
     current.output = std::move(handoff.output);
@@ -334,6 +347,18 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                                  .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                  .routing_epoch = kRoutingEpoch};
             if (auto queued = queue_response(token, refused); !queued) {
+                return queued;
+            }
+            current->input_offset += decoded->consumed;
+            continue;
+        }
+        if (!authorize_opcode(config_.authz, current->capabilities, decoded->frame.opcode)) {
+            ResponseView denied{.status = ResponseStatus::permission_denied,
+                                .request_id = decoded->frame.request_id,
+                                .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                                .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                .routing_epoch = kRoutingEpoch};
+            if (auto queued = queue_response(token, denied); !queued) {
                 return queued;
             }
             current->input_offset += decoded->consumed;
@@ -478,11 +503,15 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     }
     ConnectionHandoff handoff{.socket = std::move(current->socket),
                               .tls = std::move(current->tls),
+                              .principal = std::move(current->principal),
+                              .capabilities = current->capabilities,
                               .input = std::move(current->input),
                               .output = std::move(current->output),
                               .bound_worker = static_cast<std::uint32_t>(target_worker),
                               .initialized = current->initialized,
                               .peer_read_closed = current->peer_read_closed};
+    current->principal.clear();
+    current->capabilities = Capability::none;
     current->bound_worker.reset();
     current->initialized = false;
     current->peer_read_closed = false;

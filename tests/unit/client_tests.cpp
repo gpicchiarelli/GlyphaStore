@@ -1,5 +1,6 @@
 #include "glyphastore/client/client.hpp"
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "test.hpp"
@@ -523,4 +524,38 @@ GLYPHA_TEST("C++ client rejects invalid configuration before network I/O") {
     invalid = glyphastore::client::Client::connect({.maximum_pipeline_bytes = 1});
     GLYPHA_REQUIRE(!invalid.has_value());
     GLYPHA_REQUIRE(invalid.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("authz-enabled server emits wire permission_denied status 8") {
+    glyphastore::server::AuthzPolicy policy;
+    policy.bind("mapped.example", glyphastore::server::Capability::read);
+    auto created = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 16, .worker_count = 1, .authz = std::move(policy)});
+    GLYPHA_REQUIRE(created.has_value());
+    GLYPHA_REQUIRE((*created)->start().has_value());
+
+    auto connected = glyphastore::client::Client::connect({.port = (*created)->port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+
+    // Lifecycle opcodes remain open; data-plane opcodes default-deny unmapped peers.
+    const auto denied = client.get("key");
+    GLYPHA_REQUIRE(!denied.has_value());
+    GLYPHA_REQUIRE(denied.error().category == "permission_denied");
+    GLYPHA_REQUIRE(denied.error().retryability == "never");
+    GLYPHA_REQUIRE(denied.error().wire_status.has_value());
+    GLYPHA_REQUIRE(*denied.error().wire_status ==
+                   static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::permission_denied));
+
+    const auto put = client.put("key", "value");
+    GLYPHA_REQUIRE(!put.committed());
+    GLYPHA_REQUIRE(put.error.has_value());
+    GLYPHA_REQUIRE(put.error->category == "permission_denied");
+    GLYPHA_REQUIRE(put.error->wire_status.has_value());
+    GLYPHA_REQUIRE(*put.error->wire_status ==
+                   static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::permission_denied));
+
+    client.close();
+    (*created)->request_stop();
+    static_cast<void>((*created)->join());
 }

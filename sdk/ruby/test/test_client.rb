@@ -42,6 +42,24 @@ class ClientTest < Minitest::Test
     server&.join
   end
 
+  def test_permission_denied_status_eight
+    server = FakeServer.new(deny_data_plane: true)
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    err = assert_raises(GlyphaStore::Error) { client.get("key".b) }
+    assert_equal GlyphaStore::Category::PERMISSION_DENIED, err.category
+    assert_equal GlyphaStore::Protocol::Status::PERMISSION_DENIED, err.wire_status
+    assert_equal GlyphaStore::Retryability::NEVER, err.retryability
+    result = client.put("key".b, "value".b)
+    assert result.rejected?
+    assert_equal GlyphaStore::Category::PERMISSION_DENIED, result.error.category
+    assert_equal GlyphaStore::Protocol::Status::PERMISSION_DENIED, result.error.wire_status
+    client.close
+  ensure
+    server&.join
+  end
+
   def test_overloaded_retryability_is_never
     err = GlyphaStore::Error.overloaded("server is overloaded")
     assert_equal GlyphaStore::Category::OVERLOADED, err.category

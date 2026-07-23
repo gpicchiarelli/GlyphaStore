@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
 #include "glyphastore/server/disk_read_executor.hpp"
@@ -71,6 +72,8 @@ struct ReactorConfig {
     // (ADR 0020 dual listeners; never opportunistic TLS on one endpoint).
     std::optional<std::uint16_t> tls_port{};
     TlsConfig tls{};
+    // When enabled, data-plane opcodes require capabilities from --authz-map.
+    AuthzPolicy authz{};
 };
 
 class Reactor final {
@@ -131,6 +134,8 @@ class Reactor final {
     struct Connection {
         SocketHandle socket;
         std::unique_ptr<TlsSession> tls;
+        std::string principal{};
+        Capability capabilities{Capability::none};
         std::uint32_t generation{1};
         std::vector<std::byte> input;
         std::size_t input_offset{};

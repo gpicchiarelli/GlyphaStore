@@ -27,7 +27,7 @@ Related: [SDK roadmap](sdk-roadmap.md), [client semantics v1](../spec/client-sem
 | Isomorphic semantics | Same categories, outcomes, retry counts, deadline rules, unhealthy rules as [client semantics v1](../spec/client-semantics-v1.md). |
 | Fail closed | Malformed frames, owner/epoch mismatch, non-empty mutation `OK` → protocol/unhealthy/`indeterminate` as specified; never “best effort” success. |
 | Binary-safe | Keys and values are opaque byte strings (`String` with `Encoding::BINARY` / `ASCII-8BIT`). No implicit UTF-8, no string encoding conversions on the hot path. |
-| Secure by posture | Until server TLS/auth exist, document private-network/sidecar-only. When TLS lands, Ruby gets it in the **same release train** as other SDKs—no silent cleartext fallback. |
+| Secure by posture | Until Ruby TLS exists, document private-network/sidecar-only. **Ruby is an explicit temporary exception** to the security “same train” policy: peers (C++/Python/Perl/Go/Erlang) already ship TLS; Ruby remains cleartext-only until Phase 3 below—docs and interop must not imply Ruby TLS. |
 | Measure before cleverness | Ship a correct pure-Ruby hot path first; C extension / Fiber async / `connections_per_worker` only after benchmarks prove the bottleneck. |
 
 ## 2. Isomorphism checklist (definition of “complete”)
