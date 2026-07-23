@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/reactor.hpp"
 #include "glyphastore/store/store.hpp"
 
@@ -30,6 +31,7 @@ struct DaemonOptions {
     bool show_version{};
     bool show_dump_config{};
     bool quiet{};
+    DaemonLogFormat log_format{DaemonLogFormat::human};
 };
 
 // Optional environment lookup for tests. Returning nullopt means unset.

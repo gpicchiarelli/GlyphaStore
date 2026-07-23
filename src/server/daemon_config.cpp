@@ -54,6 +54,7 @@ enum OptionId : std::size_t {
     max_hot_cache_bytes,
     max_temporary_compaction_bytes,
     quiet,
+    log_format,
     tls_cert,
     tls_key,
     tls_client_ca,
@@ -158,6 +159,9 @@ constexpr std::array kOptionSpecs{
                     "Cap temporary durable compaction peak bytes (default: 1GiB)"},
     cli::OptionSpec{
         quiet, "quiet", 'q', cli::OptionArity::none, {}, "Suppress normal startup and shutdown messages"},
+    cli::OptionSpec{log_format, "log-format", '\0', cli::OptionArity::required, "FORMAT",
+                    "Emit lifecycle logs as human stderr/stdout (default) or JSON-lines on stderr "
+                    "(human|json)"},
     cli::OptionSpec{tls_cert, "tls-cert", '\0', cli::OptionArity::required, "PATH",
                     "PEM certificate chain for TLS 1.3 (requires --tls-key; TLS-only on --port unless "
                     "--tls-port)"},
@@ -350,6 +354,13 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     options.show_help = show_help;
     options.show_version = show_version;
     options.quiet = parsed->has(quiet);
+    if (const auto format = parsed->value(log_format)) {
+        auto resolved = parse_daemon_log_format(*format);
+        if (!resolved) {
+            return unexpected(resolved.error());
+        }
+        options.log_format = *resolved;
+    }
     if (const auto address = parsed->value(bind)) {
         options.server.bind_address = *address;
     }
@@ -816,6 +827,8 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += std::to_string(options.store.durable_limits.max_temporary_compaction_bytes);
     out += "\nquiet=";
     out += options.quiet ? "true" : "false";
+    out += "\nlog-format=";
+    out += daemon_log_format_name(options.log_format);
     out += "\ntls-cert=";
     out += options.server.tls.certificate_file.string();
     out += "\ntls-key=";
