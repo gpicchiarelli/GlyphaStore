@@ -31,6 +31,7 @@ module GlyphaStore
       OVERLOADED = 5
       WRONG_OWNER = 6
       NOT_BOUND = 7
+      PERMISSION_DENIED = 8
     end
 
     Request = Struct.new(
@@ -163,7 +164,7 @@ module GlyphaStore
     end
 
     def valid_status?(status)
-      status.between?(Status::OK, Status::NOT_BOUND)
+      status.between?(Status::OK, Status::PERMISSION_DENIED)
     end
 
     def binary!(payload)

@@ -188,6 +188,8 @@ class DurableRuntimeCatalog final {
         -> Result<MaintenanceObservation>;
     [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns,
                                       std::uint64_t max_copy_bytes = 0) -> DurableCompactionResult;
+    // Lexicographically sorted live Index keys. Intended for offline tools (migrate).
+    [[nodiscard]] auto snapshot_live_keys() -> Result<std::vector<std::string>>;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
     void request_close_flush();

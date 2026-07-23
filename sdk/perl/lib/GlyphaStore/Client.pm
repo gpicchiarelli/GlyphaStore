@@ -19,6 +19,7 @@ use GlyphaStore::Protocol qw(
     OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
     STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND
+    STATUS_PERMISSION_DENIED
     encode_request_parts encode_request_hot decode_response
 );
 use GlyphaStore::SendFailure;
@@ -409,6 +410,8 @@ sub _status_error {
     $error = _error('not_found', 'key was not found') if $status == STATUS_NOT_FOUND;
     $error = _error('overloaded', 'server is overloaded') if $status == STATUS_OVERLOADED;
     $error = _error('unavailable', 'server connection is not bound') if $status == STATUS_NOT_BOUND;
+    $error = _error('permission_denied', 'server denied the request')
+        if $status == STATUS_PERMISSION_DENIED;
     $error = _error('protocol', 'server rejected Worker routing') if $status == STATUS_WRONG_OWNER;
     $error = _error('invalid_argument', 'server rejected the request')
         if $status == STATUS_INVALID_REQUEST || $status == STATUS_UNSUPPORTED;

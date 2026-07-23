@@ -7,11 +7,22 @@ Last reviewed: 2026-07-23
 
 ## 1. Transport and byte order
 
-The protocol runs over a reliable TCP byte stream. Every integer is unsigned and encoded little-endian. Frames are length-prefixed; TCP packet boundaries have no semantic meaning.
+The protocol runs over a reliable TCP byte stream, optionally wrapped in TLS 1.3 as an outer
+transport ([ADR 0020](../adr/0020-tls-outer-transport.md),
+[secure-profile reference](../security/secure-profile.md)). Every integer is unsigned and encoded
+little-endian. Frames are length-prefixed; TCP packet boundaries have no semantic meaning.
 
 The maximum protocol frame size is 2 MiB, including the header. The server's connection input and output buffering may impose an additional configured limit (4 MiB by default). A client must handle partial reads and writes.
 
-There is currently no TLS, authentication, compression, multiplexed stream identifier, or protocol-level timeout. Deployments requiring confidentiality or access control must provide an external trusted boundary. Official clients impose local connect/request deadlines and classify failures as specified in [client semantics v1](client-semantics-v1.md). The planned secure profile wraps this protocol in TLS 1.3 with mTLS ([ADR 0020](../adr/0020-tls-outer-transport.md), [ADR 0021](../adr/0021-secure-profile-authentication.md)) without changing frame layout; OpenBSD uses LibreSSL.
+There is no in-band STARTTLS, authentication opcode, compression, multiplexed stream identifier, or
+protocol-level timeout field. Cleartext TCP remains the default listener mode. Confidentiality and
+access control on reachable listeners use the opt-in secure profile: outer TLS 1.3, mTLS principals,
+and coarse capabilities ([ADR 0020](../adr/0020-tls-outer-transport.md)–
+[0022](../adr/0022-authorization-capabilities.md),
+[secure-profile reference](../security/secure-profile.md)). Official clients impose local
+connect/request deadlines and classify failures as specified in
+[client semantics v1](client-semantics-v1.md). Outer TLS does not change frame layout; OpenBSD uses
+LibreSSL.
 
 ## 2. Request frame
 
@@ -75,13 +86,14 @@ Store state. `HEALTH` returns `OK` while the daemon process is live (started and
 recorded). `READY` returns `OK` only while the server is ready to accept traffic: live, not shutting
 down, Store admission open, durable catalog healthy, and maintenance is not in emergency or a sticky
 faulted state. `STATS` returns `OK` with a versioned line-oriented report (`version`, `live`, `ready`,
-connection counts, per-Worker durable mutation lane counters, batch counters, and maintenance
-snapshot fields, including durable rotation publication wait, Segment seal/create, Manifest
-publication, aggregate execution, and final Record commit timings) while live; the payload is
+connection counts, per-Worker durable mutation lane counters including fixed-bucket
+`queue_wait_ns` / `service_ns` latency histograms (`count`, `sum`, cumulative `le_*`, approximate
+p50/p99), batch counters, and maintenance snapshot fields, including durable rotation publication
+wait, Segment seal/create, Manifest publication, aggregate execution, final Record commit timings,
+and maintenance rate-window consumption) while live; the payload is
 capped and may return `OVERLOADED` if it cannot fit the connection output budget. Failed
-liveness/readiness/stats probes return `INTERNAL_ERROR` with an empty value. Treat `STATS` as a
-private-admin surface until ADR 0021/0022 authentication is enforced; it never returns TLS
-private-key material.
+liveness/readiness/stats probes return `INTERNAL_ERROR` with an empty value. Under the secure
+profile, `STATS` requires the `read` capability; it never returns TLS private-key material.
 
 Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
 decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode
@@ -99,6 +111,7 @@ error on clients). Clients must not send ignored data.
 | 5 | `OVERLOADED` | bounded resource or admission limit reached |
 | 6 | `WRONG_OWNER` | bound Worker does not own the key; `owner_worker` is authoritative |
 | 7 | `NOT_BOUND` | Store operation attempted before Worker binding |
+| 8 | `PERMISSION_DENIED` | secure-profile authz denied the opcode for this principal |
 
 The mapping from internal error categories to protocol status is many-to-one. Clients must not infer an internal `ErrorCode` that is not carried on the wire.
 

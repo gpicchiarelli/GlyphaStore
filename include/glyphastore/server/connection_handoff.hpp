@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/server/bounded_mpsc_queue.hpp"
+#include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/socket.hpp"
 #include "glyphastore/server/tls.hpp"
 #include "glyphastore/server/wakeup.hpp"
@@ -9,6 +10,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <vector>
 
 namespace glyphastore::server {
@@ -16,6 +18,8 @@ namespace glyphastore::server {
 struct ConnectionHandoff {
     SocketHandle socket;
     std::unique_ptr<TlsSession> tls;
+    std::string principal{};
+    Capability capabilities{Capability::none};
     std::vector<std::byte> input;
     std::vector<std::byte> output;
     std::optional<std::uint32_t> bound_worker;

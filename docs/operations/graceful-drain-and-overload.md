@@ -130,5 +130,6 @@ after fixing capacity or shedding load.
 ## Related tests and evidence
 
 Integration coverage includes graceful stop, drain timeout, and real-daemon SIGKILL paths
-(`glyphastore_crash_daemon`). Formal staging runbook exercise remains a release gate; see
-[production readiness](../production-readiness.md).
+(`glyphastore_crash_daemon`). CI/staging runbook smoke:
+`scripts/exercise_ops_runbooks.sh` (backup/restore, corruption repair, graceful drain + `STATS`)
+via `.github/workflows/ops-runbooks.yml`. See [production readiness](../production-readiness.md).

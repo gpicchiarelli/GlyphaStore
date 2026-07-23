@@ -226,5 +226,5 @@ GLYPHA_TEST("wire protocol v2 matches independent canonical response fixtures") 
         offset += decoded->consumed;
         ++expected_status;
     }
-    GLYPHA_REQUIRE(expected_status == 8);
+    GLYPHA_REQUIRE(expected_status == 9);
 }

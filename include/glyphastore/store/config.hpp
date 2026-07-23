@@ -80,9 +80,14 @@ struct MaintenanceConfig {
     // Preflight limit for one normal-mode evaluation/compaction. Zero explicitly
     // disables this limit; pressure and emergency always bypass it.
     std::uint64_t max_copy_bytes_per_cycle{kDefaultMaintenanceMaxCopyBytesPerCycle};
-    // Zero means "use implementation defaults" for rate/CPU budgets reserved for Phase 1+.
+    // Inclusive per-second copy budget across normal-mode compact work in the
+    // current one-second steady_clock window. Zero disables the rate limit;
+    // pressure and emergency bypass it.
     std::uint64_t max_copy_bytes_per_sec{};
     std::uint32_t max_segments_per_cycle{1};
+    // Inclusive CPU budget for compact work inside the same one-second window
+    // (milliseconds of wall time charged to compact). Zero disables; pressure
+    // and emergency bypass it.
     std::uint32_t max_cpu_ms_per_window{};
     std::uint32_t min_eval_interval_ms{1'000};
     std::uint32_t max_eval_interval_ms{60'000};

@@ -11,7 +11,9 @@ official GlyphaStore TCP client must implement. It complements
 [ADR 0019](../adr/0019-client-error-retry-timeout.md).
 
 The embedded Store API and daemon-internal error codes are out of scope except where they appear as
-wire statuses. Protocol v2 still has no TLS, authentication, or protocol-level timeout field.
+wire statuses. Protocol v2 has no authentication or protocol-level timeout field. Optional outer
+TLS 1.3 (ADR 0020) is a transport concern and does not add wire opcodes; client TLS connect options
+follow [secure-profile.md](../security/secure-profile.md).
 
 ## 1. Clocks and deadline kinds
 
@@ -36,6 +38,7 @@ this closed set for client-visible failures:
 | `invalid_argument` | Local validation failed, or the server returned `INVALID_REQUEST` / `UNSUPPORTED`. |
 | `not_found` | Server returned `NOT_FOUND`. |
 | `overloaded` | Server returned `OVERLOADED`, or a local admission/resource limit equivalent was hit before send. |
+| `permission_denied` | Server returned `PERMISSION_DENIED` (secure-profile authz). |
 | `unavailable` | Client closed, routing metadata changed, bootstrap/reconnect cannot proceed, or `NOT_BOUND` while the session is considered unusable. |
 | `transport` | Socket I/O, connect failure after dial, peer EOF, or **request deadline expired** while waiting on the socket. |
 | `protocol` | Framing/codec failure, mismatched `request_id`, wrong Worker owner on an `OK`/`error` that should not occur, non-empty mutation `OK` value, or other trust failure in a decoded frame. |
@@ -80,6 +83,7 @@ fields must not change category/outcome rules when added.
 | `OVERLOADED` | `overloaded` | `rejected` | Known not committed. Wire collapses admission pressure **and** durable capacity exhaustion (including maintenance emergency `storage_exhausted`). Clients must not infer which cause applied. |
 | `WRONG_OWNER` | `protocol` | `rejected` | Mark client **unhealthy**; open a new client (v2 has no online rebalance). |
 | `NOT_BOUND` | `unavailable` | `rejected` | Mark client **unhealthy** if observed on a supposedly bound session. |
+| `PERMISSION_DENIED` | `permission_denied` | `rejected` | Secure-profile capability denial; `retryability=never`. |
 
 Unknown status codes: treat as error, preserve TCP framing sync, category `protocol` or `internal`;
 for mutations prefer `indeterminate` if any request bytes were written, else `rejected`.
@@ -88,7 +92,7 @@ for mutations prefer `indeterminate` if any request bytes were written, else `re
 
 | Class | Meaning | Examples |
 | --- | --- | --- |
-| `never` | Retrying the same logical mutation without application reconciliation may duplicate or is pointless | `committed`; local `invalid_argument` before send; **`overloaded`** (admission and capacity causes are indistinguishable on the wire) |
+| `never` | Retrying the same logical mutation without application reconciliation may duplicate or is pointless | `committed`; local `invalid_argument` before send; **`overloaded`** (admission and capacity causes are indistinguishable on the wire); **`permission_denied`** |
 | `same_request` | Automatic client retry of the **same** encoded attempt is allowed under §5 | Read-only transport failure; mutation with `bytes_sent == 0` |
 | `new_attempt` | Application may start a **new** request after fixing inputs or backing off | `not_found`; `rejected` with server validation (not `overloaded`) |
 | `reconcile_first` | Must not blindly retry a mutation | `indeterminate`; disconnect after `bytes_sent > 0` |

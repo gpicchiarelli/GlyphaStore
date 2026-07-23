@@ -19,7 +19,7 @@ our @EXPORT_OK = qw(
     PROTOCOL_VERSION REQUEST_HEADER_BYTES RESPONSE_HEADER_BYTES MAX_FRAME_BYTES NO_WORKER
     OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
-    STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND
+    STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND STATUS_PERMISSION_DENIED
     encode_request encode_request_parts encode_request_hot decode_request encode_response
     decode_response worker_for
 );
@@ -51,6 +51,7 @@ use constant STATUS_NOT_FOUND       => 4;
 use constant STATUS_OVERLOADED      => 5;
 use constant STATUS_WRONG_OWNER     => 6;
 use constant STATUS_NOT_BOUND       => 7;
+use constant STATUS_PERMISSION_DENIED => 8;
 
 # Native little-endian u64 fields (requires use64bitint).
 my $REQUEST_FORMAT  = 'VvCC Q< VV Q< VV';
@@ -207,7 +208,7 @@ sub encode_response {
     my (%response) = @_;
     my $status = $response{status};
     die "unknown protocol-v2 status\n"
-        if !defined($status) || $status < STATUS_OK || $status > STATUS_NOT_BOUND;
+        if !defined($status) || $status < STATUS_OK || $status > STATUS_PERMISSION_DENIED;
     my $request_id = _as_u64($response{request_id}, 'request_id');
     my $value = _require_bytes($response{value}, 'value');
     my $owner_worker = $response{owner_worker} // NO_WORKER;
@@ -237,7 +238,7 @@ sub decode_response {
         if $frame_size != length($frame) || $frame_size > $maximum;
     die "response protocol version is unsupported\n" if $version != PROTOCOL_VERSION;
     die "response reserved field is noncanonical\n" if $reserved != 0;
-    die "unknown protocol-v2 status\n" if $status < STATUS_OK || $status > STATUS_NOT_BOUND;
+    die "unknown protocol-v2 status\n" if $status < STATUS_OK || $status > STATUS_PERMISSION_DENIED;
     die "response value extent is invalid\n"
         if RESPONSE_HEADER_BYTES + $value_size != $frame_size;
     return {

@@ -292,6 +292,8 @@ class TemporaryDirectory final {
         return "reclaim-threshold";
     case glyphastore::MaintenanceSkipReason::copy_budget:
         return "copy-budget";
+    case glyphastore::MaintenanceSkipReason::rate_budget:
+        return "rate-budget";
     }
     return "unknown";
 }

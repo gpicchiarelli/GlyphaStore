@@ -6,6 +6,12 @@ on:
   pull_request:
   schedule:
     - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: "Wall-clock seconds per libFuzzer target"
+        required: false
+        default: "120"
 
 permissions:
   contents: read
@@ -38,19 +44,54 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-  fuzz-build:
-    name: Clang libFuzzer build
+  fuzz-run:
+    name: libFuzzer / ${{ matrix.target }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - record_decoder
+          - segment_scanner
+          - index_rebuild
+          - protocol_decoder
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
       - run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Resolve fuzz time budget
+        id: budget
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "seconds=${{ inputs.fuzz_seconds }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "seconds=120" >> "$GITHUB_OUTPUT"
+          else
+            echo "seconds=60" >> "$GITHUB_OUTPUT"
+          fi
       - name: Configure fuzz targets
         env:
           CC: clang
           CXX: clang++
         run: cmake --preset unix-fuzz
       - name: Build fuzz targets
-        run: cmake --build --preset unix-fuzz
+        run: cmake --build --preset unix-fuzz --target fuzz_${{ matrix.target }}
+      - name: Run fuzzer
+        env:
+          GLYPHASTORE_FUZZ_BUILD_DIR: ${{ github.workspace }}/build/unix-fuzz
+          GLYPHASTORE_FUZZ_TARGET: ${{ matrix.target }}
+          GLYPHASTORE_FUZZ_SECONDS: ${{ steps.budget.outputs.seconds }}
+        run: |
+          chmod +x scripts/run-fuzzers.sh
+          bash scripts/run-fuzzers.sh
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}-${{ github.run_id }}
+          path: build/unix-fuzz/fuzz-artifacts/
+          if-no-files-found: ignore
+          retention-days: 30

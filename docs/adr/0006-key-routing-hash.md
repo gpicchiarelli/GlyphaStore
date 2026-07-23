@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-07-11
+- Amended by: [0024](0024-offline-worker-migration.md) (offline Worker-count migration)
 
 Worker routing uses a deterministic 64-bit FNV-1a hash over the full logical key bytes. The selected
 Worker is `hash(key) % worker_count`, where `worker_count` is fixed for the process lifetime.

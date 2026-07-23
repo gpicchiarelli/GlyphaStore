@@ -122,11 +122,13 @@ without application reconciliation ([client semantics v1 §5](../spec/client-sem
 |---|---|---|
 | `--maintenance-mode` | `background` | `cooperative`, `background`, or `disabled` |
 | `--maintenance-max-copy-bytes-per-cycle` | 128 MiB | normal compaction copy limit (`0` = unlimited) |
+| `--maintenance-max-copy-bytes-per-sec` | 0 | normal one-second copy rate (`0` = unlimited) |
+| `--maintenance-max-cpu-ms-per-window` | 0 | normal one-second compact CPU budget (`0` = unlimited) |
 | `--maintenance-unread-ttl-pressure-probe` | true | probe unread expired puts under pressure |
 | `--maintenance-unread-ttl-normal-scheduling` | false | opt-in: count unread expired bytes in normal dead-byte threshold |
 
-Pressure/emergency maintenance bypass the normal copy limit to recover capacity. Sticky maintenance
-faults fail `READY` until resolved or the Store is replaced from backup.
+Pressure/emergency maintenance bypass the normal copy and rate limits to recover capacity. Sticky
+maintenance faults fail `READY` until resolved or the Store is replaced from backup.
 
 ## 3. HEALTH / READY / STATS expectations
 
@@ -137,7 +139,7 @@ probes return `INTERNAL_ERROR` with an empty value.
 |---|---|---|
 | `HEALTH` (7) | `GlyphaStore/live` | process / executor liveness only |
 | `READY` (8) | `GlyphaStore/ready` | load balancer readiness — admission open, not shutting down, catalog healthy, maintenance not in emergency or sticky fault |
-| `STATS` (9) | bounded ASCII report | admin snapshot: version, live/ready, connections, durable lane/batch counters, maintenance fields |
+| `STATS` (9) | bounded ASCII report | admin snapshot: version, live/ready, connections, durable lane/batch counters, per-lane latency histograms (`queue_wait_ns` / `service_ns`), maintenance fields |
 
 **Fail closed for traffic:** orchestrators must gate on `READY`, not `HEALTH` alone. During
 graceful drain or sticky storage faults, `HEALTH` may succeed while `READY` fails.

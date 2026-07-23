@@ -69,3 +69,18 @@ Cleartext vs TLS 1.3 tax on the Go pipeline harness:
 OpenBSD / LibreSSL correctness gate (not a throughput bench):
 `bash scripts/ci-openbsd-libressl.sh` on OpenBSD, or the
 [OpenBSD LibreSSL](../.github/workflows/openbsd-libressl.yml) workflow.
+
+FreeBSD native build/test gate (portability signal; not UFS/ZFS durability certification):
+`bash scripts/ci-freebsd.sh` on FreeBSD, or the
+[FreeBSD](../.github/workflows/freebsd.yml) workflow.
+
+Continuous fuzz smoke (Linux Clang libFuzzer):
+
+```bash
+cmake --preset unix-fuzz
+cmake --build --preset unix-fuzz
+GLYPHASTORE_FUZZ_SECONDS=30 ./scripts/run-fuzzers.sh
+```
+
+CI runs each target in `.github/workflows/sanitizers.yml` (`fuzz-run`) against
+`fuzz/corpus/<target>/` (60s on PR/push, 120s on the Monday schedule / manual dispatch).

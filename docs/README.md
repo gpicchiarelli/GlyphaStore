@@ -67,13 +67,15 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 
 ## Decisions, development, and operations
 
-- [Operations runbooks](operations/README.md) — graceful drain, overload, offline backup/restore, corruption repair
+- [Operations runbooks](operations/README.md) — graceful drain, overload, offline backup/restore, Worker reshard, corruption repair
+- [Version lifecycle and compatibility](architecture/version-lifecycle.md) — 0.x upgrade/downgrade, ABI, Worker migrate
 - [ADR index and lifecycle](adr/README.md)
 - [Glossary](glossary.md)
 - [Code tour](development/code-tour.md)
 - [Test strategy](development/test-strategy.md)
 - [Threat model](security/threat-model.md)
 - [Security implementation roadmap](security/roadmap.md)
+- [Secure-profile TLS reference](security/secure-profile.md)
 - [TLS performance note](security/tls-performance.md)
 - [Durable compaction exploratory benchmark](benchmarks/durable-compaction-2026-07-23.md)
 - [Concurrent maintenance exploratory benchmark](benchmarks/concurrent-maintenance-2026-07-23.md)

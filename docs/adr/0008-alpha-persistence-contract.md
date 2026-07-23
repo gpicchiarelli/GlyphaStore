@@ -26,7 +26,7 @@ A versioned manifest records Store identity, format versions, the Segment catalo
 ownership, routing hash identifier, Worker count, and routing epoch. Worker auto-sizing applies
 only when a durable Store is first created. Reopening uses the persisted Worker count. A requested
 hash, Worker count, or routing configuration mismatch is rejected until an explicit offline
-migration exists.
+migration exists ([ADR 0024](0024-offline-worker-migration.md)).
 
 Manifest replacement uses write-temporary, synchronize-file, atomic rename, and
 synchronize-directory ordering. Segment creation is synchronized and made visible in the manifest

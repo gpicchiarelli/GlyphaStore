@@ -153,7 +153,7 @@ func TestResponseDecoderMatchesEveryCanonicalFixture(t *testing.T) {
 		}
 		decoded = append(decoded, resp)
 	}
-	for i := 0; i <= int(protocol.StatusNotBound); i++ {
+	for i := 0; i <= int(protocol.StatusPermissionDenied); i++ {
 		if decoded[i].Status != protocol.Status(i) {
 			t.Fatalf("status[%d]=%d", i, decoded[i].Status)
 		}

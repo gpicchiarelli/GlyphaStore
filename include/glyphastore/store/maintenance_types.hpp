@@ -32,6 +32,7 @@ enum class MaintenanceSkipReason : std::uint8_t {
     policy_deferred,
     reclaim_threshold,
     copy_budget,
+    rate_budget,
 };
 
 enum class MaintenancePressureLevel : std::uint8_t {
@@ -53,6 +54,7 @@ enum class MaintenanceActivationReason : std::uint8_t {
     no_candidate,
     reclaim_threshold,
     copy_budget,
+    rate_budget,
 };
 
 struct MaintenanceObserveRequest {
@@ -155,6 +157,9 @@ struct MaintenanceSnapshot {
     std::uint64_t last_eval_duration_ns{};
     std::uint64_t last_compact_duration_ns{};
     std::uint64_t ns_since_last_useful_compaction{};
+    // Current one-second rate-limit window consumption (zero when unlimited).
+    std::uint64_t rate_window_bytes_copied{};
+    std::uint64_t rate_window_cpu_ns{};
     DurableRotationStats rotation{};
     MaintenanceSkipReason last_skip_reason{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation{};

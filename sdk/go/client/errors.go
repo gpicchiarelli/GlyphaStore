@@ -8,13 +8,14 @@ import (
 type Category string
 
 const (
-	CategoryInvalidArgument Category = "invalid_argument"
-	CategoryNotFound        Category = "not_found"
-	CategoryOverloaded      Category = "overloaded"
-	CategoryUnavailable     Category = "unavailable"
-	CategoryTransport       Category = "transport"
-	CategoryProtocol        Category = "protocol"
-	CategoryInternal        Category = "internal"
+	CategoryInvalidArgument   Category = "invalid_argument"
+	CategoryNotFound          Category = "not_found"
+	CategoryOverloaded        Category = "overloaded"
+	CategoryUnavailable       Category = "unavailable"
+	CategoryTransport         Category = "transport"
+	CategoryProtocol          Category = "protocol"
+	CategoryInternal          Category = "internal"
+	CategoryPermissionDenied  Category = "permission_denied"
 )
 
 // Retryability classifies whether an automatic or application retry is safe.
@@ -155,6 +156,8 @@ func retryabilityFor(category Category, mutationSent bool, indeterminate bool) R
 	case category == CategoryOverloaded:
 		// Wire OVERLOADED collapses admission and capacity exhaustion; fail closed.
 		return RetryNever
+	case category == CategoryPermissionDenied:
+		return RetryNever
 	case category == CategoryNotFound:
 		return RetryNewAttempt
 	case category == CategoryUnavailable:
@@ -199,6 +202,12 @@ func overloaded(message string) *Error {
 	return err
 }
 
+func permissionDenied(message string) *Error {
+	err := newError(CategoryPermissionDenied, message)
+	err.Retryability = RetryNever
+	return err
+}
+
 func internalErr(message string) *Error {
 	return newError(CategoryInternal, message)
 }
@@ -212,6 +221,8 @@ func statusError(status protocol.Status) *Error {
 		err = overloaded("server is overloaded")
 	case protocol.StatusNotBound:
 		err = unavailable("server connection is not bound")
+	case protocol.StatusPermissionDenied:
+		err = permissionDenied("server denied the request")
 	case protocol.StatusWrongOwner:
 		err = protocolErr("server rejected Worker routing")
 	case protocol.StatusInvalidRequest, protocol.StatusUnsupported:

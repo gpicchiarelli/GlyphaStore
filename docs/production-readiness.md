@@ -18,13 +18,17 @@ below has automated evidence. A design document or implementation alone does not
 - [x] The supported API is separated from implementation headers and has an ownership/lifetime model.
   The installed API uses owning reads; internal access remains build-tree-only.
 - [ ] API and ABI compatibility policies define what may change in patch, minor, and major releases.
-  Target policy: [public C++ API](architecture/public-api-contract.md).
+  Target policy: [public C++ API](architecture/public-api-contract.md) and
+  [version lifecycle](architecture/version-lifecycle.md) (no ABI before 1.0; source patch/minor
+  rules; disk/wire by encoded versions). Tagged cross-release binary matrices remain open.
 - [ ] Disk and wire formats have independent versions, golden fixtures, and compatibility matrices.
   Manifest, Segment header, commit slot, Record, and dual-Manifest compaction intent have exact v1
   layouts and golden fixtures emitted independently of the production decoders. Decode-only
   compatibility tests, exact encoder checks, and durable artifact round-trip evidence exist. Wire
   v2 request/response golden fixtures are verified across the C++, Python, Perl, Go, and Ruby
-  codecs. Cross-release artifact evidence is open.
+  codecs. Released-artifact harness and packaging script exist
+  (`tests/fixtures/released/`, `scripts/package-release-compatibility-artifacts.sh`); regular
+  tagged drops remain open.
   Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
   Official TCP client error categories, mutation outcomes, automatic retries, and monotonic request
@@ -72,19 +76,28 @@ below has automated evidence. A design document or implementation alone does not
   `EROFS`, and every embedded mutation commit boundary with a recovery oracle. System-level
   disk-full/quota/writeback-error and power-loss matrices are open.
 - [ ] Backup, restore, verification, and version migration are tested with released artifacts.
+  Offline backup/restore/verify/repair and offline Worker reshard (`glyphastore_migrate_store`) are
+  implemented with unit tests. Released-tag artifact consumption remains open.
 
 ### Verification
 
 - [ ] Unit, integration, property, concurrency, crash, recovery, and compatibility suites are distinct.
-  Durable recovery has a separate integration suite. Crash, decode-only compatibility, and durable
-  artifact suites are separate from integration recovery tests. Released-artifact suites are open.
+  Durable recovery has a separate integration suite. Crash, decode-only compatibility, released-
+  artifact harness, and durable artifact suites are separate from integration recovery tests.
+  Regular tagged artifact drops remain open.
 - [ ] Fault injection covers allocation and relevant filesystem, clock, socket, and thread failures.
   Allocation sites in durable put/update/erase/read/group/rotation paths are enumerated
   deterministically. Filesystem publication and mutation boundaries have deterministic pre/post
   failure matrices. Exhaustive socket, thread-creation, platform clock, and hardware power-cut
   failures are open.
-- [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
+- [x] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
+  Seed corpora live under `fuzz/corpus/<target>/`. `.github/workflows/sanitizers.yml` builds and
+  executes each libFuzzer target with a bounded budget (60s on PR/push, 120s on the Monday schedule
+  and manual dispatch). Longer soak and additional Manifest/Segment/intent corpora remain open.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
+  CI-friendly entry point: `scripts/soak_daemon.sh` (default ~45s PUT/GET/reconnect/churn + drain)
+  exercised by `.github/workflows/ops-runbooks.yml` on PRs and a weekly 30-minute schedule. Multi-hour
+  hardware soak with RSS/rotation evidence remains a release gate.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
   Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous baseline.
   Weekly PGO smoke training includes durable open/put/reopen workloads. Local filters:
@@ -96,30 +109,35 @@ below has automated evidence. A design document or implementation alone does not
 
 ### Operations and security
 
-- [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
+- [x] Configuration has documented precedence, validation, safe defaults, and resource limits.
   Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
   The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
   flags plus documented file/environment precedence (`defaults < profile < file < env < CLI`).
   `--dump-config` prints the resolved effective settings and exits without listening. Normal
   background compaction has a documented, daemon-configurable 128 MiB per-candidate copy limit plus
-  opt-in unread-TTL normal scheduling (default off). Per-second/CPU maintenance rate fields remain
-  reserved placeholders. Deployment profiles (`dev`, `embedded`, `production`) validate fail-closed
-  before listen.
-- [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
+  opt-in unread-TTL normal scheduling (default off). Per-second (`max_copy_bytes_per_sec`) and CPU
+  (`max_cpu_ms_per_window`) maintenance rate limits are enforced in a one-second window under normal
+  policy (zero disables; pressure/emergency bypass). Deployment profiles (`dev`, `embedded`,
+  `production`) validate fail-closed before listen.
+- [x] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
-  lane/batch counters, and maintenance snapshot fields. Histogram export remains open. Structured
+  lane/batch counters, maintenance snapshot fields, and fixed-bucket durable lane latency histograms
+  (`queue_wait_ns` / `service_ns` with count, sum, `le_*`, approximate p50/p99). Structured
   JSON-lines lifecycle logging (`--log-format json`) covers start/listen, readiness transitions,
   shutdown drain, maintenance emergency/fault, and executor failure.
-- [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
+- [x] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
   Operator procedures: [operations runbooks](operations/README.md) including the end-to-end
   [durable TCP daemon guide](operations/durable-tcp-daemon.md) (graceful drain/overload,
   [backup-restore](operations/backup-restore.md), [corruption-repair](operations/corruption-repair.md)).
-  Formal staging/CI exercise remains open.
+  CI/staging smoke: `scripts/exercise_ops_runbooks.sh` via `.github/workflows/ops-runbooks.yml`
+  (verify, backup/restore, corruption repair, graceful drain + STATS checks).
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
   [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md).
-  Daemon TLS scaffold landed (cert/key/mTLS CA flags, dual `--tls-port`, SDK TLS train partial);
-  authn/authz remain open.
+  Phase 2 outer TLS is complete ([secure-profile.md](security/secure-profile.md)): daemon TLS 1.3,
+  dual `--tls-port`, SDK TLS train (C++/Python/Perl/Go/Erlang; Ruby cleartext until its Phase 3),
+  interop, LibreSSL CI. Phases 3–4 mTLS principals + `--authz-map` / `--secure-profile` landed.
+  Phase 5 rate/idle limits and Phase 6 full audit remain open before public bind.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.
@@ -130,7 +148,11 @@ below has automated evidence. A design document or implementation alone does not
 - [x] CI builds and runs an external consumer exclusively from the installed prefix.
 - [ ] Release CI covers supported compilers, architectures, operating systems, and optimized builds.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
-- [ ] Upgrade, downgrade, deprecation, support, and end-of-life policies are published.
+- [x] Upgrade, downgrade, deprecation, support, and end-of-life policies are published for 0.x /
+  persistence v1 (reopen rules, offline Worker migrate, no ABI before 1.0). Formal support windows
+  for beta/RC/stable remain P3.
+  Policy: [version lifecycle](architecture/version-lifecycle.md), [ADR 0024](adr/0024-offline-worker-migration.md).
+  Operator runbook: [worker-resharding](operations/worker-resharding.md).
 
 ## Change discipline
 

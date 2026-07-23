@@ -1,0 +1,38 @@
+name: FreeBSD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: freebsd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  freebsd:
+    name: FreeBSD / native build+test
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build and test on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.3"
+          arch: x86_64
+          usesh: true
+          copyback: false
+          sync: rsync
+          mem: 8192
+          cache-after-prepare: true
+          prepare: |
+            pkg install -y cmake ninja git bash openssl
+          run: |
+            set -e
+            chmod +x scripts/ci-freebsd.sh
+            bash scripts/ci-freebsd.sh

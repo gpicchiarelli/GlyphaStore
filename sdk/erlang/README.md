@@ -8,7 +8,7 @@ client state; each Worker owns a dedicated connection process (`glyphastore_conn
 
 Version: `glyphastore_version:version/0` (must match repository `VERSION`)  
 License: BSD-3-Clause  
-Requires: Erlang/OTP ≥ 25, rebar3
+Requires: Erlang/OTP ≥ 25 and rebar3 (on macOS: MacPorts `erlang` + `rebar3`).
 
 ```erlang
 {ok, Client} = glyphastore_client:connect(#{host => "127.0.0.1", port => 7379}),
@@ -16,6 +16,16 @@ Requires: Erlang/OTP ≥ 25, rebar3
 {ok, Value} = glyphastore_client:get(Client, <<"session\00042">>),
 glyphastore_client:close(Client).
 ```
+
+## Install toolchain (macOS)
+
+Use MacPorts — do not install OTP via kerl, asdf, or Homebrew for this project:
+
+```bash
+sudo port install erlang rebar3
+```
+
+Confirm `/opt/local/bin` is on `PATH`, then `erl` and `rebar3` resolve from MacPorts.
 
 ## Layout
 

@@ -261,6 +261,8 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .last_eval_duration_ns = last_eval_duration_ns_,
         .last_compact_duration_ns = last_compact_duration_ns_,
         .ns_since_last_useful_compaction = since_useful,
+        .rate_window_bytes_copied = rate_window_bytes_copied_,
+        .rate_window_cpu_ns = rate_window_cpu_ns_,
         .last_skip_reason = last_skip_reason_,
         .last_observation = last_observation_,
         .last_error = last_error_,
@@ -283,6 +285,36 @@ void MaintenanceController::publish_mutations_rejected_locked(const bool rejecte
         return;
     }
     mutations_rejected_.store(rejected, std::memory_order_release);
+}
+
+void MaintenanceController::refresh_rate_window_locked(
+    const std::chrono::steady_clock::time_point now) noexcept {
+    constexpr auto kWindow = std::chrono::seconds{1};
+    if (rate_window_start_.time_since_epoch().count() == 0 || now - rate_window_start_ >= kWindow) {
+        rate_window_start_ = now;
+        rate_window_bytes_copied_ = 0;
+        rate_window_cpu_ns_ = 0;
+    }
+}
+
+auto MaintenanceController::remaining_copy_bytes_locked(const MaintenanceConfig& config) const noexcept
+    -> std::optional<std::uint64_t> {
+    if (config.max_copy_bytes_per_sec == 0) {
+        return std::nullopt;
+    }
+    if (rate_window_bytes_copied_ >= config.max_copy_bytes_per_sec) {
+        return 0;
+    }
+    return config.max_copy_bytes_per_sec - rate_window_bytes_copied_;
+}
+
+auto MaintenanceController::cpu_budget_exhausted_locked(const MaintenanceConfig& config) const noexcept
+    -> bool {
+    if (config.max_cpu_ms_per_window == 0) {
+        return false;
+    }
+    const auto budget_ns = static_cast<std::uint64_t>(config.max_cpu_ms_per_window) * 1'000'000ULL;
+    return rate_window_cpu_ns_ >= budget_ns;
 }
 
 auto MaintenanceController::eval_interval_locked() const -> std::chrono::milliseconds {
@@ -472,6 +504,35 @@ void MaintenanceController::evaluate_once() {
         return;
     }
 
+    std::uint64_t max_copy_bytes = under_pressure ? 0 : config.max_copy_bytes_per_cycle;
+    if (!under_pressure) {
+        const std::lock_guard lock{mutex_};
+        refresh_rate_window_locked(std::chrono::steady_clock::now());
+        if (cpu_budget_exhausted_locked(config)) {
+            last_eval_duration_ns_ = elapsed_ns(eval_started);
+            record_skip(MaintenanceSkipReason::rate_budget, MaintenanceState::suspended,
+                        MaintenanceActivationReason::rate_budget);
+            return;
+        }
+        if (const auto remaining = remaining_copy_bytes_locked(config)) {
+            if (*remaining == 0) {
+                last_eval_duration_ns_ = elapsed_ns(eval_started);
+                record_skip(MaintenanceSkipReason::rate_budget, MaintenanceState::suspended,
+                            MaintenanceActivationReason::rate_budget);
+                return;
+            }
+            if (max_copy_bytes == 0 || *remaining < max_copy_bytes) {
+                max_copy_bytes = *remaining;
+            }
+            if (observation.durable && observation.candidate_live_record_bytes > max_copy_bytes) {
+                last_eval_duration_ns_ = elapsed_ns(eval_started);
+                record_skip(MaintenanceSkipReason::rate_budget, MaintenanceState::suspended,
+                            MaintenanceActivationReason::rate_budget);
+                return;
+            }
+        }
+    }
+
     MaintenanceActivationReason activation = MaintenanceActivationReason::scheduled;
     if (pressure == MaintenancePressureLevel::emergency) {
         activation = MaintenanceActivationReason::emergency_capacity;
@@ -499,13 +560,19 @@ void MaintenanceController::evaluate_once() {
     }
 
     const auto compact_started = std::chrono::steady_clock::now();
-    const auto max_copy_bytes = under_pressure ? 0 : config.max_copy_bytes_per_cycle;
     auto result = compact(observation.compaction_candidate_worker, max_copy_bytes);
     const auto compact_ns = elapsed_ns(compact_started);
     {
         const std::lock_guard lock{mutex_};
         last_compact_duration_ns_ = compact_ns;
         last_eval_duration_ns_ = elapsed_ns(eval_started);
+        refresh_rate_window_locked(std::chrono::steady_clock::now());
+        if (!under_pressure) {
+            rate_window_cpu_ns_ =
+                compact_ns > std::numeric_limits<std::uint64_t>::max() - rate_window_cpu_ns_
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : rate_window_cpu_ns_ + compact_ns;
+        }
         if (!result) {
             last_error_ = result.error();
             if (result.error().code == ErrorCode::unavailable) {
@@ -530,6 +597,12 @@ void MaintenanceController::evaluate_once() {
         last_bytes_copied_ = result->bytes_copied;
         last_records_copied_ = result->records_copied;
         last_expired_records_dropped_ = result->expired_records_dropped;
+        if (!under_pressure) {
+            rate_window_bytes_copied_ =
+                result->bytes_copied > std::numeric_limits<std::uint64_t>::max() - rate_window_bytes_copied_
+                    ? std::numeric_limits<std::uint64_t>::max()
+                    : rate_window_bytes_copied_ + result->bytes_copied;
+        }
         if (!result->compacted) {
             ++consecutive_no_gain_;
             last_no_gain_source_records_verified_ = result->source_records_verified;

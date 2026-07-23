@@ -3,7 +3,7 @@
 Status: roadmap  
 Applies to: daemon TCP surface, official SDKs, durable namespace ops  
 Owner: security maintainers  
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-23
 
 This roadmap turns [threat-model.md](threat-model.md) and the security rows in
 [production-readiness.md](../production-readiness.md) / [v1-production-roadmap.md](../v1-production-roadmap.md)
@@ -44,9 +44,9 @@ changes require ADRs and compatibility evidence first.
 | Area | Today |
 | --- | --- |
 | Transport | Cleartext TCP (protocol v2) by default; optional TLS 1.3 outer transport when built with LibreSSL/OpenSSL (`--tls-cert`/`--tls-key`); optional dual cleartext+TLS via `--tls-port` (ADR 0020) |
-| Authn / authz | None — any peer that reaches the port can mutate |
-| Quotas / rate limits | Frame/buffer bounds only; no per-client identity |
-| Audit | No security audit trail |
+| Authn / authz | Secure profile: mTLS principals + coarse `--authz-map` capabilities (ADR 0021/0022); cleartext trusted profile unchanged |
+| Quotas / rate limits | Frame/buffer bounds only; no per-client identity quotas (Phase 5 open) |
+| Audit | Lifecycle JSON logs; thin auth-specific audit trail (Phase 6 open) |
 | At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
 | Safe deployment | Embedded trusted caller, or daemon on trusted loopback/private network only |
 
@@ -103,21 +103,22 @@ Phase 8  Later: UDS, at-rest crypto, multi-tenant keyed routing
 | 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
 | 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
 
-**Next:** Phase 3 mTLS principal extraction (ADR 0021 hooks already accept `--tls-client-ca`).
-OpenBSD/LibreSSL CI and the TLS perf note are done (Phases 2.5–2.6).
+**Next:** Phase 5 abuse controls (rate/idle limits) before public bind; Phase 6 audit polish.
+Phase 2 outer-transport TLS is complete; Phases 3–4 (mTLS principal + capabilities) landed
+2026-07-23 — see [secure-profile.md](secure-profile.md).
 
 ---
 
-## Phase 2 — Transport security (TLS) — **in progress (daemon + SDK TLS 2026-07-20)**
+## Phase 2 — Transport security (TLS) — **done (2026-07-23)**
 
 **Goal:** Confidentiality and integrity of the byte stream; optional client identity via certificates.
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
-| 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | **partial** — `TlsContext` + `--tls-cert`/`--tls-key`/`--tls-client-ca`; TLS 1.3-only; CMake `GLYPHASTORE_ENABLE_TLS` (LibreSSL on OpenBSD, OpenSSL 3.x elsewhere) |
+| 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | **done** — `TlsContext` + `--tls-cert`/`--tls-key`/`--tls-client-ca`; TLS 1.3-only; explicit AEAD cipher suites; CMake `GLYPHASTORE_ENABLE_TLS` (LibreSSL on OpenBSD, OpenSSL 3.x elsewhere); [secure-profile.md](secure-profile.md) |
 | 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **done** (2026-07-20) — TLS without `--tls-port` keeps `--port` TLS-only; `--tls-port` enables dual cleartext+TLS on distinct ports (fail closed if ports collide); never opportunistic on one endpoint |
-| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **partial** — Go / C++ / Python / Perl clients expose opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); Ruby Phase 3 follows the same train; fail closed; no silent cleartext fallback |
-| 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** (2026-07-20) — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs, daemon `--tls-cert`/`--tls-key`, client `--tls`/`--tls-ca`/`--server-name`); Ruby cleartext-only until its TLS train; Perl TLS soft-excluded when `IO::Socket::SSL` is missing |
+| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **done** for C++ / Python / Perl / Go / Erlang — opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); fail closed; no silent cleartext fallback. **Ruby** remains cleartext-only until [ruby-sdk-roadmap](../architecture/ruby-sdk-roadmap.md) Phase 3 |
+| 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs; Erlang included when OTP available; Ruby cleartext-only; Perl TLS soft-excluded when `IO::Socket::SSL` is missing) |
 | 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | **done** (2026-07-20) — `scripts/benchmark_tls_tax.sh` + [tls-performance.md](tls-performance.md); Go bench gained `--tls` flags |
 | 2.6 | OpenBSD CI: native LibreSSL build + TLS smoke | **done** (2026-07-20) — `.github/workflows/openbsd-libressl.yml` via `vmactions/openbsd-vm` + `scripts/ci-openbsd-libressl.sh` (LibreSSL-only configure, full ctest, Go TLS PUT→GET) |
 
@@ -150,37 +151,30 @@ unless ADR 1.5 requires an in-band upgrade — default is outer TLS.
 
 ---
 
-## Phase 3 — Authentication (authn)
+## Phase 3 — Authentication (authn) — **done 2026-07-23 (mTLS principals)**
 
 **Goal:** Every admitted session has a stable **principal id** (or is rejected).
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
-| 3.1 | Principal model (cert CN/SAN, token subject, or both per ADR) | Spec section + ADR |
-| 3.2 | Session establishment after TLS (if token-based): single auth exchange, then normal v2 ops | Timeouts, failure → close |
-| 3.3 | Credential provisioning docs (files, env, rotation without downtime) | Runbook |
-| 3.4 | SDK credential hooks (no secrets in `Error.Error()` / logs / `inspect`) | Tests for redaction |
-| 3.5 | Reject anonymous peers when secure profile enabled | Negative tests |
-
-**Effort:** 2–3 weeks after Phase 2 (or overlapping if mTLS-only authn is chosen in ADR).
+| 3.1 | Principal model (cert CN/SAN, token subject, or both per ADR) | **done** — URI SAN → DNS SAN → CN; [secure-profile.md](secure-profile.md) |
+| 3.2 | Session establishment after TLS (if token-based): single auth exchange, then normal v2 ops | **n/a** for mTLS-only v1 (handshake is the auth exchange) |
+| 3.3 | Credential provisioning docs (files, env, rotation without downtime) | **done** (secure-profile §5) |
+| 3.4 | SDK credential hooks (no secrets in `Error.Error()` / logs / `inspect`) | **done** (existing TLS options; paths only in dump/logs) |
+| 3.5 | Reject anonymous peers when secure profile enabled | **done** (`SSL_VERIFY_FAIL_IF_NO_PEER_CERT` + principal extraction) |
 
 ---
 
-## Phase 4 — Authorization (authz)
+## Phase 4 — Authorization (authz) — **done 2026-07-23 (coarse capabilities)**
 
 **Goal:** Principals are limited to allowed operations / namespaces.
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
-| 4.1 | Capability table: e.g. `read`, `write`, `admin` (exact set in ADR) | Spec |
-| 4.2 | Enforcement points: before mutate admission; GET/PING policy explicit | Unit + interop denial tests |
-| 4.3 | Namespace or prefix scope (if ADR requires) | Boundary tests; no cross-scope leak |
-| 4.4 | Default-deny in secure profile | Misconfig fails closed |
-
-**Non-goal for first authz cut:** rich multi-tenant isolation with adversarial hash-flood resistance
-(threat model §6). That needs a **versioned keyed routing** design — Phase 8.
-
-**Effort:** 2–4 weeks depending on granularity chosen in Phase 1.
+| 4.1 | Capability table: e.g. `read`, `write`, `admin` (exact set in ADR) | **done** — [secure-profile.md](secure-profile.md) §3 |
+| 4.2 | Enforcement points: before mutate admission; GET/PING policy explicit | **done** — Reactor pre-admission; wire `PERMISSION_DENIED` |
+| 4.3 | Namespace or prefix scope (if ADR requires) | **deferred** (ADR 0022 optional; not required for mTLS) |
+| 4.4 | Default-deny in secure profile | **done** — `--secure-profile` + empty/unmapped deny |
 
 ---
 

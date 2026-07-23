@@ -114,6 +114,8 @@ module GlyphaStore
           overloaded("server is overloaded")
         when Protocol::Status::NOT_BOUND
           unavailable("server connection is not bound")
+        when Protocol::Status::PERMISSION_DENIED
+          permission_denied("server denied the request")
         when Protocol::Status::WRONG_OWNER
           protocol("server rejected Worker routing")
         when Protocol::Status::INVALID_REQUEST, Protocol::Status::UNSUPPORTED
@@ -123,6 +125,10 @@ module GlyphaStore
         end
       err.enrich(wire_status: status)
       err
+    end
+
+    def self.permission_denied(message)
+      new(category: Category::PERMISSION_DENIED, message: message, retryability: Retryability::NEVER)
     end
   end
 
@@ -134,6 +140,7 @@ module GlyphaStore
     TRANSPORT = "transport"
     PROTOCOL = "protocol"
     INTERNAL = "internal"
+    PERMISSION_DENIED = "permission_denied"
   end
 
   module Retryability

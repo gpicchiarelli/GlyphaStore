@@ -44,6 +44,7 @@ const (
 	StatusOverloaded     Status = 5
 	StatusWrongOwner     Status = 6
 	StatusNotBound      Status = 7
+	StatusPermissionDenied Status = 8
 )
 
 // Request is a decoded protocol-v2 request.
@@ -365,7 +366,7 @@ func validOpcode(opcode Opcode) bool {
 }
 
 func validStatus(status Status) bool {
-	return status <= StatusNotBound
+	return status <= StatusPermissionDenied
 }
 
 func growSlice(dst []byte, n int) []byte {
@@ -396,6 +397,8 @@ func FormatStatus(status Status) string {
 		return "WRONG_OWNER"
 	case StatusNotBound:
 		return "NOT_BOUND"
+	case StatusPermissionDenied:
+		return "PERMISSION_DENIED"
 	default:
 		return fmt.Sprintf("STATUS_%d", status)
 	}

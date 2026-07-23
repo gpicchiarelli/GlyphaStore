@@ -6,11 +6,11 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 sdk="$root/sdk/erlang"
 
 if ! command -v rebar3 >/dev/null 2>&1; then
-  echo "rebar3 is required (https://rebar3.org)" >&2
+  echo "rebar3 is required (macOS: sudo port install rebar3)" >&2
   exit 1
 fi
 if ! command -v erl >/dev/null 2>&1; then
-  echo "Erlang/OTP is required (OTP >= 25 recommended)" >&2
+  echo "Erlang/OTP is required (macOS: sudo port install erlang; OTP >= 25)" >&2
   exit 1
 fi
 

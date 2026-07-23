@@ -34,15 +34,17 @@ severity or eligibility for a CVE.
 
 ## Current network posture
 
-`glyphastored` speaks **cleartext TCP** with **no authentication**. The safe default is bind
-`127.0.0.1` (loopback) or an otherwise trusted private boundary. Do not expose the listener to
-untrusted networks.
+`glyphastored` defaults to **cleartext TCP** with **no authentication**. Optional **TLS 1.3** outer
+transport is available when built with LibreSSL/OpenSSL (`--tls-cert`/`--tls-key`; dual
+`--tls-port`; see [docs/security/secure-profile.md](docs/security/secure-profile.md)). The safe
+default remains bind `127.0.0.1` (loopback) or an otherwise trusted private boundary. Do not expose
+the listener to untrusted networks until mTLS principals and capabilities are enabled.
 
-The planned **secure profile** (TLS 1.3 + mTLS + coarse capabilities) is specified in
-[docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
+The **secure profile** is specified in [docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
 [0020](docs/adr/0020-tls-outer-transport.md)–[0022](docs/adr/0022-authorization-capabilities.md).
-**OpenBSD** is a first-class target (LibreSSL; later `pledge`/`unveil`). CI builds and tests the
-daemon against system LibreSSL
+Phase 2 (outer TLS) is implemented; Phases 3–4 (authn/authz) remain open. **OpenBSD** is a
+first-class target (LibreSSL; later `pledge`/`unveil`). CI builds and tests the daemon against
+system LibreSSL
 ([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Until the full
 secure profile (TLS + mTLS + capabilities) is enabled in production deployments, treat the daemon as
 sidecar / private-network only.

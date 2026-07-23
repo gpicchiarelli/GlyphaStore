@@ -1030,4 +1030,22 @@ auto detail::StoreAccess::segments(const Store& store) -> std::vector<SegmentPtr
     return store.impl_->volatile_runtime->segment_manager.segments();
 }
 
+auto detail::StoreAccess::snapshot_live_keys(Store& store) -> Result<std::vector<std::string>> {
+    if (!store.impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "live-key snapshot requires a durable Store");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, store.impl_->control_shard()};
+    if (!operation) {
+        return closed_store();
+    }
+    return store.impl_->durable_runtime->snapshot_live_keys();
+}
+
+auto detail::StoreAccess::durable_manifest(const Store& store) -> Result<Manifest> {
+    if (!store.impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "durable manifest requires a durable Store");
+    }
+    return store.impl_->durable_runtime->manifest();
+}
+
 } // namespace glyphastore

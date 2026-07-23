@@ -37,6 +37,7 @@ class Status(IntEnum):
     OVERLOADED = 5
     WRONG_OWNER = 6
     NOT_BOUND = 7
+    PERMISSION_DENIED = 8
 
 
 @dataclass(frozen=True, slots=True)

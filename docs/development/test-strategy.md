@@ -59,8 +59,9 @@ certification.
 
 1. Per change: build, unit/integration/property tests, formatting.
 2. Required extended: ASan/UBSan and TSan.
-3. Nightly: fuzz smoke, crash matrix, opt-in exhaustive and randomized compaction matrices, broader
-   compilers/platforms.
+3. Nightly / scheduled: continuous fuzz smoke (Sanitizers `fuzz-run`, 120s per target on Monday),
+   crash matrix, opt-in exhaustive and randomized compaction matrices, broader compilers/platforms
+   including FreeBSD and OpenBSD VM gates.
 4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence.
 
 Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy.
@@ -76,8 +77,13 @@ Line coverage is diagnostic, not the acceptance metric. Review must map each nor
 ./scripts/dev.sh asan
 ./scripts/dev.sh tsan
 ./scripts/dev.sh fuzz-build
+./scripts/dev.sh fuzz-run
 ./scripts/dev.sh test-lto
 ```
+
+`fuzz-run` expects a prior `fuzz-build` (or an equivalent `unix-fuzz` / `macos-fuzz` build) and
+defaults to 60s per target via `scripts/run-fuzzers.sh`. Override with
+`GLYPHASTORE_FUZZ_SECONDS`.
 
 Run focused binaries while iterating, then the repository workflow appropriate to the change before handoff.
 

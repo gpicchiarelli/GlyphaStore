@@ -118,6 +118,6 @@ Unit tests cover exact size and identity, duplicate creation, durable reopen, al
 sealing, uncommitted tail recovery, indeterminate slot poisoning, committed-region corruption, and
 directory-lifetime fail-closed behavior, read-only mutation rejection, plus allocation/write/sync
 fault boundaries. The macOS
-implementation is exercised locally. Linux,
-FreeBSD, and OpenBSD paths still require native CI plus real disk-full, short-I/O, process-kill, and
+implementation is exercised locally. Linux, FreeBSD, and OpenBSD have native or VM CI build/test
+gates; they still require pinned filesystem rows plus real disk-full, short-I/O, process-kill, and
 power-loss testing before any platform is certified for durable service.

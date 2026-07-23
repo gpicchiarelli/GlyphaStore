@@ -66,9 +66,10 @@ change; compact remains the ground-truth transaction; emergency fails closed on 
 Negative / deferred: unread TTL stays Index-live under default normal maintenance until GET,
 recovery, pressure, or an explicit `Store::compact()` visit. Opt-in
 `unread_ttl_normal_scheduling` adds unread expired sealed puts to the normal dead-byte threshold
-via the same probe and `Store::compact()` path. Per-second/CPU maintenance rate limits remain
-placeholders. Background mode adds one Store thread when enabled. Durable compaction crash/I/O
-matrices and native power-loss certification remain under ADR 0015.
+via the same probe and `Store::compact()` path. Per-second and CPU maintenance rate limits are
+enforced under normal policy (one-second window; pressure/emergency bypass). Background mode adds
+one Store thread when enabled. Durable compaction crash/I/O matrices and native power-loss
+certification remain under ADR 0015.
 
 ## Compatibility and migration
 

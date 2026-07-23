@@ -99,12 +99,37 @@ allowed, `0` explicitly removes the limit, and pressure/emergency bypass it to r
 The same setting is available as `maintenance-max-copy-bytes-per-cycle` in the config file and
 `GLYPHASTORE_MAINTENANCE_MAX_COPY_BYTES_PER_CYCLE` in the environment.
 
+### TLS (optional outer transport)
+
+When built with LibreSSL/OpenSSL (`GLYPHASTORE_ENABLE_TLS`), the daemon may wrap protocol v2 in
+TLS 1.3 ([ADR 0020](adr/0020-tls-outer-transport.md),
+[secure-profile reference](security/secure-profile.md)):
+
+```bash
+# TLS-only on --port
+glyphastored --bind 127.0.0.1 --port 7379 \
+  --tls-cert /etc/glyphastore/server.crt --tls-key /etc/glyphastore/server.key
+
+# Dual: cleartext on --port, TLS on --tls-port
+glyphastored --bind 127.0.0.1 --port 7379 --tls-port 7380 \
+  --tls-cert /etc/glyphastore/server.crt --tls-key /etc/glyphastore/server.key
+
+# mTLS hook (require client certs; principal mapping is Phase 3)
+glyphastored ... --tls-cert ... --tls-key ... --tls-client-ca /etc/glyphastore/clients-ca.crt
+```
+
+`--tls-cert` and `--tls-key` are both required when any TLS path is set. Without `--tls-port`, TLS
+makes `--port` TLS-only. With `--tls-port`, cleartext and TLS use distinct ports (collision fails
+closed). Cleartext remains the default when TLS flags are omitted. Authn/authz beyond the mTLS
+certificate check are not yet enforced.
+
 ## Maintenance tools
 
 ```bash
 glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
 glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
 glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/destination
+glyphastore_migrate_store [--json] [--no-scan] --workers N -- /path/to/source /path/to/destination
 glyphastore_repair_store [--json] [--no-scan] -- /path/to/source /path/to/empty-workspace
 glyphastore_rebuild_index -- segment-<16hex>-<8hex>.glypha
 ```
@@ -159,6 +184,20 @@ verifies the source, creates an empty destination, copies catalog Segments then 
 syncs, and verifies the destination. Restore uses the same command with backup as source and a new
 empty destination. See [backup-restore](architecture/backup-restore.md). Live/hot backup is not
 supported.
+
+### `glyphastore_migrate_store`
+
+```bash
+glyphastore_migrate_store [--json] [--no-scan] --workers N -- /path/to/source /path/to/destination
+```
+
+Offline Worker reshard / logical rewrite. Stop writers first. Verifies the source, copies every live
+key/value/expiry into a new destination Store created with `--workers N`, checkpoints progress in
+`<destination>.migrate-state`, verifies the destination, then removes the checkpoint. Re-run the
+same command to resume after interrupt. Source is never mutated. Same Worker count is allowed as an
+offline rewrite into a new Store identity. Online resharding is not supported. See
+[store-migration](architecture/store-migration.md) and
+[worker-resharding](operations/worker-resharding.md).
 
 ### `glyphastore_repair_store`
 

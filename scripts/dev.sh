@@ -103,6 +103,12 @@ case "${1:-help}" in
         "$cmake" --preset macos-fuzz
         "$cmake" --build --preset macos-fuzz
         ;;
+    fuzz-run)
+        require_tools
+        export GLYPHASTORE_FUZZ_BUILD_DIR="${GLYPHASTORE_FUZZ_BUILD_DIR:-$root/build/macos-fuzz}"
+        export GLYPHASTORE_FUZZ_SECONDS="${GLYPHASTORE_FUZZ_SECONDS:-60}"
+        bash "$root/scripts/run-fuzzers.sh" "$@"
+        ;;
     test-lto)
         require_tools
         "$cmake" --preset macos-release-lto
@@ -128,7 +134,8 @@ case "${1:-help}" in
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|fuzz-run|xcode-build|format|clean} [benchmark args]"
         echo "PGO: pgo-generate builds instrumented benchmarks; pgo-train runs volatile + durable workloads; pgo-use rebuilds optimized benchmarks."
+        echo "Fuzz: fuzz-build configures macos-fuzz; fuzz-run executes targets (GLYPHASTORE_FUZZ_SECONDS, GLYPHASTORE_FUZZ_BUILD_DIR)."
         ;;
 esac

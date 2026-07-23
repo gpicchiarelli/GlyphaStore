@@ -115,5 +115,7 @@ make benchmark
 - A TSan failure is not waived merely because the same test passes normally.
 - Some Apple Xcode distributions do not ship a linkable macOS libFuzzer runtime. The normal,
   ASan, and TSan presets still use Apple Clang. To build fuzz targets locally, install a complete
-  LLVM toolchain and configure `macos-fuzz` with `CC`/`CXX` pointing at that Clang. CI builds the
-  fuzzers on Linux with a complete runtime.
+  LLVM toolchain and configure `macos-fuzz` with `CC`/`CXX` pointing at that Clang. CI builds and
+  runs the fuzzers on Linux (`sanitizers.yml` `fuzz-run`) with a complete runtime and seed corpora
+  under `fuzz/corpus/`. After a local fuzz build:
+  `GLYPHASTORE_FUZZ_BUILD_DIR=build/macos-fuzz ./scripts/dev.sh fuzz-run`.

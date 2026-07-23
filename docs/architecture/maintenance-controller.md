@@ -116,8 +116,6 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
 
 ## Explicitly deferred
 
-- Per-second copy rate (`max_copy_bytes_per_sec`) and CPU window budgets (`max_cpu_ms_per_window`)
-  remain reserved placeholders; normal per-candidate copy limits are enforced.
 - Controlled-hardware baselines and native power-loss certification (owned by ADR 0015 compaction
   transaction, not this scheduler). Related matrices:
   [durable compaction](../benchmarks/durable-compaction-2026-07-23.md),
@@ -127,3 +125,13 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   [deep-phase macOS](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md).
 - Shorter compaction publication leases. Measure deep rotation phases first; only then decide
   whether replacement Segment construction should move before publication authority.
+
+## Rate and CPU budgets
+
+Under normal pressure, `max_copy_bytes_per_sec` and `max_cpu_ms_per_window` share a one-second
+`steady_clock` window. Zero disables each limit. When exhausted, evaluation skips with
+`rate_budget` and suspends until the next evaluation after the window refreshes. Pressure and
+emergency bypass both budgets (same as the per-cycle copy limit). Window consumption is exported
+through `MaintenanceSnapshot` and daemon `STATS`
+(`maintenance_rate_window_bytes_copied` / `maintenance_rate_window_cpu_ns`). Daemon flags:
+`--maintenance-max-copy-bytes-per-sec` and `--maintenance-max-cpu-ms-per-window`.

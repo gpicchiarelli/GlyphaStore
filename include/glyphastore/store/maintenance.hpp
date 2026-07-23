@@ -49,6 +49,10 @@ class MaintenanceController final {
     void record_skip(MaintenanceSkipReason reason, MaintenanceState next,
                      MaintenanceActivationReason activation);
     void publish_mutations_rejected_locked(bool rejected) noexcept;
+    void refresh_rate_window_locked(std::chrono::steady_clock::time_point now) noexcept;
+    [[nodiscard]] auto remaining_copy_bytes_locked(const MaintenanceConfig& config) const noexcept
+        -> std::optional<std::uint64_t>;
+    [[nodiscard]] auto cpu_budget_exhausted_locked(const MaintenanceConfig& config) const noexcept -> bool;
 
     MaintenanceConfig config_;
     CompactCallback compact_;
@@ -85,6 +89,9 @@ class MaintenanceController final {
     std::uint64_t last_eval_duration_ns_{};
     std::uint64_t last_compact_duration_ns_{};
     std::optional<std::chrono::steady_clock::time_point> last_useful_at_{};
+    std::chrono::steady_clock::time_point rate_window_start_{};
+    std::uint64_t rate_window_bytes_copied_{};
+    std::uint64_t rate_window_cpu_ns_{};
     MaintenanceSkipReason last_skip_reason_{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation_{};
     std::optional<Error> last_error_{};

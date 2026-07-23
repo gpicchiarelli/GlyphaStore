@@ -50,8 +50,20 @@ Store.
 
 ## Upgrade and downgrade policy
 
-There is no persistent upgrade, downgrade, or in-place migration path. Before the first durable
-alpha release, every writer version must have:
+Published operator policy lives in [version lifecycle](version-lifecycle.md) and
+[ADR 0024](../adr/0024-offline-worker-migration.md). Summary for the current `0.x` / persistence v1
+line:
+
+- Same-directory **reopen** across binaries that implement Manifest/Segment/Record v1 is the
+  supported upgrade path when Worker count is unchanged.
+- Worker-count changes require offline `glyphastore_migrate_store` into a new destination Store.
+- Newer required format versions fail closed on older binaries; there is no automatic downgrade
+  rewrite.
+- Cross-release tagged artifact drops use `tests/fixtures/released/<label>/` and
+  `scripts/package-release-compatibility-artifacts.sh`; until labels are regularly published,
+  cross-release binary evidence remains an open alpha gate.
+
+Before the first durable alpha release, every writer version must still have:
 
 1. a canonical fixture emitted independently of the production decoder;
 2. compatibility tests using artifacts produced by every supported writer;
@@ -69,7 +81,10 @@ separate operator workflows.
 Fixtures are emitted by `scripts/generate_format_fixtures.py` and checked by decode-only tests in
 `tests/unit/format_compatibility_tests.cpp`. Exact encoder tests bind production output to the same
 canonical bytes. Durable Store round-trip reopen and on-disk Segment header prefixes are covered.
-Cross-release binary compatibility is not covered yet. Wire fixtures are generated independently,
+Cross-release binary compatibility uses the optional `tests/fixtures/released/<label>/` trees and
+`tests/unit/released_artifact_compat_tests.cpp`; packaging is
+`scripts/package-release-compatibility-artifacts.sh`. Wire fixtures are generated independently,
 verified against the C++ codec, and compared byte-for-byte with every official SDK. Crash recovery
 for the persistent v1 runtime is in the `glyphastore_crash_persistence` CTest target and
-[durability and recovery](durability-recovery.md).
+[durability and recovery](durability-recovery.md). Offline Worker reshard evidence is in
+`tests/unit/store_migrate_tests.cpp` and [store-migration](store-migration.md).

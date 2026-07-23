@@ -164,7 +164,10 @@ not deliberately break a supported disk or wire reader. No C++ ABI stability is 
 Disk, manifest, and wire compatibility are governed by their encoded versions, not by the library
 version alone. A release must not claim alpha status until golden fixtures and a compatibility
 matrix demonstrate every supported reader/writer pair. Current development coverage is listed in
-the [format compatibility matrix](format-compatibility.md).
+the [format compatibility matrix](format-compatibility.md). Operator-facing upgrade, downgrade,
+Worker-count, and release-artifact rules are normative in
+[version lifecycle](version-lifecycle.md) ([ADR 0024](../adr/0024-offline-worker-migration.md)).
+Worker-count changes use offline [store migration](store-migration.md); reopen never reshards.
 
 ## Prototype migration
 

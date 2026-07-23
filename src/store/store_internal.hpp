@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace glyphastore::detail {
@@ -49,6 +50,9 @@ class StoreAccess final {
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;
     [[nodiscard]] static auto segments(const Store& store) -> std::vector<SegmentPtr>;
+    // Durable-only. Lexicographically sorted live Index keys for offline tools.
+    [[nodiscard]] static auto snapshot_live_keys(Store& store) -> Result<std::vector<std::string>>;
+    [[nodiscard]] static auto durable_manifest(const Store& store) -> Result<Manifest>;
 };
 
 } // namespace glyphastore::detail

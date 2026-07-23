@@ -22,7 +22,8 @@ through `DurableRuntimeCatalog`. They share the routing/ownership contract, not 
 
 Routing is deterministic from a key hash. The first implementation may route directly by Worker
 count; online Worker resizing would require a stable routing-slot table and migration protocol and
-is intentionally outside this bootstrap.
+is intentionally outside this bootstrap. Changing the persisted Worker count is supported only via
+offline [store migration](store-migration.md) ([ADR 0024](../adr/0024-offline-worker-migration.md)).
 
 ## Concurrency
 

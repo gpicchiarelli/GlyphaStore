@@ -13,6 +13,7 @@
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg"></a>
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/pgo-smoke.yml"><img alt="PGO smoke" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/pgo-smoke.yml/badge.svg"></a>
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/openbsd-libressl.yml"><img alt="OpenBSD LibreSSL" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/openbsd-libressl.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/freebsd.yml"><img alt="FreeBSD" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/freebsd.yml/badge.svg"></a>
 </p>
 
 <!-- toolchain and release posture -->
@@ -392,8 +393,9 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 - macOS on Apple Silicon is the primary development platform; macOS Intel remains a target.
 - Linux and macOS are built and tested in CI.
 - OpenBSD is a first-class target: `.github/workflows/openbsd-libressl.yml` builds and tests with
-  system **LibreSSL** (ADR 0020 / security roadmap Phase 2.6). FreeBSD remains an architectural
-  target without a dedicated native CI job yet.
+  system **LibreSSL** (ADR 0020 / security roadmap Phase 2.6).
+- FreeBSD has a native VM CI gate (`.github/workflows/freebsd.yml`) for build and test; it is a
+  portability signal and does **not** certify UFS/ZFS durability (E3/E4 remain open).
 - Linux, macOS, FreeBSD, and OpenBSD are architectural targets since `0.1.0`.
 
 ## Security

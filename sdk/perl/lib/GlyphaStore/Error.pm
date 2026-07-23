@@ -37,6 +37,7 @@ sub _retryability_for {
     return 'never' if $category eq 'invalid_argument' && !$mutation_sent;
     return 'same_request' if $category eq 'transport' && !$mutation_sent;
     return 'never' if $category eq 'overloaded';
+    return 'never' if $category eq 'permission_denied';
     return 'new_attempt' if $category eq 'not_found';
     return 'never' if $category eq 'unavailable';
     return 'reconcile_first' if $mutation_sent;

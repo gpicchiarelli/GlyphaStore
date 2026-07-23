@@ -3,7 +3,7 @@
 Status: initial normative security boundary
 Applies to: embedded engine and TCP protocol v2
 Owner: security maintainers
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-23
 
 ## 1. Assets
 
@@ -23,11 +23,22 @@ Protected assets are availability and integrity of Store state, confidentiality 
 
 ## 3. Current security posture
 
-Protocol v2 provides no authentication, authorization, TLS, tenant isolation, or request quota identity. Anyone who can reach the listener can attempt Store operations. The daemon must therefore bind only to an explicitly trusted interface (default `127.0.0.1`) or run behind a trusted authenticated proxy/firewall.
+Protocol v2 itself carries no authentication, authorization, tenant isolation, or request quota
+identity **inside the frame**. **Optional outer TLS 1.3** is implemented
+([ADR 0020](../adr/0020-tls-outer-transport.md), [secure-profile reference](secure-profile.md)).
+The **secure profile** adds mTLS principals and coarse capabilities (Phases 3–4). Cleartext remains
+the default for trusted loopback. Anyone who can complete a session on a reachable listener without
+the secure profile may still attempt Store operations. The daemon must therefore bind only to an
+explicitly trusted interface (default `127.0.0.1`) or run behind a trusted authenticated
+proxy/firewall unless the full secure profile is enabled (and Phase 5 abuse controls before public
+exposure).
 
 CRC32C detects accidental corruption; it is not a MAC and provides no protection against deliberate byte modification. File permissions and directory ownership are the current confidentiality/integrity boundary for persistence.
 
-The **secure profile** under design ([ADR 0020](../adr/0020-tls-outer-transport.md)–[0022](../adr/0022-authorization-capabilities.md)) adds TLS 1.3, mTLS, and coarse capabilities. Until that profile ships and is enabled, the deployment statement in §9 still applies.
+The **secure profile** ([ADR 0020](../adr/0020-tls-outer-transport.md)–[0022](../adr/0022-authorization-capabilities.md),
+[secure-profile reference](secure-profile.md)) adds TLS 1.3 (Phase 2), mTLS principal extraction
+(Phase 3), and coarse capabilities (Phase 4). Until Phase 5 abuse controls land, the deployment
+statement in §9 still applies for public / hostile exposure.
 
 ## 3a. Attacker profiles (planning)
 
@@ -54,8 +65,8 @@ The **secure profile** under design ([ADR 0020](../adr/0020-tls-outer-transport.
 | Malicious disk modification | checksums and identities detect many changes | no cryptographic authenticity or encryption |
 | Memory exhaustion | configured resource preflight, bounded queues/caches | allocator fragmentation and many connections require limits |
 | Cross-tenant key access | none | multi-tenant deployment unsupported |
-| Cleartext eavesdropping | trusted bind / network boundary | TLS outer transport (ADR 0020); LibreSSL on OpenBSD |
-| Anonymous remote mutate | none on the wire | mTLS + capabilities (ADR 0021, ADR 0022) |
+| Cleartext eavesdropping | trusted bind / network boundary; optional TLS 1.3 outer transport when enabled | Enable TLS (ADR 0020) before non-loopback exposure; LibreSSL on OpenBSD |
+| Anonymous remote mutate | none on the wire (mTLS hook via `--tls-client-ca` only rejects missing client certs) | Principal extraction + capabilities (ADR 0021, ADR 0022) |
 
 ## 5. Fail-closed requirement
 

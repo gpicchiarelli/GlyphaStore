@@ -86,6 +86,10 @@ class Unavailable(GlyphaError):
     category = "unavailable"
 
 
+class PermissionDenied(GlyphaError):
+    category = "permission_denied"
+
+
 class InternalError(GlyphaError):
     category = "internal"
 
@@ -99,6 +103,8 @@ def _retryability_for(category: str, mutation_sent: bool, indeterminate: bool) -
         return "same_request"
     if category == "overloaded":
         # Wire OVERLOADED collapses admission and capacity exhaustion; fail closed.
+        return "never"
+    if category == "permission_denied":
         return "never"
     if category == "not_found":
         return "new_attempt"
@@ -732,6 +738,8 @@ class Client:
             error = Overloaded("server is overloaded")
         elif status is Status.NOT_BOUND:
             error = Unavailable("server connection is not bound")
+        elif status is Status.PERMISSION_DENIED:
+            error = PermissionDenied("server denied the request")
         elif status is Status.WRONG_OWNER:
             error = ProtocolError("server rejected Worker routing")
         elif status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):

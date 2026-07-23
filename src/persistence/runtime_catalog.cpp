@@ -2749,7 +2749,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
     }
 }
 
-auto DurableRuntimeCatalog::verify_index() -> Status {
+auto DurableRuntimeCatalog::snapshot_live_keys() -> Result<std::vector<std::string>> {
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
@@ -2757,6 +2757,10 @@ auto DurableRuntimeCatalog::verify_index() -> Status {
     for (std::size_t worker_index = 0; worker_index < workers_.size(); ++worker_index) {
         auto& worker = *workers_[worker_index];
         const std::lock_guard lock{worker.mutex};
+        const std::shared_lock catalog_lock{catalog_mutex_};
+        if (!healthy()) {
+            return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+        }
         auto entries = worker.index.entries();
         for (auto& entry : entries) {
             if (route_worker(entry.key, workers_.size()) != worker_index) {
@@ -2765,7 +2769,19 @@ auto DurableRuntimeCatalog::verify_index() -> Status {
             keys.push_back(std::move(entry.key));
         }
     }
-    for (const auto& key : keys) {
+    std::sort(keys.begin(), keys.end());
+    return keys;
+}
+
+auto DurableRuntimeCatalog::verify_index() -> Status {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    auto keys = snapshot_live_keys();
+    if (!keys) {
+        return unexpected(keys.error());
+    }
+    for (const auto& key : *keys) {
         if (auto verified = get(key); !verified) {
             return unexpected(verified.error());
         }

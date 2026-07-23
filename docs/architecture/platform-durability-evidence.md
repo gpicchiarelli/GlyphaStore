@@ -40,8 +40,8 @@ crash harnesses. Retained evidence from pinned native power-loss campaigns does 
 | Linux / ext4 | Hosted Linux workflow and the same E1/E2 suites; hosted backing storage is not pinned | E2 only for a separately recorded run on a declared ext4 mount | Dedicated ext4 block device or VM image, mount/cache/barrier metadata, reset campaign |
 | Linux / XFS | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native XFS job, E2 run, reset campaign and artifacts |
 | Linux / btrfs | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native btrfs job, E2 run, reset campaign and artifacts |
-| FreeBSD / UFS | Synchronization strategy is implemented; no maintained native runner | Architectural target, not a supported durability claim | Native build/E1/E2, then pinned E3/E4 campaign |
-| FreeBSD / ZFS | No maintained native storage row | Architectural target, not a supported durability claim | Explicit ZFS contract, native build/E1/E2, then pinned E3/E4 campaign |
+| FreeBSD / UFS | Native FreeBSD VM workflow builds and runs the general suite (`.github/workflows/freebsd.yml`); guest storage row is not pinned | Portability/regression signal, not UFS certification | Pin UFS mount metadata, E2 collector artifact, then E3/E4 campaign |
+| FreeBSD / ZFS | No maintained native storage row; FreeBSD CI does not select or report ZFS | Architectural target, not a supported durability claim | Explicit ZFS contract, native ZFS job, E2, then pinned E3/E4 campaign |
 | OpenBSD / FFS | OpenBSD/LibreSSL VM workflow runs the general suite, but does not pin or report the guest storage row as durability evidence | Portability/regression signal, not FFS certification | Native or controlled FFS row, filesystem metadata, E2 and E3/E4 artifacts |
 | NFS, SMB, FUSE, overlay, remote or user-space storage | Deliberately outside the local-filesystem contract | Unsupported | Not eligible for certification under persistence v1 |
 

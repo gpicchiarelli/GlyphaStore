@@ -18,6 +18,7 @@ from .client import (
     MutationResult,
     NotFound,
     Overloaded,
+    PermissionDenied,
     PipelineOpcode,
     PipelineOutcome,
     PipelineRequest,
@@ -534,6 +535,8 @@ class AsyncClient:
             error = Overloaded("server is overloaded")
         elif status is Status.NOT_BOUND:
             error = Unavailable("server connection is not bound")
+        elif status is Status.PERMISSION_DENIED:
+            error = PermissionDenied("server denied the request")
         elif status is Status.WRONG_OWNER:
             error = ProtocolError("server rejected Worker routing")
         elif status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):

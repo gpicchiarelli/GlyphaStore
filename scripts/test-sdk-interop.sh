@@ -2,7 +2,8 @@
 # Cross-SDK interoperability matrix against a real volatile glyphastored.
 # Runs cleartext by default, then an opt-in TLS 1.3 matrix (Phase 2.4) when the
 # daemon was built with TLS and openssl is available. Ruby is cleartext-only until
-# its Phase 3 TLS train lands.
+# its Phase 3 TLS train lands. Erlang is included in both matrices when OTP/rebar3
+# are available.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -159,7 +160,7 @@ put_sdk() {
       "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     erlang)
-      escript "$erlang_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     *)
       echo "unknown sdk $sdk" >&2
@@ -180,8 +181,11 @@ get_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" get ;;
-    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" get ;;
-    *) return 1 ;;
+    erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
+    *)
+      echo "unknown sdk: $sdk" >&2
+      return 1
+      ;;
   esac
 }
 
@@ -197,7 +201,7 @@ pipeline_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
-    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     *) return 1 ;;
   esac
 }
@@ -224,7 +228,7 @@ expect_not_found_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
-    erlang) escript "$erlang_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
+    erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     *) return 1 ;;
   esac
 }
@@ -241,7 +245,7 @@ expect_frame_limit_sdk() {
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" expect-frame-limit ;;
-    erlang) escript "$erlang_helper" --port "$port" expect-frame-limit ;;
+    erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     *) return 1 ;;
   esac
 }
@@ -347,10 +351,11 @@ run_matrix_for_workers() {
   if [[ "$mode" == "cleartext" ]]; then
     writers+=(ruby)
     readers+=(ruby)
-    if [[ "$erlang_ready" == "1" ]]; then
-      writers+=(erlang)
-      readers+=(erlang)
-    fi
+  fi
+  if [[ "$erlang_ready" == "1" ]]; then
+    # Erlang ships TLS 1.3 (Phase 2); include in both cleartext and TLS matrices.
+    writers+=(erlang)
+    readers+=(erlang)
   fi
 
   echo "== interop mode=$mode workers=$workers =="
@@ -364,8 +369,19 @@ run_matrix_for_workers() {
     tls_args=(--tls --tls-ca "$work/server.crt" --server-name localhost)
     if ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
       echo "  note: Perl without IO::Socket::SSL — excluding perl from TLS matrix"
-      writers=(cpp python go)
-      readers=(cpp python go)
+      local filtered_w=()
+      local filtered_r=()
+      local sdk
+      for sdk in "${writers[@]}"; do
+        [[ "$sdk" == "perl" ]] && continue
+        filtered_w+=("$sdk")
+      done
+      for sdk in "${readers[@]}"; do
+        [[ "$sdk" == "perl" ]] && continue
+        filtered_r+=("$sdk")
+      done
+      writers=("${filtered_w[@]}")
+      readers=("${filtered_r[@]}")
     fi
   fi
 

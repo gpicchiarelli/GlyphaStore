@@ -79,9 +79,10 @@ TLS library is not acceptable as the first-class secure profile.
 
 - Native OpenBSD CI job building daemon + at least one official client against LibreSSL
   (`.github/workflows/openbsd-libressl.yml`, `scripts/ci-openbsd-libressl.sh`).
-- Interop: every official SDK PUT→GET over TLS (secure profile).
+- Interop: every official SDK PUT→GET over TLS (secure profile), with Ruby deferred to its own
+  TLS train.
 - Negative tests: TLS 1.2-only peer rejected; missing CA / failed hostname verify fails closed.
-- Documented cipher/protocol policy in the secure-profile reference (to be added with Phase 2).
+- Documented cipher/protocol policy: [secure-profile.md](../security/secure-profile.md).
 - TLS tax note: [tls-performance.md](../security/tls-performance.md).
 
 ## References
