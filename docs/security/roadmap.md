@@ -39,7 +39,7 @@ changes require ADRs and compatibility evidence first.
 | Linux | OpenSSL 3.x or LibreSSL | standard file perms; optional Landlock later |
 | macOS | LibreSSL/OpenSSL as provided by build | Keychain integration optional later |
 
-## Current baseline (honest)
+## Current baseline
 
 | Area | Today |
 | --- | --- |
@@ -50,9 +50,8 @@ changes require ADRs and compatibility evidence first.
 | At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
 | Safe deployment | Embedded trusted caller, or daemon on trusted loopback/private network only |
 
-**Exit criterion for “beyond trusted boundary”:** Phases 0–5 complete with published specs, ADR(s),
-interop tests, and an ops runbook. Until then, Internet / hostile multi-tenant exposure stays
-**unsupported**.
+**Beyond trusted boundary:** Phases 0–5 complete with published specs, ADR(s), interop tests, and an
+ops runbook. Internet / hostile multi-tenant exposure is unsupported until then.
 
 ## Dependency graph (high level)
 
@@ -74,10 +73,9 @@ Phase 6  Audit & admin surface
 Phase 8  Later: UDS, at-rest crypto, multi-tenant keyed routing
 ```
 
-## Phase 0 — Posture, hygiene, and honesty (now → short)
+## Phase 0 — Posture and hygiene
 
-**Goal:** Make the unsafe surface impossible to misunderstand; close documentation gaps that block
-security design.
+**Goal:** Document the unsafe surface clearly; close documentation gaps that block security design.
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
@@ -292,4 +290,4 @@ optional. Prefer **shipping mTLS + local principals first**, federation later.
 - Threat model updated (“residual risk” rows closed or explicitly deferred to Phase 8)  
 - Audit events + rotate/revoke runbook  
 - Supply-chain scanning + vulnerability response owner named  
-- Docs state clearly what remains unsupported (public Internet multi-tenant, at-rest crypto, …)
+- Document unsupported surfaces (public Internet multi-tenant, at-rest crypto, …)

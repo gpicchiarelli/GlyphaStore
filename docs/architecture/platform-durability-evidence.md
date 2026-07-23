@@ -5,10 +5,9 @@ Applies to: persistence v1 and every storage mode that claims restart durability
 Owner: release and storage maintainers
 Last reviewed: 2026-07-23
 
-This document records what each kind of test can establish and what GlyphaStore has actually
-established on each platform/filesystem row. It is deliberately stricter than a CI pass: a hosted
-runner whose filesystem, mount options, cache path, and reset mechanism are unknown is useful
-regression evidence, but it is not storage certification.
+This document records what each kind of test can establish and what GlyphaStore has established on
+each platform/filesystem row. A hosted runner whose filesystem, mount options, cache path, and
+reset mechanism are unknown is useful regression evidence, but it is not storage certification.
 
 The normative byte layouts and restart decisions remain in
 [persistence v1](../spec/persistence-v1.md) and the
@@ -32,9 +31,8 @@ test.
 
 ## Current evidence
 
-No platform/filesystem row is E3 or E4 certified in the current tree. The repository has extensive
-E1 coverage and E2 crash harnesses, but retained evidence from pinned native power-loss campaigns
-does not yet exist.
+No platform/filesystem row is E3 or E4 certified. The repository has extensive E1 coverage and E2
+crash harnesses. Retained evidence from pinned native power-loss campaigns does not exist yet.
 
 | Platform/filesystem row | Automated evidence available | Highest defensible current claim | Missing before certification |
 |---|---|---|---|

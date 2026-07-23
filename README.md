@@ -11,6 +11,8 @@
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml"><img alt="Sanitizers" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/sanitizers.yml/badge.svg"></a>
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml"><img alt="Static analysis" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/static-analysis.yml/badge.svg"></a>
   <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml"><img alt="CodeQL" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/codeql.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/pgo-smoke.yml"><img alt="PGO smoke" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/pgo-smoke.yml/badge.svg"></a>
+  <a href="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/openbsd-libressl.yml"><img alt="OpenBSD LibreSSL" src="https://github.com/gpicchiarelli/GlyphaStore/actions/workflows/openbsd-libressl.yml/badge.svg"></a>
 </p>
 
 <!-- toolchain and release posture -->
@@ -66,10 +68,9 @@ explicit.
 | Maintenance | Whole-Segment liveness plus copy-build-validate vacuum foundations |
 | Server | Native non-blocking TCP with `epoll` on Linux and `kqueue` on BSD/macOS |
 
-The scope is intentionally narrow: GlyphaStore is not Redis-compatible, a RESP implementation, a
-SQL or document database, or evidence of unverified throughput claims. The current TCP protocol is
-experimental and has no compatibility promise. For when a fast KV path actually moves the needle in
-an application (and when it does not), see
+GlyphaStore is a binary key-value engine: one logical key-space, exact-key operations, and a native
+TCP protocol. It is not a SQL or document database. The current TCP protocol is experimental and has
+no compatibility promise. For when a fast KV path helps an application (and when it does not), see
 [Where performance matters](docs/architecture/where-performance-matters.md).
 
 ## Quick start
@@ -368,7 +369,7 @@ Command-line conventions, exit codes, signals, and operational examples are docu
 | [C++ TCP client API](docs/reference/cpp-client-api.md) | Reference client, mutation outcomes, and cross-language SDK plan |
 | [Persistence v1](docs/spec/persistence-v1.md) | Durable namespace, checksums, recovery authority, and compatibility |
 | [Architecture charter](docs/architecture/architecture-charter.md) | Fixed decisions, scope, and performance contract |
-| [Where performance matters](docs/architecture/where-performance-matters.md) | When fast KV helps real apps; engine vs SDK; not a Redis claim |
+| [Where performance matters](docs/architecture/where-performance-matters.md) | When fast KV helps real apps; engine vs SDK cost |
 | [SDK roadmap](docs/architecture/sdk-roadmap.md) | Cross-SDK fixtures/interop, batch API, Go, vs production blockers |
 | [Storage model](docs/architecture/storage-model.md) | Segments, Records, visibility, recovery, and complexity |
 | [Durability and recovery](docs/architecture/durability-recovery.md) | Alpha commit point, manifest ordering, crash states, and recovery |

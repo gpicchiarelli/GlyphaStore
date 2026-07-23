@@ -10,17 +10,16 @@
 
 ## Context
 
-C++, Python, and Perl clients already implement compatible mutation outcomes and basic retries, but
-the rules lived mainly in the C++ reference prose and source. Production readiness still required
-normative error, time, and concurrency semantics for clients. Without a frozen taxonomy, a fourth
-SDK (Go) and structured-error enrichment would diverge.
+Official TCP clients need a frozen, portable contract for error categories, mutation outcomes,
+retries, and deadlines so language SDKs stay isomorphic. Rules that live only in C++ reference
+prose diverge as new SDKs land.
 
 ## Decision drivers
 
 - Correctness: never silently duplicate mutations; never call a timed-out mutation `committed`.
 - Compatibility: portable category names across languages without forcing a C ABI.
 - Operability: applications can classify `retryability` without parsing message strings.
-- Honesty: protocol v2 has no cancel frame; late responses after a deadline remain a client hazard
+- Clarity: protocol v2 has no cancel frame; late responses after a deadline remain a client hazard
   solved by connection reset, not by pretending the server aborted.
 
 ## Alternatives considered

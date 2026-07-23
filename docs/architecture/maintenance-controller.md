@@ -1,6 +1,6 @@
 # MaintenanceController
 
-Status: Phase 5 critical fail-closed + lifecycle; Phase 6 wire retry honesty (ADR 0023 / 0019)
+Status: Phase 5 critical fail-closed + lifecycle; Phase 6 wire retry mapping (ADR 0023 / 0019)
 Applies to: embedded Store and glyphastored
 Owner: persistence maintainers
 Last reviewed: 2026-07-23
@@ -28,7 +28,7 @@ In `background`, the controller:
    rotation, and compaction maintain exact active/sealed Index-referenced byte counters. The
    observation selects the next round-robin Worker with sealed history and reports its sealed,
    live, dead, and dead-ratio counters. Observation still runs when auto-compact is disabled so
-   emergency admission stays honest.
+   emergency admission stays fail-closed.
 2. Classifies pressure via `classify_maintenance_pressure` (highest severity wins):
    - **emergency** when `segment_count >= max_segment_count`, or when available free bytes cannot
      cover `reserved_free_bytes + rotate_additional_bytes` (create/rotate at risk; catalog sets
@@ -76,7 +76,12 @@ no-gain planning, skip-reason, and rotation counters.
 
 The live-byte counter means “currently Index-referenced,” not “guaranteed unexpired at observation
 time.” Expiry discovered by validated GET immediately updates it; cold, unread TTL entries remain
-conservatively live until GET, recovery, or a pressure-triggered compaction visits the Record.
+conservatively live until GET, recovery, or compaction visits the Record. Under pressure or
+emergency, an optional bounded probe (`unread_ttl_pressure_probe`, default on) reads sealed source
+Records for the round-robin candidate only and exports
+`candidate_unread_expired_sealed_record_{count,bytes}` plus `unread_ttl_probe_performed` in
+`MaintenanceObservation` / daemon `STATS`. Normal scheduling never probes and does not treat unread
+TTL as reclaim pressure.
 
 Wire note: the Reactor maps `storage_exhausted` to `ResponseStatus::overloaded` (existing
 many-to-one collapse with admission limits). Official clients advertise `retryability=never` for
@@ -107,24 +112,14 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
 
 ## Explicitly deferred
 
-- Production reclaim tuning: expose rejected-plan work and decide whether unread TTL needs a
-  bounded normal-mode probe independent of pressure. The first
-  isolated benefit/cost measurement is recorded in
-  the [2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md);
-  the clean [concurrent-maintenance follow-up](../benchmarks/concurrent-maintenance-2026-07-23.md)
-  measures a roughly 18% median throughput cost and 54--57% p99 increase while useful reclaim
-  overlaps foreground work. The second
-  [rotation/idle/churn follow-up](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md)
-  measures condition-wait latency, product-default and aggressive idle CPU, and seven validated
-  1 GiB churn samples. The
-  [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) then
-  separates publication wait, rotation execution, and residual PUT time. Runtime telemetry now also
-  splits Segment seal, replacement creation, Manifest publication, residual in-memory execution,
-  and the post-rotation final Record commit. The
-  [deep-phase macOS matrix](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md)
-  localizes 65--72% of forced rotation execution to replacement creation; controlled-hardware
-  evidence remains.
-- Shorter compaction publication leases. Measure the deeper rotation phases first; only then decide
-  whether replacement Segment construction should move before publication authority, with
-  generation revalidation/rebase at commit.
+- Normal-mode unread-TTL probe and scheduling influence (pressure/emergency probe and telemetry
+  exist via `unread_ttl_pressure_probe`). Related matrices:
+  [durable compaction](../benchmarks/durable-compaction-2026-07-23.md),
+  [concurrent maintenance](../benchmarks/concurrent-maintenance-2026-07-23.md),
+  [rotation/idle/churn](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md),
+  [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md),
+  [deep-phase macOS](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md).
+  Controlled-hardware baselines remain a release gate.
+- Shorter compaction publication leases. Measure deep rotation phases first; only then decide
+  whether replacement Segment construction should move before publication authority.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).

@@ -1,13 +1,12 @@
 # Production readiness
 
-GlyphaStore remains pre-alpha until every mandatory gate below is backed by automated evidence.
-Passing a gate means that the contract is documented, tested, and exercised in release CI; an
-implementation or design document alone is not sufficient.
+GlyphaStore is an architectural prototype. A release level advances only when every mandatory gate
+below has automated evidence. A design document or implementation alone does not close a gate.
 
 ## Release levels
 
 - **Prototype:** architecture and performance exploration; no compatibility or durability promise.
-- **Alpha:** public API and formats are versioned, but destructive changes remain possible.
+- **Alpha:** public API and formats are versioned; destructive changes remain possible.
 - **Beta:** durability, recovery, upgrade, security, and operational contracts are feature-complete.
 - **Release candidate:** only correctness, compatibility, security, and operability fixes are accepted.
 - **Stable:** supported upgrade paths, published artifacts, and an explicit support lifetime exist.
@@ -19,172 +18,101 @@ implementation or design document alone is not sufficient.
 - [x] The supported API is separated from implementation headers and has an ownership/lifetime model.
   The installed API uses owning reads; internal access remains build-tree-only.
 - [ ] API and ABI compatibility policies define what may change in patch, minor, and major releases.
-  Target policy: [public C++ API](architecture/public-api-contract.md); release evidence pending.
+  Target policy: [public C++ API](architecture/public-api-contract.md).
 - [ ] Disk and wire formats have independent versions, golden fixtures, and compatibility matrices.
-  Manifest, Segment header, commit slot, Record, and the dual-Manifest compaction intent have exact
-  v1 layouts and golden fixtures emitted independently of the production decoders. Decode-only
+  Manifest, Segment header, commit slot, Record, and dual-Manifest compaction intent have exact v1
+  layouts and golden fixtures emitted independently of the production decoders. Decode-only
   compatibility tests, exact encoder checks, and durable artifact round-trip evidence exist. Wire
   v2 request/response golden fixtures are verified across the C++, Python, Perl, Go, and Ruby
-  codecs; cross-release artifact evidence remains pending.
+  codecs. Cross-release artifact evidence is open.
   Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
-  Official TCP **client** error categories, mutation outcomes, automatic retries, and monotonic
-  request deadlines are normative in [client semantics v1](spec/client-semantics-v1.md)
-  ([ADR 0019](adr/0019-client-error-retry-timeout.md)). Ordinary reads and recovery now share a Store-owned clock with deterministic injection and
-  per-instance backward clamping. Public allocation/unexpected exceptions and background flush
-  callback exceptions are translated to stable categories. A dedicated allocator-interposition
-  executable now fails every allocation observed in durable mutation, rotation, read, and group
-  paths. Public `Store::close()` now prevents new admission, drains in-flight calls, makes final
-  flush failure observable, and releases executors and the directory lock. Embedded durable config
-  now validates storage, free-space, Segment/manifest, descriptor, recovery-memory, live-key,
-  temporary-compaction, and write-amplification limits; daemon precedence and server-side
-  cancellation/deadline semantics beyond the client contract remain pending. The real-daemon
-  cross-SDK matrix covers C++, Python, Perl, Go, and Ruby at 1/2/4/8 Workers, every deterministic
-  Worker owner, structured `NOT_FOUND`, and local oversized-frame rejection semantics.
+  Official TCP client error categories, mutation outcomes, automatic retries, and monotonic request
+  deadlines are normative in [client semantics v1](spec/client-semantics-v1.md)
+  ([ADR 0019](adr/0019-client-error-retry-timeout.md)). Ordinary reads and recovery share a
+  Store-owned clock with deterministic injection and per-instance backward clamping. Public
+  allocation/unexpected exceptions and background flush callback exceptions map to stable
+  categories. Allocator interposition covers durable mutation, rotation, read, and group paths.
+  Public `Store::close()` stops admission, drains in-flight calls, makes final flush failure
+  observable, and releases executors and the directory lock. Embedded durable config validates
+  storage, free-space, Segment/manifest, descriptor, recovery-memory, live-key, temporary-compaction,
+  and write-amplification limits. Daemon precedence and server-side cancellation/deadline semantics
+  beyond the client contract are open. The real-daemon cross-SDK matrix covers C++, Python, Perl,
+  Go, and Ruby at 1/2/4/8 Workers, every deterministic Worker owner, structured `NOT_FOUND`, and
+  local oversized-frame rejection.
 
 ### Durability and recovery
 
-- [ ] Acknowledgement semantics state exactly when a mutation is durable. The target semantics are
-  specified and implemented for `durable_sync`, `durable_group`, and `durable_periodic`; process-kill
-  evidence covers their persistent write boundaries. The
+- [ ] Acknowledgement semantics state exactly when a mutation is durable. Semantics are specified and
+  implemented for `durable_sync`, `durable_group`, and `durable_periodic`; process-kill evidence
+  covers their persistent write boundaries. The
   [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines E0–E4
-  claims and artifact provenance; no native filesystem row has E3/E4 sudden-power-loss
-  certification yet.
+  claims; no native filesystem row has E3/E4 sudden-power-loss certification.
 - [ ] Write ordering, synchronization, manifest publication, and directory synchronization are specified.
-  The platform-aware descriptor, locking, full-I/O, atomic manifest publication, preallocated
-  Segment creation, alternating commit-slot layer, and Store integration are implemented with fault
-  and process-kill tests; filesystem/power-loss matrices remain pending.
+  Platform-aware descriptor, locking, full-I/O, atomic manifest publication, preallocated Segment
+  creation, alternating commit-slot layer, and Store integration are implemented with fault and
+  process-kill tests. Filesystem/power-loss matrices are open.
 - [ ] Recovery is deterministic after process termination at every persistent state transition.
-  Manifest-driven committed scans now rebuild partitioned Indexes, next Worker sequences, and the
-  sealed-active rotation marker deterministically. A bounded descriptor-relative namespace audit
-  tolerates only recognizable crash temporaries and rejects unlisted/unknown/unsafe entries without
-  mutation. Recovered Indexes now feed a bounded per-Worker runtime whose disk reads revalidate
-  CRC/key/reference metadata and remain fail-closed after corruption. Existing stores support
-  ordered durable puts/tombstones, exact-intent rotation completion, and crash-recoverable public
-  Store creation. The configured CI invokes the `glyphastore_crash_persistence` harness, whose 91
-  occurrence-specific checkpoints SIGKILL-test bootstrap, put, rotation, single-output online
-  compaction with a 30-operation generated model, the 15 persistence transitions unique to an
-  online 3-to-2 compaction of 64 maximum-size Records, and two-output rollback/retirement cleanup;
-  the opt-in `glyphastore_crash_persistence --mode copy-matrix` adds the other 63 Record-copy
-  occurrences, yielding 154 distinct process-kill checkpoints and exhaustive coverage of all 64
-  copies without imposing that long-running profile on sanitizer jobs;
-  `--mode random-matrix` adds 36 recoveries from four reproducible 96-operation
-  PUT/overwrite/ERASE/TTL histories across nine old/next-authority checkpoint classes per seed;
-  `glyphastore_crash_daemon` SIGKILL-tests the real `glyphastored` process after wire-protocol
-  acknowledgements (durable-sync/group
-  immediately; durable-periodic after the flush window). These are E2 process-kill signals, not
-  inferred certification of a hosted runner's unspecified backing storage. Native-platform
-  exhaustive matrices and disk-full coverage remain pending. The normative
-  [recovery state-transition matrix v1](spec/recovery-state-matrix-v1.md)
-  maps every implemented bootstrap, commit/flush, rotation, and compaction phase to its exact
-  authority, visibility, resumable action, or fail-closed result.
+  Manifest-driven committed scans rebuild partitioned Indexes, next Worker sequences, and the
+  sealed-active rotation marker. A bounded descriptor-relative namespace audit tolerates only
+  recognizable crash temporaries and rejects unlisted/unknown/unsafe entries without mutation.
+  Recovered Indexes feed a bounded per-Worker runtime whose disk reads revalidate CRC/key/reference
+  metadata and remain fail-closed after corruption. Existing stores support ordered durable
+  puts/tombstones, exact-intent rotation completion, and crash-recoverable public Store creation.
+  CI runs `glyphastore_crash_persistence` (91 occurrence-specific SIGKILL checkpoints for bootstrap,
+  put, rotation, single-output online compaction, and multi-output cleanup; optional `copy-matrix`
+  and `random-matrix` profiles extend coverage). `glyphastore_crash_daemon` SIGKILL-tests the real
+  `glyphastored` process after wire-protocol acknowledgements. These are E2 process-kill signals.
+  Native-platform exhaustive matrices and disk-full coverage are open. The
+  [recovery state-transition matrix v1](spec/recovery-state-matrix-v1.md) maps bootstrap, commit/flush,
+  rotation, and compaction phases to authority, visibility, resumable action, or fail-closed result.
 - [ ] Truncation, corruption, missing files, disk-full conditions, and I/O failures fail safely.
-  Segment unit recovery rejects committed corruption and ignores uncommitted tails; missing catalog
-  files and process termination are covered. Deterministic per-directory seams now exercise short
-  reads/writes, `EINTR`, delayed-sync `EIO`, `ENOSPC`/`EDQUOT`, `EROFS`, and every embedded mutation
-  commit boundary with a recovery oracle. System-level disk-full/quota/writeback-error and
-  power-loss matrices remain pending.
+  Segment unit recovery rejects committed corruption and ignores uncommitted tails. Deterministic
+  per-directory seams exercise short reads/writes, `EINTR`, delayed-sync `EIO`, `ENOSPC`/`EDQUOT`,
+  `EROFS`, and every embedded mutation commit boundary with a recovery oracle. System-level
+  disk-full/quota/writeback-error and power-loss matrices are open.
 - [ ] Backup, restore, verification, and version migration are tested with released artifacts.
 
 ### Verification
 
 - [ ] Unit, integration, property, concurrency, crash, recovery, and compatibility suites are distinct.
-  Durable recovery now has a separate integration suite for catalog, lifecycle, routing, visibility,
-  namespace policy, bounded runtime reads, sticky corruption failure, missing-file, conflict, and
-  overflow behavior. Crash (`glyphastore_crash_persistence`), decode-only compatibility, and durable
-  artifact suites are separate from integration recovery tests; released-artifact suites remain
-  pending.
+  Durable recovery has a separate integration suite. Crash, decode-only compatibility, and durable
+  artifact suites are separate from integration recovery tests. Released-artifact suites are open.
 - [ ] Fault injection covers allocation and relevant filesystem, clock, socket, and thread failures.
   Allocation sites in durable put/update/erase/read/group/rotation paths are enumerated
-  deterministically per native STL build, including pre-write recovery invariants, post-write
-  fail-close behavior, allocation-free steady-state publication, and background waiter release.
-  Filesystem publication and mutation boundaries now have deterministic pre/post failure matrices;
-  exhaustive socket, thread-creation, platform clock, and hardware power-cut failures remain pending.
+  deterministically. Filesystem publication and mutation boundaries have deterministic pre/post
+  failure matrices. Exhaustive socket, thread-creation, platform clock, and hardware power-cut
+  failures are open.
 - [ ] Fuzz targets run continuously with retained seed and regression corpora; CI does more than compile them.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
-  Benchmark CI now fails when matched median ops/s regresses more than 10% versus the previous
-  baseline; weekly PGO smoke training includes durable open/put/reopen workloads. Local
-  `store-durable-*` filters measure strict write-through persistence; `store-durable-periodic-*`
-  filters measure the production deferred-flush path; `store-durable-group-*` filters measure
-  strict batched group commit. On Apple Silicon (macos-release, 20k ops, key=16, value=64)
-  the corrected two-barrier strict durable put path measures ~122 ops/s, while
-  `store-durable-periodic-read-after-write` measures ~239k ops/s with the 4096-record/4 MiB/1000 ms
-  default batch. After moving whole-batch Index publication into the batch closer, strict
-  `durable_group` with 32 concurrent writers on one Worker measured ~3.6--3.9k put/s. Replacing the
-  first macOS full flush with the platform's ordered storage barrier raised the directly comparable
-  4,096-operation median from 3.80k to 6.21k put/s (+63%), while p50 fell from 8.53 to 5.02 ms and
-  p99 from 12.11 to 6.96 ms. Holding concurrency at 32 across four Workers also measured 6.22k put/s
-  and p99 6.05 ms, showing that partially filled independent Worker batches remain the limit. With
-  128 clients, four full Worker batches reached 8.52k put/s at p99 29.03 ms; one Worker at the same
-  concurrency reached 5.34k put/s at p99 75.20 ms. Concurrency can buy occupancy, but not an
-  acceptable latency curve by itself. The dedicated one-Worker commit-executor path measured
-  6.28k put/s over seven 4,096-operation samples, effectively neutral against its 6.21k baseline.
-  The four-Worker path measured 6.14k put/s in the same follow-up. With one sparse client and an
-  absolute 10 ms batch deadline, end-to-end p99 including both persistence phases measured 20.08 ms.
-  Occupancy-adaptive record targets then raised one-Worker throughput at 4/8/16 producers from
-  238/480/957 put/s to 898/1.74k/2.97k put/s and reduced p50 from about 16 ms to 4--5 ms. Four
-  Workers at 8/16 producers improved from 315/636 put/s to 1.73k/3.03k put/s; saturated 32-producer
-  samples remained within 3--7% of the prior local range. Hot-cache durable get remains around
-  1.9M ops/s. The ARM64 Swiss-slot reduction from 80 to 64 bytes removed about 31.5 MiB RSS at the
-  2,097,152-slot capacity used by a 1M-entry run; cold-read generation pins now allow a blocked
-  `pread` to coexist with same-Worker mutation and source-retiring compaction without stale return.
-  A seven-repeat public-path
-  [durable compaction benefit/cost matrix](benchmarks/durable-compaction-2026-07-23.md) now measures
-  high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts with reopen/model validation. It
-  confirms useful physical reclaim but also exposes 1.6x--1.8x environmental variance on copy-heavy
-  paths. The resulting per-Worker sealed/live/dead counters now
-  enforce the normal threshold and are exported in daemon `STATS`; no-gain planning scans now export
-  verified Record/byte counters as well. Unread TTL remains a conservative
-  policy gap. A clean seven-repeat
-  [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) now supplies
-  foreground p50/p95/p99/max coverage: a useful 31.01 MiB compaction costs about 18% median
-  throughput and 54--57% p99 versus disabled, with no material median difference between
-  cooperative and background scheduling. Its calibration exposed unrelated-Worker rotation
-  rejection during Manifest publication. The clean
-  [rotation/idle/churn follow-up](benchmarks/maintenance-rotation-idle-churn-2026-07-23.md) closes
-  that availability failure: every forced rotation waits and commits, with about 2.5x median
-  forced-boundary latency. Product-default idle process CPU duty measures about 0.0018%; under
-  seven validated 1 GiB churn samples, background maintenance holds the final Store to four
-  Segments instead of 22 at a 2.9% median throughput cost and no material median p99 change.
-  A phase-instrumented
-  [macOS follow-up](benchmarks/maintenance-rotation-phases-macos-2026-07-23.md) attributes 71--75%
-  of forced-overlap latency to the intentional publication wait. In seven 1 GiB churn samples,
-  exactly one of 16 rotations waits, all 16 commit, final Segment count remains four, and background
-  cost is 2.5% median throughput with a 0.6% median p99 increase.
-  The subsequent
-  [deep-phase macOS matrix](benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md)
-  separates seal, replacement creation, Manifest publication, residual execution, and final Record
-  commit. Replacement creation accounts for 65--72% of forced rotation execution, while final
-  Record commit is about 0.3 ms. Its corrected full-Worker quiescence sweep completes all 224 churn
-  rotations and final Records and retains four versus 22 Segments; this noisier local run measures
-  -14.3% median throughput, +51.9% p95, and +2.2% p99 under aggressive 10 ms maintenance.
-  These are exploratory local results, not release regression baselines.
-  These local measurements are diagnostic baselines, not release claims;
-  controlled-hardware CI evidence and an enforced tail-latency target remain pending.
+  Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous baseline.
+  Weekly PGO smoke training includes durable open/put/reopen workloads. Local filters:
+  `store-durable-*` (strict write-through), `store-durable-periodic-*` (deferred flush),
+  `store-durable-group-*` (batched group commit). Dedicated matrices record durable compaction
+  benefit/cost, concurrent maintenance cost, and forced-rotation/idle/churn latency on macOS; see
+  [benchmarks/](benchmarks/). These are diagnostic local baselines, not release claims.
+  Controlled-hardware CI evidence and an enforced tail-latency target are open.
 
 ### Operations and security
 
 - [ ] Configuration has documented precedence, validation, safe defaults, and resource limits.
   Embedded `StoreConfig` has validated durable resource defaults and deterministic boundary tests.
   The daemon has explicit storage-mode, data-directory, durable open-policy, batch, and resource
-  flags plus documented file/environment precedence (`defaults < profile < file < env < CLI`, `--config` /
-  `GLYPHASTORE_CONFIG`, unknown keys fail closed). `--dump-config` prints the resolved effective
-  settings and exits without listening. Normal background compaction has a documented,
-  daemon-configurable 128 MiB per-candidate copy limit with explicit unlimited and pressure bypass
-  semantics. Deployment profiles (`dev`, `embedded`, `production`) are implemented with fail-closed
-  validation before listen.
+  flags plus documented file/environment precedence (`defaults < profile < file < env < CLI`).
+  `--dump-config` prints the resolved effective settings and exits without listening. Normal
+  background compaction has a documented, daemon-configurable 128 MiB per-candidate copy limit.
+  Deployment profiles (`dev`, `embedded`, `production`) validate fail-closed before listen.
 - [ ] Structured logs, metrics, health/readiness, build information, and administrative diagnostics exist.
   Wire `HEALTH`/`READY`/`STATS` expose liveness, readiness, build version, connection counts, durable
-  lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging remain
+  lane/batch counters, and maintenance snapshot fields. Histogram export and structured logging are
   open.
 - [ ] Graceful drain, overload behavior, backup, restore, and corruption runbooks are exercised.
 - [x] Authentication, authorization, transport security, rate limits, and audit requirements are specified.
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
-  [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md)
-  (OpenBSD/LibreSSL first-class; OpenBSD CI gate + TLS perf note done). Daemon TLS scaffold landed
-  (Phase 2: cert/key/mTLS CA flags, dual `--tls-port`, SDK TLS train partial); Phase 3+ authn/authz
-  remain open.
+  [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md).
+  Daemon TLS scaffold landed (cert/key/mTLS CA flags, dual `--tls-port`, SDK TLS train partial);
+  authn/authz remain open.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.
@@ -199,10 +127,10 @@ implementation or design document alone is not sufficient.
 
 ## Change discipline
 
-Any change to routing, hashing, persisted bytes, protocol framing, acknowledgement semantics, or reclamation
-requires an ADR and new compatibility or recovery evidence. Performance changes must preserve all safety and
-durability gates; benchmark improvement is never evidence of correctness.
+Any change to routing, hashing, persisted bytes, protocol framing, acknowledgement semantics, or
+reclamation requires an ADR and new compatibility or recovery evidence. Performance changes must
+preserve all safety and durability gates; benchmark improvement is never evidence of correctness.
 
-The ordered implementation backlog and acceptance criteria are maintained in the
+The ordered implementation backlog is in the
 [persistence v1 production roadmap](v1-production-roadmap.md). Persistence work remains on the v1
 format; storage modes are policies over that same format, not separate persistent versions.

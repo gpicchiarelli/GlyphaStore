@@ -480,7 +480,9 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
                 return raw->compact_for_maintenance(preferred_worker, max_copy_bytes);
             });
         store->impl_->maintenance->bind_observe(
-            []() -> Result<MaintenanceObservation> { return MaintenanceObservation{.durable = false}; });
+            [](MaintenanceObserveRequest) -> Result<MaintenanceObservation> {
+                return MaintenanceObservation{.durable = false};
+            });
         store->impl_->maintenance->start();
         return store;
     }
@@ -542,13 +544,14 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
               const std::uint64_t max_copy_bytes) -> Result<CompactionResult> {
             return raw->compact_for_maintenance(preferred_worker, max_copy_bytes);
         });
-    store->impl_->maintenance->bind_observe([raw]() -> Result<MaintenanceObservation> {
+    store->impl_->maintenance->bind_observe([raw](MaintenanceObserveRequest req) -> Result<MaintenanceObservation> {
         if (!raw->impl_ || !raw->impl_->durable_runtime) {
             return fail(ErrorCode::unavailable, "durable runtime is unavailable");
         }
         auto observation = raw->impl_->durable_runtime->maintenance_observation(
-            raw->impl_->next_compaction_worker.load(std::memory_order_relaxed));
-        if (observation && observation->compaction_candidate_worker) {
+            raw->impl_->next_compaction_worker.load(std::memory_order_relaxed), raw->impl_->now_ns(),
+            req.probe_unread_expired_ttl);
+        if (observation && observation->compaction_candidate_worker && !req.probe_unread_expired_ttl) {
             raw->impl_->next_compaction_worker.store((*observation->compaction_candidate_worker + 1U) %
                                                          raw->impl_->worker_count_value,
                                                      std::memory_order_relaxed);

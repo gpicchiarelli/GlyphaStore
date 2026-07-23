@@ -91,6 +91,10 @@ struct MaintenanceConfig {
     std::uint32_t dead_byte_ratio_bp_normal{5'000};
     std::uint32_t segment_count_pressure_pct{80};
     std::uint64_t free_bytes_pressure_margin{};
+    // When true (default), pressure/emergency evaluations probe the candidate
+    // Worker's sealed Index for unread expired puts and populate observation
+    // counters. Normal mode never probes; scheduling stays conservative there.
+    bool unread_ttl_pressure_probe{true};
 
     auto operator==(const MaintenanceConfig&) const -> bool = default;
 };

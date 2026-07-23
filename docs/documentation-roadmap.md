@@ -5,8 +5,8 @@ Applies to: post-audit documentation work after 2026-07-19
 Owner: project maintainers
 Last reviewed: 2026-07-23
 
-The normative P0 foundation now exists. This roadmap tracks remaining evidence and operator-facing
-material; it cannot override specifications.
+Tracks remaining evidence and operator-facing material after the P0 specification set. Does not
+override specifications.
 
 | Priority | Document / update | Purpose | Audience | Suggested length | Dependencies | Estimate |
 |---|---|---|---|---:|---|---:|

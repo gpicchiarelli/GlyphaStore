@@ -78,14 +78,13 @@ The exclusive lock serializes cooperating GlyphaStore processes. As with the res
 layer, it cannot prevent a same-user process that deliberately ignores the advisory protocol from
 mutating the directory concurrently; later no-follow opens and identity validation remain mandatory.
 
-## Evidence and remaining work
+## Tests
 
 Unit tests cover exact parsing, repeated enumeration, deterministic classification, canonical crash
 temporaries, unlisted files, malformed and unknown names, symlinks, hard links, missing catalog files,
 and the enumeration bound. Recovery integration proves that temporaries are reported without deletion
 and that an unlisted Segment blocks recovery without adoption or deletion.
 
-Still required for production certification: explicit operator quarantine/repair tooling,
-native FreeBSD/OpenBSD evidence, expanded process-kill and disk-full matrices, and documented
-operator handling for every quarantined namespace state. Runtime durable Store materialization is
-implemented and remains governed by the strict normal-open policy above.
+Related release gates: operator quarantine/repair tooling; native FreeBSD/OpenBSD evidence; expanded
+process-kill and disk-full matrices; documented handling for every quarantined namespace state.
+Runtime durable Store materialization follows the strict normal-open policy above.

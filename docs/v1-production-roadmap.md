@@ -1,44 +1,37 @@
 # Persistence v1 production roadmap
 
-This document is the repository-wide engineering audit and execution plan as of 2026-07-16. It
-covers the public API, volatile and durable runtimes, persistent files, recovery, the TCP daemon,
-tests, build and release automation, operations, security, and performance.
+Ordered backlog and acceptance criteria for persistence v1, the durable runtime, the TCP daemon,
+tests, operations, security, and release evidence. Last reviewed 2026-07-23.
 
-The persistence direction is deliberately singular: GlyphaStore keeps and completes the existing
-persistent **v1** Manifest, Segment header, alternating commit slots, and Record format. Storage
-modes differ only in acknowledgement and batching policy. This plan does not introduce a second
-persistent format. The native wire protocol has its own independent version.
+Persistence stays on the existing **v1** Manifest, Segment header, alternating commit slots, and
+Record format. Storage modes differ only in acknowledgement and batching policy. The native wire
+protocol has its own independent version.
 
-## Audit conclusion
+## Current status
 
-The tree has a strong storage-engine foundation: checked little-endian codecs, checksums, immutable
-Records, exact-key indexing, descriptor-relative storage access, private regular-file validation,
-exclusive Store locking, preallocated fixed-size Segments, atomic manifest replacement, bounded
-namespace auditing, fail-closed read validation, platform pollers, sanitizer jobs, golden disk
-fixtures, and process-termination tests for the v1 write boundaries.
+Implemented foundation: little-endian codecs, checksums, immutable Records, exact-key indexing,
+descriptor-relative storage access, exclusive Store locking, preallocated fixed-size Segments,
+atomic manifest replacement, bounded namespace auditing, fail-closed read validation, platform
+pollers, sanitizer jobs, golden disk fixtures, and process-termination tests for v1 write
+boundaries.
 
-It is not production ready yet. The most important gaps are behavioral rather than cosmetic:
+Open release gates (summary):
 
-- `glyphastored` can now open the v1 durable Store through explicit storage, data-directory, and
-  open-policy options, but durable mutations still execute synchronously on the reactor thread;
-- Store-owned TTL time is now implemented; long-running native-platform clock evidence remains a
-  release gate;
-- exception translation, prepared hot-cache publication, and deterministic allocation-failure
-  enumeration are implemented; native-platform evidence remains a release gate;
-- recovery now validates monotonic sequence ranges both inside and across all Segments owned by one
-  Worker; released-artifact and native-platform evidence remains to be accumulated;
-- durable compaction has an internal crash-safe publication and retirement transaction plus
-  explicit `Store::compact()` scheduling, but no complete kill/fault matrix or automatic policy yet;
-- embedded durable operation now has explicit disk, descriptor, recovery, live-key, temporary-space,
-  and write-amplification policy; daemon configuration and compaction-time enforcement remain;
-- process-kill coverage is useful but is not evidence for sudden power loss, every supported
-  filesystem, disk-full behavior, or remote/user-space filesystems;
-- offline inspection (`glyphastore_inspect_store`) and fail-closed repair
-  (`glyphastore_repair_store`) exist; `glyphastore_rebuild_index` still refuses offline Index
-  rebuild. Live/hot backup, restore automation, histogram/Prometheus metrics export,
-  authentication, transport security, and release provenance remain open.
+- Daemon durable mutations leave the reactor through bounded lanes; histogram export and further
+  operability surfaces remain open.
+- Store-owned TTL time is implemented; long-running native-platform clock evidence is a release gate.
+- Exception translation, prepared hot-cache publication, and deterministic allocation-failure
+  enumeration are implemented; native-platform evidence is a release gate.
+- Cross-Segment sequence validation is implemented; released-artifact and native-platform evidence
+  remain to accumulate.
+- Durable compaction has crash-safe publication/retirement and `Store::compact()` scheduling;
+  unread-TTL policy, controlled native baselines, and power-loss certification remain open.
+- Embedded durable resource policy is implemented; some daemon compaction-time enforcement remains.
+- Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification.
+- Offline inspect/verify/backup/repair tools exist; offline Index rebuild is refused; live/hot
+  backup, auth, and release provenance remain open.
 
-These items are release gates. Local throughput gains do not reduce their priority.
+Local throughput gains do not close these gates.
 
 ## Non-negotiable v1 invariants
 
@@ -65,39 +58,23 @@ Every implementation block below must preserve these rules:
 
 ### P0-01 — Make the daemon capable of v1 durability
 
-**Status:** in progress. `Server::create` accepts a complete `StoreConfig`, requires its Worker count
-to match the executor count, and closes the Store observably from `join()`. The daemon exposes
-explicit `volatile`, `durable-sync`, `durable-periodic`, and `durable-group` selection plus durable
-data-directory and open-policy controls. Durable `PUT`/`ERASE` now leave the Reactor through bounded
-per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
-queue-wait expiry before Store entry, per-lane queue/service metrics, and drain-before-Store-close
-shutdown with a configurable `--shutdown-drain-ms` bound (default 30s; listeners stop accepting; idle
-connections close after in-flight responses flush; queued pre-Store work expires as unavailable on
-timeout; in-flight Store mutations are never cancelled; timed-out drain fails `join` closed).
-Strict-group mode retains bounded concurrent producers so daemon batching does not collapse to
-occupancy one. Tests suspend real sync calls and prove Reactor responsiveness, independent queue
-admission, bounded overload, non-commit of expired queued work, multi-record group sync, recovery of
-a mutation admitted during shutdown, drain-deadline abandonment of still-queued work, stop-accept,
-and connection drain of idle and in-flight clients. Wire-protocol `HEALTH`, `READY`, and `STATS`
-probes expose process liveness, traffic readiness (fail closed on sticky storage faults, maintenance
-emergency, or shutdown), and a bounded ASCII admin report (version, connections, durable lane/batch
-counters, maintenance snapshot). Lock-free Worker-local kernel counters now expose exact batch
-occupancy, close reasons, failures, and commit duration; histogram export remains an observability
-surface task. Daemon CLI now
-exposes durable batch and resource caps (`--sync-interval-ms`, `--group-max-*`, `--max-store-bytes`,
-`--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, `--max-temporary-compaction-bytes`)
-with fail-closed volatile rejection, plus the normal background
-`--maintenance-max-copy-bytes-per-cycle` limit. Real-daemon wire-protocol SIGKILL coverage exists for
-post-acknowledgement durable-sync/group recovery and flushed durable-periodic recovery
-(`glyphastore_crash_daemon`). File/environment config precedence is implemented (`--config` /
-`GLYPHASTORE_CONFIG`, `GLYPHASTORE_*` mirrors of long options, defaults < profile < file < env < CLI).
-Deployment profiles (`dev`, `embedded`, `production`) are implemented with fail-closed validation.
+**Status:** partial. `Server::create` accepts a complete `StoreConfig`, requires Worker count to
+match executor count, and closes the Store from `join()`. The daemon exposes `volatile`,
+`durable-sync`, `durable-periodic`, and `durable-group` selection plus durable data-directory and
+open-policy controls. Durable `PUT`/`ERASE` leave the Reactor through bounded per-Worker FIFO lanes
+with count and byte admission, generation-safe completion, overload responses, queue-wait expiry
+before Store entry, per-lane metrics, and drain-before-Store-close shutdown (`--shutdown-drain-ms`,
+default 30s). Strict-group mode retains bounded concurrent producers. Wire `HEALTH`/`READY`/`STATS`
+expose liveness, readiness, and a bounded ASCII admin report. Daemon CLI exposes durable batch and
+resource caps; file/environment config precedence and deployment profiles (`dev`, `embedded`,
+`production`) validate fail-closed. Real-daemon wire-protocol SIGKILL coverage exists
+(`glyphastore_crash_daemon`). Histogram export remains open.
 
-**Required change:** pass a validated `StoreConfig` into `Server`; add CLI/configuration fields for
-data directory, `create_new`/`open_existing`/`open_or_create`, strict/group/periodic policy, batch
-limits, and recovery policy. Durable writes must leave the reactor thread and complete through a
-bounded asynchronous completion path; an `fsync` must not block the event loop. A success response
-may be queued only after the selected durability policy permits acknowledgement.
+**Required change:** validated `StoreConfig` into `Server`; CLI/configuration for data directory,
+open policy, durability policy, batch limits, and recovery policy. Durable writes must leave the
+reactor thread and complete through a bounded asynchronous path; an `fsync` must not block the event
+loop. A success response may be queued only after the selected durability policy permits
+acknowledgement.
 
 **Acceptance:** restart and SIGKILL tests use the real daemon and wire protocol; strict/group
 success responses always recover; pre-commit kills do not expose the mutation; disconnect after
@@ -106,17 +83,13 @@ conflicting configuration fails before listening.
 
 ### P0-02 — Implement the documented Store clock and TTL semantics
 
-**Status:** implemented in the current tree; native-platform and long-running clock evidence remains
-part of the release gate.
+**Status:** implemented; native-platform and long-running clock evidence remain a release gate.
 
-**Root cause:** public `get` and `recovery_now_ns` defaulted to zero, which disabled expiry. The
-server supplied wall-clock time, but the embedded API had no Store-owned injectable clock.
-
-**Implemented change:** ordinary reads and durable recovery now share a Store-owned clock.
-Production defaults to checked Unix-epoch nanoseconds; deterministic tests inject a thread-safe
-`StoreClock`. Per-call public timestamps were removed and nonzero `recovery_now_ns` is rejected.
-Each Store clamps backward movement with an atomic high-water mark. Monotonic time remains reserved
-for batching deadlines, never persisted absolute expiry.
+**Change:** ordinary reads and durable recovery share a Store-owned clock. Production defaults to
+checked Unix-epoch nanoseconds; deterministic tests inject a thread-safe `StoreClock`. Per-call
+public timestamps were removed; nonzero `recovery_now_ns` is rejected. Each Store clamps backward
+movement with an atomic high-water mark. Monotonic time remains reserved for batching deadlines,
+never persisted absolute expiry.
 
 **Acceptance:** an ordinary `get(key)` expires data without caller assistance; restart prunes the
 same logical expirations; tests cover equality, zero/no-expiry, maximum timestamp, backward and
@@ -124,16 +97,14 @@ forward clock jumps, and conversion overflow.
 
 ### P0-03 — Close every exception and allocation boundary around commit
 
-**Status:** implemented in the current tree. Public operations translate allocation and unexpected
-exceptions; background callback exceptions stop the coordinator, fail-close the runtime, and
-release batch waiters. Hot-cache key/value/node/capacity preparation occurs before persistent
-writes and post-commit publication uses prepared node insertion. An isolated test executable
-interposes every throwing `new` form and fails each allocation observed by the native STL build in
-put, update, erase, owning read, strict group commit, and Segment rotation paths.
+**Status:** implemented.
 
-**Root cause:** public operations did not provide a complete exception barrier. Durable publication
-inserted strings and values into `hot_records` after commit, and coordinator callbacks could throw
-from a background thread.
+**Change:** public operations translate allocation and unexpected exceptions; background callback
+exceptions stop the coordinator, fail-close the runtime, and release batch waiters. Hot-cache
+key/value/node/capacity preparation occurs before persistent writes; post-commit publication uses
+prepared node insertion. An isolated test executable interposes every throwing `new` form and fails
+each allocation observed by the native STL build in put, update, erase, owning read, strict group
+commit, and Segment rotation paths.
 
 **Required change:** inventory every allocation and throwing operation before and after commit.
 Preconstruct all fallible publication state before commit, publish prepared/no-throw nodes, or
@@ -154,12 +125,8 @@ producer and proves no caller-stack pending pointer survives the failed batch.
 
 ### P0-04 — Enforce cross-Segment sequence ranges
 
-**Status:** implemented in the current tree. Recovery rejects equal, overlapping, or reversed
-non-empty ranges in later manifest-ordered Segments of the same Worker before scanning their
-Records.
-
-**Root cause:** each Segment scan checked its own sequence order; recovery tracked a maximum but did
-not reject an overlapping or reversed range in a later Segment belonging to the same Worker.
+**Status:** implemented. Recovery rejects equal, overlapping, or reversed non-empty ranges in later
+manifest-ordered Segments of the same Worker before scanning their Records.
 
 **Required change:** validate the first and last committed sequences of every non-empty Segment
 against the preceding Segment in manifest order. Define empty active Segment behavior explicitly.
@@ -170,14 +137,11 @@ an empty new active Segment continue to recover.
 
 ### P0-05 — Make background flush failure and shutdown observable
 
-**Status:** implemented in the current tree. Coordinator callback exceptions are translated to
-sticky `resource_exhausted`/`internal_error` failures, stop the coordinator, fail-close the durable
-runtime, and release queued batch waiters. Public `Store::close()` atomically stops admission,
-forces pending strict groups, waits for already-admitted calls, performs the final flush, stops the
-executor, releases Store resources and the directory lock, and returns a sticky idempotent status.
-
-**Root cause:** `DurableFlushCoordinator::run` invoked its callback without an exception barrier,
-and destruction suppressed final flush errors.
+**Status:** implemented. Coordinator callback exceptions map to sticky `resource_exhausted`/
+`internal_error` failures, stop the coordinator, fail-close the durable runtime, and release queued
+batch waiters. Public `Store::close()` atomically stops admission, forces pending strict groups,
+waits for already-admitted calls, performs the final flush, stops the executor, releases Store
+resources and the directory lock, and returns a sticky idempotent status.
 
 **Required change:** catch callback failures, persist a sticky fail-closed error, complete every
 generation/waiter, and prevent new mutations. Add explicit idempotent `close()`/shutdown returning a
@@ -189,10 +153,8 @@ concurrent `flush()`/close tests cannot deadlock or acknowledge unflushed state.
 **Evidence:** tests cover repeated and concurrent close, concurrent flush/close, partial strict
 groups with a 60-second normal deadline, immediate reopen while the closed Store object remains
 alive, sticky final-sync failure, background callback exceptions, coordinator stop races, and
-exhausted flush generations. The destructor invokes the same path but intentionally discards its
-status as a non-throwing fallback. Admission counters are cache-line-isolated by Worker; an A/B
-Release benchmark against the pre-change commit used two interleaved, order-reversed runs of nine
-samples each; aggregate worker-affine parallel get and put medians remained within 3% on arm64 macOS.
+exhausted flush generations. The destructor invokes the same path but discards its status as a
+non-throwing fallback.
 
 ### P0-06 — Add storage and recovery resource budgets
 
@@ -200,9 +162,6 @@ samples each; aggregate worker-affine parallel get and put medians remained with
 available-space reserve, Segment count, manifest bytes, Store descriptors, estimated recovery
 memory, live keys, temporary compaction space, and write amplification. These are runtime policy and
 do not change the v1 disk format.
-
-**Root cause:** one 64 MiB active Segment was created per Worker (up to 16 GiB at 256 Workers), while
-catalog growth, recovery keys, descriptors, and rotation had only format or address-space ceilings.
 
 **Required change:** introduce validated limits for usable disk reservation, total Store bytes,
 Segment count, manifest bytes, open descriptors, recovery memory, live-key count, temporary
@@ -218,26 +177,22 @@ publishing the intent. Rotation accounts for the replacement Segment and both ma
 before sealing the old active Segment. Reopen bounds manifest allocation before decode, validates
 steady Store bytes and descriptor/RLIMIT requirements, and applies a conservative key-aware recovery
 memory estimator. Live-key capacity is divided into deterministic Worker-owned partitions whose sum
-is the public limit, avoiding global mutation-path contention. Tests cover all invalid fields,
-configured byte/count/descriptor boundaries, injected available space, a 256-Worker rejection with
-no bootstrap intent, reusable live-key capacity, constrained recovery, and rotation rejection while
-the persisted active Segment remains unsealed. Native `ENOSPC`/`EDQUOT`, `EFBIG`, and
-`EMFILE`/`ENFILE` map to `storage_exhausted`, `file_too_large`, and `descriptor_exhausted`.
-Two order-reversed Release runs of nine samples for 4,096 one-Worker periodic durable puts measured
-baseline medians of 42.52/45.75k put/s and limited-build medians of 44.01/45.28k put/s, showing no
-regression from Worker-local live-key admission.
+is the public limit. Tests cover invalid fields, configured boundaries, injected available space,
+256-Worker rejection with no bootstrap intent, reusable live-key capacity, constrained recovery, and
+rotation rejection while the persisted active Segment remains unsealed. Native `ENOSPC`/`EDQUOT`,
+`EFBIG`, and `EMFILE`/`ENFILE` map to `storage_exhausted`, `file_too_large`, and
+`descriptor_exhausted`.
 
 ### P0-07 — Complete the failure matrix beyond process termination
 
 **Status:** deterministic in-process coverage and the evidence-collection foundation are
-implemented; hardware/filesystem certification is still open. v1 process-kill tests cover
-bootstrap, put, periodic/group put, and rotation checkpoints, and each run is isolated by process
-and start-time suffix. Instance-local raw I/O seams now force short `pread`/`pwrite`, `EINTR`,
-synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS` without global test state. The
+implemented; hardware/filesystem certification is open. v1 process-kill tests cover bootstrap, put,
+periodic/group put, and rotation checkpoints. Instance-local raw I/O seams force short
+`pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS`. The
 [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines
-cumulative E0–E4 claims, exact per-row provenance, promotion rules, and a safe collector for native
-E2 artifacts. Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows
-cannot be established by an in-process seam and remain release blockers.
+cumulative E0–E4 claims, provenance, promotion rules, and a collector for native E2 artifacts.
+Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows require
+out-of-process reset infrastructure.
 
 **Required change:** add deterministic short-write/read, `EINTR`, delayed writeback `EIO`, `ENOSPC`,
 `EDQUOT`, `EROFS`, missing file, corrupt directory entry, rename, file-sync, and directory-sync
@@ -249,81 +204,31 @@ or user-space filesystems are rejected or prominently documented.
 
 **Evidence:** exact-I/O tests prove retry after `EINTR`, completion after repeated short transfers,
 and stable native error categories. Manifest, bootstrap intent, and Segment creation matrices verify
-every pre-rename boundary leaves the old authority or a pristine namespace; directory-sync failure
-after rename is indeterminate and fail-closed. Durable mutation tests cross write, Record sync,
-commit-slot write, and commit-slot sync with `io_error`, `storage_exhausted`, and
-`read_only_filesystem`, then reopen and verify the absent/optional commit oracle and rebuilt Index.
-Existing namespace recovery cases also reject missing catalog files, malformed names, symlinks, hard
-links, and unlisted entries without adopting or repairing them.
-The SIGKILL bootstrap matrix now begins at data-directory creation and parent-directory sync.
-Periodic and group crash matrices also completed concurrently with isolated namespaces and markers.
-The filesystem contract now prominently marks NFS, SMB, FUSE, overlay, and other remote/user-space
-storage unsupported. The evidence matrix now records the honest current state for APFS,
-ext4/XFS/btrfs, UFS/ZFS, and FFS and prevents hosted runners from being mistaken for certified
-storage rows. VM/block-device power-cut automation, repeated E3 campaigns, and reviewed E4 release
-artifacts remain before this P0 item can be complete.
+every pre-rename boundary. Directory-sync failure after rename is indeterminate and fail-closed.
+Durable mutation tests cross write, Record sync, commit-slot write, and commit-slot sync with
+`io_error`, `storage_exhausted`, and `read_only_filesystem`, then reopen and verify the recovery
+oracle. Namespace recovery rejects missing catalog files, malformed names, symlinks, hard links,
+and unlisted entries without adopting them. NFS, SMB, FUSE, overlay, and other remote/user-space
+storage are unsupported. VM/block-device power-cut automation, repeated E3 campaigns, and reviewed
+E4 release artifacts remain open.
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 
-**Status:** in progress. Durable compaction is exposed as cooperative `Store::compact()` maintenance
+**Status:** partial. Durable compaction is exposed as cooperative `Store::compact()` maintenance
 with an optional Store-owned [MaintenanceController](architecture/maintenance-controller.md)
 (ADR 0023). Automatic reclaim policy through Phase 3 (budgets, pressure, emergency mutation reject)
-is implemented, including Phase 4 lifecycle fail-closed (emergency gate survives reclaim fault;
-close drains blocked background compact). The first
-[durable compaction benefit/cost benchmark](benchmarks/durable-compaction-2026-07-23.md) now covers
-six public-path reclaim classes with seven verified repeats. It shows that normal-mode dead-byte
-selection materially changes compaction cost. Exact per-Worker Index-referenced sealed/live/dead
-byte counters now enforce the inclusive normal threshold and select the same Worker for policy and
-automatic execution. A finite 128 MiB default now preflights that candidate's exact live bytes
-before normal automatic compaction (zero explicitly means unlimited; pressure/emergency bypass).
-The clean
-[concurrent-maintenance benchmark](benchmarks/concurrent-maintenance-2026-07-23.md) now measures
-disabled/cooperative/background mixed GET/PUT cost: one useful 31.01 MiB compaction reduces median
-foreground throughput about 18% and raises p99 54--57%, while cooperative and background medians
-are effectively equal. Its rotation-forcing calibration exposes fail-fast rejection of an
-unrelated Worker's writes during Manifest publication. Unread-TTL policy and controlled native
-baselines remain open; the former publication-availability gap is closed by condition-based
-rotation waits, and no-gain planning now exposes public scan counters. A deterministic v1
-planner treats one Worker's complete sealed history as the atomic unit,
-reuses the earliest source IDs with incremented generations, preserves the active Segment, and
-rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
-A checksummed intent codec embeds and validates both complete manifest authorities and their exact
-canonical transition. Descriptor-relative intent publication and removal now implement private
-temporary creation, exact write, file sync, rename, `unlinkat`, bounded read, and mandatory directory
-sync with explicit pre-operation/indeterminate outcomes. Runtime reopen now resolves an interrupted
-intent against exactly the old or next authority, fully recovers that catalog before deletion,
-validates obsolete identities, performs idempotent rollback/source retirement, synchronizes the
-directory, removes the intent, and re-audits the namespace. This prevents a per-Segment tombstone
-drop from resurrecting older values. A durable builder now consumes an owning manifest/Index
-snapshot and exact source-generation pins, verifies routed source Records, drops expired puts,
-computes exact non-spanning Segment
-layout, prebuilds the replacement Index, publishes the intent, copies original v1 bytes with a
-reused buffer, seals and reopens every output, and validates checksums and commit metadata. The
-internal durable runtime now holds no Worker/catalog lock during scan, CRC, replacement writes,
-seal, or reopen validation. A brief final try-lock publishes only if sequence, batch, manifest,
-source identity, and generation pins still match; concurrent mutation instead triggers finite
-old-authority rollback and preserves the mutation. It installs the prepared manifest, commit
-catalog, and Index atomically, releases data locks before retiring sources, removes the intent, and
-fails closed only when recovery is genuinely required. A logical manifest-publication lease makes
-another compaction fail fast; rotation now waits on a condition variable, rebuilds from the
-resulting authority, and commits without exposing a third Manifest state. Immutable generation pins
-let readers continue across catalog entry removal. Final manifest write/sync also runs without
-Worker, catalog, or publication mutexes under a Worker-local commit gate. Public
-`Store::compact()` now uses a non-queuing
-Store-wide maintenance gate, selects Workers round-robin, skips exact no-gain layouts, executes at
-most one transaction per call, and reports copy statistics. The online single-output crash and I/O
-fault matrices now cover 25 distinct persistence boundaries, including occurrence-specific directory
-syncs and unlinks; allocator interposition reopens after every observed allocation failure.
-Multi-output recovery now proves resumable partial rollback across two replacements and resumable
-partial retirement across three sources with both injected failures and occurrence-specific
-SIGKILL. A differential online 3-to-2 matrix now covers the 15 transitions unique to second-output
-creation, data/seal commits, Manifest publication, third-source retirement, and shifted directory
-syncs while preserving 64 maximum-size values under the exact old/next authority. Rollback also
-removes a partially created replacement temporary by exact identity. Production reclaim policy and
-concurrent-load tuning, controlled native benchmark baselines, and native power-loss certification
-remain open.
-Durable mutation lanes reject before enqueue when the maintenance emergency gate is armed (no doomed
-buffered work). Official clients map wire `OVERLOADED` to `retryability=never`.
+is implemented, including Phase 4 lifecycle fail-closed. Exact per-Worker sealed/live/dead byte
+counters enforce the inclusive normal threshold. A finite 128 MiB default preflights candidate live
+bytes before normal automatic compaction. Rotation waits on the compaction publication lease instead
+of fail-fast rejecting unrelated Workers. A deterministic v1 planner treats one Worker's complete
+sealed history as the atomic unit. Descriptor-relative intent publication, restart resolution
+against exactly old or next authority, and online single- and multi-output crash/I/O fault matrices
+are implemented. Public `Store::compact()` uses a non-queuing Store-wide maintenance gate. Durable
+mutation lanes reject before enqueue when the maintenance emergency gate is armed. Official clients
+map wire `OVERLOADED` to `retryability=never`. Unread-TTL policy, controlled native benchmark
+baselines, and native power-loss certification remain open. Benchmark matrices:
+[durable compaction](benchmarks/durable-compaction-2026-07-23.md),
+[concurrent maintenance](benchmarks/concurrent-maintenance-2026-07-23.md).
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -334,55 +239,10 @@ recovery of recognizable compaction temporaries, and an online scheduling policy
 boundary recover exactly one valid catalog; readers never observe deleted backing files; space and
 write amplification remain within configured limits; no format change is introduced.
 
-**Implemented evidence:** planner tests cover header-aware output sizing, complete sealed-set
-replacement, zero-output retirement, stable Segment-ID ordering, incremented generations, unchanged
-routing/active identity, encodable next manifests, generation exhaustion, no-gain rejection, and
-temporary-space, peak-Store, and physical write-amplification limits. The protocol and reader
-ownership rules are specified in
-[crash-safe durable compaction](architecture/durable-compaction.md).
-Intent codec tests additionally cover exact dual-manifest round trips, truncation, trailing bytes,
-CRC corruption, header/payload disagreement, unknown versions, reserved bytes, and noncanonical
-catalog transitions.
-Filesystem tests cross intent write, sync, rename, post-rename directory sync, pre-unlink rejection,
-post-unlink directory sync, duplicate intent, bounded read, reopen, and namespace classification.
-Integration recovery tests cover old-authority rollback, next-authority roll-forward, rejection of
-an unrelated manifest or Segment, failure before retirement, partial source unlink, indeterminate
-retirement sync, both intent-removal boundaries, and successful idempotent completion on the next
-reopen. Two-output cases additionally interrupt rollback after the first replacement and
-roll-forward after the second of three source removals, preserving the selected authority and
-finishing every remaining identity on the next reopen. The crash harness repeats those cleanup
-positions with SIGKILL after every replacement/source unlink and both directory-sync phases.
-Builder tests cover exact sequence and value preservation, superseded/tombstoned Record omission,
-TTL reclamation, active-reference preservation, zero-output retirement, non-spanning layout
-fragmentation, intent-aware peak-space accounting, and rollback after an injected post-intent copy
-failure. Runtime integration tests cover atomic in-memory installation and source retirement,
-including an end-to-end 64-maximum-Record transaction that reclaims three sealed sources into
-exactly two replacements and reopens every rebuilt reference, restart visibility, fail-closed
-rollback after an online post-intent failure, preservation of
-another Worker's cached descriptor when catalog positions shift, and artificially blocked Phase B
-where same-Worker GET, PUT, erase, and TTL update complete before the stale build rolls back with
-`sequence_conflict`. A forced unrelated rotation now waits for the lease, commits against the
-compacted authority, and survives reopen; a blocked final
-manifest sync proves that reads and other-Worker writes continue without any Worker, catalog, or
-publication mutex held. Close during Phase B rolls the old authority back to a clean reopen.
-Four additional fixed-seed model histories mix 608 total PUT, ERASE, expired PUT, overwrite, and
-active-Segment decisions across 32 keys. Every model agrees before compaction, after installation,
-and after reopen, and failures report the exact reproduction seed. Five further seeds inject
-pre-operation I/O failures at intent write, the third Record copy, Manifest sync, the second source
-unlink, and intent removal. Across another 760 operations they verify outcome, runtime health,
-old/next authority selection, namespace cleanup, and model agreement on reopen.
-The 25-checkpoint online SIGKILL scenario now uses its own deterministic 30-operation history across
-eight keys, two sealed sources, and the active Segment, checking the complete model after every
-restart. The 15-checkpoint differential multi-output scenario exercises a real 3-to-2 build and
-checks all 64 maximum-size values plus clean namespace recovery before and after Manifest authority
-changes. An opt-in 63-checkpoint `copy-matrix` covers every remaining `write_record` occurrence;
-together the standard and exhaustive profiles cover all 64 Record copies and 154 distinct
-persistence checkpoints. A four-seed `random-matrix` adds 36 process-kill recoveries over
-384 logical PUT/overwrite/ERASE/TTL operations and nine representative authority, copy,
-second-output, publication, retirement, and cleanup boundaries.
-Public integration tests additionally cover no-op maintenance without sealed history, rejection on
-volatile and closed Stores, restart visibility, one-Worker-per-call round-robin progress, and
-post-compaction no-gain detection.
+**Evidence:** planner, intent codec, filesystem, integration recovery, builder, runtime, model-
+history, SIGKILL, and public integration coverage are summarized in
+[crash-safe durable compaction](architecture/durable-compaction.md) and the crash harness
+profiles (`standard`, `copy-matrix`, `random-matrix`).
 
 ## P1 — complete the product contract
 
@@ -424,9 +284,9 @@ post-compaction no-gain detection.
   useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
   the [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) measures
   foreground tail cost and identifies unrelated-Worker rotation conflict during publication.
-  Remaining open work is unread-TTL policy, controlled native baselines, and native power-loss
-  evidence under P0-08. The publication-availability gap and no-gain observability counters are
-  closed.
+  Remaining open work is normal-mode unread-TTL scheduling, controlled native baselines, and native
+  power-loss evidence under P0-08. Pressure/emergency unread-TTL counting and STATS export are
+  closed; the publication-availability gap and no-gain observability counters are closed.
 
 ### Offline verification, backup, restore, and repair
 
@@ -614,11 +474,8 @@ new crash/power-loss evidence.
 
 ## Definition of production-ready v1
 
-Persistence v1 is production ready only when all P0 items are complete; every supported platform
-and filesystem has automated recovery evidence; all resources have tested limits; backup/restore
-and verification are usable; the daemon, if shipped as durable, acknowledges exactly the documented
+Persistence v1 is production ready when all P0 items are complete; every supported platform and
+filesystem has automated recovery evidence; all resources have tested limits; backup/restore and
+verification are usable; the daemon, if shipped as durable, acknowledges exactly the documented
 commit state; security and operational controls exist; and released v1 artifacts pass forward and
 backward compatibility tests within the published policy.
-
-Until then, the accurate status remains architectural prototype with implemented embedded v1
-durability—not a production-certified database.

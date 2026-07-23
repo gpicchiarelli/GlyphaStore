@@ -182,7 +182,9 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto next_compaction_worker(std::size_t start_worker) const
         -> Result<std::optional<std::size_t>>;
     // Catalog-level sealed/free snapshot and exact candidate live/dead byte counters.
-    [[nodiscard]] auto maintenance_observation(std::size_t start_worker = 0) const
+    // Optional unread TTL probe reads sealed source Records for the candidate only.
+    [[nodiscard]] auto maintenance_observation(std::size_t start_worker = 0, std::uint64_t now_ns = 0,
+                                               bool probe_unread_expired_ttl = false)
         -> Result<MaintenanceObservation>;
     [[nodiscard]] auto compact_worker(std::size_t worker_index, std::uint64_t now_ns,
                                       std::uint64_t max_copy_bytes = 0) -> DurableCompactionResult;

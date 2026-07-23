@@ -175,11 +175,11 @@ Until 3.1–3.2 exist on the server, Ruby README keeps the same **private networ
 
 ## 5. Security priorities (detail)
 
-Client-side security before server TLS is mostly **hygiene and honesty**:
+Client-side security before server TLS is deployment hygiene:
 
 | Area | Requirement |
 | --- | --- |
-| Deployment honesty | README + connect-time warning path: cleartext, no auth |
+| Deployment posture | README + connect-time warning path: cleartext, no auth |
 | Limits | Enforce `maximum_frame_bytes` / pipeline caps **before** send (DoS amplification / memory) |
 | Parser hardness | No integer wrap on frame sizes; cap allocations to declared limits |
 | Timeouts | Non-zero defaults; reject non-positive per-call overrides (§6.5) |
@@ -192,7 +192,7 @@ objects when those arrive.
 
 ## 6. Performance priorities (detail)
 
-Expected shape (hypothesis until measured):
+Expected shape (until measured):
 
 - MRI single-process ceiling between Perl and Python for pure Ruby, depending on pack/`String`
   discipline.
@@ -206,12 +206,12 @@ Expected shape (hypothesis until measured):
 | 1 | Correct pack/unpack hot path; pre-size buffers; one `write` per exchange/pipeline |
 | 2 | Overlap multi-Worker I/O in `execute_batch` |
 | 3 | Publish benches; compare fairly (wire-ops vs pairs—match current harness units) |
-| 4 | AsyncClient for Falcon/async apps (app throughput, not microbench miracles) |
+| 4 | AsyncClient for Falcon/async apps (app throughput, not sync microbench) |
 | 5 | Optional C ext for FNV/framing if Phase 2.3 shows clear win |
 | 6 | `connections_per_worker` only after latency evidence |
 
 **Non-goals for performance:** FFI to `libglyphastore` C++ client; rewriting the daemon in Ruby;
-claiming Redis-class ops/s from the MRI SDK path.
+treating MRI SDK microbenchmarks as engine capacity.
 
 ## 7. Proposed layout
 
@@ -283,7 +283,7 @@ as such; they remain on this roadmap until checked off.
 ## 11. Explicit non-goals
 
 - Wrapping the C++ client via FFI/Rice as the primary artifact
-- Redis/RESP compatibility
+- Text-protocol or command-emulation compatibility
 - Guaranteeing C++/Go microbench parity on MRI
 - Shipping Ruby before Phase 1 correctness gates
-- Inventing Ruby-only outcome names or extra automatic retries “for convenience”
+- Inventing Ruby-only outcome names or extra automatic retries

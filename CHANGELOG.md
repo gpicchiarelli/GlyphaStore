@@ -1,25 +1,26 @@
 # Changelog
 
-- Started P0-08 with a deterministic whole-Worker durable compaction planner, generation-safe v1
-  manifest replacement, physical temporary/peak/amplification gates, a checksummed dual-manifest
-  intent codec, descriptor-relative crash-classified intent publication/removal, and restart
-  resolution against exactly the old or next authority with validated, idempotent Segment
-  retirement. Add an exact Record-boundary layout and a durable builder that prebuilds the new
-  Index, preserves visible v1 Record bytes and sequences, reclaims expired/superseded/tombstoned
-  history, validates sealed replacements, and classifies post-intent failures for rollback. Runtime
-  installation now atomically publishes the prepared manifest, commit catalog, and Worker Index,
-  retires old sources, serializes competing manifest authorities, keeps other-Worker descriptor
-  caches stable by immutable identity, and fails closed when restart recovery is required. Public
-  `Store::compact()` maintenance now selects Workers round-robin without a background thread or
-  queued concurrent requests, skips exact no-gain layouts, executes at most one transaction per
-  call, and returns copy statistics. Production reclaim tuning and native power-loss certification
-  remain open.
-
 All notable changes will be documented here. GlyphaStore follows Semantic Versioning once a stable
 public API exists.
 
 ## [Unreleased]
 
+- Add fail-closed unread-TTL observability for pressure/emergency maintenance. When
+  `unread_ttl_pressure_probe` is enabled (default), background evaluations under segment or
+  free-space pressure, or emergency, perform a bounded sealed-Index probe of the round-robin
+  candidate and export unread expired sealed Record counts/bytes through
+  `MaintenanceObservation`, `MaintenanceSnapshot`, and daemon `STATS`. Normal policy remains
+  Index-referenced dead bytes until pressure or an explicit `Store::compact()` visit. Fail-closed
+  probe faults disable auto-compact unless an emergency gate is already armed.
+- Add a deterministic whole-Worker durable compaction planner, generation-safe v1 manifest
+  replacement, physical temporary/peak/amplification gates, a checksummed dual-manifest intent
+  codec, descriptor-relative intent publication/removal, and restart resolution against exactly
+  the old or next authority with validated, idempotent Segment retirement. Add a durable builder
+  that prebuilds the new Index, preserves visible v1 Record bytes and sequences, reclaims
+  expired/superseded/tombstoned history, and validates sealed replacements. Runtime installation
+  publishes the prepared manifest, commit catalog, and Worker Index atomically and retires sources.
+  Public `Store::compact()` selects Workers round-robin without a background thread, skips exact
+  no-gain layouts, executes at most one transaction per call, and returns copy statistics.
 - Add fail-closed daemon deployment profiles (`dev`, `embedded`, `production`) with precedence
   `defaults < profile < file < env < CLI`. Unknown profile names fail before listen; `--dump-config`
   prints the selected profile plus resolved settings.
@@ -59,8 +60,8 @@ public API exists.
   seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB
   useful compaction without conflict, while median foreground throughput falls about 18% and p99
   rises 54--57% versus disabled. Cooperative and background medians are effectively equal. A
-  rotation-forcing calibration identified the unrelated-Worker fail-fast publication conflict
-  subsequently closed and measured by the follow-up above.
+  rotation-forcing calibration exposed unrelated-Worker fail-fast publication conflict; the follow-up
+  above closes and measures that path.
 - Enforce `dead_byte_ratio_bp_normal` for normal durable maintenance using exact per-Worker
   Index-referenced active/sealed Record-byte counters maintained across recovery, mutation, lazy
   expiry, rotation, compaction, and reopen. Observe the next round-robin candidate without scanning
@@ -80,11 +81,11 @@ public API exists.
   limit above. No-gain planning scans now expose public counters through `CompactionResult`,
   `MaintenanceSnapshot`, and daemon `STATS`. Unread TTL remains conservative under normal
   policy, and concurrent foreground cost is measured by the dedicated follow-up matrix.
-- Add the platform durability evidence matrix with cumulative E0–E4 claim levels, an honest
-  APFS/Linux/BSD row inventory, artifact/promotion requirements, and a controlled power-loss
-  campaign protocol. Add a portable collector that records source, OS, hardware class,
-  filesystem/mount, toolchain, commands, results, and SHA-256 provenance while limiting itself
-  explicitly to metadata or process-kill evidence.
+- Add the platform durability evidence matrix with cumulative E0–E4 claim levels, APFS/Linux/BSD
+  row inventory, artifact/promotion requirements, and a controlled power-loss campaign protocol.
+  Add a portable collector that records source, OS, hardware class, filesystem/mount, toolchain,
+  commands, results, and SHA-256 provenance while limiting itself to metadata or process-kill
+  evidence.
 - Extend compaction recovery beyond the single-output fixture: interrupt rollback between two
   replacement unlinks and roll-forward between three source unlinks, then prove that an ordinary
   reopen preserves the selected manifest authority and completes every remaining cleanup. Add the

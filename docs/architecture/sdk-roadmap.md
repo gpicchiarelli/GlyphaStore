@@ -5,10 +5,10 @@ Last reviewed: 2026-07-20
 
 # SDK and client roadmap
 
-The official clients already share the correct nucleus: wire protocol v2, Worker routing, ordered
-pipelines, timeouts, controlled reconnect, and `committed` / `rejected` / `indeterminate` mutation
-outcomes. The remaining work is not “rebuild the SDKs.” It splits into **completing the shared
-contract** and **making GlyphaStore usable in production**.
+Official clients share wire protocol v2, Worker routing, ordered pipelines, timeouts, controlled
+reconnect, and `committed` / `rejected` / `indeterminate` mutation outcomes. Remaining work is
+shared-contract completion and production operability (TLS/auth, packaging, benchmarks)—not a
+rewrite of the SDKs.
 
 Related: [production readiness](../production-readiness.md),
 [v1 production roadmap](../v1-production-roadmap.md),
@@ -18,7 +18,7 @@ Related: [production readiness](../production-readiness.md),
 [Ruby SDK roadmap](ruby-sdk-roadmap.md),
 [SDK packaging standard](sdk-packaging.md).
 
-## Verdict (2026-07-20)
+## Client status (2026-07-20)
 
 | Client | Assessment |
 | --- | --- |

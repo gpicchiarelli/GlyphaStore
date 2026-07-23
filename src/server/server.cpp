@@ -542,6 +542,12 @@ auto Server::stats_report() const -> Result<std::string> {
         } else {
             out += "none";
         }
+        out += "\nmaintenance_unread_ttl_probe_performed=";
+        out += maintenance.last_observation.unread_ttl_probe_performed ? "1" : "0";
+        out += "\nmaintenance_candidate_unread_expired_sealed_record_count=";
+        out += std::to_string(maintenance.last_observation.candidate_unread_expired_sealed_record_count);
+        out += "\nmaintenance_candidate_unread_expired_sealed_record_bytes=";
+        out += std::to_string(maintenance.last_observation.candidate_unread_expired_sealed_record_bytes);
         out += '\n';
 
         for (const auto& lane : durable_mutation_stats()) {

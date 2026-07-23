@@ -1,10 +1,9 @@
 # Durability and recovery contract
 
-This document defines the target contract for the alpha persistent engine. The embedded Store now
-implements the persistence v1 path and process-termination evidence described below; production
-certification and the remaining gates are tracked in the
-[persistence v1 production roadmap](../v1-production-roadmap.md). Normative terms such as **must**,
-**must not**, and **may** describe required alpha behavior.
+This document defines the alpha persistent-engine contract. The embedded Store implements the
+persistence v1 path and process-termination coverage described below. Release certification
+criteria are in the [persistence v1 production roadmap](../v1-production-roadmap.md). Normative
+terms such as **must**, **must not**, and **may** describe required alpha behavior.
 
 The consolidated normative mapping from every durable intermediate state to its exact restart
 outcome is the [recovery state-transition matrix v1](../spec/recovery-state-matrix-v1.md).
@@ -236,7 +235,8 @@ Index rebuild, sequence restoration, and interrupted-rotation detection are impl
 strict normal-recovery policy are implemented in the [namespace policy](namespace-policy.md).
 Bounded verified reads, durable mutation ordering, and exact-intent rotation completion are
 implemented in the [durable runtime catalog](durable-runtime-catalog.md) and owned by the public
-Store PImpl. Explicit repair for arbitrary orphans, retirement, and crash evidence remain pending.
+Store PImpl. Offline inspection and fail-closed repair tools exist; live/hot backup and in-place
+destructive rewrite remain out of the ordinary open path.
 
 ## Recovery
 
@@ -282,25 +282,21 @@ contract.
 
 ## Required evidence
 
-The persistent implementation is incomplete until CI exercises:
+Alpha durability requires CI coverage of:
 
-- golden fixtures for manifest, Segment header, commit slots, and Records (manifest, Segment header,
-  both commit slots, and Record now have canonical v1 fixtures);
+- golden fixtures for manifest, Segment header, commit slots, and Records;
 - restart tests across every mutation and rotation transition;
 - process-kill and injected short-read/write, `EINTR`, writeback `EIO`, rename, disk/quota/read-only,
-  and allocation failures (an isolated
-  executable now fails every allocation observed in durable mutation/read/group/rotation paths;
-  instance-local filesystem seams cover fragmented positional I/O plus write, file-sync, slot-sync,
-  rename, and directory-sync boundaries);
-- active-tail tolerance and committed-region corruption rejection (covered at Segment-file unit
-  level and by restart/process-kill coverage; power-loss/filesystem certification remains pending);
+  and allocation failures;
+- active-tail tolerance and committed-region corruption rejection;
 - manifest rollback and explicit orphan quarantine/identity reservation;
 - routing and Worker-count mismatch rejection;
 - recovery independence from Segment enumeration order;
 - compatibility reads using artifacts emitted by every supported alpha format version.
 
-The current development reader/writer coverage is recorded in the
-[format compatibility matrix](format-compatibility.md). Cross-release compatibility and durable
-filesystem behavior remain unproven until exercised using released artifacts.
+Current development coverage is recorded in the
+[format compatibility matrix](format-compatibility.md). Cross-release compatibility and pinned
+filesystem power-loss campaigns are release gates (see
+[platform durability evidence](platform-durability-evidence.md)).
 
-Passing unit tests for codecs alone is not evidence of durability.
+Codec unit tests alone are not durability evidence.

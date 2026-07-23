@@ -63,10 +63,10 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 Positive: clear lifecycle and config surface; daemon path ready for autosufficient reclaim; no format
 change; compact remains the ground-truth transaction; emergency fails closed on capacity.
 
-Negative / deferred: unread TTL remains conservatively live until GET, recovery, or an aggressive
-pressure compaction; production foreground-latency and long-churn benches remain follow-up.
-Background mode adds one Store thread when enabled. Durable compaction crash/I/O matrices remain
-under ADR 0015.
+Negative / deferred: unread TTL stays Index-live under normal maintenance until GET, recovery, or
+an explicit `Store::compact()` visit. Pressure/emergency evaluations may probe unread expired sealed
+puts for telemetry; normal-mode probe and scheduling influence remain open. Background mode adds one
+Store thread when enabled. Durable compaction crash/I/O matrices remain under ADR 0015.
 
 ## Compatibility and migration
 

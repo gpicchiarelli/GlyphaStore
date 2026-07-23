@@ -99,18 +99,15 @@ Equality is accepted, zero explicitly means unlimited, and pressure/emergency by
 One directly measured policy gap remains: no-gain planning work still lacks detailed public
 counters.
 
-## Decision and next benchmark gates
+## Open work
 
-Before treating automatic reclaim as production-tuned:
+1. Expose no-gain planning work in `CompactionResult` and maintenance telemetry.
+2. Decide whether unread TTL needs a bounded normal-mode probe independent of pressure.
+3. Use the
+   [concurrent-maintenance matrix](concurrent-maintenance-2026-07-23.md) for unrelated-Worker
+   rotation conflicts during compaction publication.
+4. Add long sealed-churn and idle-overhead workloads; run controlled matrices on macOS/APFS and
+   Linux ext4/XFS with retained artifacts.
 
-1. expose no-gain planning work in `CompactionResult` and maintenance telemetry;
-2. decide whether unread TTL needs a bounded normal-mode probe independent of pressure;
-3. use the completed
-   [concurrent-maintenance matrix](concurrent-maintenance-2026-07-23.md) to address unrelated-Worker
-   rotation conflicts during compaction publication;
-4. add long sealed-churn and idle-overhead workloads, then run longer controlled matrices on
-   controlled macOS/APFS and Linux ext4/XFS hosts with raw artifacts.
-
-Until those gates pass, durable compaction correctness remains ahead of reclaim-policy tuning. The
-normal overwrite-driven threshold gap is closed, but the result does not close the production
-benchmark or native power-loss requirements.
+Overwrite-driven normal thresholds are in place. Production reclaim tuning and native power-loss
+campaigns remain separate release gates.

@@ -8,12 +8,13 @@
 ## Context
 
 The daemon needs binary-safe keys/values, bounded parsing, pipelining, routing metadata, and Worker
-binding. Adopting a text or Redis-compatible protocol would add parsing and compatibility scope that
-is outside the project's goals.
+binding. A text command protocol would add parsing and compatibility scope outside the project's
+goals.
 
 ## Alternatives considered
 
-- RESP/Redis compatibility: rejected as a non-goal and a larger semantic commitment;
+- Text command protocol: rejected; enlarges parsing and semantic commitment without benefit to the
+  exact-key path;
 - HTTP: rejected for the initial low-overhead native data path;
 - schema framework: deferred until evolution needs outweigh the fixed-header simplicity;
 - native C++ struct transmission: rejected because layout, endian, padding, and ABI are unstable.

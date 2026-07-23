@@ -139,11 +139,11 @@ active commit (generation 1, zero Records, offset 4096). No arbitrary orphan is 
 preceded creation, open creates the replacement. If manifest rename may already have happened, normal
 manifest and namespace recovery selects and validates the completed state.
 
-## Evidence and remaining gates
+## Tests
 
-Tests cover binary reads, expiration, concurrent readers, a deliberately blocked cold `pread` that
-does not block a same-Worker mutation, blocked compaction build and manifest-sync concurrency,
-waiting and restart-durable unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
+Tests cover binary reads, expiration, concurrent readers, a blocked cold `pread` that does not
+block a same-Worker mutation, blocked compaction build and manifest-sync concurrency, waiting and
+restart-durable unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
 preflighted long-key publication, puts/replacements/tombstones across restart, sealed-active
 completion, and exact prepared-replacement adoption. A separate allocator-interposition executable
 fails every allocation observed in native put, update, erase, owning-read, strict-group, and rotation
@@ -151,8 +151,6 @@ paths. It reopens every pre-write/interrupted-rotation failure, requires uncerta
 closed, releases background waiters after `bad_alloc`, and forbids any allocation after the ordinary
 Record write boundary through coherent runtime publication.
 
-Still required before durability can be certified:
-
-- native-platform process-kill and power-loss evidence at every mutation and rotation boundary;
-- the complete online compaction kill/fault matrix and any future automatic scheduling policy;
-- disk-full and native Linux/FreeBSD/OpenBSD evidence.
+Related release gates: native-platform process-kill and power-loss evidence; online compaction
+kill/fault matrix completeness; disk-full and native Linux/FreeBSD/OpenBSD rows. See
+[production readiness](../production-readiness.md).

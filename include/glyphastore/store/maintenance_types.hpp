@@ -55,8 +55,16 @@ enum class MaintenanceActivationReason : std::uint8_t {
     copy_budget,
 };
 
+struct MaintenanceObserveRequest {
+    // When true, the durable runtime may read sealed source Records for the
+    // round-robin candidate to count Index-resident puts expired at Store time
+    // that have not yet been visited by GET or compaction.
+    bool probe_unread_expired_ttl{};
+};
+
 // Read-only physical observation for scheduling. Candidate byte counters are
-// exact published Record extents; no Worker Index scan is performed here.
+// exact published Record extents. Unread TTL probes are optional and run only
+// when explicitly requested (pressure/emergency policy under ADR 0023).
 struct MaintenanceObservation {
     bool durable{};
     std::size_t segment_count{};
@@ -66,6 +74,9 @@ struct MaintenanceObservation {
     std::uint64_t candidate_live_record_bytes{};
     std::uint64_t candidate_dead_record_bytes{};
     std::optional<std::uint32_t> candidate_dead_byte_ratio_bp{};
+    bool unread_ttl_probe_performed{};
+    std::uint64_t candidate_unread_expired_sealed_record_count{};
+    std::uint64_t candidate_unread_expired_sealed_record_bytes{};
     std::size_t max_segment_count{};
     std::uint64_t reserved_free_bytes{};
     // Bytes required in addition to reserved_free_bytes to create/rotate one Segment

@@ -20,7 +20,7 @@ class MaintenanceController final {
   public:
     using CompactCallback = std::function<Result<CompactionResult>(
         std::optional<std::size_t> preferred_worker, std::uint64_t max_copy_bytes)>;
-    using ObserveCallback = std::function<Result<MaintenanceObservation>()>;
+    using ObserveCallback = std::function<Result<MaintenanceObservation>(MaintenanceObserveRequest)>;
 
     explicit MaintenanceController(MaintenanceConfig config);
     ~MaintenanceController();

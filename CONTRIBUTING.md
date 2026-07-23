@@ -16,8 +16,8 @@ preserve the [ownership and compatibility contract](docs/architecture/public-api
 Changing a commit point, routing metadata, recovery authority, or read lifetime requires a new ADR.
 
 Use Conventional Commits. Keep public terminology aligned with the architecture documents: the
-public model has a Store, Workers, an Index, and Segments. Do not introduce Redis compatibility,
-text protocols, or unbounded client-controlled work without an accepted design change.
+public model has a Store, Workers, an Index, and Segments. Do not introduce text-protocol
+compatibility layers or unbounded client-controlled work without an accepted design change.
 
 ## Safety gates
 

@@ -54,7 +54,8 @@ GLYPHA_TEST("normal dead-byte threshold is inclusive and pressure bypasses it") 
     auto selected_worker =
         std::make_shared<std::atomic<std::size_t>>(std::numeric_limits<std::size_t>::max());
     controller.bind_observe(
-        [ratio, segment_count]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        [ratio, segment_count](glyphastore::MaintenanceObserveRequest)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
             return glyphastore::MaintenanceObservation{
                 .durable = true,
                 .segment_count = segment_count->load(std::memory_order_relaxed),
@@ -130,7 +131,8 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
     auto observed_copy_limit = std::make_shared<std::atomic<std::uint64_t>>(0);
     controller.bind_observe(
-        [candidate_live_bytes, segment_count]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        [candidate_live_bytes, segment_count](glyphastore::MaintenanceObserveRequest)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
             return glyphastore::MaintenanceObservation{
                 .durable = true,
                 .segment_count = segment_count->load(std::memory_order_relaxed),
@@ -192,7 +194,8 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     compact_calls->store(0, std::memory_order_relaxed);
     glyphastore::MaintenanceController unlimited_controller{config};
     unlimited_controller.bind_observe(
-        [candidate_live_bytes, segment_count]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        [candidate_live_bytes, segment_count](glyphastore::MaintenanceObserveRequest)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
             return glyphastore::MaintenanceObservation{
                 .durable = true,
                 .segment_count = segment_count->load(std::memory_order_relaxed),
@@ -230,7 +233,7 @@ GLYPHA_TEST("maintenance telemetry counts sequence conflicts") {
     config.max_eval_interval_ms = 60'000;
 
     glyphastore::MaintenanceController controller{config};
-    controller.bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller.bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 3,
@@ -493,7 +496,7 @@ GLYPHA_TEST("pressure policy continues compacting despite no-gain budget") {
 
     // Inject durable pressure (not emergency) with sealed history so budget would suspend under
     // normal, but pressure must still attempt compact.
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 90,
@@ -537,7 +540,7 @@ GLYPHA_TEST("pressure observes no_candidate when durable sealed set is empty") {
     GLYPHA_REQUIRE(store.has_value());
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 90,
@@ -578,7 +581,7 @@ GLYPHA_TEST("emergency rejects put and erase with storage_exhausted") {
 
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -620,7 +623,7 @@ GLYPHA_TEST("emergency rejects put and erase with storage_exhausted") {
                    compacted.error().code == glyphastore::ErrorCode::sequence_conflict);
 
     // Recovery: observation clears emergency → mutations resume.
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 10,
@@ -659,7 +662,7 @@ GLYPHA_TEST("emergency rejects mutations even when auto-compact is disabled") {
     controller->set_auto_compact_enabled(false);
     const auto baseline_cycles = initial.evaluation_cycles;
     const auto baseline_attempts = initial.compact_attempts;
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 4,
@@ -700,7 +703,7 @@ GLYPHA_TEST("emergency gate survives compact fault") {
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
 
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -727,7 +730,7 @@ GLYPHA_TEST("emergency gate survives compact fault") {
             GLYPHA_REQUIRE(!put.has_value());
             GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::storage_exhausted);
 
-            controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+            controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
                 return glyphastore::MaintenanceObservation{
                     .durable = true,
                     .segment_count = 10,
@@ -766,7 +769,7 @@ GLYPHA_TEST("close under emergency clears mutations_rejected and stops thread") 
     GLYPHA_REQUIRE(store.has_value());
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -803,7 +806,7 @@ GLYPHA_TEST("flush succeeds while emergency rejects put") {
     GLYPHA_REQUIRE(store.has_value());
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -843,7 +846,7 @@ GLYPHA_TEST("emergency compact fault keeps reclaim attempts while gate is armed"
     static_cast<void>(wait_for_initial_idle(**store));
 
     auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -924,7 +927,7 @@ GLYPHA_TEST("join after stop leaves mutations_rejected cleared") {
     GLYPHA_REQUIRE(store.has_value());
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
     GLYPHA_REQUIRE(controller != nullptr);
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 100,
@@ -957,7 +960,7 @@ GLYPHA_TEST("maintenance snapshot records expired_records_dropped from compact")
     GLYPHA_REQUIRE(controller != nullptr);
     const auto initial = wait_for_initial_idle(**store);
 
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 10,
@@ -1008,7 +1011,7 @@ GLYPHA_TEST("maintenance snapshot records no-gain planning scan counters") {
     GLYPHA_REQUIRE(controller != nullptr);
     const auto initial = wait_for_initial_idle(**store);
 
-    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+    controller->bind_observe([](glyphastore::MaintenanceObserveRequest) -> glyphastore::Result<glyphastore::MaintenanceObservation> {
         return glyphastore::MaintenanceObservation{
             .durable = true,
             .segment_count = 10,
@@ -1050,4 +1053,122 @@ GLYPHA_TEST("maintenance snapshot records no-gain planning scan counters") {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
     GLYPHA_REQUIRE(false);
+}
+
+GLYPHA_TEST("pressure evaluation requests unread TTL probe when enabled") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 10'000;
+    config.unread_ttl_pressure_probe = true;
+
+    glyphastore::MaintenanceController controller{config};
+    auto probe_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe(
+        [probe_calls](glyphastore::MaintenanceObserveRequest request)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+            if (request.probe_unread_expired_ttl) {
+                probe_calls->fetch_add(1, std::memory_order_relaxed);
+                return glyphastore::MaintenanceObservation{
+                    .durable = true,
+                    .segment_count = 90,
+                    .sealed_segment_count = 2,
+                    .compaction_candidate_worker = 0,
+                    .candidate_sealed_record_bytes = 2'000,
+                    .candidate_live_record_bytes = 1'000,
+                    .candidate_dead_record_bytes = 1'000,
+                    .candidate_dead_byte_ratio_bp = 5'000,
+                    .unread_ttl_probe_performed = true,
+                    .candidate_unread_expired_sealed_record_count = 2,
+                    .candidate_unread_expired_sealed_record_bytes = 128,
+                    .max_segment_count = 100,
+                    .reserved_free_bytes = 1'024,
+                    .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+                };
+            }
+            return glyphastore::MaintenanceObservation{
+                .durable = true,
+                .segment_count = 90,
+                .sealed_segment_count = 2,
+                .compaction_candidate_worker = 0,
+                .candidate_sealed_record_bytes = 2'000,
+                .candidate_live_record_bytes = 1'000,
+                .candidate_dead_record_bytes = 1'000,
+                .candidate_dead_byte_ratio_bp = 5'000,
+                .max_segment_count = 100,
+                .reserved_free_bytes = 1'024,
+                .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+            };
+        });
+    controller.bind_compact([](const std::optional<std::size_t>,
+                               const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        return glyphastore::CompactionResult{};
+    });
+    controller.start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snapshot = controller.snapshot();
+        if (snapshot.last_observation.unread_ttl_probe_performed &&
+            snapshot.last_observation.candidate_unread_expired_sealed_record_count == 2) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(probe_calls->load(std::memory_order_relaxed) >= 1);
+    const auto snapshot = controller.snapshot();
+    GLYPHA_REQUIRE(snapshot.last_observation.unread_ttl_probe_performed);
+    GLYPHA_REQUIRE(snapshot.last_observation.candidate_unread_expired_sealed_record_count == 2);
+    GLYPHA_REQUIRE(snapshot.last_observation.candidate_unread_expired_sealed_record_bytes == 128);
+    controller.stop();
+}
+
+GLYPHA_TEST("normal evaluation skips unread TTL probe") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 0;
+    config.unread_ttl_pressure_probe = true;
+
+    glyphastore::MaintenanceController controller{config};
+    auto probe_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe(
+        [probe_calls](glyphastore::MaintenanceObserveRequest request)
+            -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+            if (request.probe_unread_expired_ttl) {
+                probe_calls->fetch_add(1, std::memory_order_relaxed);
+            }
+            return glyphastore::MaintenanceObservation{
+                .durable = true,
+                .segment_count = 10,
+                .sealed_segment_count = 2,
+                .compaction_candidate_worker = 0,
+                .candidate_sealed_record_bytes = 2'000,
+                .candidate_live_record_bytes = 1'000,
+                .candidate_dead_record_bytes = 1'000,
+                .candidate_dead_byte_ratio_bp = 5'000,
+                .unread_ttl_probe_performed = request.probe_unread_expired_ttl,
+                .max_segment_count = 100,
+                .reserved_free_bytes = 1'024,
+                .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+            };
+        });
+    controller.bind_compact([](const std::optional<std::size_t>,
+                               const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        return glyphastore::CompactionResult{.compacted = true, .bytes_copied = 1};
+    });
+    controller.start();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (controller.snapshot().compact_completed > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(probe_calls->load(std::memory_order_relaxed) == 0);
+    GLYPHA_REQUIRE(!controller.snapshot().last_observation.unread_ttl_probe_performed);
+    controller.stop();
 }

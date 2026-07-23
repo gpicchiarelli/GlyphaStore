@@ -1,8 +1,8 @@
 # Format compatibility matrix
 
-This document records the formats understood by the current `0.1.x` code line. It is an executable
-development matrix, not yet a released persistence guarantee: `durable_sync` is enabled for
-development use, but no released artifact migration has been exercised.
+This document records the formats understood by the current `0.1.x` code line. It is the development
+reader/writer matrix for persistence and wire codecs. Released migration policy is separate and is
+not implied by this matrix.
 
 Durable persistence has one format family: v1. All durable policies differ only in commit timing and
 acknowledgement semantics; they read and write the same v1 bytes.
@@ -21,7 +21,7 @@ and wire versions advance together.
 | Record | 1 | Exact canonical v1 only | Emits v1 | [`record_v1.hex`](../../tests/fixtures/record_v1.hex) | Internal codec complete |
 | Bootstrap intent | 1 | Exact Manifest v1 | Emits canonical Manifest v1 | Bootstrap and recovery integration tests | Integrated; shares Manifest codec |
 | Compaction intent | 1 | Exact v1 only | Emits v1 | [`compaction_intent_v1.hex`](../../tests/fixtures/compaction_intent_v1.hex), decode-only compatibility, exact encoder, and interrupted-recovery tests | Internal codec complete |
-| Native wire protocol | 2 | Exact v2 only | Emits v2 | [`wire_requests_v2.hex`](../../tests/fixtures/wire_requests_v2.hex), [`wire_responses_v2.hex`](../../tests/fixtures/wire_responses_v2.hex), malformed-frame tests, and cross-SDK fixture verification | Experimental codec complete; cross-release evidence pending |
+| Native wire protocol | 2 | Exact v2 only | Emits v2 | [`wire_requests_v2.hex`](../../tests/fixtures/wire_requests_v2.hex), [`wire_responses_v2.hex`](../../tests/fixtures/wire_responses_v2.hex), malformed-frame tests, and cross-SDK fixture verification | Experimental codec complete |
 
 For persistent codecs, “exact” means that unknown required versions, sizes, flags, and non-zero
 reserved bytes are rejected. Wire v2 likewise rejects non-zero flags/reserved fields and
@@ -46,12 +46,12 @@ one logical Record cannot have multiple correctly checksummed encodings.
 
 The manifest pins all persistent component versions. Mixing a manifest v1 catalog with a Segment,
 header, commit slot, or Record version not declared and supported by that manifest is an incompatible
-Store, not an invitation to guess or partially recover.
+Store.
 
 ## Upgrade and downgrade policy
 
-There is currently no persistent upgrade, downgrade, or in-place migration path. Before the first
-durable alpha release, every writer version must have:
+There is no persistent upgrade, downgrade, or in-place migration path. Before the first durable
+alpha release, every writer version must have:
 
 1. a canonical fixture emitted independently of the production decoder;
 2. compatibility tests using artifacts produced by every supported writer;
@@ -62,15 +62,14 @@ durable alpha release, every writer version must have:
 A future writer must not overwrite an older Store until compatibility has been decided and all
 required source artifacts have been validated. An older binary encountering a correctly checksummed
 newer required version fails closed. Read-only salvage, downgrade export, and destructive repair are
-separate operator workflows and cannot be inferred from ordinary open.
+separate operator workflows.
 
-## Evidence boundary
+## Limits of current evidence
 
-The persistent fixtures, including the complete dual-Manifest compaction intent, are emitted
-independently by `scripts/generate_format_fixtures.py` and validated by decode-only tests in
+Fixtures are emitted by `scripts/generate_format_fixtures.py` and checked by decode-only tests in
 `tests/unit/format_compatibility_tests.cpp`. Exact encoder tests bind production output to the same
-canonical bytes. Those tests also exercise durable Store artifact round-trip reopen and on-disk
-Segment header prefixes. They do not yet prove compatibility across released binaries. Wire fixtures are generated independently,
+canonical bytes. Durable Store round-trip reopen and on-disk Segment header prefixes are covered.
+Cross-release binary compatibility is not covered yet. Wire fixtures are generated independently,
 verified against the C++ codec, and compared byte-for-byte with every official SDK. Crash recovery
-evidence for the persistent v1 runtime lives in the `glyphastore_crash_persistence` CTest target and
-the [durability and recovery contract](durability-recovery.md).
+for the persistent v1 runtime is in the `glyphastore_crash_persistence` CTest target and
+[durability and recovery](durability-recovery.md).

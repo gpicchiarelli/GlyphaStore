@@ -333,7 +333,7 @@ void MaintenanceController::evaluate_once() {
             return;
         }
     } else {
-        auto observed = observe();
+        auto observed = observe({});
         if (!observed) {
             const std::lock_guard lock{mutex_};
             last_error_ = observed.error();
@@ -359,6 +359,35 @@ void MaintenanceController::evaluate_once() {
             pressure_ = classify_maintenance_pressure(observation, config_);
             publish_mutations_rejected_locked(pressure_ == MaintenancePressureLevel::emergency);
             if (stop_requested_) {
+                return;
+            }
+        }
+        if (config.unread_ttl_pressure_probe && aggressive_pressure(pressure_) && observe &&
+            observation.durable && observation.compaction_candidate_worker.has_value()) {
+            if (auto probed = observe(MaintenanceObserveRequest{.probe_unread_expired_ttl = true})) {
+                observation.unread_ttl_probe_performed = probed->unread_ttl_probe_performed;
+                observation.candidate_unread_expired_sealed_record_count =
+                    probed->candidate_unread_expired_sealed_record_count;
+                observation.candidate_unread_expired_sealed_record_bytes =
+                    probed->candidate_unread_expired_sealed_record_bytes;
+                const std::lock_guard lock{mutex_};
+                last_observation_ = observation;
+            } else {
+                const std::lock_guard lock{mutex_};
+                last_error_ = probed.error();
+                last_eval_duration_ns_ = elapsed_ns(eval_started);
+                if (probed.error().code == ErrorCode::unavailable) {
+                    publish_mutations_rejected_locked(false);
+                    record_skip(MaintenanceSkipReason::store_closed, MaintenanceState::idle,
+                                MaintenanceActivationReason::none);
+                    return;
+                }
+                state_ = MaintenanceState::faulted;
+                const bool gate_armed = mutations_rejected_.load(std::memory_order_relaxed) ||
+                                        pressure_ == MaintenancePressureLevel::emergency;
+                if (!gate_armed) {
+                    auto_compact_enabled_ = false;
+                }
                 return;
             }
         }

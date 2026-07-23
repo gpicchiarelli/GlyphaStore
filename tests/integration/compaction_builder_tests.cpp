@@ -917,6 +917,29 @@ GLYPHA_TEST("public Store compact drops sealed Index-resident expired puts") {
     GLYPHA_REQUIRE(!(*reopened)->get("expired").has_value());
 }
 
+GLYPHA_TEST("maintenance observation counts unread expired sealed TTL puts") {
+    CompactionBuildDirectory temporary;
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 40);
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const auto without_probe = (*runtime)->maintenance_observation(0, 100, false);
+    GLYPHA_REQUIRE(without_probe.has_value());
+    GLYPHA_REQUIRE(!without_probe->unread_ttl_probe_performed);
+    GLYPHA_REQUIRE(without_probe->candidate_unread_expired_sealed_record_count == 0);
+
+    const auto probed = (*runtime)->maintenance_observation(0, 100, true);
+    GLYPHA_REQUIRE(probed.has_value());
+    GLYPHA_REQUIRE(probed->unread_ttl_probe_performed);
+    GLYPHA_REQUIRE(probed->candidate_unread_expired_sealed_record_count == 1);
+    GLYPHA_REQUIRE(probed->candidate_unread_expired_sealed_record_bytes > 0);
+}
+
 GLYPHA_TEST("public Store compacts one scheduled Worker and preserves restart visibility") {
     CompactionBuildDirectory temporary;
     {

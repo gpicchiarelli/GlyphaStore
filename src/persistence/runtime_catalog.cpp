@@ -2222,7 +2222,9 @@ auto DurableRuntimeCatalog::next_compaction_worker(const std::size_t start_worke
     return candidate;
 }
 
-auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_worker) const
+auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_worker,
+                                                      const std::uint64_t now_ns,
+                                                      const bool probe_unread_expired_ttl)
     -> Result<MaintenanceObservation> {
     if (start_worker >= workers_.size()) {
         return fail(ErrorCode::invalid_argument,
@@ -2311,6 +2313,73 @@ auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_work
         observation.available_free_bytes = *free;
     } else if (free.error().code != ErrorCode::unavailable && free.error().code != ErrorCode::io_error) {
         return unexpected(free.error());
+    }
+
+    if (probe_unread_expired_ttl && now_ns != 0 && observation.compaction_candidate_worker) {
+        struct ProbeContext {
+            std::uint64_t now_ns{};
+            std::uint64_t key_hash{};
+            bool expired{};
+        };
+        const RecordVisitor probe_visitor = [](void* opaque, const RecordView& record) -> Status {
+            auto& context = *static_cast<ProbeContext*>(opaque);
+            if (record.opcode != Opcode::put || record.key_hash != context.key_hash) {
+                return fail(ErrorCode::corrupted_data,
+                            "unread TTL probe Index entry disagrees with its source Record");
+            }
+            context.expired = record.expired(context.now_ns);
+            return {};
+        };
+
+        const auto candidate = *observation.compaction_candidate_worker;
+        auto& worker = *workers_[candidate];
+        std::lock_guard worker_lock{worker.mutex};
+        const std::shared_lock probe_catalog_lock{catalog_mutex_};
+        if (!healthy()) {
+            return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+        }
+        if (generation_pins_.size() != manifest_.segments.size()) {
+            return fail(ErrorCode::corrupted_data, "unread TTL probe catalog metadata is not aligned");
+        }
+
+        for (const auto& entry : worker.index.entries()) {
+            if (entry.record.segment_id == worker.active_segment) {
+                continue;
+            }
+            const auto found = std::lower_bound(
+                manifest_.segments.begin(), manifest_.segments.end(), entry.record.segment_id,
+                [](const ManifestSegmentEntry& segment, const SegmentId id) {
+                    return segment.segment_id.value < id.value;
+                });
+            if (found == manifest_.segments.end() || found->segment_id != entry.record.segment_id ||
+                found->role != ManifestSegmentRole::sealed || found->owner_worker.value != candidate) {
+                continue;
+            }
+            const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+            const auto& pin = generation_pins_[catalog_index];
+            if (!pin || pin->identity.segment_id != entry.record.segment_id ||
+                pin->identity.generation != entry.record.generation ||
+                pin->identity.owner_worker != worker.worker_id) {
+                return fail(ErrorCode::corrupted_data,
+                            "unread TTL probe generation pin disagrees with the Index");
+            }
+            ProbeContext context{.now_ns = now_ns, .key_hash = hash_key(entry.key)};
+            if (auto visited = pin->file.visit_runtime_record(entry.record, &context, probe_visitor); !visited) {
+                return unexpected(visited.error());
+            }
+            if (!context.expired) {
+                continue;
+            }
+            ++observation.candidate_unread_expired_sealed_record_count;
+            if (entry.record.size.value >
+                std::numeric_limits<std::uint64_t>::max() -
+                    observation.candidate_unread_expired_sealed_record_bytes) {
+                return fail(ErrorCode::arithmetic_overflow,
+                            "unread TTL probe sealed Record byte count overflows uint64_t");
+            }
+            observation.candidate_unread_expired_sealed_record_bytes += entry.record.size.value;
+        }
+        observation.unread_ttl_probe_performed = true;
     }
     return observation;
 }

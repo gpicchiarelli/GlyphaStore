@@ -37,15 +37,14 @@ generation, and owner must all match the catalog; filenames alone are never trus
 The namespace audit reports exact private crash temporaries without deleting them. Unlisted final
 Segments, malformed engine names, unknown entries, unsafe filesystem objects, and missing catalog
 files reject normal recovery before any Segment scan. The complete classification, descriptor-relative
-algorithm, limits, and remaining quarantine requirements are specified in the
+algorithm, limits, and operator quarantine tooling are specified in the
 [data-directory namespace audit](namespace-policy.md).
 
 ## Bounded scan and resource strategy
 
 The Segment layer exposes an internal visitor over one contiguous read of
 `[4096, committed_end)`. Each Record is structurally decoded and checksum-verified once, then its
-short-lived view is consumed directly by recovery. This avoids the former potential pattern of
-scanning references and issuing one additional positional read per Record.
+short-lived view is consumed directly by recovery—one scan, no per-Record positional re-read.
 
 Catalog grouping uses a prefix-sum offset table plus one contiguous array of manifest indexes. It is
 `O(segment count + Worker count)`, has no per-Segment allocation, and preserves canonical catalog
@@ -105,7 +104,7 @@ The recovery scan does not append to a sealed active Segment. The durable runtim
 intent marker and completes only the exact next-identity pristine replacement transition before
 serving writes.
 
-## Returned state and remaining gates
+## Returned state
 
 The returned Segment-state vector is index-for-index aligned with `manifest.segments`; catalog
 identity is not duplicated. Every Worker state contains its rebuilt Index, next sequence, manifest
@@ -123,8 +122,6 @@ expiration, sequence restoration, lifecycle transitions, missing files, Store-ID
 hash mismatch, wrong-Worker routing, equal winning sequences, sequence exhaustion, crash temporaries,
 and unlisted-Segment rejection without adoption.
 
-Still required for production certification:
-
-- add explicit operator quarantine/repair for arbitrary orphans;
-- complete daemon-side asynchronous durable-I/O handling;
-- expand process-kill, disk-full, native-platform, and power-loss matrices.
+Open release work for this area: operator quarantine/repair for arbitrary orphans; daemon
+asynchronous durable-I/O completion; native-platform process-kill, disk-full, and power-loss
+matrices. See [production readiness](../production-readiness.md).

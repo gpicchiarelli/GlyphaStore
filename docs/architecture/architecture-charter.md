@@ -3,8 +3,7 @@
 ## Purpose
 
 GlyphaStore is a native-binary, many-core, memory-first key-value store. Its fast path pays only
-for exact-key operations and must remain measurable, bounded, and independent from compatibility
-with Redis or any text protocol.
+for exact-key operations and must remain measurable and resource-bounded.
 
 ## Fixed decisions
 
@@ -36,16 +35,16 @@ with Redis or any text protocol.
 
 ## Non-goals
 
-- Redis/RESP compatibility, Lua, or historical Redis command semantics.
+- Text-protocol or command-emulation compatibility layers.
 - SQL, joins, generic secondary indexes, and unbounded ordered scans.
-- Claims that a design alone outperforms another product.
+- Performance claims without reproducible benchmarks and hardware description.
 - GPU/NPU dependencies in the key-value fast path.
 - A stable on-disk or wire format before explicit versioning and compatibility tests exist.
 
-The embedded Store now implements persistence v1 and has automated process-termination evidence,
-but this does not make the project production durable. Filesystem/power-loss certification,
-resource bounds, durable compaction, operational tooling, and the remaining gates in the
-[persistence v1 production roadmap](../v1-production-roadmap.md) are still required.
+The embedded Store implements persistence v1 with automated process-termination coverage. Release
+certification criteria are listed in
+[production readiness](../production-readiness.md) and the
+[persistence v1 production roadmap](../v1-production-roadmap.md).
 
 ## Performance contract
 

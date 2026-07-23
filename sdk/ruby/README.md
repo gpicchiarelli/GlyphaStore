@@ -9,9 +9,9 @@ Implements [client semantics v1](../../docs/spec/client-semantics-v1.md). Roadma
 
 **Gem:** `glyphastore` · **Module:** `GlyphaStore` · **Ruby:** ≥ 3.2 · **License:** BSD-3-Clause
 
-Cleartext TCP only for now: treat the server as loopback / private network / sidecar. Phase 3 TLS
-connect options follow the same SDK train as Go/C++/Python/Perl (ADR 0020); Ruby TLS is not in this
-release yet.
+Cleartext TCP: treat the server as loopback / private network / sidecar. TLS connect options follow
+the same SDK train as Go/C++/Python/Perl (ADR 0020); Ruby TLS is not in this release. See the
+[security roadmap](../../docs/security/roadmap.md).
 
 ```ruby
 require "glypha_store"
