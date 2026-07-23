@@ -61,6 +61,17 @@ ruby_ver="$(
 )"
 check "ruby/GlyphaStore::VERSION" "$ruby_ver"
 
+if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+  (cd "$root/sdk/erlang" && rebar3 compile >/dev/null)
+  erlang_ver="$(
+    erl -noshell -pa "$root/sdk/erlang/_build/default/lib/glyphastore/ebin" \
+      -eval 'io:format("~s", [glyphastore_version:version()]), halt().'
+  )"
+  check "erlang/glyphastore_version" "$erlang_ver"
+else
+  echo "note: skipping Erlang version check (erl/rebar3 not on PATH)" >&2
+fi
+
 check "cmake/PROJECT_VERSION (VERSION file)" "$expected"
 
 if [[ "$fail" -ne 0 ]]; then

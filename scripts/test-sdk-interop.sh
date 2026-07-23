@@ -158,6 +158,9 @@ put_sdk() {
     ruby)
       "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
+    erlang)
+      escript "$erlang_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      ;;
     *)
       echo "unknown sdk $sdk" >&2
       return 1

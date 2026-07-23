@@ -91,7 +91,7 @@ jobs:
       - name: Install Perl::Critic and build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof
+          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof erlang rebar3
           perl -MPerl::Critic -e 'print $Perl::Critic::VERSION, "\n"'
       - name: Verify wire golden fixtures
         run: |
@@ -101,6 +101,7 @@ jobs:
             cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/go/testdata/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/ruby/test/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/erlang/test/fixtures/$fixture"
           done
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
@@ -118,6 +119,8 @@ jobs:
         run: |
           gem install async --no-document
           ./scripts/test-ruby-client.sh
+      - name: Test Erlang client
+        run: ./scripts/test-erlang-client.sh
       - name: Package and verify Python client
         run: ./scripts/package-python-client.sh
       - name: Package and verify Perl client
