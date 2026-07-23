@@ -59,6 +59,17 @@ auto durable_status(DurableMutationResult result) -> Status {
 
 auto public_compaction_result(const std::size_t worker_index, DurableCompactionResult result)
     -> Result<CompactionResult> {
+    if (result.outcome == DurableCompactionOutcome::not_beneficial) {
+        return CompactionResult{
+            .compacted = false,
+            .worker_index = worker_index,
+            .source_records_verified = result.stats.source_index_records_verified,
+            .source_bytes_verified = result.stats.source_bytes_verified,
+            .records_copied = 0,
+            .bytes_copied = 0,
+            .expired_records_dropped = result.stats.expired_records_dropped,
+        };
+    }
     if (!result.compacted()) {
         auto error =
             result.error ? std::move(*result.error) : Error{ErrorCode::io_error, "durable compaction failed"};
@@ -749,15 +760,15 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
                                             std::memory_order_relaxed);
         auto result =
             impl_->durable_runtime->compact_worker(*preferred_worker, impl_->now_ns(), max_copy_bytes);
-        if (result.outcome == DurableCompactionOutcome::not_beneficial ||
-            (result.outcome == DurableCompactionOutcome::not_compacted && result.error.has_value() &&
-             result.error->code == ErrorCode::not_found)) {
+        if (result.outcome == DurableCompactionOutcome::not_compacted && result.error.has_value() &&
+            result.error->code == ErrorCode::not_found) {
             return CompactionResult{};
         }
         return public_compaction_result(*preferred_worker, std::move(result));
     }
 
     std::optional<std::size_t> first_candidate;
+    std::optional<CompactionResult> last_no_gain;
     for (;;) {
         auto candidate = impl_->durable_runtime->next_compaction_worker(
             impl_->next_compaction_worker.load(std::memory_order_relaxed));
@@ -765,6 +776,9 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
             return unexpected(candidate.error());
         }
         if (!*candidate || (first_candidate && **candidate == *first_candidate)) {
+            if (last_no_gain) {
+                return *last_no_gain;
+            }
             return CompactionResult{};
         }
         const auto worker_index = **candidate;
@@ -775,6 +789,11 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
                                             std::memory_order_relaxed);
         auto result = impl_->durable_runtime->compact_worker(worker_index, impl_->now_ns(), 0);
         if (result.outcome == DurableCompactionOutcome::not_beneficial) {
+            auto mapped = public_compaction_result(worker_index, std::move(result));
+            if (!mapped) {
+                return unexpected(mapped.error());
+            }
+            last_no_gain = *mapped;
             continue;
         }
         return public_compaction_result(worker_index, std::move(result));

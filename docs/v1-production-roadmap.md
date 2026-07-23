@@ -281,8 +281,9 @@ The clean
 disabled/cooperative/background mixed GET/PUT cost: one useful 31.01 MiB compaction reduces median
 foreground throughput about 18% and raises p99 54--57%, while cooperative and background medians
 are effectively equal. Its rotation-forcing calibration exposes fail-fast rejection of an
-unrelated Worker's writes during Manifest publication. No-gain observability, unread-TTL policy,
-that publication-availability gap, and controlled native baselines remain open. A deterministic v1
+unrelated Worker's writes during Manifest publication. Unread-TTL policy and controlled native
+baselines remain open; the former publication-availability gap is closed by condition-based
+rotation waits, and no-gain planning now exposes public scan counters. A deterministic v1
 planner treats one Worker's complete sealed history as the atomic unit,
 reuses the earliest source IDs with incremented generations, preserves the active Segment, and
 rejects generation exhaustion, no-gain rewrites, and temporary/peak/amplification budget overruns.
@@ -423,8 +424,9 @@ post-compaction no-gain detection.
   useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
   the [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) measures
   foreground tail cost and identifies unrelated-Worker rotation conflict during publication.
-  Remaining open work is unread-TTL policy, that availability gap, long-churn/idle benches,
-  controlled native baselines, and native power-loss evidence under P0-08.
+  Remaining open work is unread-TTL policy, controlled native baselines, and native power-loss
+  evidence under P0-08. The publication-availability gap and no-gain observability counters are
+  closed.
 
 ### Offline verification, backup, restore, and repair
 

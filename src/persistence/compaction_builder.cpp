@@ -47,8 +47,12 @@ auto verify_indexed_put(void* opaque, const RecordView& record) -> Status {
     return {};
 }
 
-auto build_failure(const DurableCompactionBuildOutcome outcome, Error error) -> DurableCompactionBuildResult {
-    return {.outcome = outcome, .prepared = std::nullopt, .error = std::move(error)};
+auto build_failure(const DurableCompactionBuildOutcome outcome, Error error,
+                   DurableCompactionCopyStats stats = {}) -> DurableCompactionBuildResult {
+    return {.outcome = outcome,
+            .prepared = std::nullopt,
+            .stats = std::move(stats),
+            .error = std::move(error)};
 }
 
 auto checked_add(const std::uint64_t left, const std::uint64_t right, const char* description)
@@ -265,7 +269,8 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         if (layout.segment_count() >= sources.size()) {
             return build_failure(
                 DurableCompactionBuildOutcome::not_beneficial,
-                Error{ErrorCode::not_found, "durable compaction would not reclaim a physical Segment"});
+                Error{ErrorCode::not_found, "durable compaction would not reclaim a physical Segment"},
+                copy_stats);
         }
 
         auto plan = plan_durable_worker_compaction(current, worker_id, layout.segment_count(), limits);

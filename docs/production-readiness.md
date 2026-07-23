@@ -134,7 +134,8 @@ implementation or design document alone is not sufficient.
   high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts with reopen/model validation. It
   confirms useful physical reclaim but also exposes 1.6x--1.8x environmental variance on copy-heavy
   paths. The resulting per-Worker sealed/live/dead counters now
-  enforce the normal threshold and are exported in daemon `STATS`; unread TTL remains a conservative
+  enforce the normal threshold and are exported in daemon `STATS`; no-gain planning scans now export
+  verified Record/byte counters as well. Unread TTL remains a conservative
   policy gap. A clean seven-repeat
   [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) now supplies
   foreground p50/p95/p99/max coverage: a useful 31.01 MiB compaction costs about 18% median

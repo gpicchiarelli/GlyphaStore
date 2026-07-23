@@ -2450,7 +2450,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
         if (!built.succeeded()) {
             if (built.outcome == DurableCompactionBuildOutcome::not_beneficial) {
                 return {.outcome = DurableCompactionOutcome::not_beneficial,
-                        .stats = stats,
+                        .stats = built.stats,
                         .error = std::move(built.error)};
             }
             recovery_required = built.outcome == DurableCompactionBuildOutcome::recovery_required;

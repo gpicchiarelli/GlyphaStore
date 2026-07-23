@@ -52,8 +52,9 @@ Wire-protocol `HEALTH` (opcode 7) and `READY` (opcode 8) probes are accepted bef
 `HEALTH` returns `OK` with value `GlyphaStore/live` while executors are live; `READY` returns `OK`
 with value `GlyphaStore/ready` only when the Store is operational and maintenance is not in emergency
 or a sticky faulted state. `STATS` (opcode 9) returns a bounded ASCII admin report (version, live/ready,
-connections, durable lane/batch counters, maintenance snapshot, and durable rotation wait/execution
-phase timings, including seal, Segment creation, Manifest publication, and final Record commit)
+connections, durable lane/batch counters, maintenance snapshot including skip reason and no-gain
+planning scan counters, and durable rotation wait/execution phase timings, including seal, Segment
+creation, Manifest publication, and final Record commit)
 while live. Failed probes return `INTERNAL_ERROR`. `--quiet`
 suppresses normal startup and shutdown messages, but never suppresses errors.
 

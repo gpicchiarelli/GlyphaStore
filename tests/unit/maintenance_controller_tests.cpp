@@ -994,3 +994,60 @@ GLYPHA_TEST("maintenance snapshot records expired_records_dropped from compact")
     }
     GLYPHA_REQUIRE(false);
 }
+
+GLYPHA_TEST("maintenance snapshot records no-gain planning scan counters") {
+    glyphastore::StoreConfig config{};
+    config.worker_config.explicit_count = 1;
+    config.maintenance.mode = glyphastore::MaintenanceMode::background;
+    config.maintenance.min_eval_interval_ms = 60'000;
+    config.maintenance.max_eval_interval_ms = 60'000;
+
+    auto store = glyphastore::Store::open(config);
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+    const auto initial = wait_for_initial_idle(**store);
+
+    controller->bind_observe([]() -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 10,
+            .sealed_segment_count = 2,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller->bind_compact(
+        [](std::optional<std::size_t>, std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+            return glyphastore::CompactionResult{
+                .compacted = false,
+                .worker_index = 0,
+                .source_records_verified = 11,
+                .source_bytes_verified = 22'016,
+                .expired_records_dropped = 3,
+            };
+        });
+    controller->request_evaluate();
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < deadline) {
+        const auto snap = (**store).maintenance_snapshot();
+        if (snap.last_skip_reason == glyphastore::MaintenanceSkipReason::no_gain &&
+            snap.consecutive_no_gain > initial.consecutive_no_gain) {
+            GLYPHA_REQUIRE(snap.last_no_gain_source_records_verified == 11);
+            GLYPHA_REQUIRE(snap.last_no_gain_source_bytes_verified == 22'016);
+            GLYPHA_REQUIRE(snap.last_no_gain_expired_records_dropped == 3);
+            GLYPHA_REQUIRE(snap.total_no_gain_source_records_verified ==
+                           initial.total_no_gain_source_records_verified + 11);
+            GLYPHA_REQUIRE(snap.total_no_gain_source_bytes_verified ==
+                           initial.total_no_gain_source_bytes_verified + 22'016);
+            GLYPHA_REQUIRE(snap.total_no_gain_expired_records_dropped ==
+                           initial.total_no_gain_expired_records_dropped + 3);
+            GLYPHA_REQUIRE((**store).close().has_value());
+            return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(false);
+}

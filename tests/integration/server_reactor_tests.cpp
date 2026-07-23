@@ -798,6 +798,14 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(stats_text.find("version=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("connections_active=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_state=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("useful_compactions=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_skips=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_consecutive_no_gain=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_last_skip_reason=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_last_no_gain_source_records_verified=") !=
+                      std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_total_no_gain_source_bytes_verified=") !=
+                      std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_attempts=0\n") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_publication_wait_ns=0\n") !=
                       std::string_view::npos);

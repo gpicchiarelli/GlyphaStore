@@ -20,6 +20,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Expose durable no-gain planning work that previously looked identical to cheap scheduler skips.
+  `Store::compact()` still returns `compacted == false` without publishing an intent, but now reports
+  the Worker examined plus exact Index-referenced sealed Record/byte counts verified before the
+  layout rejected the rewrite. `MaintenanceSnapshot` and daemon `STATS` accumulate last/total no-gain
+  scan counters alongside `skips`, `consecutive_no_gain`, and `last_skip_reason`.
 - Replace fail-fast unrelated-Worker rotation during a durable compaction lease with condition-based
   serialization: the rotation now waits, rebuilds from the newly published Manifest, commits, and
   survives reopen without changing persistence v1. Advance the automatic round-robin cursor for
@@ -64,7 +69,8 @@ public API exists.
   checks its complete key model; CSV output includes segment/byte reclamation, copied and expired
   records, elapsed time, and effective scan/copy rates. Record the first seven-repeat exploratory
   macOS/APFS result and use it to drive the per-Worker dead-byte enforcement and finite normal copy
-  limit above. No-gain work lacks public counters, unread TTL remains conservative under normal
+  limit above. No-gain planning scans now expose public counters through `CompactionResult`,
+  `MaintenanceSnapshot`, and daemon `STATS`. Unread TTL remains conservative under normal
   policy, and concurrent foreground cost is measured by the dedicated follow-up matrix.
 - Add the platform durability evidence matrix with cumulative E0–E4 claim levels, an honest
   APFS/Linux/BSD row inventory, artifact/promotion requirements, and a controlled power-loss

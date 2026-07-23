@@ -942,6 +942,16 @@ GLYPHA_TEST("public Store compacts one scheduled Worker and preserves restart vi
     GLYPHA_REQUIRE(text(*(*store)->get("live-a")) == "alpha");
     GLYPHA_REQUIRE(text(*(*store)->get("replacement")) == "new");
     GLYPHA_REQUIRE((*store)->verify_index().has_value());
+
+    const auto no_gain = (*store)->compact();
+    GLYPHA_REQUIRE(no_gain.has_value());
+    GLYPHA_REQUIRE(!no_gain->compacted);
+    GLYPHA_REQUIRE(no_gain->worker_index == 0);
+    GLYPHA_REQUIRE(no_gain->source_records_verified == 2);
+    GLYPHA_REQUIRE(no_gain->source_bytes_verified > 0);
+    GLYPHA_REQUIRE(no_gain->records_copied == 0);
+    GLYPHA_REQUIRE(no_gain->bytes_copied == 0);
+    GLYPHA_REQUIRE(no_gain->expired_records_dropped == 0);
     GLYPHA_REQUIRE((*store)->close().has_value());
 
     auto reopened = glyphastore::Store::open({
@@ -1034,7 +1044,10 @@ GLYPHA_TEST("public Store compaction scheduler advances one Worker per call") {
     const auto no_gain = (*store)->compact();
     GLYPHA_REQUIRE(no_gain.has_value());
     GLYPHA_REQUIRE(!no_gain->compacted);
-    GLYPHA_REQUIRE(!no_gain->worker_index.has_value());
+    GLYPHA_REQUIRE(no_gain->worker_index.has_value());
+    GLYPHA_REQUIRE(no_gain->source_records_verified > 0);
+    GLYPHA_REQUIRE(no_gain->source_bytes_verified > 0);
+    GLYPHA_REQUIRE(no_gain->records_copied == 0);
     GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_first)) == "zero-first");
     GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_second)) == "zero-second");
     GLYPHA_REQUIRE(text(*(*store)->get(worker_one_first)) == "one-first");

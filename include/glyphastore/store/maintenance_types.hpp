@@ -128,6 +128,15 @@ struct MaintenanceSnapshot {
     std::uint64_t last_records_copied{};
     std::uint64_t last_expired_records_dropped{};
     std::uint64_t total_expired_records_dropped{};
+    // Exact Index-referenced sealed Records examined by the most recent no-gain
+    // planning decision (DurableCompactionOutcome::not_beneficial). Cheap policy
+    // skips such as reclaim_threshold or copy_budget do not update these fields.
+    std::uint64_t last_no_gain_source_records_verified{};
+    std::uint64_t last_no_gain_source_bytes_verified{};
+    std::uint64_t last_no_gain_expired_records_dropped{};
+    std::uint64_t total_no_gain_source_records_verified{};
+    std::uint64_t total_no_gain_source_bytes_verified{};
+    std::uint64_t total_no_gain_expired_records_dropped{};
     std::uint64_t last_eval_duration_ns{};
     std::uint64_t last_compact_duration_ns{};
     std::uint64_t ns_since_last_useful_compaction{};

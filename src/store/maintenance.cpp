@@ -241,6 +241,12 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .last_records_copied = last_records_copied_,
         .last_expired_records_dropped = last_expired_records_dropped_,
         .total_expired_records_dropped = total_expired_records_dropped_,
+        .last_no_gain_source_records_verified = last_no_gain_source_records_verified_,
+        .last_no_gain_source_bytes_verified = last_no_gain_source_bytes_verified_,
+        .last_no_gain_expired_records_dropped = last_no_gain_expired_records_dropped_,
+        .total_no_gain_source_records_verified = total_no_gain_source_records_verified_,
+        .total_no_gain_source_bytes_verified = total_no_gain_source_bytes_verified_,
+        .total_no_gain_expired_records_dropped = total_no_gain_expired_records_dropped_,
         .last_eval_duration_ns = last_eval_duration_ns_,
         .last_compact_duration_ns = last_compact_duration_ns_,
         .ns_since_last_useful_compaction = since_useful,
@@ -473,6 +479,12 @@ void MaintenanceController::evaluate_once() {
         last_expired_records_dropped_ = result->expired_records_dropped;
         if (!result->compacted) {
             ++consecutive_no_gain_;
+            last_no_gain_source_records_verified_ = result->source_records_verified;
+            last_no_gain_source_bytes_verified_ = result->source_bytes_verified;
+            last_no_gain_expired_records_dropped_ = result->expired_records_dropped;
+            total_no_gain_source_records_verified_ += result->source_records_verified;
+            total_no_gain_source_bytes_verified_ += result->source_bytes_verified;
+            total_no_gain_expired_records_dropped_ += result->expired_records_dropped;
             record_skip(MaintenanceSkipReason::no_gain, MaintenanceState::idle, activation);
             return;
         }

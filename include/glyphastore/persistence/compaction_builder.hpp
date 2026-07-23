@@ -37,6 +37,7 @@ struct PreparedDurableCompaction {
 struct DurableCompactionBuildResult {
     DurableCompactionBuildOutcome outcome{DurableCompactionBuildOutcome::not_started};
     std::optional<PreparedDurableCompaction> prepared;
+    DurableCompactionCopyStats stats{};
     std::optional<Error> error;
 
     [[nodiscard]] auto succeeded() const noexcept -> bool {

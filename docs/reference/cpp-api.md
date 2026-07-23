@@ -88,7 +88,7 @@ For volatile mode, `flush()` succeeds as a no-op.
 auto compact() -> Result<CompactionResult>;
 ```
 
-Runs explicit compaction according to the storage mode's selection policy. Durable mode uses its crash-consistent whole-Worker transaction. Volatile mode copy-builds replacements for selected sparse sealed Segments and publishes them only when the Worker uses fewer physical Segments afterward. Only one public compaction attempt may run at a time; a concurrent attempt returns `sequence_conflict`. Success with no eligible or physically beneficial work returns a result with `compacted == false`.
+Runs explicit compaction according to the storage mode's selection policy. Durable mode uses its crash-consistent whole-Worker transaction. Volatile mode copy-builds replacements for selected sparse sealed Segments and publishes them only when the Worker uses fewer physical Segments afterward. Only one public compaction attempt may run at a time; a concurrent attempt returns `sequence_conflict`. Success with no eligible or physically beneficial work returns a result with `compacted == false`. Durable no-gain planning still fills `worker_index` and the verified sealed Record/byte counters from the exact Index scan that rejected the rewrite; it never publishes an intent or rewrites Segments.
 
 Compaction preserves logical key/value visibility and may change Record references and physical Segment identities. Volatile source bytes remain alive while an already returned internal snapshot retains shared ownership; durable compaction additionally preserves crash recovery authority.
 
@@ -102,7 +102,8 @@ dead, and dead-ratio Record-byte counters. The normal controller compares that r
 `dead_byte_ratio_bp_normal` and preflights live bytes against the inclusive
 `max_copy_bytes_per_cycle` limit (128 MiB by default; zero means unlimited); pressure and emergency
 bypass both controls. Unread expired Records remain conservatively live until GET, recovery, or
-compaction validates their expiration. For durable Stores, `rotation` reports runtime-local
+compaction validates their expiration. Exact no-gain planning decisions also update last/total
+`*_no_gain_source_*` scan counters; cheap policy skips do not. For durable Stores, `rotation` reports runtime-local
 attempt/commit/wait counters, post-rotation final-Record attempt/commit counters, and
 last/total/maximum nanoseconds for publication wait, Segment seal, replacement Segment creation,
 Manifest publication, aggregate execution, the complete rotation, and the final Record commit.

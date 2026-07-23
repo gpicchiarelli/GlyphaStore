@@ -72,6 +72,35 @@ namespace {
     return "unknown";
 }
 
+[[nodiscard]] auto maintenance_skip_reason_name(const MaintenanceSkipReason reason) noexcept
+    -> std::string_view {
+    switch (reason) {
+    case MaintenanceSkipReason::none:
+        return "none";
+    case MaintenanceSkipReason::mode_disabled:
+        return "mode_disabled";
+    case MaintenanceSkipReason::mode_cooperative:
+        return "mode_cooperative";
+    case MaintenanceSkipReason::no_gain:
+        return "no_gain";
+    case MaintenanceSkipReason::no_candidate:
+        return "no_candidate";
+    case MaintenanceSkipReason::budget:
+        return "budget";
+    case MaintenanceSkipReason::store_closed:
+        return "store_closed";
+    case MaintenanceSkipReason::sequence_conflict:
+        return "sequence_conflict";
+    case MaintenanceSkipReason::policy_deferred:
+        return "policy_deferred";
+    case MaintenanceSkipReason::reclaim_threshold:
+        return "reclaim_threshold";
+    case MaintenanceSkipReason::copy_budget:
+        return "copy_budget";
+    }
+    return "unknown";
+}
+
 [[nodiscard]] auto validate_config(const ReactorConfig& config) -> Status {
     constexpr std::size_t maximum_queue_capacity = std::size_t{1} << 30U;
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
@@ -411,6 +440,33 @@ auto Server::stats_report() const -> Result<std::string> {
         out += '\n';
         out += "useful_compactions=";
         out += std::to_string(maintenance.useful_compactions);
+        out += '\n';
+        out += "maintenance_skips=";
+        out += std::to_string(maintenance.skips);
+        out += '\n';
+        out += "maintenance_consecutive_no_gain=";
+        out += std::to_string(maintenance.consecutive_no_gain);
+        out += '\n';
+        out += "maintenance_last_skip_reason=";
+        out += maintenance_skip_reason_name(maintenance.last_skip_reason);
+        out += '\n';
+        out += "maintenance_last_no_gain_source_records_verified=";
+        out += std::to_string(maintenance.last_no_gain_source_records_verified);
+        out += '\n';
+        out += "maintenance_last_no_gain_source_bytes_verified=";
+        out += std::to_string(maintenance.last_no_gain_source_bytes_verified);
+        out += '\n';
+        out += "maintenance_last_no_gain_expired_records_dropped=";
+        out += std::to_string(maintenance.last_no_gain_expired_records_dropped);
+        out += '\n';
+        out += "maintenance_total_no_gain_source_records_verified=";
+        out += std::to_string(maintenance.total_no_gain_source_records_verified);
+        out += '\n';
+        out += "maintenance_total_no_gain_source_bytes_verified=";
+        out += std::to_string(maintenance.total_no_gain_source_bytes_verified);
+        out += '\n';
+        out += "maintenance_total_no_gain_expired_records_dropped=";
+        out += std::to_string(maintenance.total_no_gain_expired_records_dropped);
         out += '\n';
         out += "maintenance_sequence_conflicts=";
         out += std::to_string(maintenance.sequence_conflicts);

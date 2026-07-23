@@ -76,6 +76,12 @@ class MaintenanceController final {
     std::uint64_t last_records_copied_{};
     std::uint64_t last_expired_records_dropped_{};
     std::uint64_t total_expired_records_dropped_{};
+    std::uint64_t last_no_gain_source_records_verified_{};
+    std::uint64_t last_no_gain_source_bytes_verified_{};
+    std::uint64_t last_no_gain_expired_records_dropped_{};
+    std::uint64_t total_no_gain_source_records_verified_{};
+    std::uint64_t total_no_gain_source_bytes_verified_{};
+    std::uint64_t total_no_gain_expired_records_dropped_{};
     std::uint64_t last_eval_duration_ns_{};
     std::uint64_t last_compact_duration_ns_{};
     std::optional<std::chrono::steady_clock::time_point> last_useful_at_{};

@@ -65,11 +65,14 @@ In `background`, the controller:
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
 eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
 count, time since last useful compaction, candidate Worker, candidate sealed/live/dead Record bytes,
-and dead ratio in basis points. Durable snapshots also include rotation attempts, commits,
+and dead ratio in basis points. Exact no-gain planning scans also expose last/total
+`source_records_verified`, `source_bytes_verified`, and `expired_records_dropped` examined before
+the layout rejected a rewrite; cheap policy skips (`reclaim_threshold`, `copy_budget`,
+`no_candidate`) do not update those fields. Durable snapshots also include rotation attempts, commits,
 compaction waits, final-Record attempts/commits, and last/total/maximum durations for publication
 wait, Segment seal, replacement Segment creation, Manifest publication, aggregate execution,
-complete rotation, and the post-rotation final Record commit. Daemon `STATS` exports both candidate
-and rotation counters.
+complete rotation, and the post-rotation final Record commit. Daemon `STATS` exports candidate,
+no-gain planning, skip-reason, and rotation counters.
 
 The live-byte counter means “currently Index-referenced,” not “guaranteed unexpired at observation
 time.” Expiry discovered by validated GET immediately updates it; cold, unread TTL entries remain
