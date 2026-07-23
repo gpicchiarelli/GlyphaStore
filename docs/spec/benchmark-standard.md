@@ -46,6 +46,7 @@ Every sample validates operation counts, hits/misses, response IDs, status, and 
 | `store-parallel-*` | public Store scaling | all client operations and synchronization |
 | `store-durable-*` | persistence-mode path | explicitly named durability policy |
 | durable compaction | physical reclaim benefit/cost | public `Store::compact()` only; seed/flush/reopen/verification excluded |
+| concurrent maintenance | foreground cost and reclaim progress for disabled/cooperative/background policy | mixed public GET/PUT calls only; preload/flush/close/reopen/verification excluded |
 | server TCP | parser, loopback transport, executor, Store, response | validated request/response pipeline |
 
 Sequential/random describe key visitation order, not Worker distribution. Parallel distribution must be named:
@@ -114,6 +115,7 @@ A change is a plausible regression only when it repeats across runs and exceeds 
 ./scripts/dev.sh benchmark --filter store-parallel-all --workers 4 --threads 4 --distribution uniform --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-durable --ops 20000 --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-compaction --warmup 1 --repeats 7
+./scripts/dev.sh benchmark-maintenance --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-server --ops 100000 --workers 4 --clients 4 --pipeline 32 --executor-affinity --warmup 1 --repeats 7
 ```
 

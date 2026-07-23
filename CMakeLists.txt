@@ -587,6 +587,24 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_compaction_benchmark RELEASE ARGUMENTS
         --repeats 3
     )
+    add_executable(glyphastore_maintenance_benchmark
+        benchmarks/maintenance_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_maintenance_benchmark
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    target_compile_definitions(
+        glyphastore_maintenance_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_maintenance_benchmark)
+    glyphastore_enable_hardening(glyphastore_maintenance_benchmark)
+    glyphastore_enable_ipo(glyphastore_maintenance_benchmark)
+    set_target_properties(glyphastore_maintenance_benchmark PROPERTIES FOLDER "Benchmarks")
+    glyphastore_xcode_scheme(glyphastore_maintenance_benchmark RELEASE ARGUMENTS
+        --repeats 3
+    )
     add_executable(glyphastore_server_benchmarks
         benchmarks/server_benchmark.cpp
         benchmarks/harness.cpp
@@ -652,6 +670,24 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
         )
         set_tests_properties(glyphastore_benchmark_durable_group_smoke PROPERTIES
             PASS_REGULAR_EXPRESSION "latency_samples=64"
+        )
+        add_test(
+            NAME glyphastore_benchmark_maintenance_smoke
+            COMMAND glyphastore_maintenance_benchmark
+                --operations 128
+                --threads 2
+                --keys 16
+                --value-bytes 1024
+                --reclaim-value-bytes 1024
+                --put-percent 10
+                --maintenance-interval-ms 1
+                --cooldown-ms 0
+                --warmup 0
+                --repeats 1
+                --mode disabled
+        )
+        set_tests_properties(glyphastore_benchmark_maintenance_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION "disabled,1,128"
         )
         add_test(
             NAME glyphastore_benchmark_server_tcp
