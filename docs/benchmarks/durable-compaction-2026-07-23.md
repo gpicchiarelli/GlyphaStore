@@ -101,8 +101,9 @@ counters.
 
 ## Open work
 
-1. Expose no-gain planning work in `CompactionResult` and maintenance telemetry.
-2. Decide whether unread TTL needs a bounded normal-mode probe independent of pressure.
+1. Expose no-gain planning work in `CompactionResult` and maintenance telemetry. **Closed.**
+2. Decide whether unread TTL needs a bounded normal-mode probe independent of pressure. **Closed:**
+   opt-in `unread_ttl_normal_scheduling` (default off) uses the same probe and `Store::compact()` path.
 3. Use the
    [concurrent-maintenance matrix](concurrent-maintenance-2026-07-23.md) for unrelated-Worker
    rotation conflicts during compaction publication.

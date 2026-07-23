@@ -5,6 +5,16 @@ public API exists.
 
 ## [Unreleased]
 
+- Close durable unread-TTL normal-mode policy fail-closed. Default scheduling stays conservative
+  (Index-referenced dead bytes only). Opt-in `unread_ttl_normal_scheduling` probes unread expired
+  sealed puts during normal evaluations and adds them to `candidate_scheduling_dead_byte_ratio_bp`
+  for the inclusive dead-byte threshold only; compaction still uses the sole `Store::compact()`
+  path and copy budget still uses exact live bytes. Export scheduling ratio through
+  `MaintenanceSnapshot` and daemon `STATS`. Add daemon CLI/config for unread-TTL probe and normal
+  scheduling flags.
+- Document permanent refusal of `glyphastore_rebuild_index` for durable v1 with explicit operator
+  paths via Store recovery and `glyphastore_repair_store`. Sync persistence roadmap: software P0-08
+  policy slices closed; controlled native baselines and E3/E4 power-loss certification remain open.
 - Add fail-closed JSON-lines structured logging for `glyphastored` lifecycle events (`start`, `listen`,
   `ready`, `maintenance_emergency`, `maintenance_fault`, `shutdown_begin`, `shutdown_drain_begin`,
   `shutdown_drain_end`, `stopped`, `executor_failure`). Opt in with `--log-format json` (default
