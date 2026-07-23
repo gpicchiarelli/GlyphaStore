@@ -3,7 +3,7 @@
 Status: normative for the current TCP server
 Applies to: protocol version 2
 Owner: networking maintainers
-Last reviewed: 2026-07-21
+Last reviewed: 2026-07-23
 
 ## 1. Transport and byte order
 
@@ -145,9 +145,23 @@ A client should maintain at least one connection per actively used Worker when i
 
 ## 8. Pipelining and ordering
 
-Clients may place multiple complete requests on one connection without waiting for each response. The server processes and emits responses in request order for that connection. `request_id` is copied verbatim so the client can correlate responses; it does not change ordering or provide idempotency.
+Clients may place multiple complete requests on one connection without waiting for each response. The server processes and emits responses in request order for that connection.
 
 There is no cross-connection ordering guarantee and no transaction spanning requests.
+
+### 8.1 `request_id` semantics
+
+`request_id` is a client-chosen unsigned 64-bit correlation token. The server copies it verbatim onto the matching response and performs no other processing on it.
+
+Normative rules:
+
+1. **Correlation only.** `request_id` lets a pipelining client match each response to its request. It does not change server processing order, acknowledgement timing, or durability boundaries.
+2. **No server deduplication.** The server maintains no duplicate-detection table, replay cache, or idempotency scope keyed by `request_id`, neither per connection nor globally. Clients must never assume that reusing an id suppresses duplicate mutation or yields a cached prior outcome.
+3. **Duplicate ids on one connection.** Reusing the same `request_id` for different in-flight or subsequent requests on one connection is undefined for the client: responses still arrive in request order, but applications must not infer deduplication, safe retry, or commit proof from id reuse alone.
+4. **Fresh ids after reconnect.** After any TCP reconnect, previously used `request_id` values carry no server memory. A client must allocate fresh ids for new attempts on the new session.
+5. **No wire idempotency token.** Protocol v2 has no deduplication field. Application-level idempotency is out of band.
+
+Official clients classify transport loss, automatic retries, and mutation outcomes per [client semantics v1](client-semantics-v1.md).
 
 ## 9. Expiration
 
@@ -159,7 +173,21 @@ Clock synchronization is an operational responsibility. Version 2 has no server-
 
 The server closes the connection without a response when it cannot safely decode frame boundaries, including an invalid header size, unsupported version at framing time, size overflow, or frame beyond the maximum. Once framing is trustworthy, semantic request errors may receive `INVALID_REQUEST` or `UNSUPPORTED`.
 
-Failure to enqueue a one-time connection handoff, input/output buffer exhaustion, socket error, or peer EOF also closes the connection. A client must treat disconnect as an indeterminate transport outcome: it cannot know solely from the disconnect whether a mutation linearized.
+Failure to enqueue a one-time connection handoff, input/output buffer exhaustion, socket error, or peer EOF also closes the connection.
+
+### 10.1 Reconnect and transport loss
+
+When a connection closes for any reason, all session state for that TCP stream is lost on the server side. A client opening or reusing transport to the same daemon must treat the new stream as a fresh session.
+
+Normative rules:
+
+1. **Re-bootstrap required.** Before Store traffic (`GET`, `PUT`, `ERASE`), the client must send `INIT`, read worker metadata, and send exactly one `BIND_WORKER` on the new connection. Pipelined or bound state from a prior connection is not preserved.
+2. **Routing metadata check.** On reconnect, official clients accept only the original `worker_count` and `routing_epoch` discovered at client construction. A mismatch makes the session unusable (`unavailable`); the application must construct a new client because protocol v2 defines no online rebalance.
+3. **Indeterminate mutations.** If any request bytes of a `PUT` or `ERASE` were written before disconnect without a trustworthy definitive response, the mutation outcome is **indeterminate**: the server may or may not have applied it. Disconnect timing alone does not prove commit or rejection.
+4. **No cancel on disconnect.** Admitted durable work is not cancelled because the client lost the connection; a mutation may commit after the client observes transport failure.
+5. **No `request_id` carry-over.** Reconnect does not resume an earlier exchange. Retrying a logical mutation is a new request with a new `request_id`; the server does not deduplicate by id (§8.1).
+
+A client must treat disconnect as an indeterminate transport outcome for mutations with bytes sent: it cannot know solely from the disconnect whether a mutation linearized. Official clients implement re-bootstrap, routing checks, and outcome classification per [client semantics v1](client-semantics-v1.md).
 
 ## 11. Backpressure
 
@@ -187,4 +215,4 @@ Worker from making progress.
 4. Send `BIND_WORKER` for a valid Worker.
 5. Send framed requests and read framed responses in order.
 6. On `WRONG_OWNER`, use a connection bound to `owner_worker`.
-7. On disconnect after a mutation, apply application-specific retry/idempotency policy; protocol v2 has no deduplication token. Official clients classify outcomes and automatic retries per [client semantics v1](client-semantics-v1.md).
+7. On transport loss, re-bootstrap with `INIT` and `BIND_WORKER` (§10.1). Treat mutations with bytes sent as indeterminate; never assume server `request_id` deduplication (§8.1). Apply application-specific reconciliation before retrying a logical mutation. Official clients classify outcomes and automatic retries per [client semantics v1](client-semantics-v1.md).

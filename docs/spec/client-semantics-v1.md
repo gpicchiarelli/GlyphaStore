@@ -1,7 +1,7 @@
 Status: normative for official GlyphaStore TCP clients
 Applies to: wire protocol v2 clients (C++, Python, Perl, Go; Ruby when official)
 Owner: networking maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-23
 
 # Client semantics v1 — errors, retry, and timeouts
 
@@ -117,6 +117,16 @@ caller order. It is not atomic across Workers.
 
 Reconnect after a transient failure must accept only the **original** `worker_count` and
 `routing_epoch`. A mismatch → `unavailable`, client unhealthy, no further automatic retry.
+
+After transport loss on a Worker connection, the client **must** discard the old socket state and
+re-bootstrap that connection with `INIT` followed by exactly one `BIND_WORKER` before any further
+Store traffic ([wire protocol §10.1](wire-protocol-v2.md)). Session initialization on a new TCP
+stream is mandatory even when routing metadata is unchanged.
+
+Clients **must not** assume server-side deduplication keyed by `request_id`. Reconnecting and
+resending a logical mutation with the same or a different `request_id` is a new server request;
+only application reconciliation (for example a read of the affected key) can prove whether an earlier
+indeterminate attempt committed ([wire protocol §8.1](wire-protocol-v2.md)).
 
 ## 6. Timeouts, cancellation, and late responses
 

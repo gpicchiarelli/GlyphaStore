@@ -20,6 +20,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Normatively specify duplicate `request_id` and reconnect semantics for wire protocol v2. `request_id`
+  is correlation-only with no server deduplication; transport loss requires re-`INIT`/`BIND_WORKER`;
+  mutations with bytes sent remain indeterminate until application reconciliation. Update
+  [wire protocol v2 §8.1 and §10.1](docs/spec/wire-protocol-v2.md), [client semantics v1 §5](docs/spec/client-semantics-v1.md),
+  ADR 0019, and close the corresponding production-roadmap bullets.
 - Expose durable no-gain planning work that previously looked identical to cheap scheduler skips.
   `Store::compact()` still returns `compacted == false` without publishing an intent, but now reports
   the Worker examined plus exact Index-referenced sealed Record/byte counts verified before the

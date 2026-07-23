@@ -457,8 +457,11 @@ post-compaction no-gain detection.
   Wire `HEALTH`/`READY`/`STATS` and `glyphastored --dump-config` are implemented; histogram export
   and structured logging remain open.
 - Add wire golden fixtures, reserved-bit validation, opcode-specific key/value/expiry constraints,
-  stable error mapping, duplicate request-id guidance, reconnect semantics, and compatibility
-  tests. Protocol versioning remains independent from persistence v1.
+  stable error mapping, and compatibility tests. Duplicate `request_id` guidance (correlation-only;
+  no server deduplication) and reconnect semantics (re-`INIT`/`BIND_WORKER`; indeterminate
+  mutations after transport loss) are specified in [wire protocol v2 §8.1 and §10.1](spec/wire-protocol-v2.md)
+  and [client semantics v1 §5](spec/client-semantics-v1.md). Protocol versioning remains independent
+  from persistence v1.
 - Avoid repeated vector erasure/memmove on input/output queues; use ring/slab buffers with bounded
   high/low watermarks and prove behavior under partial frames, slow readers, pipelining, and
   malicious maximum-size frames.

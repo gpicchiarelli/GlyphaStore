@@ -52,7 +52,9 @@ Adopt [Client semantics v1](../spec/client-semantics-v1.md) as normative for off
   structured error fields can be added without changing outcomes.
 - Negative: C++ `ErrorCode` names remain a superset and are not the portable taxonomy.
 - Deferred: per-request deadline API options, connection pools, and wire idempotency keys
-  ([SDK roadmap](../architecture/sdk-roadmap.md)).
+  ([SDK roadmap](../architecture/sdk-roadmap.md)). Duplicate `request_id` correlation-only semantics
+  and reconnect/re-bootstrap rules are specified in [wire protocol v2 §8.1 and §10.1](../spec/wire-protocol-v2.md)
+  and [client semantics v1 §5](../spec/client-semantics-v1.md).
 
 ## Compatibility and migration
 
