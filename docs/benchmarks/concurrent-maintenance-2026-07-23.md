@@ -89,15 +89,18 @@ That diagnostic matrix is not mixed into the latency table because failed operat
 the modes incomparable. It identifies the next engineering target rather than a performance
 number to optimize away.
 
+This finding is historical for source `1ccd379`. The follow-up implementation replaces fail-fast
+rotation with condition-based serialization, and the clean
+[forced-rotation, idle, and 1 GiB churn matrix](maintenance-rotation-idle-churn-2026-07-23.md)
+records zero foreground failures across all forced overlaps.
+
 ## Decision and next gates
 
-The concurrent foreground measurement gate is complete, but automatic reclaim is not yet
-production-tuned. Next:
+The concurrent foreground measurement gate is complete. Forced rotation, idle overhead, and
+sustained churn are covered by the linked follow-up. Remaining:
 
-1. redesign or narrow Manifest publication coordination so unrelated-Worker rotation can coexist
-   safely, then add a benchmark scenario that forces rotation and requires zero foreground errors;
-2. expose rejected/no-gain planning work in compaction and maintenance telemetry;
-3. decide whether unread TTL needs a bounded normal-mode probe independent of pressure;
-4. add idle-overhead and long sealed-churn efficacy workloads;
-5. rerun longer controlled matrices on macOS/APFS and Linux ext4/XFS, then define separate
+1. expose rejected/no-gain planning work in compaction and maintenance telemetry;
+2. decide whether unread TTL needs a bounded normal-mode probe independent of pressure;
+3. instrument rotation phase and Manifest-wait durations separately;
+4. rerun longer controlled matrices on macOS/APFS and Linux ext4/XFS, then define separate
    throughput and tail-latency regression gates.

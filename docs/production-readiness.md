@@ -139,9 +139,14 @@ implementation or design document alone is not sufficient.
   [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) now supplies
   foreground p50/p95/p99/max coverage: a useful 31.01 MiB compaction costs about 18% median
   throughput and 54--57% p99 versus disabled, with no material median difference between
-  cooperative and background scheduling. Calibration also exposes unrelated-Worker rotation
-  rejection during Manifest publication. These are exploratory local results, not release
-  regression baselines.
+  cooperative and background scheduling. Its calibration exposed unrelated-Worker rotation
+  rejection during Manifest publication. The clean
+  [rotation/idle/churn follow-up](benchmarks/maintenance-rotation-idle-churn-2026-07-23.md) closes
+  that availability failure: every forced rotation waits and commits, with about 2.5x median
+  forced-boundary latency. Product-default idle process CPU duty measures about 0.0018%; under
+  seven validated 1 GiB churn samples, background maintenance holds the final Store to four
+  Segments instead of 22 at a 2.9% median throughput cost and no material median p99 change.
+  These are exploratory local results, not release regression baselines.
   These local measurements are diagnostic baselines, not release claims;
   controlled-hardware CI evidence and an enforced tail-latency target remain pending.
 

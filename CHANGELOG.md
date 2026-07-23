@@ -24,14 +24,19 @@ public API exists.
   serialization: the rotation now waits, rebuilds from the newly published Manifest, commits, and
   survives reopen without changing persistence v1. Advance the automatic round-robin cursor for
   every observed candidate so a below-threshold Worker cannot starve reclaimable peers, and expose
-  a cumulative maintenance sequence-conflict counter through snapshots and daemon `STATS`.
+  a cumulative maintenance sequence-conflict counter through snapshots and daemon `STATS`. Extend
+  the maintenance benchmark with forced-rotation, idle, and sustained-churn scenarios. On the clean
+  seven-repeat macOS/APFS follow-up, all forced rotations commit without foreground errors; the
+  serialized boundary costs about 2.5x median latency, product-default idle duty is about 0.0018%,
+  and seven 1 GiB churn samples finish with four Segments instead of 22 at a 2.9% median throughput
+  cost.
 - Add a reproducible concurrent-maintenance benchmark comparing disabled, cooperative, and
   Store-owned background policy under a synchronized mixed GET/PUT workload. Record a clean
   seven-repeat macOS/APFS matrix with raw CSV: both maintenance modes complete the same 31.01 MiB
   useful compaction without conflict, while median foreground throughput falls about 18% and p99
   rises 54--57% versus disabled. Cooperative and background medians are effectively equal. A
-  rotation-forcing calibration also identifies unrelated-Worker fail-fast publication conflict as
-  the next availability target.
+  rotation-forcing calibration identified the unrelated-Worker fail-fast publication conflict
+  subsequently closed and measured by the follow-up above.
 - Enforce `dead_byte_ratio_bp_normal` for normal durable maintenance using exact per-Worker
   Index-referenced active/sealed Record-byte counters maintained across recovery, mutation, lazy
   expiry, rotation, compaction, and reopen. Observe the next round-robin candidate without scanning

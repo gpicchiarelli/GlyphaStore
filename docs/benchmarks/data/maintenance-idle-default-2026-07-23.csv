@@ -1,0 +1,21 @@
+# benchmark=glyphastore_concurrent_maintenance
+# git_sha=573a741
+# scenario=idle
+# warmups=0;measured_repeats=7;threads=4;operations=15360;keys=128;value_bytes=65536;reclaim_value_bytes=262144;put_percent=5;cooldown_ms=250
+# storage_mode=durable-periodic;workers=2;foreground=none;duration_ms=3000
+# background_policy=product_defaults;min_eval_interval_ms=1000;max_eval_interval_ms=60000
+mode,repeat,wall_s,process_cpu_ms,process_cpu_duty_pct,evaluation_cycles,maintenance_skips,last_eval_us
+disabled,1,3.010052,0.042000,0.001395,0,0,0.000000
+background,1,3.010042,0.051000,0.001694,1,1,19.167000
+background,2,3.010039,0.048000,0.001595,1,1,17.417000
+disabled,2,3.010034,0.021000,0.000698,0,0,0.000000
+disabled,3,3.010051,0.034000,0.001130,0,0,0.000000
+background,3,3.010041,0.061000,0.002027,1,1,24.167000
+background,4,3.010047,0.049000,0.001628,1,1,13.500000
+disabled,4,3.010028,0.022000,0.000731,0,0,0.000000
+disabled,5,3.010040,0.028000,0.000930,0,0,0.000000
+background,5,3.010038,0.061000,0.002027,1,1,20.375000
+background,6,3.010029,0.056000,0.001860,1,1,23.417000
+disabled,6,3.010034,0.023000,0.000764,0,0,0.000000
+disabled,7,3.010038,0.031000,0.001030,0,0,0.000000
+background,7,3.010044,0.054000,0.001794,1,1,18.833000

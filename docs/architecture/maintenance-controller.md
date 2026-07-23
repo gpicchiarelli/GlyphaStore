@@ -3,7 +3,7 @@
 Status: Phase 5 critical fail-closed + lifecycle; Phase 6 wire retry honesty (ADR 0023 / 0019)
 Applies to: embedded Store and glyphastored
 Owner: persistence maintainers
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-23
 
 # Overview
 
@@ -106,8 +106,10 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
   the [2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md);
   the clean [concurrent-maintenance follow-up](../benchmarks/concurrent-maintenance-2026-07-23.md)
   measures a roughly 18% median throughput cost and 54--57% p99 increase while useful reclaim
-  overlaps foreground work. Idle overhead, long sealed-churn efficacy, and controlled native
-  baselines remain.
-- Rotation latency during Manifest publication. Unrelated rotation now waits and commits rather
-  than returning `sequence_conflict`; controlled latency and churn evidence remain required.
+  overlaps foreground work. The second
+  [rotation/idle/churn follow-up](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md)
+  measures condition-wait latency, product-default and aggressive idle CPU, and seven validated
+  1 GiB churn samples. Controlled native baselines remain.
+- Rotation phase and condition-wait telemetry. The aggregate forced-overlap latency is measured,
+  but build, intent/publication wait, rotation I/O, and flush time are not yet separated.
 - Native power-loss certification (owned by ADR 0015 compaction transaction, not this scheduler).
