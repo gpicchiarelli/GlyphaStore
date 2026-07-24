@@ -8,10 +8,19 @@ all() ->
     [
         put_get_ping_erase,
         internal_error_mutation_is_indeterminate,
+        disconnect_after_mutation_is_indeterminate,
         pipeline_put_get,
+        pipeline_preserves_order,
+        pipeline_disconnect_classifies_each_request,
+        pipeline_limits_fail_before_transmission,
         batch_multi_worker,
         worker_pipelines_concurrent,
-        rejects_non_positive_timeout
+        rejects_non_positive_timeout,
+        per_call_timeout_overrides_config,
+        overloaded_retryability_is_never,
+        permission_denied_status,
+        tls_requires_cert_and_key_pair,
+        close_is_synchronous
     ].
 
 put_get_ping_erase(_Config) ->
@@ -29,6 +38,8 @@ put_get_ping_erase(_Config) ->
         4 = maps:get(wire_status, Err),
         new_attempt = maps:get(retryability, Err),
         <<"get">> = maps:get(operation, Err),
+        true = glyphastore_client:healthy(Client),
+        9 = glyphastore_client:routing_epoch(Client),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -43,6 +54,17 @@ internal_error_mutation_is_indeterminate(_Config) ->
         3 = maps:get(wire_status, Err),
         reconcile_first = maps:get(retryability, Err),
         <<"put">> = maps:get(operation, Err),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+disconnect_after_mutation_is_indeterminate(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{drop_after_mutation => true}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        #{outcome := indeterminate, error := Err} = glyphastore_client:put(Client, <<"key">>, <<"value">>),
+        transport = maps:get(category, Err),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -63,6 +85,72 @@ pipeline_put_get(_Config) ->
         succeeded = maps:get(outcome, lists:nth(1, Responses)),
         succeeded = maps:get(outcome, lists:nth(2, Responses)),
         Value = maps:get(value, lists:nth(2, Responses)),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+pipeline_preserves_order(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        Requests = lists:flatmap(
+            fun(I) ->
+                Value = list_to_binary(io_lib:format("pipeline-~B", [I])),
+                [
+                    #{opcode => put, key => <<"key">>, value => Value},
+                    #{opcode => get, key => <<"key">>}
+                ]
+            end,
+            lists:seq(0, 63)
+        ),
+        {ok, Responses} = glyphastore_client:execute_pipeline(Client, Requests),
+        128 = length(Responses),
+        lists:foreach(
+            fun(I) ->
+                Expected = list_to_binary(io_lib:format("pipeline-~B", [I])),
+                succeeded = maps:get(outcome, lists:nth(I * 2 + 1, Responses)),
+                succeeded = maps:get(outcome, lists:nth(I * 2 + 2, Responses)),
+                Expected = maps:get(value, lists:nth(I * 2 + 2, Responses))
+            end,
+            lists:seq(0, 63)
+        ),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+pipeline_disconnect_classifies_each_request(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{drop_after_mutation => true}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        {ok, Responses} =
+            glyphastore_client:execute_pipeline(Client, [
+                #{opcode => put, key => <<"key">>, value => <<"value">>},
+                #{opcode => get, key => <<"key">>},
+                #{opcode => erase, key => <<"key">>}
+            ]),
+        indeterminate = maps:get(outcome, lists:nth(1, Responses)),
+        failed = maps:get(outcome, lists:nth(2, Responses)),
+        indeterminate = maps:get(outcome, lists:nth(3, Responses)),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+pipeline_limits_fail_before_transmission(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{
+            port => glyphastore_fake_server:port(Server),
+            maximum_pipeline_requests => 1
+        }),
+        {error, Err} =
+            glyphastore_client:execute_pipeline(Client, [
+                #{opcode => get, key => <<"key">>},
+                #{opcode => get, key => <<"key">>}
+            ]),
+        invalid_argument = maps:get(category, Err),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -129,6 +217,78 @@ rejects_non_positive_timeout(_Config) ->
         {error, Err} = glyphastore_client:get(Client, <<"k">>, #{timeout => 0}),
         invalid_argument = maps:get(category, Err),
         glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+per_call_timeout_overrides_config(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{stall_on_get => true}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{
+            port => glyphastore_fake_server:port(Server),
+            request_timeout => 5.0
+        }),
+        {error, Err} = glyphastore_client:get(Client, <<"key">>, #{timeout => 0.05}),
+        transport = maps:get(category, Err),
+        {error, Err2} = glyphastore_client:get(Client, <<"key">>, #{timeout => 0}),
+        invalid_argument = maps:get(category, Err2),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+overloaded_retryability_is_never(_Config) ->
+    never = glyphastore_error:retryability_for(overloaded, false, false),
+    never = glyphastore_error:retryability_for(overloaded, true, false),
+    Err = glyphastore_error:overloaded(<<"server is overloaded">>),
+    overloaded = maps:get(category, Err),
+    never = maps:get(retryability, Err),
+    {ok, Server} = glyphastore_fake_server:start(#{
+        status_on_get => glyphastore_protocol:status_overloaded()
+    }),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        {error, Wire} = glyphastore_client:get(Client, <<"key">>),
+        overloaded = maps:get(category, Wire),
+        never = maps:get(retryability, Wire),
+        5 = maps:get(wire_status, Wire),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+permission_denied_status(_Config) ->
+    Err = glyphastore_error:permission_denied(<<"denied">>),
+    permission_denied = maps:get(category, Err),
+    never = maps:get(retryability, Err),
+    {ok, Server} = glyphastore_fake_server:start(#{
+        status_on_get => glyphastore_protocol:status_permission_denied()
+    }),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        {error, Wire} = glyphastore_client:get(Client, <<"key">>),
+        permission_denied = maps:get(category, Wire),
+        never = maps:get(retryability, Wire),
+        8 = maps:get(wire_status, Wire),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+tls_requires_cert_and_key_pair(_Config) ->
+    {error, Err} = glyphastore_client:build_tls_options(
+        #{enable => true, cert_file => "/tmp/only-cert.pem"},
+        "localhost"
+    ),
+    invalid_argument = maps:get(category, Err).
+
+close_is_synchronous(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        ok = glyphastore_client:close(Client),
+        false = is_process_alive(Client),
+        ok = glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
     end.

@@ -71,7 +71,16 @@ connect(Config0) ->
         {error, Err} -> {error, Err}
     end.
 
-close(Client) -> gen_server:cast(Client, close), ok.
+%% Synchronous close (sibling SDKs wait until sockets are released).
+close(Client) ->
+    try gen_server:call(Client, close, infinity) of
+        ok -> ok
+    catch
+        exit:{noproc, _} -> ok;
+        exit:{{noproc, _}, _} -> ok;
+        exit:{normal, _} -> ok;
+        exit:{{normal, _}, _} -> ok
+    end.
 healthy(Client) -> gen_server:call(Client, healthy).
 worker_count(Client) -> gen_server:call(Client, worker_count).
 routing_epoch(Client) -> gen_server:call(Client, routing_epoch).
@@ -143,12 +152,14 @@ handle_call({execute_batch, Requests, Opts}, _From, State) ->
 handle_call({execute_worker_pipelines, Batches, Opts}, _From, State) ->
     {Reply, State1} = do_execute_worker_pipelines(Batches, Opts, State),
     {reply, Reply, State1};
+handle_call(close, _From, State) ->
+    maps:foreach(fun(_W, Pid) -> glyphastore_conn:reset(Pid) end, State#state.workers),
+    {stop, normal, ok, State#state{healthy = false}};
 handle_call(_Req, _From, State) ->
     {reply, {error, glyphastore_error:internal(<<"unexpected call">>)}, State}.
 
-handle_cast(close, State) ->
-    maps:foreach(fun(_W, Pid) -> glyphastore_conn:reset(Pid) end, State#state.workers),
-    {stop, normal, State#state{healthy = false}}.
+handle_cast(_Msg, State) ->
+    {noreply, State}.
 
 terminate(_Reason, State) ->
     maps:foreach(fun(_W, Pid) -> catch gen_server:stop(Pid) end, State#state.workers),
@@ -263,7 +274,7 @@ do_read(Op, Key, Value, Opts, State) ->
 do_read_attempt(_O, _N, _K, _V, _D, _W, _C, State, 0) ->
     {{error, glyphastore_error:unavailable(<<"request was not attempted">>)}, State};
 do_read_attempt(Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts) ->
-    case ensure_connected(Conn, State) of
+    case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
             {RequestId, State2} = bump_id(State1),
             case encode_request(Opcode, RequestId, Key, Value, 0, State2) of
@@ -303,8 +314,10 @@ handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
             {{error, annotate(Err, OpName, RequestId, Worker, State)}, State}
     end.
 
+%% At-most-one auto-retry (Attempts starts at 2). Preserve the last error — do not
+%% collapse a second transport failure into a synthetic "not attempted" unavailable.
 retry_read(Err, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts) ->
-    case retryable_read(Err, State) of
+    case Attempts > 1 andalso retryable_read(Err, State) of
         true -> do_read_attempt(Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts - 1);
         false -> {{error, Err}, State}
     end.
@@ -329,7 +342,7 @@ do_mutate_attempt(_Op, OpName, _K, _V, _E, _D, Worker, _C, State, 0) ->
     Err = enrich_mutation(annotate(glyphastore_error:unavailable(<<"could not send mutation">>), OpName, undefined, Worker, State), rejected),
     {#{outcome => rejected, error => Err}, State};
 do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, Attempts) ->
-    case ensure_connected(Conn, State) of
+    case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
             {RequestId, State2} = bump_id(State1),
             Opcode = mutate_opcode(Op),
@@ -494,28 +507,31 @@ plan_pipeline_items([Req | Rest], State, Worker0, Need, Acc, MaxBytes, StateAcc)
     end.
 
 run_pipeline(Plan, Deadline, Worker, Conn, State, Count) ->
-    Responses = [failed_response() || _ <- lists:seq(1, Count)],
-    case ensure_connected(Conn, State) of
+    %% Pre-size with array for O(1) updates (list setnth is O(n²) on long pipelines).
+    Responses = array:new(Count, {default, failed_response()}),
+    case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
-            Output = iolist_to_binary([maps:get(frame, I) || I <- Plan]),
+            %% Keep frames as an iolist — gen_tcp/ssl send accepts iodata without a contig copy.
+            Output = [maps:get(frame, I) || I <- Plan],
+            TotalBytes = iolist_size(Output),
             Metadata = [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan],
             case glyphastore_conn:send(Conn, Output, Deadline) of
                 ok ->
-                    collect_pipeline(Metadata, 1, Responses, Deadline, Worker, Conn, State1, byte_size(Output));
+                    collect_pipeline(Metadata, 0, Responses, Deadline, Worker, Conn, State1, TotalBytes);
                 {error, SF = #{send_failure := true}} ->
                     glyphastore_conn:reset(Conn),
-                    {{ok, mark_unresolved(Responses, 1, promote_send_sf(SF, undefined, undefined, Worker, State1, false), maps:get(bytes_sent, SF, 0), Metadata, byte_size(Output))}, State1};
+                    {{ok, array:to_list(mark_unresolved(Responses, 0, promote_send_sf(SF, undefined, undefined, Worker, State1, false), maps:get(bytes_sent, SF, 0), Metadata))}, State1};
                 {error, Err} ->
                     glyphastore_conn:reset(Conn),
-                    {{ok, mark_unresolved(Responses, 1, Err, 0, Metadata, byte_size(Output))}, State1}
+                    {{ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, Metadata))}, State1}
             end;
         {{error, Err}, State1} ->
-            {{ok, mark_unresolved(Responses, 1, Err, 0, metadata_from_plan(Plan), byte_size(iolist_to_binary([maps:get(frame, I) || I <- Plan])))}, State1}
+            {{ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, metadata_from_plan(Plan)))}, State1}
     end.
 
 collect_pipeline([], _Idx, Responses, _Deadline, _Worker, _Conn, State, _Sent) ->
-    {{ok, Responses}, State};
-collect_pipeline([{RequestId, Req, _Begin} | Rest], Idx, Responses, Deadline, Worker, Conn, State, SentBytes) ->
+    {{ok, array:to_list(Responses)}, State};
+collect_pipeline([{RequestId, Req, Begin} | Rest], Idx, Responses, Deadline, Worker, Conn, State, SentBytes) ->
     case glyphastore_conn:receive_response(Conn, Deadline) of
         {ok, Response} ->
             case validate_response(Response, RequestId, Worker, State) of
@@ -524,28 +540,28 @@ collect_pipeline([{RequestId, Req, _Begin} | Rest], Idx, Responses, Deadline, Wo
                         ?GS_ST_OK ->
                             case pipeline_ok(Req, Response) of
                                 ok ->
-                                    Responses1 = set_response(Responses, Idx, #{
+                                    Responses1 = array:set(Idx, #{
                                         outcome => succeeded, value => maps:get(value, Response)
-                                    }),
+                                    }, Responses),
                                     collect_pipeline(Rest, Idx + 1, Responses1, Deadline, Worker, Conn, State, SentBytes);
                                 {error, Err} ->
                                     glyphastore_conn:reset(Conn),
-                                    {{ok, mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, 0} | Rest], SentBytes)}, State}
+                                    {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
                             end;
                         Status ->
                             Err = status_err(Status, pipeline_op(Req), RequestId, Worker, State),
                             Outcome = pipeline_status_outcome(Req, Status),
-                            Responses1 = set_response(Responses, Idx, #{outcome => Outcome, error => Err}),
+                            Responses1 = array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
                             State1 = maybe_unhealthy_state(Status, State),
                             collect_pipeline(Rest, Idx + 1, Responses1, Deadline, Worker, Conn, State1, SentBytes)
                     end;
                 {error, Err} ->
                     glyphastore_conn:reset(Conn),
-                    {{ok, mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, 0} | Rest], SentBytes)}, State}
+                    {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            {{ok, mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, 0} | Rest], SentBytes)}, State}
+            {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
     end.
 
 group_batch(Requests, State) ->
@@ -574,12 +590,12 @@ group_batch([Req | Rest], State, Idx, Groups) ->
     end.
 
 run_batch(Groups, Deadline, State, Count) ->
-    Responses0 = [failed_response() || _ <- lists:seq(1, Count)],
+    Responses0 = array:new(Count, {default, failed_response()}),
     case prepare_batch_groups(Groups, State, []) of
         {ok, Prepared, State1} ->
             case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
                 {ok, State2} ->
-                    fanout_prepared(
+                    case fanout_prepared(
                         Prepared,
                         Deadline,
                         State2,
@@ -587,7 +603,13 @@ run_batch(Groups, Deadline, State, Count) ->
                             merge_group_by_index(Acc, Items, GroupResponses)
                         end,
                         Responses0
-                    );
+                    ) of
+                        {{ok, Acc}, State3} when is_tuple(Acc) ->
+                            %% Acc is an array when Merge builds via merge_group_by_index
+                            {{ok, array:to_list(Acc)}, State3};
+                        Other ->
+                            Other
+                    end;
                 {{error, Err}, State2} ->
                     {{error, Err}, State2}
             end;
@@ -599,7 +621,7 @@ prepare_batch_groups([], State, Acc) ->
     {ok, lists:reverse(Acc), State};
 prepare_batch_groups([{Worker, Items} | Rest], State, Acc) ->
     Ordered = lists:reverse(Items),
-    case build_group_plan(Ordered, State, []) of
+    case build_group_plan(Ordered, State) of
         {ok, Plan, State1} ->
             prepare_batch_groups(Rest, State1, [{Worker, Ordered, Plan} | Acc]);
         {error, Err} ->
@@ -718,7 +740,7 @@ ensure_workers_connected([], State) ->
     {ok, State};
 ensure_workers_connected([Worker | Rest], State) ->
     Conn = maps:get(Worker, State#state.workers),
-    case ensure_connected(Conn, State) of
+    case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
             ensure_workers_connected(Rest, State1);
         {{error, Err}, State1} ->
@@ -771,24 +793,26 @@ collect_fanout(Pending, Acc, State, Merge) ->
 set_nth(List, Idx, Value) ->
     lists:sublist(List, 1, Idx - 1) ++ [Value] ++ lists:nthtail(Idx, List).
 
-build_group_plan([], State, Acc) ->
+build_group_plan(Items, State) ->
+    build_group_plan(Items, State, 0, []).
+
+build_group_plan([], State, _Need, Acc) ->
     {ok, lists:reverse(Acc), State};
-build_group_plan([{Idx, Norm} | Rest], State, Acc) ->
+build_group_plan([{Idx, Norm} | Rest], State, Need, Acc) ->
     {RequestId, State1} = bump_id(State),
     Key = maps:get(key, Norm),
     Value = maps:get(value, Norm, <<>>),
     Expire = maps:get(expire_at_ns, Norm, 0),
     case encode_request(maps:get(opcode, Norm), RequestId, Key, Value, Expire, State1) of
         {ok, Frame, State2} ->
-            Begin = lists:foldl(fun(I, N) -> N + byte_size(maps:get(frame, I)) end, 0, Acc),
             Item = #{
                 req => Norm,
                 request_id => RequestId,
                 frame => Frame,
-                begin_offset => Begin,
+                begin_offset => Need,
                 index => Idx
             },
-            build_group_plan(Rest, State2, [Item | Acc]);
+            build_group_plan(Rest, State2, Need + byte_size(Frame), [Item | Acc]);
         {{error, Err}, _} ->
             {error, Err}
     end.
@@ -796,7 +820,7 @@ build_group_plan([{Idx, Norm} | Rest], State, Acc) ->
 merge_group_by_index(Responses, Items, GroupResponses) ->
     lists:foldl(
         fun({{Idx, _Norm}, Resp}, Acc) ->
-            set_response(Acc, Idx + 1, Resp)
+            array:set(Idx, Resp, Acc)
         end,
         Responses,
         lists:zip(Items, GroupResponses)
@@ -875,14 +899,13 @@ worker_index(#state{worker_count = WC, workers = Workers}, Key) ->
             {error, glyphastore_error:invalid_argument(Msg)}
     end.
 
-ensure_connected(Conn, State) ->
+ensure_connected(Conn, Worker, State) ->
     case gen_server:call(Conn, connected, 5000) of
         true ->
             {ok, State};
         false ->
             WC = State#state.worker_count,
             Epoch = State#state.routing_epoch,
-            Worker = worker_for_conn(Conn, State#state.workers),
             case bootstrap_conn(Conn, Worker, {WC, Epoch}, State#state.config, State#state.request_id) of
                 {ok, WC, Epoch, NextId} ->
                     {ok, State#state{request_id = NextId}};
@@ -890,9 +913,6 @@ ensure_connected(Conn, State) ->
                     {{error, Err}, State}
             end
     end.
-
-worker_for_conn(Conn, Workers) ->
-    maps:fold(fun(W, P, Acc) -> case P =:= Conn of true -> W; false -> Acc end end, 0, Workers).
 
 validate_response(Response, RequestId, Worker, #state{worker_count = WC, routing_epoch = Epoch}) ->
     case maps:get(request_id, Response) =:= RequestId of
@@ -995,8 +1015,6 @@ normalize_pipeline_req(Req) ->
     end.
 
 failed_response() -> #{outcome => failed}.
-set_response(List, Idx, Resp) ->
-    lists:sublist(List, 1, Idx - 1) ++ [Resp] ++ lists:nthtail(Idx, List).
 
 frame_limit_err(FrameLen, MaxFrame, _MaxBytes, _Need) ->
     case FrameLen > MaxFrame of
@@ -1025,26 +1043,27 @@ pipeline_status_outcome(Req, Status) ->
 pipeline_op(Req) ->
     atom_to_binary(maps:get(op, Req), utf8).
 
-mark_unresolved(Responses, Start, Err, BytesSent, Metadata, TotalSent) ->
-    lists:zipwith(
-        fun(Idx, Resp) ->
-            case Idx >= Start of
-                true ->
-                    case mutation_may_have_arrived(Idx, Metadata, BytesSent, TotalSent) of
-                        true -> #{outcome => indeterminate, error => Err};
-                        false -> #{outcome => failed, error => Err}
-                    end;
-                false -> Resp
-            end
-        end,
-        lists:seq(1, length(Responses)),
-        Responses
-    ).
+%% Match Go/Python: per-request classification — mutation indeterminate only when
+%% bytes_sent > that request's begin_offset (zero-byte send failures stay failed).
+mark_unresolved(Responses, Start, Err, BytesSent, Metadata) ->
+    mark_unresolved_from(Start, Metadata, Responses, Err, BytesSent).
 
-mutation_may_have_arrived(Idx, Metadata, BytesSent, TotalSent) ->
-    lists:any(fun({_Id, Req, Begin}) ->
-        maps:get(op, Req) =/= get andalso (BytesSent > Begin orelse TotalSent > Begin)
-    end, lists:nthtail(Idx - 1, Metadata)).
+mark_unresolved_from(_Idx, [], Responses, _Err, _BytesSent) ->
+    Responses;
+mark_unresolved_from(Idx, [{_Id, Req, Begin} | Rest], Responses, Err, BytesSent) ->
+    Op = maps:get(op, Req),
+    Outcome =
+        case (Op =:= put orelse Op =:= erase) andalso BytesSent > Begin of
+            true -> indeterminate;
+            false -> failed
+        end,
+    mark_unresolved_from(
+        Idx + 1,
+        Rest,
+        array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
+        Err,
+        BytesSent
+    ).
 
 metadata_from_plan(Plan) ->
     [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan].

@@ -157,8 +157,11 @@ do_dial_tls(Host, Port, TimeoutMs, TLS, State) ->
 
 send_frame(#state{socket = undefined} = State, _Frame, _Deadline) ->
     {error, glyphastore_error:transport(<<"socket is not connected">>), State};
+send_frame(State, Frame, Deadline) when is_binary(Frame) ->
+    send_loop(State, Frame, 0, byte_size(Frame), Deadline);
 send_frame(State, Frame, Deadline) ->
-    send_loop(State, Frame, 0, byte_size(Frame), Deadline).
+    %% Accept iolist pipelines without forcing a contiguous copy up front.
+    send_loop(State, Frame, 0, iolist_size(Frame), Deadline).
 
 send_loop(State, Frame, Sent, Total, Deadline) ->
     case glyphastore_util:remaining_timeout(Deadline) of
@@ -175,11 +178,15 @@ send_loop(State, Frame, Sent, Total, Deadline) ->
                     {error, send_failure(Sent1, Reason), reset_state(State)}
             end;
         {error, Err} ->
-            {error, send_failure(0, Err), State}
+            {error, send_failure(Sent, Err), State}
     end.
 
+%% ssl:send/2 only — timeouts are enforced via remaining_timeout before each chunk
+%% and ssl:setopts send_timeout when the OTP ssl application supports it.
 send_chunk(#state{socket = Socket, use_ssl = true}, Frame, Sent, Total, TimeoutMs) ->
-    case ssl:send(Socket, binary_part(Frame, Sent, Total - Sent), TimeoutMs) of
+    _ = catch ssl:setopts(Socket, [{send_timeout, TimeoutMs}]),
+    Chunk = iolist_or_part(Frame, Sent, Total - Sent),
+    case ssl:send(Socket, Chunk) of
         ok -> {ok, Total};
         {error, closed} -> {error, closed, Sent};
         {error, timeout} -> {error, transport(<<"request deadline expired">>), Sent};
@@ -188,13 +195,22 @@ send_chunk(#state{socket = Socket, use_ssl = true}, Frame, Sent, Total, TimeoutM
     end;
 send_chunk(#state{socket = Socket, use_ssl = false}, Frame, Sent, Total, TimeoutMs) ->
     ok = inet:setopts(Socket, [{send_timeout, TimeoutMs}]),
-    case gen_tcp:send(Socket, binary_part(Frame, Sent, Total - Sent)) of
+    Chunk = iolist_or_part(Frame, Sent, Total - Sent),
+    case gen_tcp:send(Socket, Chunk) of
         ok -> {ok, Total};
         {error, closed} -> {error, closed, Sent};
         {error, timeout} -> {error, transport(<<"request deadline expired">>), Sent};
         {error, Reason} ->
             {error, transport(iolist_to_binary([<<"request send failed: ">>, atom_to_binary(Reason, utf8)])), Sent}
     end.
+
+%% Prefer zero-copy send of a full binary/iolist; only slice when retrying a partial send.
+iolist_or_part(Data, 0, _Len) when is_binary(Data); is_list(Data) ->
+    Data;
+iolist_or_part(Data, Sent, Len) when is_binary(Data) ->
+    binary_part(Data, Sent, Len);
+iolist_or_part(Data, Sent, Len) ->
+    binary_part(iolist_to_binary(Data), Sent, Len).
 
 receive_one(State, Deadline) ->
     read_response(State, Deadline).
@@ -245,10 +261,8 @@ recv_more(State, Deadline) ->
                 end,
             case Recv of
                 {ok, Chunk} ->
-                    read_response(
-                        State#state{input = <<(State#state.input)/binary, Chunk/binary>>},
-                        Deadline
-                    );
+                    Input1 = append_input(State#state.input, Chunk),
+                    read_response(State#state{input = Input1}, Deadline);
                 {error, closed} ->
                     {error, glyphastore_error:transport(<<"server closed the connection">>), reset_state(State)};
                 {error, timeout} ->
@@ -263,6 +277,10 @@ recv_more(State, Deadline) ->
         {error, Err} ->
             {error, Err, State}
     end.
+
+%% Avoid an empty-binary concat on the first chunk of a frame.
+append_input(<<>>, Chunk) -> Chunk;
+append_input(Input, Chunk) -> <<Input/binary, Chunk/binary>>.
 
 send_failure(BytesSent, Err) ->
     #{send_failure => true, bytes_sent => BytesSent, error => Err}.

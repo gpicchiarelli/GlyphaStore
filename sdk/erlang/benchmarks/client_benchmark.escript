@@ -1,7 +1,9 @@
 #!/usr/bin/env escript
-%%! -noshell -noinput +S 1:1
+%%! -noshell -noinput +S 4:4
 %% Reproducible external-server benchmark for the Erlang GlyphaStore SDK.
 %% Workload matches Python/Perl/Go/Ruby: ordered PUT/GET pipeline read-after-write.
+%% Fixed +S 4:4 (not 1:1) so execute_worker_pipelines fan-out can use multiple
+%% schedulers; still capped for cross-machine comparability.
 -mode(compile).
 
 main(Args) ->

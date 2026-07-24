@@ -8,6 +8,7 @@
     not_found/1,
     overloaded/1,
     internal/1,
+    permission_denied/1,
     from_status/1,
     retryability_for/3,
     enrich/2,
