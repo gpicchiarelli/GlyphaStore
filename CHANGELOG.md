@@ -9,12 +9,10 @@ public API exists.
   then unlock; pin only on cold miss; deferred TTL drain only when backlog non-empty), move hot-cache
   bookkeeping to cache-line-aligned relaxed atomics, gate fine-grained GET timing out of Release
   builds (`NDEBUG`, overridable with `GLYPHASTORE_GET_PATH_TIMING`), and replace the hot map with a
-  flat open-addressed table (FNV hash, load 0.5, 48-byte inline values, in-place staging). Document
-  results in `docs/benchmarks/get-path-hot-cache-followup-2026-07-24.md`; raise default GET-path bench
-  ops. The prior −20% v32 regression is closed at credible op counts.
-- Document durable GET path + hot-cache optimization results
-  (`docs/benchmarks/get-path-hot-cache-2026-07-24.md`) with comparative microbenchmarks,
-  sanitizer notes, preserved invariants, and discarded alternatives.
+  flat open-addressed table (FNV hash, load 0.5, 48-byte inline values, in-place staging). Raise
+  default GET-path bench ops. The prior −20% v32 regression is closed at credible op counts.
+- Record durable GET path + hot-cache optimization notes (comparative microbenchmarks, sanitizer
+  notes, preserved invariants, and discarded alternatives) without retaining run artifacts in-tree.
 - Tighten durable hot-cache structure: max_load_factor 0.5, geometric reserve, 32-byte inline
   values to avoid heap allocations on small payloads, and documented per-entry accounting. Hash is
   never treated as identity; full key compare remains mandatory on collision.

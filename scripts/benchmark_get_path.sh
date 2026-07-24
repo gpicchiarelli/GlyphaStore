@@ -6,7 +6,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 label="${1:-baseline}"
 shift || true
-out_dir="${root}/docs/benchmarks/data/get-path-${label}"
+out_dir="${root}/benchmark-results/get-path-${label}"
 mkdir -p "${out_dir}"
 
 cmake="${CMAKE:-cmake}"

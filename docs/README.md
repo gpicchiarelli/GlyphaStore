@@ -77,8 +77,6 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - [Security implementation roadmap](security/roadmap.md)
 - [Secure-profile TLS reference](security/secure-profile.md)
 - [TLS performance note](security/tls-performance.md)
-- [Durable compaction exploratory benchmark](benchmarks/durable-compaction-2026-07-23.md)
-- [Concurrent maintenance exploratory benchmark](benchmarks/concurrent-maintenance-2026-07-23.md)
 - [Documentation roadmap](documentation-roadmap.md)
 - [Production readiness](production-readiness.md)
 - [Persistence v1 roadmap](v1-production-roadmap.md)

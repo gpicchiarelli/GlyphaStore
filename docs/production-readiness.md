@@ -102,10 +102,10 @@ below has automated evidence. A design document or implementation alone does not
   Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous baseline.
   Weekly PGO smoke training includes durable open/put/reopen workloads. Local filters:
   `store-durable-*` (strict write-through), `store-durable-periodic-*` (deferred flush),
-  `store-durable-group-*` (batched group commit). Dedicated matrices record durable compaction
-  benefit/cost, concurrent maintenance cost, and forced-rotation/idle/churn latency on macOS; see
-  [benchmarks/](benchmarks/). These are diagnostic local baselines, not release claims.
-  Controlled-hardware CI evidence and an enforced tail-latency target are open.
+  `store-durable-group-*` (batched group commit). Local diagnostic runs use
+  `./scripts/dev.sh benchmark` / `benchmark-durable` and write under gitignored
+  `benchmark-results*/`. Controlled-hardware CI evidence and an enforced tail-latency target are
+  open.
 
 ### Operations and security
 

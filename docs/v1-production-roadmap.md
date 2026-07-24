@@ -236,9 +236,7 @@ against exactly old or next authority, and online single- and multi-output crash
 are implemented. Public `Store::compact()` uses a non-queuing Store-wide maintenance gate. Durable
 mutation lanes reject before enqueue when the maintenance emergency gate is armed. Official clients
 map wire `OVERLOADED` to `retryability=never`. Controlled native benchmark baselines and native
-power-loss certification remain open. Benchmark matrices:
-[durable compaction](benchmarks/durable-compaction-2026-07-23.md),
-[concurrent maintenance](benchmarks/concurrent-maintenance-2026-07-23.md).
+power-loss certification remain open.
 
 **Required change:** copy only the latest live v1 Records into new v1 Segments, validate the copy,
 atomically publish a new v1 Manifest, sync the directory, then retire old files with a second
@@ -290,10 +288,8 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   puts (`expired_records_dropped` on `CompactionResult` / `MaintenanceSnapshot`); active-Segment
   expired Index entries remain until GET reclaim or recovery. Physical TTL cleanup of sealed history
   is therefore measured. The isolated
-  [benefit/cost matrix](benchmarks/durable-compaction-2026-07-23.md) covers TTL and four other
-  useful/no-gain shapes. Normal overwrite-driven dead-byte selection is now enforced per candidate;
-  the [concurrent-maintenance matrix](benchmarks/concurrent-maintenance-2026-07-23.md) measures
-  foreground tail cost and identifies unrelated-Worker rotation conflict during publication.
+  Local benefit/cost and concurrent-maintenance diagnostic runs cover TTL and useful/no-gain
+  shapes, overwrite-driven dead-byte selection, and foreground tail cost under publication conflict.
   Normal unread-TTL scheduling is opt-in and fail-closed by default
   (`unread_ttl_normal_scheduling`); pressure/emergency probe and telemetry are closed. Remaining
   open work is controlled native baselines and native power-loss evidence under P0-08.

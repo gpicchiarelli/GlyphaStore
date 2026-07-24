@@ -117,12 +117,7 @@ starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
 ## Explicitly deferred
 
 - Controlled-hardware baselines and native power-loss certification (owned by ADR 0015 compaction
-  transaction, not this scheduler). Related matrices:
-  [durable compaction](../benchmarks/durable-compaction-2026-07-23.md),
-  [concurrent maintenance](../benchmarks/concurrent-maintenance-2026-07-23.md),
-  [rotation/idle/churn](../benchmarks/maintenance-rotation-idle-churn-2026-07-23.md),
-  [macOS phase attribution](../benchmarks/maintenance-rotation-phases-macos-2026-07-23.md),
-  [deep-phase macOS](../benchmarks/maintenance-rotation-deep-phases-macos-2026-07-23.md).
+  transaction, not this scheduler).
 - Shorter compaction publication leases. Measure deep rotation phases first; only then decide
   whether replacement Segment construction should move before publication authority.
 

@@ -180,11 +180,9 @@ amplification limits. A Store-local try-lock rejects a concurrent maintenance re
 queuing it. This bounds shutdown: `close()` either sees no compaction or waits only for the one
 already admitted transaction to finish.
 
-The first public-path benefit/cost measurement is the
-[2026-07-23 durable compaction benchmark](../benchmarks/durable-compaction-2026-07-23.md). It
-validates high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts through close/reopen and
-full model checks. It is exploratory evidence from a dirty macOS/APFS build; foreground tail
-latency, controlled cross-platform runs, and automatic-policy tuning remain release work.
+Benefit/cost validation for high/medium/low reclaim, copy-heavy, TTL, and no-gain layouts runs
+through the compaction/maintenance harnesses under gitignored `benchmark-results*/`. Foreground
+tail latency, controlled cross-platform runs, and automatic-policy tuning remain release work.
 
 When `StoreConfig::maintenance.mode` is `background`, a Store-owned
 [MaintenanceController](maintenance-controller.md) may run one evaluation thread and invoke
