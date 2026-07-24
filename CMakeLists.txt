@@ -78,14 +78,21 @@ add_library(glyphastore_core
     src/index/key_arena.cpp
     src/index/swiss_table.cpp
     src/persistence/bootstrap.cpp
-    src/persistence/compaction.cpp
+    src/persistence/compaction/layout.cpp
+    src/persistence/compaction/manifest_transition.cpp
+    src/persistence/compaction/planner.cpp
+    src/persistence/compaction/resource_estimator.cpp
     src/persistence/compaction_builder.cpp
     src/persistence/compaction_intent.cpp
     src/persistence/filesystem.cpp
     src/persistence/manifest.cpp
     src/persistence/namespace_audit.cpp
     src/persistence/durable_flush_coordinator.cpp
-    src/persistence/recovery.cpp
+    src/persistence/recovery/recovery.cpp
+    src/persistence/recovery/recovery_budget.cpp
+    src/persistence/recovery/recovery_catalog.cpp
+    src/persistence/recovery/recovery_index_builder.cpp
+    src/persistence/recovery/recovery_scanner.cpp
     src/persistence/resource_limits.cpp
     src/persistence/runtime_catalog.cpp
     src/persistence/segment_file.cpp
@@ -206,7 +213,12 @@ add_library(glyphastore_server_core
     src/server/disk_read_executor.cpp
     src/server/durable_mutation_executor.cpp
     src/server/reactor.cpp
+    src/server/reactor_factory.cpp
     src/server/server.cpp
+    src/server/server_builder.cpp
+    src/server/server_health.cpp
+    src/server/server_lifecycle.cpp
+    src/server/server_stats.cpp
     src/server/socket.cpp
     src/server/thread_affinity.cpp
     src/server/wakeup.cpp

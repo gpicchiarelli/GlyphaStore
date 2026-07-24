@@ -19,6 +19,8 @@
 
 namespace glyphastore::server {
 
+struct ServerRuntime;
+
 class Server final {
   public:
     // A missing Store Worker count inherits ReactorConfig::worker_count. An
@@ -70,7 +72,7 @@ class Server final {
     [[nodiscard]] auto stats_report() const -> Result<std::string>;
 
   private:
-    Server(ReactorConfig config, std::unique_ptr<Store> store);
+    Server(ReactorConfig config, ServerRuntime&& runtime);
     void run(std::size_t executor_id) noexcept;
 
     ReactorConfig config_;

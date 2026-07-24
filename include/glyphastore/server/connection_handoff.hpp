@@ -36,8 +36,8 @@ class ConnectionHandoffMesh final {
 
     ConnectionHandoffMesh(const ConnectionHandoffMesh&) = delete;
     auto operator=(const ConnectionHandoffMesh&) -> ConnectionHandoffMesh& = delete;
-    ConnectionHandoffMesh(ConnectionHandoffMesh&&) = delete;
-    auto operator=(ConnectionHandoffMesh&&) -> ConnectionHandoffMesh& = delete;
+    ConnectionHandoffMesh(ConnectionHandoffMesh&&) noexcept = default;
+    auto operator=(ConnectionHandoffMesh&&) noexcept -> ConnectionHandoffMesh& = default;
 
     void register_wakeup(std::size_t executor, Wakeup& wakeup) noexcept;
     [[nodiscard]] auto try_handoff(std::size_t target_executor, ConnectionHandoff&& connection) -> bool;
