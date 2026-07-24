@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Document durable GET path + hot-cache optimization results
+  (`docs/benchmarks/get-path-hot-cache-2026-07-24.md`) with comparative microbenchmarks,
+  sanitizer notes, preserved invariants, and discarded alternatives.
 - Tighten durable hot-cache structure: max_load_factor 0.5, geometric reserve, 32-byte inline
   values to avoid heap allocations on small payloads, and documented per-entry accounting. Hash is
   never treated as identity; full key compare remains mandatory on collision.

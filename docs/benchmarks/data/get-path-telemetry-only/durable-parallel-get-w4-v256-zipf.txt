@@ -1,0 +1,12 @@
+# glyphastore benchmark
+# git_sha=99bceac
+# arch=arm64
+# platform=macos
+# compiler=Apple LLVM 21.0.0 (clang-2100.1.1.101)
+# benchmark_warmup=2
+# benchmark_repeats=5
+# cpu_pin_requested=0
+# cpu_pin_applied=0
+# note=use plugged-in power; thermal throttling affects spread
+# latency_measurement=per-operation-steady-clock
+name=store_durable_parallel_get_copy key_size=16 value_size=256 workers=4 threads=4 distribution=zipf random=0 operations=2000 hits=2000 samples=5 warmup=2 median_seconds=0.00323725 min_seconds=0.00297987 max_seconds=0.00374092 median_ops_per_second=617808 min_ops_per_second=534628 max_ops_per_second=671169 median_ns_per_op=1618.62 min_ns_per_op=1489.94 max_ns_per_op=1870.46 median_rss_bytes=4.6039e+06 min_rss_bytes=4.47283e+06 max_rss_bytes=4.70221e+06 median_rss_delta_bytes=0 peak_rss_bytes=4.80051e+06 ingress_bytes=0 egress_bytes=0 median_ingress_bytes_per_second=0 min_ingress_bytes_per_second=0 max_ingress_bytes_per_second=0 median_egress_bytes_per_second=0 min_egress_bytes_per_second=0 max_egress_bytes_per_second=0 median_duplex_bytes_per_second=0 min_duplex_bytes_per_second=0 max_duplex_bytes_per_second=0 latency_samples=10000 p50_latency_ns=2375 p95_latency_ns=25459 p99_latency_ns=41417 p999_latency_ns=64208 median_durable_queue_wait_ns=0 maximum_durable_queue_wait_ns=0 median_durable_service_ns=0 maximum_durable_service_ns=0 median_durable_commit_ns=0 maximum_durable_commit_ns=0 median_durable_batch_records=0 maximum_durable_batch_records=0 durable_completed=0 durable_rejected=0 durable_expired=0 durable_committed_batches=0 durable_committed_records=0 durable_committed_bytes=0 durable_failed_batches=0 durable_maximum_queue_depth=0 durable_maximum_queued_bytes=0 durable_pending_records=0 durable_pending_bytes=0 durable_record_limit_closes=0 durable_byte_limit_closes=0 durable_adaptive_target_closes=0 durable_deadline_closes=0
