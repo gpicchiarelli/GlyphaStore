@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Defer durable Index TTL reclaim to a bounded per-Worker backlog drained by existing Worker paths
+  (`prepare_get`, `mutate`). Expired GETs still return `not_found` immediately, drop hot rows, and
+  never serve expired values; reclaim verifies exact `RecordRef` before erase so reinserts survive.
 - Resolve durable GET generation pins in O(1) via a dense `SegmentId` → catalog-slot side table
   rebuilt on recovery, rotation, and compaction. Index↔catalog identity, generation, owner, and
   pin-object checks remain mandatory; `RecordRef` identity is unchanged.

@@ -33,6 +33,7 @@ inline constexpr std::uint64_t kDefaultMaximumHotCacheBytes = 256ULL * 1024ULL *
 inline constexpr std::uint64_t kDefaultMaximumHotCacheBytesPerWorker = 64ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kDefaultMaximumHotCacheStagingBytesPerWorker = 16ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t kDefaultMaximumHotCacheEntriesPerWorker = 1'000'000;
+inline constexpr std::size_t kDefaultMaximumDeferredTtlReclaimsPerWorker = 1'024;
 inline constexpr std::uint64_t kDefaultMaintenanceMaxCopyBytesPerCycle = 128ULL * 1024ULL * 1024ULL;
 
 struct DurableResourceLimits {
@@ -51,6 +52,9 @@ struct DurableResourceLimits {
     std::uint64_t max_hot_cache_bytes_per_worker{kDefaultMaximumHotCacheBytesPerWorker};
     std::uint64_t max_hot_cache_staging_bytes_per_worker{kDefaultMaximumHotCacheStagingBytesPerWorker};
     std::size_t max_hot_cache_entries_per_worker{kDefaultMaximumHotCacheEntriesPerWorker};
+    // Bounded Index/hot-cache TTL reclaim backlog drained by Worker maintenance
+    // paths (mutate, prepare_get). Zero forces synchronous reclaim on expire.
+    std::size_t max_deferred_ttl_reclaims_per_worker{kDefaultMaximumDeferredTtlReclaimsPerWorker};
 
     auto operator==(const DurableResourceLimits&) const -> bool = default;
 };

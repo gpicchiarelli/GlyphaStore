@@ -1634,6 +1634,47 @@ GLYPHA_TEST("zero hot-cache budget falls back to pinned active-Segment reads for
     GLYPHA_REQUIRE(path_stats[0].hot_resident_entries == 0);
 }
 
+GLYPHA_TEST("deferred TTL reclaim allows reinsert after an expired GET") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_deferred_ttl_reclaims_per_worker = 64;
+    auto runtime =
+        glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, {.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const std::string key{"ttl-reinsert"};
+    const std::string first{"old"};
+    const std::string second{"new"};
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{first}), 100).committed());
+    const auto expired = (*runtime)->get(key, 100);
+    GLYPHA_REQUIRE(!expired.has_value());
+    GLYPHA_REQUIRE(expired.error().code == glyphastore::ErrorCode::not_found);
+    // Mutate drains the deferred expired RecordRef before publishing the reinsert.
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{second}), 0).committed());
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == second);
+    const auto again = (*runtime)->get(key, 100);
+    GLYPHA_REQUIRE(again.has_value());
+    GLYPHA_REQUIRE(owned_text(*again) == second);
+}
+
 GLYPHA_TEST("get path telemetry records hot hits and prepare hold without behavioral change") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();

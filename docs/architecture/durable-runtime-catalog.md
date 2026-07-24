@@ -52,12 +52,13 @@ already pinned descriptor remains valid, so a `RecordRef` never crosses the Work
 without generation ownership. Normal misses and expiration do not poison the runtime; corruption or
 I/O disagreement on a still-current pin makes later operations return `unavailable`.
 
-After a validated expiration (hot-cache hit or cold Record visit), the runtime lazily removes the
-Index entry with allocation-free `erase_no_compact` and drops any matching hot-cache row. This is
-Index-only reclaim: it does not append a durable erase tombstone. Sealed compaction remains the
-physical TTL cleanup path (`expired_records_dropped`). Concurrent mutations that moved the Index
-away from the validated `RecordRef` skip reclaim. Repeated GETs of an already-reclaimed expired key
-are Index misses and perform no Segment I/O.
+After a validated expiration (hot-cache hit or cold Record visit), the runtime returns `not_found`
+immediately and never serves the expired value. Physical Index removal is queued on a bounded
+per-Worker deferred-TTL backlog and drained by existing Worker paths (`prepare_get`, `mutate`) with
+exact `RecordRef` verification so a concurrent reinsert is never erased. Matching hot-cache rows are
+dropped immediately. Compaction remains the durable TTL cleanup path (`expired_records_dropped`).
+A zero backlog limit forces synchronous Index reclaim. Repeated GETs after a successful drain are
+Index misses and perform no Segment I/O.
 
 The per-Worker active-Record hot cache is bounded by deterministic shares of a global byte budget,
 a per-Worker byte cap, a staging-byte cap, and an entry cap. Admission allocates the immutable value

@@ -10,6 +10,9 @@ out_dir="${root}/docs/benchmarks/data/get-path-${label}"
 mkdir -p "${out_dir}"
 
 cmake="${CMAKE:-cmake}"
+if [[ -x "${root}/.tools/venv/bin/cmake" ]]; then
+  cmake="${root}/.tools/venv/bin/cmake"
+fi
 "${cmake}" --build --preset macos-release --target glyphastore_benchmarks
 
 bench="${root}/build/macos-release/glyphastore_benchmarks"

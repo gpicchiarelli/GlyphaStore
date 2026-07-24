@@ -567,6 +567,12 @@ struct DurableRuntimeCatalog::RuntimeSegmentGeneration {
     DurableSegmentFile file;
 };
 
+struct DeferredTtlReclaim {
+    std::string key;
+    std::uint64_t key_hash{};
+    RecordRef reference{};
+};
+
 struct DurableRuntimeCatalog::RuntimeWorker {
     struct alignas(64) BatchMetrics final {
         std::atomic_size_t pending_records{};
@@ -655,6 +661,10 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::uint64_t hot_record_admission_bypasses{};
     std::uint64_t hot_record_size_rejected{};
     std::uint64_t get_expired_ttl{};
+    std::vector<DeferredTtlReclaim> deferred_ttl_reclaims;
+    std::uint64_t deferred_ttl_enqueued{};
+    std::uint64_t deferred_ttl_applied{};
+    std::uint64_t deferred_ttl_skipped{};
     std::vector<PendingGroupMutation*> pending_group_mutations;
     std::size_t pending_group_insertions{};
     std::size_t pending_group_heap_key_bytes{};
@@ -670,6 +680,13 @@ struct DurableRuntimeCatalog::RuntimeWorker {
 
     [[nodiscard]] auto hot_cache_total_bytes() const noexcept -> std::uint64_t;
     void erase_hot_record(std::string_view key) noexcept;
+    // Drain up to `limit` deferred TTL reclamations. Verifies exact RecordRef
+    // before erase so a reinsert/update is never deleted. Caller holds mutex.
+    [[nodiscard]] auto drain_deferred_ttl(std::size_t limit) -> Status;
+    // Queue Index reclaim for an expired GET. May drain a bounded prefix when
+    // the backlog is full. Caller holds mutex. Zero backlog limit reclaim sync.
+    [[nodiscard]] auto defer_or_reclaim_expired(const HashedKey& key, const RecordRef& reference,
+                                                std::size_t backlog_limit) -> Status;
     [[nodiscard]] auto prepare_hot_record(std::size_t worker_index, std::size_t worker_count,
                                           const DurableResourceLimits& limits, std::string_view key,
                                           std::span<const std::byte> value, std::uint64_t expire_at_ns,
@@ -703,6 +720,77 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
     hot_record_resident_bytes -= existing->second.accounted_bytes;
     hot_records.erase(existing);
     ++hot_record_evictions;
+}
+
+auto DurableRuntimeCatalog::RuntimeWorker::drain_deferred_ttl(const std::size_t limit) -> Status {
+    std::size_t processed = 0;
+    while (processed < limit && !deferred_ttl_reclaims.empty()) {
+        auto pending = std::move(deferred_ttl_reclaims.front());
+        deferred_ttl_reclaims.erase(deferred_ttl_reclaims.begin());
+        ++processed;
+        const HashedKey key{.key = pending.key, .hash = pending.key_hash};
+        const auto current = index.find(key);
+        if (!current || *current != pending.reference) {
+            ++deferred_ttl_skipped;
+            continue;
+        }
+        const auto erased = index.erase_no_compact(key);
+        if (auto counted = update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+            return counted;
+        }
+        erase_hot_record(key.key);
+        ++deferred_ttl_applied;
+    }
+    return {};
+}
+
+auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const HashedKey& key,
+                                                                   const RecordRef& reference,
+                                                                   const std::size_t backlog_limit)
+    -> Status {
+    // Drop any matching hot row immediately so the expired value cannot be
+    // served; Index removal may wait for a bounded Worker drain.
+    erase_hot_record(key.key);
+    ++get_expired_ttl;
+
+    if (backlog_limit == 0) {
+        const auto current = index.find(key);
+        if (!current || *current != reference) {
+            ++deferred_ttl_skipped;
+            return {};
+        }
+        const auto erased = index.erase_no_compact(key);
+        if (auto counted = update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+            return counted;
+        }
+        ++deferred_ttl_applied;
+        return {};
+    }
+
+    if (deferred_ttl_reclaims.size() >= backlog_limit) {
+        if (auto drained = drain_deferred_ttl(std::max<std::size_t>(1, backlog_limit / 8U)); !drained) {
+            return drained;
+        }
+    }
+    if (deferred_ttl_reclaims.size() >= backlog_limit) {
+        // Backlog still full: reclaim this exact reference synchronously.
+        const auto current = index.find(key);
+        if (!current || *current != reference) {
+            ++deferred_ttl_skipped;
+            return {};
+        }
+        const auto erased = index.erase_no_compact(key);
+        if (auto counted = update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+            return counted;
+        }
+        ++deferred_ttl_applied;
+        return {};
+    }
+
+    deferred_ttl_reclaims.push_back(
+        DeferredTtlReclaim{.key = std::string{key.key}, .key_hash = key.hash, .reference = reference});
+    ++deferred_ttl_enqueued;
+    return {};
 }
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::prepare_hot_record(
@@ -1324,6 +1412,11 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
         if (!healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
         }
+        if (auto drained =
+                worker.drain_deferred_ttl(std::min<std::size_t>(8, worker.deferred_ttl_reclaims.size()));
+            !drained) {
+            return fail_closed(drained.error());
+        }
 
         const auto index_started = std::chrono::steady_clock::now();
         const auto reference = worker.index.find(key);
@@ -1352,17 +1445,14 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                 ++worker.hot_record_hits;
                 if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
                     cached->second.expire_at_ns <= now_ns) {
-                    // Index-only lazy reclaim: drop the expired live entry so budgets and later
-                    // GETs do not keep paying for a key that can never become visible again.
-                    // Compaction remains the durable TTL cleanup path (no tombstone here).
-                    const auto erased = worker.index.erase_no_compact(key);
-                    if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
-                        !counted) {
+                    // Return not_found immediately; Index reclaim is deferred to a
+                    // bounded Worker backlog drained by prepare_get/mutate.
+                    if (auto reclaimed = worker.defer_or_reclaim_expired(
+                            key, *reference, options_.limits.max_deferred_ttl_reclaims_per_worker);
+                        !reclaimed) {
                         hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
-                        return fail_closed(counted.error());
+                        return fail_closed(reclaimed.error());
                     }
-                    worker.erase_hot_record(key.key);
-                    ++worker.get_expired_ttl;
                     hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
@@ -1467,9 +1557,8 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
         }
         if (!visited) {
             if (visited.error().code == ErrorCode::not_found) {
-                // Visitor not_found is validated expiry only. Reclaim under lock if the Index
-                // still names the exact RecordRef that failed expiration — otherwise a concurrent
-                // put/erase may have already moved or removed the key.
+                // Visitor not_found is validated expiry only. Defer Index reclaim
+                // while verifying the exact RecordRef when the backlog drains.
                 {
                     const auto wait_started = std::chrono::steady_clock::now();
                     const std::lock_guard worker_lock{worker.mutex};
@@ -1485,13 +1574,12 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                         const HashedKey key{.key = read.key_, .hash = read.key_hash_};
                         const auto current = worker.index.find(key);
                         if (current && *current == read.reference_) {
-                            const auto erased = worker.index.erase_no_compact(key);
-                            if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
-                                !counted) {
-                                return fail_closed(counted.error());
+                            if (auto reclaimed = worker.defer_or_reclaim_expired(
+                                    key, read.reference_,
+                                    options_.limits.max_deferred_ttl_reclaims_per_worker);
+                                !reclaimed) {
+                                return fail_closed(reclaimed.error());
                             }
-                            worker.erase_hot_record(key.key);
-                            ++worker.get_expired_ttl;
                         }
                     }
                 }
@@ -1784,6 +1872,9 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         if (!healthy()) {
             return mutation_failure(DurableMutationOutcome::indeterminate,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        }
+        if (auto drained = worker.drain_deferred_ttl(worker.deferred_ttl_reclaims.size()); !drained) {
+            return mutation_failure(DurableMutationOutcome::indeterminate, drained.error());
         }
         if (worker.compaction_commit_active) {
             return mutation_failure(DurableMutationOutcome::not_committed,
