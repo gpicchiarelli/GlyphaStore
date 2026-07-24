@@ -3,6 +3,8 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
+#include "glyphastore/index/swiss_control_group.hpp"
+#include "glyphastore/index/swiss_table.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -20,8 +22,9 @@
 namespace glyphastore {
 namespace detail {
 
-// Per-Worker durable hot-cache table: flat open addressing (power-of-two capacity,
-// linear probe, tombstones). Uses the same FNV-1a key hash as Index routing; hash
+// Per-Worker durable hot-cache table: Swiss-style flat open addressing with
+// 8-slot control groups, H2 fingerprints, and SIMD/scalar group matching via
+// swiss_control_group.hpp. Uses the same FNV-1a key hash as Index routing; hash
 // alone is never identity — full key bytes are compared on every candidate slot.
 // Values ≤ kInlineValueBytes live in the slot; larger values use a shared heap buffer.
 struct HotRecordEntry {
@@ -106,17 +109,26 @@ class HotRecordTable final {
         if (capacity_ == 0) {
             return nullptr;
         }
-        const auto mask = capacity_ - 1U;
-        auto index = static_cast<std::size_t>(key_hash) & mask;
-        for (std::size_t probed = 0; probed < capacity_; ++probed) {
-            const auto control = control_[index];
-            if (control == kEmpty) {
-                return nullptr;
+        const auto fingerprint = h2(key_hash);
+        auto group_start = probe_start(key_hash);
+        for (std::size_t probed = 0; probed < capacity_; probed += kSwissGroupSize) {
+            const auto* const group = &control_[group_start];
+            const auto control_word = load_control_group64(group);
+            const auto fingerprint_mask = equal_byte_mask(group, fingerprint);
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto control = control_byte_at(control_word, offset);
+                if (control == kSwissEmpty) {
+                    return nullptr;
+                }
+                if ((fingerprint_mask & (1ULL << offset)) == 0) {
+                    continue;
+                }
+                const auto index = group_start + offset;
+                if (hashes_[index] == key_hash && keys_[index] == key) {
+                    return &entries_[index];
+                }
             }
-            if (control == kFull && hashes_[index] == key_hash && keys_[index] == key) {
-                return &entries_[index];
-            }
-            index = (index + 1U) & mask;
+            group_start = next_group(group_start);
         }
         return nullptr;
     }
@@ -136,28 +148,35 @@ class HotRecordTable final {
         if (auto grown = grow_for_insert(); !grown) {
             return grown;
         }
-        const auto mask = capacity_ - 1U;
-        auto index = static_cast<std::size_t>(key_hash) & mask;
+        const auto fingerprint = h2(key_hash);
+        auto group_start = probe_start(key_hash);
         std::optional<std::size_t> tomb;
-        for (std::size_t probed = 0; probed < capacity_; ++probed) {
-            const auto control = control_[index];
-            if (control == kFull && hashes_[index] == key_hash && keys_[index] == key) {
-                entries_[index] = std::move(entry);
-                return {};
+        for (std::size_t probed = 0; probed < capacity_; probed += kSwissGroupSize) {
+            const auto* const group = &control_[group_start];
+            const auto control_word = load_control_group64(group);
+            const auto fingerprint_mask = equal_byte_mask(group, fingerprint);
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto index = group_start + offset;
+                const auto control = control_byte_at(control_word, offset);
+                if (control == kSwissEmpty) {
+                    place_new(tomb.value_or(index), std::move(key), key_hash, fingerprint, std::move(entry));
+                    return {};
+                }
+                if (control == kSwissDeleted && !tomb) {
+                    tomb = index;
+                }
+                if ((fingerprint_mask & (1ULL << offset)) != 0 && hashes_[index] == key_hash &&
+                    keys_[index] == key) {
+                    entries_[index] = std::move(entry);
+                    return {};
+                }
             }
-            if (control == kEmpty) {
-                place_new(tomb.value_or(index), std::move(key), key_hash, std::move(entry));
-                return {};
-            }
-            if (control == kTombstone && !tomb) {
-                tomb = index;
-            }
-            index = (index + 1U) & mask;
+            group_start = next_group(group_start);
         }
         if (!tomb) {
             return fail(ErrorCode::internal_error, "hot-cache insert probed a full table");
         }
-        place_new(*tomb, std::move(key), key_hash, std::move(entry));
+        place_new(*tomb, std::move(key), key_hash, fingerprint, std::move(entry));
         return {};
     }
 
@@ -166,18 +185,27 @@ class HotRecordTable final {
         if (capacity_ == 0) {
             return false;
         }
-        const auto mask = capacity_ - 1U;
-        auto index = static_cast<std::size_t>(key_hash) & mask;
-        for (std::size_t probed = 0; probed < capacity_; ++probed) {
-            const auto control = control_[index];
-            if (control == kEmpty) {
-                return false;
+        const auto fingerprint = h2(key_hash);
+        auto group_start = probe_start(key_hash);
+        for (std::size_t probed = 0; probed < capacity_; probed += kSwissGroupSize) {
+            const auto* const group = &control_[group_start];
+            const auto control_word = load_control_group64(group);
+            const auto fingerprint_mask = equal_byte_mask(group, fingerprint);
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto control = control_byte_at(control_word, offset);
+                if (control == kSwissEmpty) {
+                    return false;
+                }
+                if ((fingerprint_mask & (1ULL << offset)) == 0) {
+                    continue;
+                }
+                const auto index = group_start + offset;
+                if (hashes_[index] == key_hash && keys_[index] == key) {
+                    clear_slot(index);
+                    return true;
+                }
             }
-            if (control == kFull && hashes_[index] == key_hash && keys_[index] == key) {
-                clear_slot(index);
-                return true;
-            }
-            index = (index + 1U) & mask;
+            group_start = next_group(group_start);
         }
         return false;
     }
@@ -200,7 +228,7 @@ class HotRecordTable final {
 
     template <typename Predicate> void erase_if(Predicate&& predicate) {
         for (std::size_t index = 0; index < capacity_; ++index) {
-            if (control_[index] != kFull) {
+            if (!is_full(control_[index])) {
                 continue;
             }
             if (predicate(keys_[index], hashes_[index], entries_[index])) {
@@ -211,7 +239,7 @@ class HotRecordTable final {
 
     template <typename Callback> void for_each(Callback&& callback) const {
         for (std::size_t index = 0; index < capacity_; ++index) {
-            if (control_[index] == kFull) {
+            if (is_full(control_[index])) {
                 callback(keys_[index], hashes_[index], entries_[index]);
             }
         }
@@ -219,12 +247,12 @@ class HotRecordTable final {
 
     void clear() noexcept {
         for (std::size_t index = 0; index < capacity_; ++index) {
-            if (control_[index] == kFull) {
+            if (is_full(control_[index])) {
                 keys_[index].clear();
                 keys_[index].shrink_to_fit();
                 entries_[index] = HotRecordEntry{};
             }
-            control_[index] = kEmpty;
+            control_[index] = kSwissEmpty;
             hashes_[index] = 0;
         }
         size_ = 0;
@@ -232,9 +260,24 @@ class HotRecordTable final {
     }
 
   private:
-    static constexpr std::uint8_t kEmpty = 0;
-    static constexpr std::uint8_t kFull = 1;
-    static constexpr std::uint8_t kTombstone = 2;
+    [[nodiscard]] static auto h2(const std::uint64_t hash) noexcept -> std::uint8_t {
+        const auto fingerprint = static_cast<std::uint8_t>(hash & 0x7FU);
+        return fingerprint == 0 ? static_cast<std::uint8_t>(1) : fingerprint;
+    }
+
+    [[nodiscard]] static auto is_full(const std::uint8_t control) noexcept -> bool {
+        return control != kSwissEmpty && control != kSwissDeleted;
+    }
+
+    [[nodiscard]] auto probe_start(const std::uint64_t hash) const noexcept -> std::size_t {
+        const auto group_index = (hash >> 7U) & ((capacity_ / kSwissGroupSize) - 1U);
+        return group_index * kSwissGroupSize;
+    }
+
+    [[nodiscard]] auto next_group(const std::size_t group_start) const noexcept -> std::size_t {
+        const auto next = group_start + kSwissGroupSize;
+        return next >= capacity_ ? next - capacity_ : next;
+    }
 
     [[nodiscard]] static auto normalize_capacity(std::size_t minimum) -> Result<std::size_t> {
         if (minimum < kMinimumCapacity) {
@@ -281,23 +324,39 @@ class HotRecordTable final {
         if (!normalized) {
             return unexpected(normalized.error());
         }
-        std::vector<std::uint8_t> control(*normalized, kEmpty);
+        std::vector<std::uint8_t> control(*normalized, kSwissEmpty);
         std::vector<std::uint64_t> hashes(*normalized, 0);
         std::vector<std::string> keys(*normalized);
         std::vector<HotRecordEntry> entries(*normalized);
-        const auto mask = *normalized - 1U;
+        const auto group_mask = (*normalized / kSwissGroupSize) - 1U;
         for (std::size_t index = 0; index < capacity_; ++index) {
-            if (control_[index] != kFull) {
+            if (!is_full(control_[index])) {
                 continue;
             }
-            auto slot = static_cast<std::size_t>(hashes_[index]) & mask;
-            while (control[slot] == kFull) {
-                slot = (slot + 1U) & mask;
+            const auto key_hash = hashes_[index];
+            const auto fingerprint = h2(key_hash);
+            auto group_start = ((key_hash >> 7U) & group_mask) * kSwissGroupSize;
+            for (;;) {
+                bool placed = false;
+                for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                    const auto slot = group_start + offset;
+                    if (control[slot] == kSwissEmpty) {
+                        control[slot] = fingerprint;
+                        hashes[slot] = key_hash;
+                        keys[slot] = std::move(keys_[index]);
+                        entries[slot] = std::move(entries_[index]);
+                        placed = true;
+                        break;
+                    }
+                }
+                if (placed) {
+                    break;
+                }
+                group_start += kSwissGroupSize;
+                if (group_start >= *normalized) {
+                    group_start -= *normalized;
+                }
             }
-            control[slot] = kFull;
-            hashes[slot] = hashes_[index];
-            keys[slot] = std::move(keys_[index]);
-            entries[slot] = std::move(entries_[index]);
         }
         control_ = std::move(control);
         hashes_ = std::move(hashes);
@@ -309,11 +368,11 @@ class HotRecordTable final {
     }
 
     void place_new(const std::size_t slot, std::string key, const std::uint64_t key_hash,
-                   HotRecordEntry entry) noexcept {
-        if (control_[slot] == kTombstone) {
+                   const std::uint8_t fingerprint, HotRecordEntry entry) noexcept {
+        if (control_[slot] == kSwissDeleted) {
             --tombstones_;
         }
-        control_[slot] = kFull;
+        control_[slot] = fingerprint;
         hashes_[slot] = key_hash;
         keys_[slot] = std::move(key);
         entries_[slot] = std::move(entry);
@@ -321,7 +380,7 @@ class HotRecordTable final {
     }
 
     void clear_slot(const std::size_t index) noexcept {
-        control_[index] = kTombstone;
+        control_[index] = kSwissDeleted;
         hashes_[index] = 0;
         keys_[index].clear();
         keys_[index].shrink_to_fit();

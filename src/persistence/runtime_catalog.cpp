@@ -1399,7 +1399,8 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
         const auto locked_at = timing_now();
         mutex_wait_ns = timing_duration_ns(wait_started, locked_at);
         ScopeExit observe_hold{[&]() noexcept { prepare_hold_ns = timing_elapsed_ns(locked_at); }};
-        const std::shared_lock catalog_lock{catalog_mutex_};
+        // Hot path only needs the Worker mutex + atomic health. Catalog shared lock
+        // is taken below solely for cold-miss generation pin / manifest identity.
         if (!healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
         }
@@ -1450,6 +1451,11 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
             ++local_misses;
 
             const auto pin_started = timing_now();
+            const std::shared_lock catalog_lock{catalog_mutex_};
+            if (!healthy()) {
+                generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
+                return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+            }
             const auto catalog_index = catalog_index_for_segment(reference->segment_id);
             if (!catalog_index) {
                 generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
@@ -1522,7 +1528,6 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                                           timing_elapsed_ns(locked_at));
                 }
             }};
-            const std::shared_lock catalog_lock{catalog_mutex_};
             if (!healthy()) {
                 return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
             }
@@ -1532,8 +1537,14 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
             if constexpr (kGetPathTimingEnabled) {
                 atomic_saturating_add(metrics.index_lookup_ns, timing_elapsed_ns(index_started));
             }
+            // Catalog lock only when the Index still names the captured RecordRef;
+            // churned keys skip pin identity work and catalog shared-lock contention.
             if (current && *current == read.reference_) {
                 const auto pin_started = timing_now();
+                const std::shared_lock catalog_lock{catalog_mutex_};
+                if (!healthy()) {
+                    return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+                }
                 const auto catalog_index = catalog_index_for_segment(current->segment_id);
                 still_current = catalog_index.has_value() &&
                                 generation_pins_[*catalog_index] == read.generation_;
@@ -1581,7 +1592,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                                                   timing_elapsed_ns(locked_at));
                         }
                     }};
-                    const std::shared_lock catalog_lock{catalog_mutex_};
+                    // Index + deferred TTL reclaim are Worker-local; no catalog pin work.
                     if (healthy()) {
                         const HashedKey key{.key = read.key_, .hash = read.key_hash_};
                         const auto current = worker.index.find(key);

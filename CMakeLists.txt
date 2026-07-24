@@ -273,6 +273,7 @@ if(BUILD_TESTING)
         tests/unit/compaction_tests.cpp
         tests/unit/adaptive_batch_sizer_tests.cpp
         tests/unit/index_tests.cpp
+        tests/unit/hot_record_table_tests.cpp
         tests/unit/manifest_tests.cpp
         tests/unit/maintenance_controller_tests.cpp
         tests/unit/namespace_audit_tests.cpp
