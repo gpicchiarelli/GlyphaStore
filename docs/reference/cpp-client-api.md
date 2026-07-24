@@ -176,7 +176,7 @@ connection so a late frame cannot satisfy a later call.
 ## Cross-language SDK contract
 
 The C++ client and canonical fixtures define behavior to reproduce, not a C ABI to wrap. Python,
-Perl, Go, Ruby, and a future Erlang client must implement the same wire contract and the same
+Perl, Go, Ruby, and Erlang clients must implement the same wire contract and the same
 mutation / pipeline outcome rules natively so each runtime retains its normal cancellation,
 scheduling, packaging, and binary-data conventions. Outcome classification is part of the public
 contract: zero-byte final send failures are `rejected`, and a successful mutation response with a
@@ -196,7 +196,7 @@ Secure-profile follow-ons (mTLS principals / authz) are tracked in
 | Perl | Native module under `sdk/perl` using byte strings | synchronous handles; one client per process/thread (event-loop adapter later) |
 | Go | Native module under `sdk/go` (`client` + `protocol`) | synchronous, goroutine-safe, one connection per Worker; `ExecuteBatch` fans out per Worker |
 | Ruby | Implemented under `sdk/ruby` (`Client` + optional `AsyncClient`) | sync: per-Worker mutex; async: Fiber + `async` gem; one client per forked worker process |
-| Erlang | Native OTP application | supervised Worker-connection processes |
+| Erlang | Implemented under `sdk/erlang` (`glyphastore` OTP app) | client `gen_server` + one connection process per Worker; `execute_batch` / `execute_worker_pipelines` fan out |
 
 Every SDK must consume the canonical request/response corpus under `tests/fixtures/`, use unsigned
 little-endian fields exactly, distinguish indeterminate mutations, and pass the same malformed-frame

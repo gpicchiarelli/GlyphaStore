@@ -4,7 +4,8 @@ Native Erlang/OTP client for GlyphaStore wire protocol v2. One `gen_server` seri
 client state; each Worker owns a dedicated connection process (`glyphastore_conn`) with
 `TCP_NODELAY`, canonical FNV-1a routing, monotonic request deadlines, and
 `committed` / `rejected` / `indeterminate` mutation outcomes per
-[client semantics v1](../../docs/spec/client-semantics-v1.md).
+[client semantics v1](../../docs/spec/client-semantics-v1.md). Multi-Worker
+`execute_batch` and `execute_worker_pipelines` overlap pipelines across Workers.
 
 Version: `glyphastore_version:version/0` (must match repository `VERSION`)  
 License: BSD-3-Clause  
@@ -34,8 +35,9 @@ Confirm `/opt/local/bin` is on `PATH`, then `erl` and `rebar3` resolve from MacP
 | `glyphastore_protocol` | Wire codec, FNV-1a routing, golden fixture tests |
 | `glyphastore_error` | Structured client-semantics v1 errors |
 | `glyphastore_conn` | Per-Worker TCP/TLS connection `gen_server` |
-| `glyphastore_client` | Public sync API (get/put/erase/ping, pipeline, batch) |
+| `glyphastore_client` | Public sync API (get/put/erase/ping, pipeline, batch, worker pipelines) |
 | `scripts/glyphastore-interop` | CLI for `scripts/test-sdk-interop.sh` |
+| `benchmarks/client_benchmark.escript` | PUT/GET pipeline throughput harness |
 
 ## Build and test
 
@@ -49,8 +51,23 @@ From the repository root:
 
 ```bash
 ./scripts/test-erlang-client.sh
+./scripts/package-erlang-client.sh
 ./scripts/sync-sdk-fixtures.sh   # refresh vendored wire hex fixtures
 ```
+
+## Benchmarks
+
+Against a local `glyphastored` (same matrix as Python/Perl/Go/Ruby):
+
+```bash
+./scripts/benchmark_erlang_client.sh
+# short smoke:
+OPS=2000 WARMUP=0 REPEATS=1 ./scripts/benchmark_erlang_client.sh /tmp/erlang-bench-smoke
+```
+
+Artifacts land under `benchmark-results-erlang-*` (`summary.md`, `results.json`,
+`environment.txt`, `commands.md`, raw logs). Concurrent mode uses
+`execute_worker_pipelines` when `workers > 1`.
 
 ## TLS
 

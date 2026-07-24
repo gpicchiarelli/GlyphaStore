@@ -46,6 +46,7 @@ for f in "$root/sdk/ruby/dist"/glyphastore-*.gem; do
   add "$f"
 done
 add "$root/sdk/go/dist/package-info.txt" "go-package-info.txt"
+add "$root/sdk/erlang/dist/package-info.txt" "erlang-package-info.txt"
 add "$root/sdk/cpp-dist/package-info.txt" "cpp-package-info.txt"
 shopt -u nullglob
 

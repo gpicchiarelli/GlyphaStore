@@ -1,7 +1,7 @@
 Status: roadmap
-Applies to: native SDKs (C++, Python, Perl, Go; Ruby planned) and shared wire contract
+Applies to: native SDKs (C++, Python, Perl, Go, Erlang; Ruby Phase 3 TLS still open) and shared wire contract
 Owner: maintainer
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-24
 
 # SDK and client roadmap
 
@@ -18,15 +18,16 @@ Related: [production readiness](../production-readiness.md),
 [Ruby SDK roadmap](ruby-sdk-roadmap.md),
 [SDK packaging standard](sdk-packaging.md).
 
-## Client status (2026-07-20)
+## Client status (2026-07-24)
 
 | Client | Assessment |
 | --- | --- |
 | C++ | Effectively complete for alpha |
 | Python | Effectively complete, including async |
 | Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
-| Go | Complete as a synchronous client (protocol + client + interop + CI) |
-| Ruby | **Phase 1+2 sync/async landed** — benches/C-ext/TLS still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
+| Go | Complete as a synchronous client (protocol + client + interop + CI + benches) |
+| Erlang | Complete as a synchronous OTP client (protocol + client + TLS + interop + CI + benches) |
+| Ruby | **Phase 1+2 sync/async landed** — C-ext/TLS still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
 
 Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
 [client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
@@ -38,11 +39,12 @@ sidecar / development only until authentication and TLS exist.
 ### 1. Cross-SDK interoperability suite (highest SDK gap) — **done for alpha matrix**
 
 `scripts/test-sdk-interop.sh` starts a volatile `glyphastored` and proves PUT→GET across
-C++ / Python / Perl / Go / Ruby (including every pair) for binary keys, empty values, per-SDK
-pipelines, and short TTL expiry on Workers 1 / 2 / 4 / 8. Deterministic routing keys exercise every
-Worker owner. Every SDK must also preserve structured `not_found` semantics and reject an oversized
-2 MiB request locally with a known-rejected, zero-byte-send outcome. Wire golden fixtures are
-verified and compared to vendored SDK copies in the same script and in CI.
+C++ / Python / Perl / Go / Ruby / Erlang (including every pair when OTP is available) for binary
+keys, empty values, per-SDK pipelines, and short TTL expiry on Workers 1 / 2 / 4 / 8. Deterministic
+routing keys exercise every Worker owner. Every SDK must also preserve structured `not_found`
+semantics and reject an oversized 2 MiB request locally with a known-rejected, zero-byte-send
+outcome. Wire golden fixtures are verified and compared to vendored SDK copies in the same script
+and in CI.
 
 Still desirable later: released-artifact cross-version compatibility.
 
@@ -65,9 +67,9 @@ indeterminate from “application problem” into “protocol-managed.”
 
 ### 4. Multi-Worker batch API — **done**
 
-`execute_batch` (C++ / Python sync+async / Perl) groups requests by Worker, runs one pipeline per
-Worker (overlapping when multiple Workers are involved), and restores caller order. Not a
-transaction: Workers succeed or fail independently after admission. Perl still exposes
+`execute_batch` (C++ / Python sync+async / Perl / Go / Erlang) groups requests by Worker, runs one
+pipeline per Worker (overlapping when multiple Workers are involved), and restores caller order. Not
+a transaction: Workers succeed or fail independently after admission. Perl and Erlang also expose
 `execute_worker_pipelines` for explicit per-Worker vectors.
 
 ### 5. Configurable connections per Worker (measure first)
@@ -110,8 +112,16 @@ client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
 ### 10. Go client — **done for alpha**
 
 `sdk/go` provides a production-oriented synchronous client (`protocol` + `client`), golden fixture
-tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), and CI coverage
-via `scripts/test-go-client.sh` and the cross-SDK matrix.
+tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), CI coverage
+via `scripts/test-go-client.sh` and the cross-SDK matrix, and
+`scripts/benchmark_go_client.sh`.
+
+### 10b. Erlang client — **done for alpha**
+
+`sdk/erlang` provides an OTP application (`glyphastore_protocol` + `glyphastore_client`), golden
+fixture CT suites, `execute_pipeline` / `execute_batch` / `execute_worker_pipelines`, TLS 1.3,
+interop escript, CI via `scripts/test-erlang-client.sh`, packaging via
+`scripts/package-erlang-client.sh`, and `scripts/benchmark_erlang_client.sh`.
 
 ### 11. Ruby client — **Phase 1 done; Phase 2 largely done**
 

@@ -1,12 +1,12 @@
 Status: normative checklist
-Applies to: official SDK packaging (Python, Perl, Go, Ruby, C++ client)
+Applies to: official SDK packaging (Python, Perl, Go, Ruby, Erlang, C++ client)
 Owner: release maintainers
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-24
 
 # SDK packaging standard
 
 Every official client must be **buildable, installable, version-locked, and verifiable** without
-asking a maintainer. Publishing to registries (PyPI, PAUSE, RubyGems, proxy.golang.org) is a
+asking a maintainer. Publishing to registries (PyPI, PAUSE, RubyGems, Hex, proxy.golang.org) is a
 separate credentialed step; everything below is required **before** publish.
 
 Related: [sdk-roadmap](sdk-roadmap.md), per-SDK `PACKAGING.md` under `sdk/*/`, root `VERSION`.
@@ -21,10 +21,12 @@ Related: [sdk-roadmap](sdk-roadmap.md), per-SDK `PACKAGING.md` under `sdk/*/`, r
 | Perl package | `./scripts/package-perl-client.sh` |
 | Go package | `./scripts/package-go-client.sh` |
 | Ruby package | `./scripts/package-ruby-client.sh` |
+| Erlang package | `./scripts/package-erlang-client.sh` (requires OTP + rebar3) |
 | C++ CMake client | `./scripts/verify-cpp-client-package.sh` |
 | All of the above + checksums | `./scripts/package-all-sdk-clients.sh` |
 
-CI job `sdk-clients` runs version lock, language tests, and package scripts for Python/Perl/Go/Ruby.
+CI job `sdk-clients` runs version lock, language tests, and package scripts for
+Python/Perl/Go/Ruby/Erlang.
 The `install-consumer` job covers CMake install + external consumer smokes (requires OpenSSL when
 the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the package config).
 
@@ -37,6 +39,7 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
    - Perl: `our $VERSION` in every `lib/**/*.pm` (must be identical)
    - Go: `client.Version`
    - Ruby: `GlyphaStore::VERSION`
+   - Erlang: `glyphastore_version:version/0`
    - C++: CMake `PROJECT_VERSION` from root `VERSION`
 3. Diverging an SDK version requires an ADR; until then CI fails on drift.
 
@@ -51,6 +54,7 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
    - Python: `twine upload` (Trusted Publisher preferred)
    - Perl: PAUSE upload of `GlyphaStore-VERSION.tar.gz`
    - Ruby: `gem push` (MFA required; `allowed_push_host=rubygems.org`)
+   - Erlang: `rebar3 hex publish` when Hex credentials are configured
    - Go: `git tag sdk/go/vVERSION && git push origin sdk/go/vVERSION`
    - C++: ship CMake installable prefix / source tag; optional future vcpkg/Conan
 

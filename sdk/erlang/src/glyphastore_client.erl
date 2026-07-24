@@ -22,6 +22,8 @@
     execute_pipeline/3,
     execute_batch/2,
     execute_batch/3,
+    execute_worker_pipelines/2,
+    execute_worker_pipelines/3,
     build_tls_options/2
 ]).
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -91,10 +93,18 @@ erase(Client, Key) -> erase(Client, Key, #{}).
 erase(Client, Key, Opts) -> gen_server:call(Client, {mutate, erase, Key, <<>>, 0, Opts}).
 
 execute_pipeline(Client, Requests) -> execute_pipeline(Client, Requests, #{}).
-execute_pipeline(Client, Requests, Opts) -> gen_server:call(Client, {execute_pipeline, Requests, Opts}).
+execute_pipeline(Client, Requests, Opts) ->
+    gen_server:call(Client, {execute_pipeline, Requests, Opts}, infinity).
 
 execute_batch(Client, Requests) -> execute_batch(Client, Requests, #{}).
-execute_batch(Client, Requests, Opts) -> gen_server:call(Client, {execute_batch, Requests, Opts}).
+execute_batch(Client, Requests, Opts) ->
+    gen_server:call(Client, {execute_batch, Requests, Opts}, infinity).
+
+%% Run one pipeline vector per Worker concurrently (Perl execute_worker_pipelines parity).
+%% Batches must be a list of length worker_count(); empty lists are skipped.
+execute_worker_pipelines(Client, Batches) -> execute_worker_pipelines(Client, Batches, #{}).
+execute_worker_pipelines(Client, Batches, Opts) ->
+    gen_server:call(Client, {execute_worker_pipelines, Batches, Opts}, infinity).
 
 init(Config) ->
     case bootstrap_all(Config, 1) of
@@ -129,6 +139,9 @@ handle_call({execute_pipeline, Requests, Opts}, _From, State) ->
     {reply, Reply, State1};
 handle_call({execute_batch, Requests, Opts}, _From, State) ->
     {Reply, State1} = do_execute_batch(Requests, Opts, State),
+    {reply, Reply, State1};
+handle_call({execute_worker_pipelines, Batches, Opts}, _From, State) ->
+    {Reply, State1} = do_execute_worker_pipelines(Batches, Opts, State),
     {reply, Reply, State1};
 handle_call(_Req, _From, State) ->
     {reply, {error, glyphastore_error:internal(<<"unexpected call">>)}, State}.
@@ -562,21 +575,201 @@ group_batch([Req | Rest], State, Idx, Groups) ->
 
 run_batch(Groups, Deadline, State, Count) ->
     Responses0 = [failed_response() || _ <- lists:seq(1, Count)],
-    run_batch_groups(Groups, Deadline, State, Responses0).
-
-run_batch_groups([], _Deadline, State, Responses) ->
-    {{ok, Responses}, State};
-run_batch_groups([{Worker, Items} | Rest], Deadline, State, Responses0) ->
-    case build_group_plan(lists:reverse(Items), State, []) of
-        {ok, Plan, State1} ->
-            Conn = maps:get(Worker, State1#state.workers),
-            {{ok, GroupResponses}, State2} =
-                run_pipeline(Plan, Deadline, Worker, Conn, State1, length(Items)),
-            Responses1 = merge_group_by_index(Responses0, Items, GroupResponses),
-            run_batch_groups(Rest, Deadline, State2, Responses1);
+    case prepare_batch_groups(Groups, State, []) of
+        {ok, Prepared, State1} ->
+            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
+                {ok, State2} ->
+                    fanout_prepared(
+                        Prepared,
+                        Deadline,
+                        State2,
+                        fun(_Worker, Items, GroupResponses, Acc) ->
+                            merge_group_by_index(Acc, Items, GroupResponses)
+                        end,
+                        Responses0
+                    );
+                {{error, Err}, State2} ->
+                    {{error, Err}, State2}
+            end;
         {error, Err} ->
             {{error, Err}, State}
     end.
+
+prepare_batch_groups([], State, Acc) ->
+    {ok, lists:reverse(Acc), State};
+prepare_batch_groups([{Worker, Items} | Rest], State, Acc) ->
+    Ordered = lists:reverse(Items),
+    case build_group_plan(Ordered, State, []) of
+        {ok, Plan, State1} ->
+            prepare_batch_groups(Rest, State1, [{Worker, Ordered, Plan} | Acc]);
+        {error, Err} ->
+            {error, Err}
+    end.
+
+do_execute_worker_pipelines(_Batches, _Opts, #state{healthy = false} = State) ->
+    {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+do_execute_worker_pipelines(Batches, Opts, State) when is_list(Batches) ->
+    WC = State#state.worker_count,
+    case length(Batches) =:= WC of
+        false ->
+            {{error, glyphastore_error:invalid_argument(<<"worker pipeline vector does not match Worker count">>)}, State};
+        true ->
+            case resolve_deadline(State, Opts) of
+                {ok, Deadline} ->
+                    case plan_worker_pipelines(Batches, 0, State, []) of
+                        {ok, Prepared, State1} ->
+                            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
+                                {ok, State2} ->
+                                    Empty = [[] || _ <- lists:seq(1, WC)],
+                                    fanout_prepared(
+                                        Prepared,
+                                        Deadline,
+                                        State2,
+                                        fun(Worker, _Items, GroupResponses, Acc) ->
+                                            set_nth(Acc, Worker + 1, GroupResponses)
+                                        end,
+                                        Empty
+                                    );
+                                {{error, Err}, State2} ->
+                                    {{error, Err}, State2}
+                            end;
+                        {error, Err} ->
+                            {{error, Err}, State}
+                    end;
+                {error, Err} ->
+                    {{error, Err}, State}
+            end
+    end;
+do_execute_worker_pipelines(_Batches, _Opts, State) ->
+    {{error, glyphastore_error:invalid_argument(<<"worker pipelines must be a list">>)}, State}.
+
+plan_worker_pipelines([], _Worker, State, Acc) ->
+    {ok, lists:reverse(Acc), State};
+plan_worker_pipelines([[] | Rest], Worker, State, Acc) ->
+    plan_worker_pipelines(Rest, Worker + 1, State, Acc);
+plan_worker_pipelines([Requests | Rest], Worker, State, Acc) when is_list(Requests) ->
+    case plan_pipeline_for_worker(Requests, Worker, State) of
+        {ok, Plan, State1} ->
+            plan_worker_pipelines(Rest, Worker + 1, State1, [{Worker, Requests, Plan} | Acc]);
+        {error, Err} ->
+            {error, Err}
+    end;
+plan_worker_pipelines([_ | _], _Worker, _State, _Acc) ->
+    {error, glyphastore_error:invalid_argument(<<"each worker pipeline must be a list">>)}.
+
+plan_pipeline_for_worker(Requests, ExpectedWorker, State) ->
+    MaxReq = maps:get(maximum_pipeline_requests, State#state.config),
+    MaxBytes = maps:get(maximum_pipeline_bytes, State#state.config),
+    case length(Requests) > MaxReq of
+        true ->
+            {error, glyphastore_error:invalid_argument(<<"pipeline exceeds the configured request limit">>)};
+        false ->
+            plan_pipeline_for_worker_items(Requests, ExpectedWorker, State, 0, [], MaxBytes)
+    end.
+
+plan_pipeline_for_worker_items([], _ExpectedWorker, StateAcc, _Need, Acc, _MaxBytes) ->
+    {ok, lists:reverse(Acc), StateAcc};
+plan_pipeline_for_worker_items([Req | Rest], ExpectedWorker, StateAcc, Need, Acc, MaxBytes) ->
+    case normalize_pipeline_req(Req) of
+        {error, Err} ->
+            {error, Err};
+        {ok, Norm} ->
+            case worker_index(StateAcc, maps:get(key, Norm)) of
+                {error, Err} ->
+                    {error, Err};
+                {ok, Owner, _Conn} when Owner =/= ExpectedWorker ->
+                    {error, glyphastore_error:invalid_argument(<<"pipeline key does not route to the expected Worker">>)};
+                {ok, Owner, _Conn} ->
+                    Key = maps:get(key, Norm),
+                    Value = maps:get(value, Norm, <<>>),
+                    FrameLen = glyphastore_protocol:request_frame_size(Key, Value),
+                    MaxFrame = maps:get(maximum_frame_bytes, StateAcc#state.config),
+                    case FrameLen =< MaxFrame andalso FrameLen =< MaxBytes - Need of
+                        true ->
+                            {RequestId, State1} = bump_id(StateAcc),
+                            case encode_request(
+                                maps:get(opcode, Norm),
+                                RequestId,
+                                Key,
+                                Value,
+                                maps:get(expire_at_ns, Norm, 0),
+                                State1
+                            ) of
+                                {ok, Frame, State2} ->
+                                    Item = #{
+                                        req => Norm,
+                                        request_id => RequestId,
+                                        frame => Frame,
+                                        begin_offset => Need
+                                    },
+                                    plan_pipeline_for_worker_items(
+                                        Rest, Owner, State2, Need + FrameLen, [Item | Acc], MaxBytes
+                                    );
+                                {{error, Err2}, _} ->
+                                    {error, Err2}
+                            end;
+                        false ->
+                            {error, frame_limit_err(FrameLen, MaxFrame, MaxBytes, Need)}
+                    end
+            end
+    end.
+
+ensure_workers_connected([], State) ->
+    {ok, State};
+ensure_workers_connected([Worker | Rest], State) ->
+    Conn = maps:get(Worker, State#state.workers),
+    case ensure_connected(Conn, State) of
+        {ok, State1} ->
+            ensure_workers_connected(Rest, State1);
+        {{error, Err}, State1} ->
+            {{error, Err}, State1}
+    end.
+
+fanout_prepared([], _Deadline, State, _Merge, Acc) ->
+    {{ok, Acc}, State};
+fanout_prepared([{Worker, Items, Plan}], Deadline, State, Merge, Acc) ->
+    %% Single Worker: stay on the client process (Go ExecuteBatch fast path).
+    Conn = maps:get(Worker, State#state.workers),
+    {{ok, GroupResponses}, State1} = run_pipeline(Plan, Deadline, Worker, Conn, State, length(Plan)),
+    {{ok, Merge(Worker, Items, GroupResponses, Acc)}, State1};
+fanout_prepared(Prepared, Deadline, State, Merge, Acc0) ->
+    Parent = self(),
+    Pending = lists:map(
+        fun({Worker, Items, Plan}) ->
+            Ref = make_ref(),
+            Conn = maps:get(Worker, State#state.workers),
+            spawn(fun() ->
+                {{ok, GroupResponses}, StateOut} =
+                    run_pipeline(Plan, Deadline, Worker, Conn, State, length(Plan)),
+                Parent ! {Ref, Worker, Items, GroupResponses, StateOut#state.healthy}
+            end),
+            {Ref, Worker, Items}
+        end,
+        Prepared
+    ),
+    collect_fanout(Pending, Acc0, State, Merge).
+
+collect_fanout([], Acc, State, _Merge) ->
+    {{ok, Acc}, State};
+collect_fanout(Pending, Acc, State, Merge) ->
+    receive
+        {Ref, Worker, Items, GroupResponses, Healthy} ->
+            case lists:keytake(Ref, 1, Pending) of
+                {value, {Ref, Worker, Items}, Rest} ->
+                    Acc1 = Merge(Worker, Items, GroupResponses, Acc),
+                    State1 =
+                        case Healthy of
+                            true -> State;
+                            false -> State#state{healthy = false}
+                        end,
+                    collect_fanout(Rest, Acc1, State1, Merge);
+                false ->
+                    collect_fanout(Pending, Acc, State, Merge)
+            end
+    end.
+
+set_nth(List, Idx, Value) ->
+    lists:sublist(List, 1, Idx - 1) ++ [Value] ++ lists:nthtail(Idx, List).
 
 build_group_plan([], State, Acc) ->
     {ok, lists:reverse(Acc), State};

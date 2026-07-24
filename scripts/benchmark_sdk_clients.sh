@@ -19,13 +19,24 @@ if [[ ! -x "$daemon" ]]; then
   exit 1
 fi
 
-mkdir -p "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/logs"
+mkdir -p "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/erlang" "$outdir/logs"
 export PYTHONPATH="$root/sdk/python/src"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 go_bin="${GO:-go}"
 mkdir -p "$root/sdk/go/bin"
 (cd "$root/sdk/go" && "$go_bin" build -o bin/glyphastore-bench ./cmd/glyphastore-bench)
 go_bench="$root/sdk/go/bin/glyphastore-bench"
+
+erlang_ready=0
+erlang_bench=""
+if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+  (cd "$root/sdk/erlang" && rebar3 compile >/dev/null)
+  erlang_bench="$root/sdk/erlang/benchmarks/client_benchmark.escript"
+  chmod +x "$erlang_bench"
+  erlang_ready=1
+else
+  echo "note: Erlang SDK bench skipped (install OTP + rebar3 to include erlang)" >&2
+fi
 
 capture_environment() {
   {
@@ -53,6 +64,12 @@ PY
     echo "perl_sdk_version=$($perl -MGlyphaStore -e 'print \$GlyphaStore::VERSION')"
     echo "go=$($go_bin version)"
     echo "go_sdk_version=0.1.0"
+    if [[ "$erlang_ready" == "1" ]]; then
+      echo "erlang=$(erl -noshell -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().')"
+      echo "erlang_sdk_version=$(erl -noshell -pa "$root/sdk/erlang/_build/default/lib/glyphastore/ebin" -eval 'io:format("~s",[glyphastore_version:version()]),halt().')"
+    else
+      echo "erlang=skipped"
+    fi
     echo "glyphastored=$daemon"
     echo "glyphastored_version=$("$daemon" --version 2>&1 | tr '\n' ' ')"
     echo "ops=$ops warmup=$warmup repeats=$repeats"
@@ -180,6 +197,24 @@ run_matrix() {
       "$go_bench" --host "$host" --port "$port" --workers "$w" --ops "$ops" \
         --pipeline "$p" --warmup "$warmup" --repeats "$repeats" --execution sequential \
         | tee "$outdir/go/sequential-${label}.txt"
+
+      if [[ "$erlang_ready" == "1" ]]; then
+        echo "running erlang sequential $label"
+        escript "$erlang_bench" \
+          --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+          --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+          --no-concurrent \
+          | tee "$outdir/erlang/sequential-${label}.txt"
+
+        if [[ "$w" -gt 1 ]]; then
+          echo "running erlang concurrent $label"
+          escript "$erlang_bench" \
+            --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+            --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+            --concurrent \
+            | tee "$outdir/erlang/concurrent-${label}.txt"
+        fi
+      fi
     done
 
     stop_server "$port_file"
@@ -220,6 +255,7 @@ for path in (
     sorted(outdir.glob("python/*.txt"))
     + sorted(outdir.glob("perl/*.txt"))
     + sorted(outdir.glob("go/*.txt"))
+    + sorted(outdir.glob("erlang/*.txt"))
 ):
     text = path.read_text(encoding="utf-8")
     match = pattern.search(text)
@@ -266,6 +302,8 @@ for row in rows:
         sdk = "Python"
     elif row["file"].startswith("perl/"):
         sdk = "Perl"
+    elif row["file"].startswith("erlang/"):
+        sdk = "Erlang"
     else:
         sdk = "Go"
     lines.append(
@@ -281,8 +319,9 @@ lines.extend(
         "",
         "- Python `concurrent` uses one OS thread per Worker against one shared `Client`.",
         "- Python `async` uses one `asyncio` task per Worker against one shared `AsyncClient`.",
-        "- Python `sequential`, Perl sequential, and Go `sequential` drain Workers one after another.",
+        "- Python `sequential`, Perl sequential, Go `sequential`, and Erlang sequential drain Workers one after another.",
         "- Go `concurrent` uses one goroutine per Worker against one shared `Client`.",
+        "- Erlang `concurrent` uses `execute_worker_pipelines` (overlapped per-Worker pipelines).",
         "- Perl has no shared-client multi-threaded mode; ithreads are not used.",
         "- Do not treat same-host loopback numbers as production capacity.",
         "",
@@ -297,7 +336,7 @@ write_readme() {
   cat >"$outdir/README.md" <<EOF
 # GlyphaStore SDK benchmarks — ${sdk_version}
 
-Published client-side pipeline benchmarks for the native Python, Perl, and Go SDKs at version
+Published client-side pipeline benchmarks for the native Python, Perl, Go, and Erlang SDKs at version
 \`${sdk_version}\`.
 
 ## Contents
@@ -311,6 +350,7 @@ Published client-side pipeline benchmarks for the native Python, Perl, and Go SD
 | \`python/\` | Raw Python sync/async result files |
 | \`perl/\` | Raw Perl result files |
 | \`go/\` | Raw Go result files |
+| \`erlang/\` | Raw Erlang result files (when OTP/rebar3 available) |
 | \`logs/\` | Server stdout/stderr |
 
 ## How to reproduce
@@ -319,11 +359,12 @@ Published client-side pipeline benchmarks for the native Python, Perl, and Go SD
 ./scripts/benchmark_sdk_clients.sh
 \`\`\`
 
-Go-only:
+Language-only:
 
 \`\`\`bash
 ./scripts/benchmark_go_client.sh
 ./scripts/benchmark_perl_client.sh
+./scripts/benchmark_erlang_client.sh
 \`\`\`
 
 Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`, \`PYTHON\`, \`PERL\`, \`GO\`.

@@ -129,6 +129,8 @@ jobs:
         run: ./scripts/package-go-client.sh
       - name: Package and verify Ruby client
         run: ./scripts/package-ruby-client.sh
+      - name: Package and verify Erlang client
+        run: ./scripts/package-erlang-client.sh
       - name: Checksum packaged SDK artifacts
         run: ./scripts/checksum-sdk-artifacts.sh
       - name: Build daemon and interop client
