@@ -67,10 +67,14 @@ Additional final-only points:
 
 ## Discarded / deferred optimizations
 
-- Full SwissTable replacement of the hot map: deferred; current map already uses
-  transparent hashing, 0.5 load factor, geometric reserve, and inline small values.
+- Full SwissTable replacement of the hot map: deferred in this slice; addressed in the follow-up
+  (`docs/benchmarks/get-path-hot-cache-followup-2026-07-24.md`) with a flat open-addressed
+  `HotRecordTable` (not the Index SwissTable control SIMD path).
 - Caching a Worker-global generation version to skip the second Index lookup after
   cold I/O: rejected (ABA / rehash fragility). Cold GET keeps exact RecordRef + pin
   object revalidation.
 - Global LRU / shared cache lock: rejected (ADR 0017).
 - Populating the hot cache from cold GET: out of scope; would change admission policy.
+
+Follow-up (critical-section slim, Release timing gate, flat hot table, high-ops benches):
+see `docs/benchmarks/get-path-hot-cache-followup-2026-07-24.md`.

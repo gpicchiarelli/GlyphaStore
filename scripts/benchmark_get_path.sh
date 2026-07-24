@@ -16,6 +16,7 @@ fi
 "${cmake}" --build --preset macos-release --target glyphastore_benchmarks
 
 bench="${root}/build/macos-release/glyphastore_benchmarks"
+# Higher defaults: 500-ops medians were too noisy to judge ~µs hot GETs.
 common=(--warmup 2 --repeats 5)
 
 run() {
@@ -25,11 +26,8 @@ run() {
   "${bench}" "${common[@]}" "$@" | tee "${out_dir}/${name}.txt"
 }
 
-# Minimal matrix: GET 100%, GET/PUT mix via put-get, uniform + zipf, worker counts,
-# value sizes covering hot and cold-ish payloads.
-# Note: --distribution/--threads require a *parallel* store filter.
-ops="${GET_PATH_BENCH_OPS:-500}"
-parallel_ops="${GET_PATH_BENCH_PARALLEL_OPS:-2000}"
+ops="${GET_PATH_BENCH_OPS:-5000}"
+parallel_ops="${GET_PATH_BENCH_PARALLEL_OPS:-8000}"
 for workers in 1 2 4 8; do
   for value in 32 256 4096 65536; do
     run "durable-get-w${workers}-v${value}" \
@@ -50,6 +48,6 @@ done
 # One oversized value to exercise admission size-reject / cold path.
 run "durable-get-w2-v131072" \
   --filter store-durable-get --workers 2 --value-size 131072 \
-  --ops 50 "$@"
+  --ops 200 "$@"
 
 echo "Wrote results under ${out_dir}"
