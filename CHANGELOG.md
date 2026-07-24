@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Tighten durable hot-cache structure: max_load_factor 0.5, geometric reserve, 32-byte inline
+  values to avoid heap allocations on small payloads, and documented per-entry accounting. Hash is
+  never treated as identity; full key compare remains mandatory on collision.
 - Add explicit durable hot-cache controls: `hot_cache_enabled`, `max_hot_cache_value_bytes`
   (default 64KiB), daemon `--disable-hot-cache` / `--max-hot-cache-value-bytes`, and stats for
   hit-rate, size-rejected, enabled, and max value. Oversized values never admit; disabling the

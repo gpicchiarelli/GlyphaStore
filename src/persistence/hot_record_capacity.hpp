@@ -11,6 +11,11 @@ struct HotRecordReservePlan {
     bool overflow{};
 };
 
+// Geometric reserve planner for the durable hot-cache unordered_map. The map uses
+// max_load_factor(0.5) and transparent string hashing; identity is always a full key
+// compare (hash alone is not authoritative). Per-entry accounting charges the map
+// node (~value_type + 4 pointers), the owned key bytes, and heap value bytes only
+// when the value exceeds the 32-byte inline buffer.
 [[nodiscard]] constexpr auto plan_hot_record_reserve(const std::size_t current_size,
                                                      const std::size_t additional_records,
                                                      const std::size_t current_capacity) noexcept

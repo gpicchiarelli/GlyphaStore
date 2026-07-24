@@ -12,10 +12,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <limits>
 #include <mutex>
+#include <new>
 #include <optional>
 #include <ranges>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -131,19 +134,45 @@ template <typename Callback> class ScopeExit final {
 template <typename Callback> ScopeExit(Callback) -> ScopeExit<Callback>;
 
 struct HotRecordEntry {
+    static constexpr std::size_t kInlineValueBytes = 32;
+
     RecordRef reference{};
-    std::shared_ptr<const std::byte[]> value_bytes;
+    std::shared_ptr<const std::byte[]> heap_value;
+    alignas(std::max_align_t) std::byte inline_value[kInlineValueBytes]{};
     std::size_t value_size{};
     SequenceNumber sequence{};
     std::uint64_t expire_at_ns{};
     std::uint64_t accounted_bytes{};
+    bool value_inline{};
+
+    [[nodiscard]] auto value_span() const noexcept -> std::span<const std::byte> {
+        if (value_size == 0) {
+            return {};
+        }
+        if (value_inline) {
+            return {inline_value, value_size};
+        }
+        return {heap_value.get(), value_size};
+    }
 };
 
 struct HotRecordSnapshot {
-    std::shared_ptr<const std::byte[]> value_bytes;
+    std::shared_ptr<const std::byte[]> heap_value;
+    alignas(std::max_align_t) std::byte inline_value[HotRecordEntry::kInlineValueBytes]{};
     std::size_t value_size{};
     SequenceNumber sequence{};
     std::uint64_t expire_at_ns{};
+    bool value_inline{};
+
+    [[nodiscard]] auto value_span() const noexcept -> std::span<const std::byte> {
+        if (value_size == 0) {
+            return {};
+        }
+        if (value_inline) {
+            return {inline_value, value_size};
+        }
+        return {heap_value.get(), value_size};
+    }
 };
 
 struct TransparentStringHash {
@@ -243,15 +272,20 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
 
 [[nodiscard]] auto hot_record_accounted_bytes(const std::size_t key_bytes, const std::size_t value_bytes)
     -> Result<std::uint64_t> {
+    // Per-entry overhead (unordered_map node + control): value_type plus ~4 pointers.
+    // Keys are owned by the map node (no second key copy). Values <= 32B are inlined in the
+    // entry; larger values charge the heap buffer size. Hash is never treated as identity.
     constexpr auto fixed = static_cast<std::uint64_t>(sizeof(HotRecordMap::value_type) + 4U * sizeof(void*));
     if (key_bytes > std::numeric_limits<std::uint64_t>::max() - fixed) {
         return fail(ErrorCode::arithmetic_overflow, "hot-cache key accounting overflow");
     }
     const auto with_key = fixed + static_cast<std::uint64_t>(key_bytes);
-    if (value_bytes > std::numeric_limits<std::uint64_t>::max() - with_key) {
+    const auto charged_value =
+        value_bytes <= HotRecordEntry::kInlineValueBytes ? 0U : static_cast<std::uint64_t>(value_bytes);
+    if (charged_value > std::numeric_limits<std::uint64_t>::max() - with_key) {
         return fail(ErrorCode::arithmetic_overflow, "hot-cache value accounting overflow");
     }
-    return with_key + static_cast<std::uint64_t>(value_bytes);
+    return with_key + charged_value;
 }
 
 [[nodiscard]] auto hot_cache_worker_budget(const std::size_t worker_index, const std::size_t worker_count,
@@ -291,9 +325,18 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
 [[nodiscard]] auto owned_value_from_hot(const HotRecordSnapshot& entry) -> OwnedValue {
     std::vector<std::byte> value(entry.value_size);
     if (entry.value_size != 0) {
-        std::copy_n(entry.value_bytes.get(), entry.value_size, value.begin());
+        const auto bytes = entry.value_span();
+        std::copy_n(bytes.begin(), entry.value_size, value.begin());
     }
     return {.bytes = std::move(value), .sequence = entry.sequence.value, .expire_at_ns = entry.expire_at_ns};
+}
+
+[[nodiscard]] auto make_hot_record_map() -> HotRecordMap {
+    HotRecordMap records;
+    // Keep load factor low to reduce collision chains; identity is full-key compare.
+    records.max_load_factor(0.5f);
+    records.reserve(64);
+    return records;
 }
 
 auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_active,
@@ -613,7 +656,8 @@ struct DurableRuntimeCatalog::RuntimeWorker {
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
           next_sequence(recovered.next_sequence), active_segment(recovered.active_segment),
           active_live_record_bytes(recovered.active_live_record_bytes),
-          sealed_live_record_bytes(recovered.sealed_live_record_bytes) {}
+          sealed_live_record_bytes(recovered.sealed_live_record_bytes),
+          hot_records(make_hot_record_map()), hot_record_staging(make_hot_record_map()) {}
 
     [[nodiscard]] auto update_live_record_bytes(const std::optional<RecordRef>& previous,
                                                 const std::optional<RecordRef>& current) -> Status {
@@ -869,17 +913,19 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
         return PreparedHotRecord{};
     }
 
-    std::shared_ptr<const std::byte[]> immutable_value;
-    if (!value.empty()) {
+    HotRecordEntry staged_entry{.value_size = value.size(),
+                                .expire_at_ns = expire_at_ns,
+                                .accounted_bytes = *charge};
+    if (!value.empty() && value.size() <= HotRecordEntry::kInlineValueBytes) {
+        std::copy(value.begin(), value.end(), staged_entry.inline_value);
+        staged_entry.value_inline = true;
+    } else if (!value.empty()) {
         auto mutable_value = std::make_shared<std::byte[]>(value.size());
         std::copy(value.begin(), value.end(), mutable_value.get());
-        immutable_value = std::move(mutable_value);
+        staged_entry.heap_value = std::move(mutable_value);
+        staged_entry.value_inline = false;
     }
-    const auto staged =
-        hot_record_staging.emplace(std::string{key}, HotRecordEntry{.value_bytes = std::move(immutable_value),
-                                                                    .value_size = value.size(),
-                                                                    .expire_at_ns = expire_at_ns,
-                                                                    .accounted_bytes = *charge});
+    const auto staged = hot_record_staging.emplace(std::string{key}, std::move(staged_entry));
     if (!staged.second) {
         return fail(ErrorCode::corrupted_data, "hot Record staging map was not empty");
     }
@@ -1466,10 +1512,17 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                     hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
-                hot.emplace(HotRecordSnapshot{.value_bytes = cached->second.value_bytes,
-                                              .value_size = cached->second.value_size,
-                                              .sequence = cached->second.sequence,
-                                              .expire_at_ns = cached->second.expire_at_ns});
+                HotRecordSnapshot snapshot{.value_size = cached->second.value_size,
+                                           .sequence = cached->second.sequence,
+                                           .expire_at_ns = cached->second.expire_at_ns,
+                                           .value_inline = cached->second.value_inline};
+                if (cached->second.value_inline) {
+                    std::copy_n(cached->second.inline_value, cached->second.value_size,
+                                snapshot.inline_value);
+                } else {
+                    snapshot.heap_value = cached->second.heap_value;
+                }
+                hot.emplace(std::move(snapshot));
             } else {
                 ++worker.hot_record_stale_hits;
                 worker.erase_hot_record(key.key);
