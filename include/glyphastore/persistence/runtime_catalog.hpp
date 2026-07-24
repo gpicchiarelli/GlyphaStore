@@ -247,6 +247,11 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto prepare_get(const HashedKey& key, std::uint64_t now_ns) -> Result<PreparedRead>;
     [[nodiscard]] auto complete_get(PinnedRead read, const std::atomic_bool* cancelled = nullptr)
         -> Result<OwnedValue>;
+    // Rebuild SegmentId → catalog/pin slot mapping after catalog publication.
+    // Guarded by catalog_mutex_ (exclusive) or single-threaded initialization.
+    void rebuild_pin_slot_index() noexcept;
+    [[nodiscard]] auto catalog_index_for_segment(SegmentId segment_id) const noexcept
+        -> std::optional<std::size_t>;
 
     // Declared first so cached Segment handles are destroyed before the lock
     // and anchored directory descriptor.
@@ -255,6 +260,9 @@ class DurableRuntimeCatalog final {
     NamespaceAuditReport namespace_audit_;
     std::vector<RecoveredSegmentState> segments_;
     std::vector<std::shared_ptr<const RuntimeSegmentGeneration>> generation_pins_;
+    // Dense SegmentId → catalog index. Absent/retired ids store UINT32_MAX.
+    // Keeps GET pin resolution O(1) without changing RecordRef identity.
+    std::vector<std::uint32_t> pin_slot_by_segment_id_;
     std::vector<std::unique_ptr<RuntimeWorker>> workers_;
     DurableRecoveryStats recovery_stats_;
     DurableRuntimeOptions options_;

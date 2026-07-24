@@ -73,8 +73,10 @@ authoritative `RecordRef`; the mandatory post-I/O Index and pin revalidation abo
 linearization point. Rotation removes all entries charged to the retired active generation.
 
 The steady-state Segment-descriptor bound is the catalog Segment count plus the Worker count. Cold
-read concurrency reuses immutable pins and therefore does not increase that bound. Catalog lookup is
-binary search over the strictly ordered manifest, avoiding a second potentially million-entry map.
+read concurrency reuses immutable pins and therefore does not increase that bound. Catalog lookup on
+the GET path resolves `SegmentId` → pin slot in O(1) via a dense side table rebuilt on recovery,
+rotation, and compaction publication; identity, generation, owner, and pin-object checks remain
+mandatory. Other catalog walks may still binary-search the ordered manifest.
 
 Configured descriptor policy must cover generation pins, Worker mutable handles, directory, lock,
 enumeration, and transient publication descriptors and must fit the process `RLIMIT_NOFILE`.

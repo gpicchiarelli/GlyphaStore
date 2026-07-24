@@ -1153,7 +1153,37 @@ auto DurableRuntimeCatalog::initialize_generation_pins() -> Status {
             .identity = identity, .selected = segments_[index].selected, .file = std::move(*opened)}));
     }
     generation_pins_ = std::move(pins);
+    rebuild_pin_slot_index();
     return {};
+}
+
+void DurableRuntimeCatalog::rebuild_pin_slot_index() noexcept {
+    constexpr auto kAbsent = std::numeric_limits<std::uint32_t>::max();
+    const auto needed = std::max(manifest_.next_segment_id.value, static_cast<std::uint64_t>(1));
+    pin_slot_by_segment_id_.assign(static_cast<std::size_t>(needed), kAbsent);
+    for (std::size_t index = 0; index < manifest_.segments.size(); ++index) {
+        const auto segment_id = manifest_.segments[index].segment_id.value;
+        if (segment_id >= pin_slot_by_segment_id_.size()) {
+            pin_slot_by_segment_id_.resize(static_cast<std::size_t>(segment_id) + 1U, kAbsent);
+        }
+        pin_slot_by_segment_id_[static_cast<std::size_t>(segment_id)] = static_cast<std::uint32_t>(index);
+    }
+}
+
+auto DurableRuntimeCatalog::catalog_index_for_segment(const SegmentId segment_id) const noexcept
+    -> std::optional<std::size_t> {
+    constexpr auto kAbsent = std::numeric_limits<std::uint32_t>::max();
+    if (segment_id.value >= pin_slot_by_segment_id_.size()) {
+        return std::nullopt;
+    }
+    const auto slot = pin_slot_by_segment_id_[static_cast<std::size_t>(segment_id.value)];
+    if (slot == kAbsent || slot >= manifest_.segments.size() || slot >= generation_pins_.size()) {
+        return std::nullopt;
+    }
+    if (manifest_.segments[slot].segment_id != segment_id) {
+        return std::nullopt;
+    }
+    return slot;
 }
 
 auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
@@ -1302,19 +1332,14 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
             return fail(ErrorCode::not_found, "key is not present");
         }
         const auto pin_started = std::chrono::steady_clock::now();
-        const auto found =
-            std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
-                             [](const ManifestSegmentEntry& entry, const SegmentId id) {
-                                 return entry.segment_id.value < id.value;
-                             });
-        if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
+        const auto catalog_index = catalog_index_for_segment(reference->segment_id);
+        if (!catalog_index) {
             generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
             return fail_closed(Error{ErrorCode::corrupted_data,
                                      "durable Index references a Segment absent from the catalog"});
         }
-        const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
-        if (found->generation != reference->generation || found->owner_worker != worker.worker_id ||
-            catalog_index >= generation_pins_.size()) {
+        const auto& found = manifest_.segments[*catalog_index];
+        if (found.generation != reference->generation || found.owner_worker != worker.worker_id) {
             generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
             return fail_closed(Error{ErrorCode::corrupted_data,
                                      "durable Index reference disagrees with catalog identity or ownership"});
@@ -1354,7 +1379,7 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
 
         if (!hot) {
             ++worker.hot_record_misses;
-            const auto& pin = generation_pins_[catalog_index];
+            const auto& pin = generation_pins_[*catalog_index];
             if (!pin || pin->identity.segment_id != reference->segment_id ||
                 pin->identity.generation != reference->generation ||
                 pin->identity.owner_worker != worker.worker_id) {
@@ -1414,16 +1439,9 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
             atomic_saturating_add(metrics.index_lookup_ns, steady_elapsed_ns(index_started));
             if (current && *current == read.reference_) {
                 const auto pin_started = std::chrono::steady_clock::now();
-                const auto found = std::lower_bound(
-                    manifest_.segments.begin(), manifest_.segments.end(), current->segment_id,
-                    [](const ManifestSegmentEntry& entry, const SegmentId id) {
-                        return entry.segment_id.value < id.value;
-                    });
-                if (found != manifest_.segments.end() && found->segment_id == current->segment_id) {
-                    const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
-                    still_current = catalog_index < generation_pins_.size() &&
-                                    generation_pins_[catalog_index] == read.generation_;
-                }
+                const auto catalog_index = catalog_index_for_segment(current->segment_id);
+                still_current = catalog_index.has_value() &&
+                                generation_pins_[*catalog_index] == read.generation_;
                 atomic_saturating_add(metrics.generation_pin_lookup_ns, steady_elapsed_ns(pin_started));
             }
         }
@@ -1703,6 +1721,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     segments_.push_back({.selected = replacement_selected});
     generation_pins_[old_index] = std::move(sealed_generation);
     generation_pins_.push_back(std::move(replacement_generation));
+    rebuild_pin_slot_index();
     worker.active_segment = replacement_segment_id;
     worker.active_live_record_bytes.store(0, std::memory_order_release);
     worker.sealed_live_record_bytes.store(next_sealed_live_record_bytes, std::memory_order_release);
@@ -2835,6 +2854,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             manifest_ = std::move(prepared.plan.next_manifest);
             segments_ = std::move(next_segments);
             generation_pins_ = std::move(next_generation_pins);
+            rebuild_pin_slot_index();
             worker.index = std::move(prepared.index);
             worker.active_live_record_bytes.store(prepared.active_live_record_bytes,
                                                   std::memory_order_release);

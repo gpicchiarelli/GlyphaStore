@@ -5,6 +5,9 @@ public API exists.
 
 ## [Unreleased]
 
+- Resolve durable GET generation pins in O(1) via a dense `SegmentId` → catalog-slot side table
+  rebuilt on recovery, rotation, and compaction. Index↔catalog identity, generation, owner, and
+  pin-object checks remain mandatory; `RecordRef` identity is unchanged.
 - Add low-overhead durable GET path telemetry (`get_path_stats()`): Worker mutex wait, prepare/complete
   lock hold, Index/hot-cache/generation-pin lookup time, cold read and CRC/value-copy time,
   relinearization retries, hot-cache hit/miss/stale/eviction, expired-TTL GETs, and hot-cache resident
