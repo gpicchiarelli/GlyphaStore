@@ -797,6 +797,16 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
     const std::size_t worker_index, const std::size_t worker_count, const DurableResourceLimits& limits,
     const std::string_view key, const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
     const std::uint64_t publication_staging_bytes) -> Result<PreparedHotRecord> {
+    if (!limits.hot_cache_enabled) {
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
+    if (limits.max_hot_cache_value_bytes == 0 ||
+        value.size() > static_cast<std::size_t>(limits.max_hot_cache_value_bytes)) {
+        ++hot_record_size_rejected;
+        ++hot_record_admission_bypasses;
+        return PreparedHotRecord{};
+    }
     auto charge = hot_record_accounted_bytes(key.size(), value.size());
     if (!charge) {
         return unexpected(charge.error());
@@ -2270,6 +2280,16 @@ auto DurableRuntimeCatalog::hot_cache_stats() const -> std::vector<DurableHotCac
             .admission_bypasses = worker.hot_record_admission_bypasses,
             .size_rejected = worker.hot_record_size_rejected,
             .expired_gets = worker.get_expired_ttl,
+            .hit_rate_bp =
+                (worker.hot_record_hits + worker.hot_record_misses) == 0
+                    ? 0
+                    : (worker.hot_record_hits * 10'000ULL) /
+                          (worker.hot_record_hits + worker.hot_record_misses),
+            .enabled = options_.limits.hot_cache_enabled &&
+                       hot_cache_worker_budget(index, workers_.size(), options_.limits) > 0 &&
+                       options_.limits.max_hot_cache_entries_per_worker > 0 &&
+                       options_.limits.max_hot_cache_value_bytes > 0,
+            .max_value_bytes = options_.limits.max_hot_cache_value_bytes,
         });
     }
     return result;

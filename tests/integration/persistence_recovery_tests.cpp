@@ -1718,6 +1718,60 @@ GLYPHA_TEST("get path telemetry records hot hits and prepare hold without behavi
     GLYPHA_REQUIRE(path[0].hot_resident_bytes > 0);
 }
 
+GLYPHA_TEST("hot-cache rejects oversized values and can be disabled without correctness loss") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_hot_cache_value_bytes = 32;
+    auto runtime =
+        glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, {.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const std::string small_key{"small"};
+    const std::string small_value(16, 's');
+    const std::string large_key{"large"};
+    const std::string large_value(64, 'L');
+    GLYPHA_REQUIRE((*runtime)
+                       ->put(std::as_bytes(std::span{small_key}), std::as_bytes(std::span{small_value}))
+                       .committed());
+    GLYPHA_REQUIRE((*runtime)
+                       ->put(std::as_bytes(std::span{large_key}), std::as_bytes(std::span{large_value}))
+                       .committed());
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(small_key)) == small_value);
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(large_key)) == large_value);
+    auto stats = (*runtime)->hot_cache_stats();
+    GLYPHA_REQUIRE(stats[0].size_rejected >= 1);
+    GLYPHA_REQUIRE(stats[0].resident_entries == 1);
+    GLYPHA_REQUIRE(stats[0].max_value_bytes == 32);
+    GLYPHA_REQUIRE(stats[0].enabled);
+
+    limits.hot_cache_enabled = false;
+    (*runtime).reset();
+    auto directory2 = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory2.has_value());
+    auto disabled =
+        glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory2), 0, {.limits = limits});
+    GLYPHA_REQUIRE(disabled.has_value());
+    GLYPHA_REQUIRE(owned_text(*(*disabled)->get(large_key)) == large_value);
+    const auto disabled_stats = (*disabled)->hot_cache_stats();
+    GLYPHA_REQUIRE(!disabled_stats[0].enabled);
+}
+
 GLYPHA_TEST("hot-cache accounting remains bounded across hit overwrite and erase") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();

@@ -1,6 +1,7 @@
 #include "glyphastore/server/daemon_config.hpp"
 
 #include "cli/arguments.hpp"
+#include "glyphastore/core/types.hpp"
 #include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/tls.hpp"
 
@@ -55,6 +56,8 @@ enum OptionId : std::size_t {
     reserved_free_bytes,
     max_segments,
     max_hot_cache_bytes,
+    max_hot_cache_value_bytes,
+    disable_hot_cache,
     max_temporary_compaction_bytes,
     quiet,
     log_format,
@@ -167,6 +170,12 @@ constexpr std::array kOptionSpecs{
                     "Cap durable Segment count (default: 127)"},
     cli::OptionSpec{max_hot_cache_bytes, "max-hot-cache-bytes", '\0', cli::OptionArity::required, "BYTES",
                     "Cap durable hot-cache bytes across Workers (default: 256MiB; 0 disables)"},
+    cli::OptionSpec{max_hot_cache_value_bytes, "max-hot-cache-value-bytes", '\0', cli::OptionArity::required,
+                    "BYTES",
+                    "Reject hot-cache admission for values larger than BYTES (default: 64KiB; 0 disables "
+                    "admission)"},
+    cli::OptionSpec{disable_hot_cache, "disable-hot-cache", '\0', cli::OptionArity::none, {},
+                    "Disable durable hot-cache admission (cold pinned reads remain correct)"},
     cli::OptionSpec{max_temporary_compaction_bytes, "max-temporary-compaction-bytes", '\0',
                     cli::OptionArity::required, "BYTES",
                     "Cap temporary durable compaction peak bytes (default: 1GiB)"},
@@ -590,6 +599,7 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
                                        parsed->has(group_max_bytes) || parsed->has(group_max_wait_ms) ||
                                        parsed->has(max_store_bytes) || parsed->has(reserved_free_bytes) ||
                                        parsed->has(max_segments) || parsed->has(max_hot_cache_bytes) ||
+                                       parsed->has(max_hot_cache_value_bytes) || parsed->has(disable_hot_cache) ||
                                        parsed->has(max_temporary_compaction_bytes);
     const bool durable = options.store.storage_mode != StorageMode::volatile_memory;
     if (durable && !options.store.data_directory) {
@@ -674,6 +684,17 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
         return unexpected(status.error());
     }
     options.store.durable_limits.max_hot_cache_bytes = hot_cache_bytes;
+    std::size_t hot_cache_value_bytes =
+        static_cast<std::size_t>(options.store.durable_limits.max_hot_cache_value_bytes);
+    if (auto status = set_byte_size_option(max_hot_cache_value_bytes, "--max-hot-cache-value-bytes", 0,
+                                           kMaxNormalRecordSize, hot_cache_value_bytes);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.store.durable_limits.max_hot_cache_value_bytes = hot_cache_value_bytes;
+    if (parsed->has(disable_hot_cache)) {
+        options.store.durable_limits.hot_cache_enabled = false;
+    }
     std::size_t temporary_bytes =
         static_cast<std::size_t>(options.store.durable_limits.max_temporary_compaction_bytes);
     if (auto status = set_byte_size_option(max_temporary_compaction_bytes, "--max-temporary-compaction-bytes",
@@ -927,6 +948,10 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += std::to_string(options.store.durable_limits.max_hot_cache_staging_bytes_per_worker);
     out += "\nmax-hot-cache-entries-per-worker=";
     out += std::to_string(options.store.durable_limits.max_hot_cache_entries_per_worker);
+    out += "\nmax-hot-cache-value-bytes=";
+    out += std::to_string(options.store.durable_limits.max_hot_cache_value_bytes);
+    out += "\nhot-cache-enabled=";
+    out += options.store.durable_limits.hot_cache_enabled ? "true" : "false";
     out += "\nmax-temporary-compaction-bytes=";
     out += std::to_string(options.store.durable_limits.max_temporary_compaction_bytes);
     out += "\nquiet=";

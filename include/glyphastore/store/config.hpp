@@ -33,6 +33,7 @@ inline constexpr std::uint64_t kDefaultMaximumHotCacheBytes = 256ULL * 1024ULL *
 inline constexpr std::uint64_t kDefaultMaximumHotCacheBytesPerWorker = 64ULL * 1024ULL * 1024ULL;
 inline constexpr std::uint64_t kDefaultMaximumHotCacheStagingBytesPerWorker = 16ULL * 1024ULL * 1024ULL;
 inline constexpr std::size_t kDefaultMaximumHotCacheEntriesPerWorker = 1'000'000;
+inline constexpr std::uint64_t kDefaultMaximumHotCacheValueBytes = 64ULL * 1024ULL;
 inline constexpr std::size_t kDefaultMaximumDeferredTtlReclaimsPerWorker = 1'024;
 inline constexpr std::uint64_t kDefaultMaintenanceMaxCopyBytesPerCycle = 128ULL * 1024ULL * 1024ULL;
 
@@ -48,10 +49,15 @@ struct DurableResourceLimits {
     std::uint32_t max_write_amplification{4};
     // Zero disables hot admission without affecting correctness. The global
     // budget is partitioned across Workers, then capped by the per-Worker limit.
+    // hot_cache_enabled=false is an explicit kill switch equivalent to a zero
+    // byte budget for admission (cold pinned reads remain correct).
+    bool hot_cache_enabled{true};
     std::uint64_t max_hot_cache_bytes{kDefaultMaximumHotCacheBytes};
     std::uint64_t max_hot_cache_bytes_per_worker{kDefaultMaximumHotCacheBytesPerWorker};
     std::uint64_t max_hot_cache_staging_bytes_per_worker{kDefaultMaximumHotCacheStagingBytesPerWorker};
     std::size_t max_hot_cache_entries_per_worker{kDefaultMaximumHotCacheEntriesPerWorker};
+    // Values larger than this are never admitted; they always take the cold path.
+    std::uint64_t max_hot_cache_value_bytes{kDefaultMaximumHotCacheValueBytes};
     // Bounded Index/hot-cache TTL reclaim backlog drained by Worker maintenance
     // paths (mutate, prepare_get). Zero forces synchronous reclaim on expire.
     std::size_t max_deferred_ttl_reclaims_per_worker{kDefaultMaximumDeferredTtlReclaimsPerWorker};

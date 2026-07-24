@@ -5,6 +5,10 @@ public API exists.
 
 ## [Unreleased]
 
+- Add explicit durable hot-cache controls: `hot_cache_enabled`, `max_hot_cache_value_bytes`
+  (default 64KiB), daemon `--disable-hot-cache` / `--max-hot-cache-value-bytes`, and stats for
+  hit-rate, size-rejected, enabled, and max value. Oversized values never admit; disabling the
+  cache leaves cold pinned reads correct.
 - Defer durable Index TTL reclaim to a bounded per-Worker backlog drained by existing Worker paths
   (`prepare_get`, `mutate`). Expired GETs still return `not_found` immediately, drop hot rows, and
   never serve expired values; reclaim verifies exact `RecordRef` before erase so reinserts survive.

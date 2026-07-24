@@ -86,6 +86,10 @@ struct DurableHotCacheWorkerStats {
     std::uint64_t admission_bypasses{};
     std::uint64_t size_rejected{};
     std::uint64_t expired_gets{};
+    // hits * 10000 / (hits + misses); 0 when no lookups.
+    std::uint64_t hit_rate_bp{};
+    bool enabled{};
+    std::uint64_t max_value_bytes{};
 };
 
 // Low-overhead durable GET path telemetry. Totals are nanoseconds summed with

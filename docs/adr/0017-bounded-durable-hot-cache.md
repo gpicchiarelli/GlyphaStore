@@ -29,16 +29,18 @@ authoritative Index after I/O.
 
 The global hot-cache byte budget is deterministically partitioned across Workers and capped by an
 explicit per-Worker byte limit. Each Worker also has entry and pre-commit staging-byte limits.
-Accounting conservatively charges keys, immutable value buffers, map nodes, and bucket/control
-storage. Strict-group staging additionally charges its pending mutation and duplicated publication
-key. The counters, hit/miss counts, admission bypasses, and effective limits are available as a
-single locked Worker snapshot; no global cache mutex or shared admission counter is introduced.
+Admission is also gated by `hot_cache_enabled` and `max_hot_cache_value_bytes` (default 64 KiB):
+oversized values never admit and cannot blow the Worker budget. Accounting conservatively charges
+keys, immutable value buffers, map nodes, and bucket/control storage. Strict-group staging
+additionally charges its pending mutation and duplicated publication key. The counters, hit/miss/
+stale/eviction/size-rejected counts, hit-rate, and effective limits are available as a single locked
+Worker snapshot; no global cache mutex or shared admission counter is introduced.
 
 PUT prepares map capacity, key node, and a single-allocation `shared_ptr<const byte[]>` value before
 the first persistent write. Publication only moves prepared ownership. If any cache limit is exhausted,
 admission is bypassed; after authoritative Index publication an older cached value is removed and
 the mutation still succeeds. Erase, replacement, failed group publication, and rotation release
-their exact charges. A zero limit intentionally disables admission.
+their exact charges. A zero limit or `hot_cache_enabled=false` intentionally disables admission.
 
 A hot GET snapshots the immutable value owner and metadata while holding the Worker mutex, then
 copies the public owning value after releasing it. A miss captures the exact Index `RecordRef` and

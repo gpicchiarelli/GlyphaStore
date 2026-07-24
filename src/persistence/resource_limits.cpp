@@ -83,7 +83,8 @@ auto validate_durable_resource_limits(const DurableResourceLimits& limits) -> St
         limits.max_recovery_memory_bytes == 0 || limits.max_live_keys == 0 ||
         limits.max_temporary_compaction_bytes == 0 ||
         limits.max_temporary_compaction_bytes > limits.max_store_bytes ||
-        limits.max_write_amplification == 0 || limits.max_write_amplification > 64) {
+        limits.max_write_amplification == 0 || limits.max_write_amplification > 64 ||
+        limits.max_hot_cache_value_bytes > kMaxNormalRecordSize) {
         return fail(ErrorCode::invalid_argument, "durable resource limits are inconsistent");
     }
     return {};
