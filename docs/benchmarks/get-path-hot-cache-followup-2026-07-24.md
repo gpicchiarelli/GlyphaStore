@@ -79,7 +79,14 @@ uses higher ops; a 500-ops v32 rerun is included only to close the regression qu
   addressing (FNV hash reuse, no `std::unordered_map` node chase).
 - Oversized values remain correctness-neutral cold reads under the size cap.
 
-## Still deferred / rejected
+## Commits
+
+- Code (flat hot table, `prepare_get` slim, Release timing gate, tests): landed in `d493f63`
+  (note: that commit message is Erlang-oriented because it was co-authored into the same
+  local commit by concurrent work; the GET-path diff is the `src/persistence/*` +
+  `tests/integration/*` hunks).
+- Docs / benches / CHANGELOG / script defaults: `4d4351c`.
+
 
 - Full SwissTable control-byte SIMD for the hot cache: the new flat table already matches repo
   open-addressing primitives; SIMD control matching would be a separate micro-opt.
