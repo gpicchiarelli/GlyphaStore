@@ -1620,6 +1620,61 @@ GLYPHA_TEST("zero hot-cache budget falls back to pinned active-Segment reads for
     GLYPHA_REQUIRE(stats[0].admission_bypasses == sizes.size() + 3U);
     // First TTL GET is a miss that validates expiry; the second is an Index miss (no cold I/O).
     GLYPHA_REQUIRE(stats[0].misses == sizes.size() + 3U);
+    GLYPHA_REQUIRE(stats[0].expired_gets >= 1);
+
+    const auto path_stats = (*runtime)->get_path_stats();
+    GLYPHA_REQUIRE(path_stats.size() == 1);
+    GLYPHA_REQUIRE(path_stats[0].prepare_calls >= sizes.size() + 3U);
+    GLYPHA_REQUIRE(path_stats[0].complete_calls >= 1);
+    GLYPHA_REQUIRE(path_stats[0].prepare_hold_ns > 0);
+    GLYPHA_REQUIRE(path_stats[0].index_lookup_ns > 0);
+    GLYPHA_REQUIRE(path_stats[0].generation_pin_lookup_ns > 0);
+    GLYPHA_REQUIRE(path_stats[0].cold_read_ns > 0);
+    GLYPHA_REQUIRE(path_stats[0].expired_ttl_gets >= 1);
+    GLYPHA_REQUIRE(path_stats[0].hot_resident_entries == 0);
+}
+
+GLYPHA_TEST("get path telemetry records hot hits and prepare hold without behavioral change") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const std::string key{"hot-telem"};
+    const std::string value{"payload"};
+    GLYPHA_REQUIRE((*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed());
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == value);
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == value);
+
+    const auto cache = (*runtime)->hot_cache_stats();
+    GLYPHA_REQUIRE(cache.size() == 1);
+    GLYPHA_REQUIRE(cache[0].hits >= 2);
+    GLYPHA_REQUIRE(cache[0].resident_entries == 1);
+    GLYPHA_REQUIRE(cache[0].resident_bytes > 0);
+
+    const auto path = (*runtime)->get_path_stats();
+    GLYPHA_REQUIRE(path.size() == 1);
+    GLYPHA_REQUIRE(path[0].prepare_calls >= 2);
+    GLYPHA_REQUIRE(path[0].hot_hits >= 2);
+    GLYPHA_REQUIRE(path[0].prepare_hold_ns > 0);
+    GLYPHA_REQUIRE(path[0].hot_cache_lookup_ns > 0);
+    GLYPHA_REQUIRE(path[0].hot_resident_entries == 1);
+    GLYPHA_REQUIRE(path[0].hot_resident_bytes > 0);
 }
 
 GLYPHA_TEST("hot-cache accounting remains bounded across hit overwrite and erase") {

@@ -81,7 +81,36 @@ struct DurableHotCacheWorkerStats {
     std::size_t entry_budget{};
     std::uint64_t hits{};
     std::uint64_t misses{};
+    std::uint64_t stale_hits{};
+    std::uint64_t evictions{};
     std::uint64_t admission_bypasses{};
+    std::uint64_t size_rejected{};
+    std::uint64_t expired_gets{};
+};
+
+// Low-overhead durable GET path telemetry. Totals are nanoseconds summed with
+// relaxed atomics outside the Worker critical section whenever possible; counters
+// under the lock stay plain Worker-local integers.
+struct DurableGetPathWorkerStats {
+    WorkerId worker_id{};
+    std::uint64_t prepare_calls{};
+    std::uint64_t complete_calls{};
+    std::uint64_t mutex_wait_ns{};
+    std::uint64_t prepare_hold_ns{};
+    std::uint64_t complete_revalidate_hold_ns{};
+    std::uint64_t index_lookup_ns{};
+    std::uint64_t hot_cache_lookup_ns{};
+    std::uint64_t generation_pin_lookup_ns{};
+    std::uint64_t cold_read_ns{};
+    std::uint64_t crc_value_copy_ns{};
+    std::uint64_t relinearization_retries{};
+    std::uint64_t hot_hits{};
+    std::uint64_t hot_misses{};
+    std::uint64_t hot_stale{};
+    std::uint64_t hot_evictions{};
+    std::uint64_t expired_ttl_gets{};
+    std::size_t hot_resident_entries{};
+    std::uint64_t hot_resident_bytes{};
 };
 
 struct DurableBatchWorkerStats {
@@ -175,6 +204,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto namespace_audit() const -> NamespaceAuditReport;
     [[nodiscard]] auto recovery_stats() const noexcept -> const DurableRecoveryStats&;
     [[nodiscard]] auto hot_cache_stats() const -> std::vector<DurableHotCacheWorkerStats>;
+    [[nodiscard]] auto get_path_stats() const -> std::vector<DurableGetPathWorkerStats>;
     [[nodiscard]] auto batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto rotation_stats() const noexcept -> DurableRotationStats;
     [[nodiscard]] auto next_sequence(std::size_t worker_index) const -> Result<SequenceNumber>;

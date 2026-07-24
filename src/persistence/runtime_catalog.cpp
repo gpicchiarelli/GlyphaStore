@@ -30,22 +30,39 @@ namespace {
     return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
 }
 
+[[nodiscard]] auto steady_duration_ns(const std::chrono::steady_clock::time_point start,
+                                      const std::chrono::steady_clock::time_point end) noexcept
+    -> std::uint64_t {
+    const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
+    return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
+}
+
+[[nodiscard]] auto steady_elapsed_ns(const std::chrono::steady_clock::time_point start) noexcept
+    -> std::uint64_t {
+    return steady_duration_ns(start, std::chrono::steady_clock::now());
+}
+
 struct ReadContext {
     std::span<const std::byte> expected_key;
     std::uint64_t expected_hash{};
     std::uint64_t now_ns{};
     OwnedValue value;
+    std::uint64_t crc_value_copy_ns{};
 };
 
 auto copy_verified_value(void* opaque, const RecordView& record) -> Status {
     auto& context = *static_cast<ReadContext*>(opaque);
+    const auto copy_started = std::chrono::steady_clock::now();
     if (record.opcode != Opcode::put) {
+        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
         return fail(ErrorCode::corrupted_data, "durable Index references a non-value Record");
     }
     if (record.key_hash != context.expected_hash || !std::ranges::equal(record.key, context.expected_key)) {
+        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
         return fail(ErrorCode::corrupted_data, "durable Index key does not match its referenced Record");
     }
     if (record.expired(context.now_ns)) {
+        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
         return fail(ErrorCode::not_found, "key has expired");
     }
     context.value = {
@@ -53,6 +70,7 @@ auto copy_verified_value(void* opaque, const RecordView& record) -> Status {
         .sequence = record.sequence.value,
         .expire_at_ns = record.expire_at_ns,
     };
+    context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
     return {};
 }
 
@@ -111,18 +129,6 @@ template <typename Callback> class ScopeExit final {
 };
 
 template <typename Callback> ScopeExit(Callback) -> ScopeExit<Callback>;
-
-[[nodiscard]] auto steady_duration_ns(const std::chrono::steady_clock::time_point start,
-                                      const std::chrono::steady_clock::time_point end) noexcept
-    -> std::uint64_t {
-    const auto count = std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count();
-    return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
-}
-
-[[nodiscard]] auto steady_elapsed_ns(const std::chrono::steady_clock::time_point start) noexcept
-    -> std::uint64_t {
-    return steady_duration_ns(start, std::chrono::steady_clock::now());
-}
 
 struct HotRecordEntry {
     RecordRef reference{};
@@ -581,6 +587,22 @@ struct DurableRuntimeCatalog::RuntimeWorker {
         std::atomic_uint64_t deadline_closes{};
     };
 
+    // GET path timing totals. Prefer publishing after unlock so the Worker
+    // mutex critical section stays short; under-lock counters remain local.
+    struct alignas(64) GetPathMetrics final {
+        std::atomic_uint64_t prepare_calls{};
+        std::atomic_uint64_t complete_calls{};
+        std::atomic_uint64_t mutex_wait_ns{};
+        std::atomic_uint64_t prepare_hold_ns{};
+        std::atomic_uint64_t complete_revalidate_hold_ns{};
+        std::atomic_uint64_t index_lookup_ns{};
+        std::atomic_uint64_t hot_cache_lookup_ns{};
+        std::atomic_uint64_t generation_pin_lookup_ns{};
+        std::atomic_uint64_t cold_read_ns{};
+        std::atomic_uint64_t crc_value_copy_ns{};
+        std::atomic_uint64_t relinearization_retries{};
+    };
+
     explicit RuntimeWorker(RecoveredWorkerState recovered)
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
           next_sequence(recovered.next_sequence), active_segment(recovered.active_segment),
@@ -628,7 +650,11 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::size_t hot_record_staged_entries{};
     std::uint64_t hot_record_hits{};
     std::uint64_t hot_record_misses{};
+    std::uint64_t hot_record_stale_hits{};
+    std::uint64_t hot_record_evictions{};
     std::uint64_t hot_record_admission_bypasses{};
+    std::uint64_t hot_record_size_rejected{};
+    std::uint64_t get_expired_ttl{};
     std::vector<PendingGroupMutation*> pending_group_mutations;
     std::size_t pending_group_insertions{};
     std::size_t pending_group_heap_key_bytes{};
@@ -636,6 +662,7 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::atomic_size_t active_group_mutations{};
     detail::AdaptiveBatchSizer batch_sizer;
     BatchMetrics batch_metrics;
+    GetPathMetrics get_path_metrics;
     bool batch_closing{};
     std::condition_variable batch_closed;
     bool compaction_commit_active{};
@@ -675,6 +702,7 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
     }
     hot_record_resident_bytes -= existing->second.accounted_bytes;
     hot_records.erase(existing);
+    ++hot_record_evictions;
 }
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::prepare_hot_record(
@@ -1239,36 +1267,61 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
     }
     const auto worker_index = route_worker(key.hash, workers_.size());
     auto& worker = *workers_[worker_index];
+    auto& metrics = worker.get_path_metrics;
     RecordRef cold_reference;
     std::shared_ptr<const RuntimeSegmentGeneration> cold_pin;
     std::optional<HotRecordSnapshot> hot;
+    std::uint64_t mutex_wait_ns = 0;
+    std::uint64_t prepare_hold_ns = 0;
+    std::uint64_t index_lookup_ns = 0;
+    std::uint64_t hot_cache_lookup_ns = 0;
+    std::uint64_t generation_pin_lookup_ns = 0;
+    ScopeExit publish_prepare_metrics{[&]() noexcept {
+        atomic_saturating_add(metrics.prepare_calls, 1U);
+        atomic_saturating_add(metrics.mutex_wait_ns, mutex_wait_ns);
+        atomic_saturating_add(metrics.prepare_hold_ns, prepare_hold_ns);
+        atomic_saturating_add(metrics.index_lookup_ns, index_lookup_ns);
+        atomic_saturating_add(metrics.hot_cache_lookup_ns, hot_cache_lookup_ns);
+        atomic_saturating_add(metrics.generation_pin_lookup_ns, generation_pin_lookup_ns);
+    }};
     {
+        const auto wait_started = std::chrono::steady_clock::now();
         const std::lock_guard worker_lock{worker.mutex};
+        const auto locked_at = std::chrono::steady_clock::now();
+        mutex_wait_ns = steady_duration_ns(wait_started, locked_at);
+        ScopeExit observe_hold{[&]() noexcept { prepare_hold_ns = steady_elapsed_ns(locked_at); }};
         const std::shared_lock catalog_lock{catalog_mutex_};
         if (!healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
         }
 
+        const auto index_started = std::chrono::steady_clock::now();
         const auto reference = worker.index.find(key);
+        index_lookup_ns = steady_elapsed_ns(index_started);
         if (!reference) {
             return fail(ErrorCode::not_found, "key is not present");
         }
+        const auto pin_started = std::chrono::steady_clock::now();
         const auto found =
             std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), reference->segment_id,
                              [](const ManifestSegmentEntry& entry, const SegmentId id) {
                                  return entry.segment_id.value < id.value;
                              });
         if (found == manifest_.segments.end() || found->segment_id != reference->segment_id) {
+            generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
             return fail_closed(Error{ErrorCode::corrupted_data,
                                      "durable Index references a Segment absent from the catalog"});
         }
         const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
         if (found->generation != reference->generation || found->owner_worker != worker.worker_id ||
             catalog_index >= generation_pins_.size()) {
+            generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
             return fail_closed(Error{ErrorCode::corrupted_data,
                                      "durable Index reference disagrees with catalog identity or ownership"});
         }
+        generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
 
+        const auto hot_started = std::chrono::steady_clock::now();
         if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
             if (hot_record_matches(cached->second, *reference)) {
                 ++worker.hot_record_hits;
@@ -1280,9 +1333,12 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                     const auto erased = worker.index.erase_no_compact(key);
                     if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
                         !counted) {
+                        hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
                         return fail_closed(counted.error());
                     }
                     worker.erase_hot_record(key.key);
+                    ++worker.get_expired_ttl;
+                    hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
                 hot.emplace(HotRecordSnapshot{.value_bytes = cached->second.value_bytes,
@@ -1290,9 +1346,11 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                                               .sequence = cached->second.sequence,
                                               .expire_at_ns = cached->second.expire_at_ns});
             } else {
+                ++worker.hot_record_stale_hits;
                 worker.erase_hot_record(key.key);
             }
         }
+        hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
 
         if (!hot) {
             ++worker.hot_record_misses;
@@ -1321,27 +1379,41 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
         if (cancelled != nullptr && cancelled->load(std::memory_order_acquire)) {
             return fail(ErrorCode::unavailable, "durable cold read was cancelled");
         }
+        auto& worker = *workers_[read.worker_index_];
+        auto& metrics = worker.get_path_metrics;
+        atomic_saturating_add(metrics.complete_calls, 1U);
         const auto key_bytes = std::span<const std::byte>{
             reinterpret_cast<const std::byte*>(read.key_.data()), read.key_.size()};
         ReadContext context{
             .expected_key = key_bytes, .expected_hash = read.key_hash_, .now_ns = read.now_ns_};
+        const auto cold_started = std::chrono::steady_clock::now();
         auto visited =
             read.generation_->file.visit_runtime_record(read.reference_, &context, &copy_verified_value);
+        atomic_saturating_add(metrics.cold_read_ns, steady_elapsed_ns(cold_started));
+        atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
 
         // Linearization point for a cold GET: the Worker index must still
         // designate both the exact RecordRef and immutable generation pin
         // captured by prepare_get(). No file I/O or CRC work holds either lock.
         bool still_current{};
-        auto& worker = *workers_[read.worker_index_];
         {
+            const auto wait_started = std::chrono::steady_clock::now();
             const std::lock_guard worker_lock{worker.mutex};
+            const auto locked_at = std::chrono::steady_clock::now();
+            atomic_saturating_add(metrics.mutex_wait_ns, steady_duration_ns(wait_started, locked_at));
+            ScopeExit observe_hold{[&]() noexcept {
+                atomic_saturating_add(metrics.complete_revalidate_hold_ns, steady_elapsed_ns(locked_at));
+            }};
             const std::shared_lock catalog_lock{catalog_mutex_};
             if (!healthy()) {
                 return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
             }
             const HashedKey key{.key = read.key_, .hash = read.key_hash_};
+            const auto index_started = std::chrono::steady_clock::now();
             const auto current = worker.index.find(key);
+            atomic_saturating_add(metrics.index_lookup_ns, steady_elapsed_ns(index_started));
             if (current && *current == read.reference_) {
+                const auto pin_started = std::chrono::steady_clock::now();
                 const auto found = std::lower_bound(
                     manifest_.segments.begin(), manifest_.segments.end(), current->segment_id,
                     [](const ManifestSegmentEntry& entry, const SegmentId id) {
@@ -1352,6 +1424,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                     still_current = catalog_index < generation_pins_.size() &&
                                     generation_pins_[catalog_index] == read.generation_;
                 }
+                atomic_saturating_add(metrics.generation_pin_lookup_ns, steady_elapsed_ns(pin_started));
             }
         }
         if (!still_current) {
@@ -1359,6 +1432,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                 return fail(ErrorCode::sequence_conflict,
                             "durable cold read exceeded its relinearization retry budget");
             }
+            atomic_saturating_add(metrics.relinearization_retries, 1U);
             const HashedKey key{.key = read.key_, .hash = read.key_hash_};
             auto prepared = prepare_get(key, read.now_ns_);
             if (!prepared) {
@@ -1379,7 +1453,15 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                 // still names the exact RecordRef that failed expiration — otherwise a concurrent
                 // put/erase may have already moved or removed the key.
                 {
+                    const auto wait_started = std::chrono::steady_clock::now();
                     const std::lock_guard worker_lock{worker.mutex};
+                    const auto locked_at = std::chrono::steady_clock::now();
+                    atomic_saturating_add(metrics.mutex_wait_ns,
+                                          steady_duration_ns(wait_started, locked_at));
+                    ScopeExit observe_hold{[&]() noexcept {
+                        atomic_saturating_add(metrics.complete_revalidate_hold_ns,
+                                              steady_elapsed_ns(locked_at));
+                    }};
                     const std::shared_lock catalog_lock{catalog_mutex_};
                     if (healthy()) {
                         const HashedKey key{.key = read.key_, .hash = read.key_hash_};
@@ -1391,6 +1473,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                                 return fail_closed(counted.error());
                             }
                             worker.erase_hot_record(key.key);
+                            ++worker.get_expired_ttl;
                         }
                     }
                 }
@@ -1629,6 +1712,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
         if (current->second.reference.segment_id == old_entry.segment_id) {
             worker.hot_record_resident_bytes -= current->second.accounted_bytes;
             current = worker.hot_records.erase(current);
+            ++worker.hot_record_evictions;
         } else {
             ++current;
         }
@@ -2071,7 +2155,59 @@ auto DurableRuntimeCatalog::hot_cache_stats() const -> std::vector<DurableHotCac
             .entry_budget = options_.limits.max_hot_cache_entries_per_worker,
             .hits = worker.hot_record_hits,
             .misses = worker.hot_record_misses,
+            .stale_hits = worker.hot_record_stale_hits,
+            .evictions = worker.hot_record_evictions,
             .admission_bypasses = worker.hot_record_admission_bypasses,
+            .size_rejected = worker.hot_record_size_rejected,
+            .expired_gets = worker.get_expired_ttl,
+        });
+    }
+    return result;
+}
+
+auto DurableRuntimeCatalog::get_path_stats() const -> std::vector<DurableGetPathWorkerStats> {
+    std::vector<DurableGetPathWorkerStats> result;
+    result.reserve(workers_.size());
+    for (const auto& worker : workers_) {
+        const auto& metrics = worker->get_path_metrics;
+        std::size_t resident_entries{};
+        std::uint64_t resident_bytes{};
+        std::uint64_t hot_hits{};
+        std::uint64_t hot_misses{};
+        std::uint64_t hot_stale{};
+        std::uint64_t hot_evictions{};
+        std::uint64_t expired_ttl{};
+        {
+            const std::lock_guard lock{worker->mutex};
+            resident_entries = worker->hot_records.size();
+            resident_bytes = worker->hot_record_resident_bytes;
+            hot_hits = worker->hot_record_hits;
+            hot_misses = worker->hot_record_misses;
+            hot_stale = worker->hot_record_stale_hits;
+            hot_evictions = worker->hot_record_evictions;
+            expired_ttl = worker->get_expired_ttl;
+        }
+        result.push_back({
+            .worker_id = worker->worker_id,
+            .prepare_calls = metrics.prepare_calls.load(std::memory_order_relaxed),
+            .complete_calls = metrics.complete_calls.load(std::memory_order_relaxed),
+            .mutex_wait_ns = metrics.mutex_wait_ns.load(std::memory_order_relaxed),
+            .prepare_hold_ns = metrics.prepare_hold_ns.load(std::memory_order_relaxed),
+            .complete_revalidate_hold_ns =
+                metrics.complete_revalidate_hold_ns.load(std::memory_order_relaxed),
+            .index_lookup_ns = metrics.index_lookup_ns.load(std::memory_order_relaxed),
+            .hot_cache_lookup_ns = metrics.hot_cache_lookup_ns.load(std::memory_order_relaxed),
+            .generation_pin_lookup_ns = metrics.generation_pin_lookup_ns.load(std::memory_order_relaxed),
+            .cold_read_ns = metrics.cold_read_ns.load(std::memory_order_relaxed),
+            .crc_value_copy_ns = metrics.crc_value_copy_ns.load(std::memory_order_relaxed),
+            .relinearization_retries = metrics.relinearization_retries.load(std::memory_order_relaxed),
+            .hot_hits = hot_hits,
+            .hot_misses = hot_misses,
+            .hot_stale = hot_stale,
+            .hot_evictions = hot_evictions,
+            .expired_ttl_gets = expired_ttl,
+            .hot_resident_entries = resident_entries,
+            .hot_resident_bytes = resident_bytes,
         });
     }
     return result;

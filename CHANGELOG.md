@@ -5,6 +5,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Add low-overhead durable GET path telemetry (`get_path_stats()`): Worker mutex wait, prepare/complete
+  lock hold, Index/hot-cache/generation-pin lookup time, cold read and CRC/value-copy time,
+  relinearization retries, hot-cache hit/miss/stale/eviction, expired-TTL GETs, and hot-cache resident
+  bytes/entries. Extend `hot_cache_stats()` with stale, eviction, size-rejected, and expired counters.
+  Behavioral GET/hot-cache optimizations follow in later commits; capture baselines first.
 - Wire the consolidation slice so documented secure-profile / migrate / STATS surfaces match the
   binary: CMake builds `authz.cpp`, `store_migrate.cpp`, `glyphastore_migrate_store`, and the orphan
   unit tests; mTLS extracts principal (URI SAN → DNS SAN → CN); the reactor enforces
