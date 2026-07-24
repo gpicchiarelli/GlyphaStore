@@ -45,6 +45,10 @@ parse_args(Opts, ["--concurrent" | Rest]) ->
     parse_args(Opts#{concurrent => true}, Rest);
 parse_args(Opts, ["--no-concurrent" | Rest]) ->
     parse_args(Opts#{concurrent => false}, Rest);
+parse_args(Opts, ["--callers", N | Rest]) ->
+    parse_args(Opts#{callers => list_to_integer(N)}, Rest);
+parse_args(Opts, ["--mode", Mode | Rest]) ->
+    parse_args(Opts#{mode => list_to_atom(Mode)}, Rest);
 parse_args(_Opts, [Unknown | _]) ->
     io:format(standard_error, "unknown argument: ~s~n", [Unknown]),
     usage(),
@@ -53,7 +57,8 @@ parse_args(_Opts, [Unknown | _]) ->
 usage() ->
     io:format(standard_error,
         "Usage: client_benchmark.escript --port N [--host H] [--workers N] [--ops N] "
-        "[--pipeline N] [--warmup N] [--repeats N] [--concurrent|--no-concurrent]~n",
+        "[--pipeline N] [--warmup N] [--repeats N] [--callers N] "
+        "[--mode pipeline|batch|worker_pipelines] [--concurrent|--no-concurrent]~n",
         []).
 
 run(Opts) ->
@@ -63,8 +68,10 @@ run(Opts) ->
     Pipeline = maps:get(pipeline, Opts),
     Warmup = maps:get(warmup, Opts),
     Repeats = maps:get(repeats, Opts),
+    Callers = maps:get(callers, Opts, 1),
+    Mode = maps:get(mode, Opts, worker_pipelines),
     case Port =:= undefined orelse Workers < 1 orelse Ops < 1 orelse Pipeline < 1
-        orelse Warmup < 0 orelse Repeats < 1 of
+        orelse Warmup < 0 orelse Repeats < 1 orelse Callers < 1 of
         true ->
             io:format(standard_error, "numeric arguments are outside benchmark limits~n", []),
             halt(2);
@@ -96,11 +103,7 @@ run(Opts) ->
                             [Other, Workers]),
                         halt(1)
                 end,
-                RunOnce =
-                    case UseConcurrent of
-                        true -> fun() -> run_concurrent(Client, Batches) end;
-                        false -> fun() -> run_sequential(Client, Batches) end
-                    end,
+                RunOnce = make_runner(Client, Batches, UseConcurrent, Callers, Mode, Workers, Ops, Pipeline),
                 lists:foreach(fun(_) -> ok = RunOnce() end, lists:seq(1, Warmup)),
                 Samples = [begin
                     T0 = erlang:monotonic_time(nanosecond),
@@ -108,7 +111,7 @@ run(Opts) ->
                     T1 = erlang:monotonic_time(nanosecond),
                     (T1 - T0) / 1.0e9
                 end || _ <- lists:seq(1, Repeats)],
-                report(UseConcurrent, Workers, Pipeline, Ops * 2, Samples)
+                report(UseConcurrent, Callers, Mode, Workers, Pipeline, Ops * 2, Samples)
             after
                 glyphastore_client:close(Client)
             end;
@@ -117,41 +120,114 @@ run(Opts) ->
             halt(1)
     end.
 
+make_runner(Client, Batches, UseConcurrent, Callers, Mode, Workers, Ops, Pipeline) ->
+    case {Callers > 1, Mode, UseConcurrent} of
+        {true, _, _} ->
+            fun() -> run_multi_callers(Client, Callers, UseConcurrent, Ops, Workers, Pipeline) end;
+        {false, batch, _} ->
+            fun() -> run_batch_mode(Client, Batches) end;
+        {false, pipeline, _} ->
+            fun() -> run_sequential(Client, Batches) end;
+        {false, worker_pipelines, true} when Workers > 1 ->
+            fun() -> run_concurrent(Client, Batches) end;
+        {false, _, _} ->
+            fun() -> run_sequential(Client, Batches) end
+    end.
+
+run_multi_callers(Client, Callers, UseConcurrent, Ops, Workers, Pipeline) ->
+    Parent = self(),
+    PerCaller = max(1, Ops div Callers),
+    lists:foreach(
+        fun(I) ->
+            spawn(fun() ->
+                try
+                    Batches = material(PerCaller, Workers, Pipeline, I),
+                    case UseConcurrent of
+                        true -> ok = run_concurrent(Client, Batches);
+                        false -> ok = run_sequential(Client, Batches)
+                    end,
+                    Parent ! {caller_done, I, ok}
+                catch
+                    Class:Reason ->
+                        Parent ! {caller_done, I, {error, Class, Reason}}
+                end
+            end)
+        end,
+        lists:seq(1, Callers)
+    ),
+    collect_callers(Callers).
+
+collect_callers(0) ->
+    ok;
+collect_callers(N) ->
+    receive
+        {caller_done, _, ok} ->
+            collect_callers(N - 1);
+        {caller_done, _, {error, Class, Reason}} ->
+            error({caller_failed, Class, Reason})
+    after 600000 ->
+        error(caller_timeout)
+    end.
+
+run_batch_mode(Client, Batches) ->
+    MaxRounds = lists:max([0 | [length(WB) || WB <- Batches]]),
+    lists:foreach(
+        fun(Round) ->
+            Wave = [
+                case Round < length(WB) of
+                    true -> lists:nth(Round + 1, WB);
+                    false -> []
+                end
+             || WB <- Batches
+            ],
+            Flat = lists:append(Wave),
+            case Flat of
+                [] -> ok;
+                _ -> validate_batch(Flat, glyphastore_client:execute_batch(Client, Flat))
+            end
+        end,
+        lists:seq(0, MaxRounds - 1)
+    ),
+    ok.
+
 material(Operations, Workers, Pipeline) ->
+    material(Operations, Workers, Pipeline, 0).
+
+material(Operations, Workers, Pipeline, CallerId) ->
     Quotas0 = [Operations div Workers || _ <- lists:seq(1, Workers)],
     Rem = Operations rem Workers,
     Quotas = [lists:nth(I, Quotas0) + case I =< Rem of true -> 1; false -> 0 end
               || I <- lists:seq(1, Workers)],
-    Requests = fill_requests(Quotas, 0, [[] || _ <- lists:seq(1, Workers)]),
+    Requests = fill_requests(Quotas, 0, [[] || _ <- lists:seq(1, Workers)], CallerId),
     BatchFrames = Pipeline * 2,
     [chunk(WorkerReqs, BatchFrames) || WorkerReqs <- Requests].
 
-fill_requests(Quotas, _Candidate, Acc) ->
+fill_requests(Quotas, _Candidate, Acc, _CallerId) ->
     case lists:any(fun(Q) -> Q > 0 end, Quotas) of
         false ->
             Acc;
         true ->
-            fill_requests_step(Quotas, 0, Acc)
+            fill_requests_step(Quotas, 0, Acc, _CallerId)
     end.
 
-fill_requests_step(Quotas, Candidate, Acc) ->
+fill_requests_step(Quotas, Candidate, Acc, CallerId) ->
     case lists:any(fun(Q) -> Q > 0 end, Quotas) of
         false ->
             Acc;
         true ->
-            Key = list_to_binary(io_lib:format("erlang-bench-~12..0B", [Candidate])),
+            Key = list_to_binary(io_lib:format("erlang-bench-~B-~12..0B", [CallerId, Candidate])),
             {ok, Owner} = glyphastore_protocol:worker_for(Key, length(Quotas)),
             Quota = lists:nth(Owner + 1, Quotas),
             case Quota of
                 0 ->
-                    fill_requests_step(Quotas, Candidate + 1, Acc);
+                    fill_requests_step(Quotas, Candidate + 1, Acc, CallerId);
                 _ ->
                     Value = binary:copy(<< (Candidate band 16#FF) >>, 64),
                     Put = #{opcode => put, key => Key, value => Value},
                     Get = #{opcode => get, key => Key},
                     Acc1 = set_nth(Acc, Owner + 1, lists:nth(Owner + 1, Acc) ++ [Put, Get]),
                     Quotas1 = set_nth(Quotas, Owner + 1, Quota - 1),
-                    fill_requests_step(Quotas1, Candidate + 1, Acc1)
+                    fill_requests_step(Quotas1, Candidate + 1, Acc1, CallerId)
             end
     end.
 
@@ -247,49 +323,60 @@ validate_batch(Batch, {ok, Responses}) ->
 validate_batch(_Batch, {error, Err}) ->
     error({pipeline_failed, Err}).
 
-report(UseConcurrent, Workers, Pipeline, OperationCount, Samples) ->
-    Rates = [OperationCount / S || S <- Samples],
+report(UseConcurrent, Callers, Mode, Workers, Pipeline, OperationCount, Samples) ->
+    Rates = [OperationCount * Callers / S || S <- Samples],
     Execution =
-        case UseConcurrent of
-            true -> "single-process-worker-concurrent";
-            false -> "single-process-worker-sequential"
+        case {Callers > 1, UseConcurrent} of
+            {true, true} -> "multi-caller-worker-concurrent";
+            {true, false} -> "multi-caller-worker-sequential";
+            {false, true} -> "single-process-worker-concurrent";
+            {false, false} -> "single-process-worker-sequential"
         end,
     Version = binary_to_list(glyphastore_version:version()),
     SortedS = lists:sort(Samples),
     SortedR = lists:sort(Rates),
     io:format("# glyphastore Erlang client benchmark~n"),
     io:format(
-        "# sdk_version=~s runtime=sync execution=~s workers=~B pipeline_pairs=~B operations=~B~n",
-        [Version, Execution, Workers, Pipeline, OperationCount]
+        "# sdk_version=~s runtime=sync execution=~s mode=~s callers=~B workers=~B "
+        "pipeline_pairs=~B operations=~B~n",
+        [Version, Execution, Mode, Callers, Workers, Pipeline, OperationCount * Callers]
     ),
     io:format(
         "name=erlang_client_pipeline_read_after_write sdk_version=~s runtime=sync execution=~s "
         "workers=~B pipeline_pairs=~B operations=~B samples=~B "
         "median_seconds=~.9f min_seconds=~.9f max_seconds=~.9f "
-        "median_ops_per_second=~.3f min_ops_per_second=~.3f max_ops_per_second=~.3f~n",
+        "median_ops_per_second=~.3f min_ops_per_second=~.3f max_ops_per_second=~.3f "
+        "mode=~s callers=~B p50_seconds=~.9f p95_seconds=~.9f p99_seconds=~.9f "
+        "errors=0 indeterminates=0~n",
         [
             Version,
             Execution,
             Workers,
             Pipeline,
-            OperationCount,
+            OperationCount * Callers,
             length(Samples),
             median(SortedS),
             hd(SortedS),
             lists:last(SortedS),
             median(SortedR),
             hd(SortedR),
-            lists:last(SortedR)
+            lists:last(SortedR),
+            Mode,
+            Callers,
+            percentile(SortedS, 0.50),
+            percentile(SortedS, 0.95),
+            percentile(SortedS, 0.99)
         ]
     ).
 
 median([X]) ->
     X;
 median(Sorted) ->
+    percentile(Sorted, 0.50).
+
+percentile([X], _P) ->
+    X;
+percentile(Sorted, P) ->
     N = length(Sorted),
-    case N rem 2 of
-        1 ->
-            lists:nth(N div 2 + 1, Sorted);
-        0 ->
-            (lists:nth(N div 2, Sorted) + lists:nth(N div 2 + 1, Sorted)) / 2
-    end.
+    Idx = max(1, min(N, ceil(P * N))),
+    lists:nth(Idx, Sorted).

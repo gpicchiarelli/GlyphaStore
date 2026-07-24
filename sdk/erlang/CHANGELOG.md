@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Concurrency:** `glyphastore_client` is a coordinator; normal I/O is delegated via
+  `spawn_monitor` so concurrent callers targeting different Workers proceed in parallel.
+  Each `glyphastore_conn` still serializes its stream. Fan-out uses monitors, deadline
+  timers, and safe late-message handling (no unmonitored `spawn/1`).
+- Request IDs remain allocated only inside the client gen_server (wrap
+  `16#FFFFFFFFFFFFFFFF → 1`). Wire `request_id` stays correlation-only.
+- Synchronous `close/1` drains in-flight work after rejecting new requests.
+- Metadata mismatch (`routing_epoch` / `worker_count`) marks the client unhealthy.
+- Connect uses `gen_server:start/3` so bootstrap failure cannot kill the caller via link.
+- CT: `glyphastore_concurrency_SUITE` (25 targeted cases) plus extended fake server barriers.
+- Benchmark harness measures single/multi caller, same vs different Workers, and pipeline APIs
+  with p50/p95/p99.
+
 ## 0.1.0
 
 - Initial OTP client: wire protocol v2 codec, structured errors, pipelines, batch,

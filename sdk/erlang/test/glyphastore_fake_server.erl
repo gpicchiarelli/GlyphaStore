@@ -1,135 +1,253 @@
 -module(glyphastore_fake_server).
--export([start/1, stop/1, port/1]).
+-export([start/1, stop/1, port/1, control/2, request_ids/1]).
 
 -include("glyphastore_protocol.hrl").
 
 start(Opts) ->
     Parent = self(),
-    Pid = spawn(fun() -> server(Parent, Opts) end),
+    Tab = ets:new(glyphastore_fake_server, [public, set]),
+    ets:insert(Tab, {cfg, normalize_opts(Opts)}),
+    ets:insert(Tab, {request_ids, []}),
+    ets:insert(Tab, {held, []}),
+    ets:insert(Tab, {release_all, false}),
+    ets:insert(Tab, {store_ops, 0}),
+    Pid = spawn(fun() -> server(Parent, Tab) end),
     receive
         {glyphastore_fake_server, ready, Port} ->
-            {ok, #{pid => Pid, port => Port}}
+            {ok, #{pid => Pid, port => Port, tab => Tab}}
     end.
 
+stop(#{pid := Pid, tab := Tab}) ->
+    exit(Pid, shutdown),
+    catch ets:delete(Tab),
+    ok;
 stop(#{pid := Pid}) ->
     exit(Pid, shutdown),
     ok.
 
 port(#{port := Port}) -> Port.
 
-server(Parent, Opts) ->
-    Workers = maps:get(workers, Opts, 1),
-    Internal = maps:get(internal_error_on_put, Opts, false),
-    %% Match Python/Go: close mid-mutation without an OK reply → indeterminate.
-    Drop = maps:get(drop_after_mutation, Opts, false),
-    StallGet = maps:get(stall_on_get, Opts, false),
-    StatusOnGet = maps:get(status_on_get, Opts, undefined),
+control(#{tab := Tab}, Msg) ->
+    handle_control(Tab, Msg).
+
+request_ids(Server) ->
+    control(Server, get_request_ids).
+
+normalize_opts(Opts) ->
+    #{
+        workers => maps:get(workers, Opts, 1),
+        internal => maps:get(internal_error_on_put, Opts, false),
+        drop => maps:get(drop_after_mutation, Opts, false),
+        stall_get => maps:get(stall_on_get, Opts, false),
+        status_on_get => maps:get(status_on_get, Opts, undefined),
+        routing_epoch => maps:get(routing_epoch, Opts, 9),
+        hold_gets => maps:get(hold_gets, Opts, false),
+        record_ids => maps:get(record_ids, Opts, false),
+        wrong_request_id => maps:get(wrong_request_id, Opts, false),
+        wrong_owner => maps:get(wrong_owner, Opts, false),
+        oversized_response => maps:get(oversized_response, Opts, false),
+        mutate_epoch_after => maps:get(mutate_epoch_after, Opts, undefined),
+        mutate_workers_after => maps:get(mutate_workers_after, Opts, undefined)
+    }.
+
+handle_control(Tab, get_request_ids) ->
+    [{request_ids, Ids}] = ets:lookup(Tab, request_ids),
+    lists:reverse(Ids);
+handle_control(Tab, release_held) ->
+    case ets:lookup(Tab, held) of
+        [{held, Held}] ->
+            lists:foreach(fun(Pid) -> Pid ! {release_hold, ok} end, Held),
+            ets:insert(Tab, {held, []}),
+            ets:insert(Tab, {release_all, true}),
+            ok;
+        _ ->
+            ok
+    end;
+handle_control(Tab, {set_routing_epoch, Epoch}) ->
+    [{cfg, Cfg}] = ets:lookup(Tab, cfg),
+    ets:insert(Tab, {cfg, Cfg#{routing_epoch => Epoch}}),
+    ok;
+handle_control(Tab, {set_workers, WC}) ->
+    [{cfg, Cfg}] = ets:lookup(Tab, cfg),
+    ets:insert(Tab, {cfg, Cfg#{workers => WC}}),
+    ok;
+handle_control(Tab, {set_wrong_request_id, Flag}) ->
+    [{cfg, Cfg}] = ets:lookup(Tab, cfg),
+    ets:insert(Tab, {cfg, Cfg#{wrong_request_id => Flag}}),
+    ok;
+handle_control(Tab, {set_wrong_owner, Flag}) ->
+    [{cfg, Cfg}] = ets:lookup(Tab, cfg),
+    ets:insert(Tab, {cfg, Cfg#{wrong_owner => Flag}}),
+    ok;
+handle_control(_Tab, Msg) ->
+    {error, {unknown_control, Msg}}.
+
+server(Parent, Tab) ->
     {ok, Listen} = gen_tcp:listen(0, [binary, {active, false}, {packet, 0}, {reuseaddr, true}]),
     {ok, {_Addr, Port}} = inet:sockname(Listen),
     Parent ! {glyphastore_fake_server, ready, Port},
-    accept_loop(Listen, #{
-        workers => Workers,
-        internal => Internal,
-        drop => Drop,
-        stall_get => StallGet,
-        status_on_get => StatusOnGet
-    }).
+    accept_loop(Listen, Tab).
 
-accept_loop(Listen, Opts) ->
+accept_loop(Listen, Tab) ->
     case gen_tcp:accept(Listen) of
         {ok, Socket} ->
-            spawn(fun() -> client_loop(Socket, Opts, undefined, #{}) end),
-            accept_loop(Listen, Opts);
+            spawn(fun() -> client_loop(Socket, Tab, undefined, #{}) end),
+            accept_loop(Listen, Tab);
         {error, closed} ->
             ok
     end.
 
-client_loop(Socket, Opts, Bound, Store) ->
+client_loop(Socket, Tab, Bound, Store) ->
     case read_frame(Socket) of
         {ok, Frame} ->
             {ok, Request} = glyphastore_protocol:decode_request(Frame, glyphastore_protocol:max_frame_bytes()),
-            handle_request(Socket, Opts, Bound, Store, Request);
+            handle_request(Socket, Tab, Bound, Store, Request);
         _ ->
             catch gen_tcp:close(Socket)
     end.
 
-handle_request(Socket, Opts, Bound, Store, Request) ->
-    Workers = maps:get(workers, Opts),
+cfg(Tab) ->
+    [{cfg, Cfg}] = ets:lookup(Tab, cfg),
+    Cfg.
+
+note_id(Tab, Id) ->
+    Cfg = cfg(Tab),
+    case maps:get(record_ids, Cfg) of
+        true ->
+            [{request_ids, Ids}] = ets:lookup(Tab, request_ids),
+            ets:insert(Tab, {request_ids, [Id | Ids]});
+        false ->
+            ok
+    end,
+    [{store_ops, N}] = ets:lookup(Tab, store_ops),
+    ets:insert(Tab, {store_ops, N + 1}).
+
+ops(Tab) ->
+    [{store_ops, N}] = ets:lookup(Tab, store_ops),
+    N.
+
+maybe_hold_get(Tab) ->
+    Cfg = cfg(Tab),
+    case maps:get(hold_gets, Cfg) of
+        true ->
+            case ets:lookup(Tab, release_all) of
+                [{release_all, true}] ->
+                    ok;
+                _ ->
+                    [{held, Held}] = ets:lookup(Tab, held),
+                    ets:insert(Tab, {held, [self() | Held]}),
+                    receive
+                        {release_hold, ok} -> ok
+                    after 30000 ->
+                        error(hold_release_timeout)
+                    end
+            end;
+        false ->
+            ok
+    end.
+
+handle_request(Socket, Tab, Bound, Store, Request) ->
+    note_id(Tab, maps:get(request_id, Request)),
+    Cfg = cfg(Tab),
+    Workers = maps:get(workers, Cfg),
+    Epoch = maps:get(routing_epoch, Cfg),
+    Ops = ops(Tab),
+    Epoch1 =
+        case maps:get(mutate_epoch_after, Cfg) of
+            EpochAfter when is_integer(EpochAfter), Ops > EpochAfter -> Epoch + 1;
+            _ -> Epoch
+        end,
+    Workers1 =
+        case maps:get(mutate_workers_after, Cfg) of
+            WorkersAfter when is_integer(WorkersAfter), Ops > WorkersAfter -> Workers + 1;
+            _ -> Workers
+        end,
     Meta = #{
-        worker_count => Workers,
-        routing_epoch => 9,
-        owner_worker => case Bound of undefined -> 0; _ -> Bound end
+        worker_count => Workers1,
+        routing_epoch => Epoch1,
+        owner_worker => case Bound of
+            undefined -> 0;
+            _ -> Bound
+        end
     },
     case maps:get(opcode, Request) of
         ?GS_OP_INIT ->
-            reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{
+            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
                 value => glyphastore_protocol:identity(),
                 owner_worker => glyphastore_protocol:no_worker()
             }),
-            client_loop(Socket, Opts, Bound, Store);
+            client_loop(Socket, Tab, Bound, Store);
         ?GS_OP_BIND ->
             NewBound = maps:get(target_worker, Request),
-            reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => NewBound}),
-            client_loop(Socket, Opts, NewBound, Store);
+            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => NewBound}),
+            client_loop(Socket, Tab, NewBound, Store);
         ?GS_OP_PUT ->
-            case maps:get(drop, Opts) of
+            case maps:get(drop, Cfg) of
                 true ->
-                    %% Accept then vanish — no response (sibling FakeServer behaviour).
                     catch gen_tcp:close(Socket);
                 false ->
-                    case maps:get(internal, Opts) of
+                    case maps:get(internal, Cfg) of
                         true ->
-                            reply(Socket, glyphastore_protocol:status_internal_error(), Request, Meta#{
+                            reply(Socket, Cfg, glyphastore_protocol:status_internal_error(), Request, Meta#{
                                 owner_worker => Bound
                             }),
-                            client_loop(Socket, Opts, Bound, Store);
+                            client_loop(Socket, Tab, Bound, Store);
                         false ->
                             Key = maps:get(key, Request),
                             Value = maps:get(value, Request),
-                            reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{
+                            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
                                 owner_worker => Bound
                             }),
-                            client_loop(Socket, Opts, Bound, Store#{Key => Value})
+                            client_loop(Socket, Tab, Bound, Store#{Key => Value})
                     end
             end;
         ?GS_OP_GET ->
-            case maps:get(stall_get, Opts) of
+            case maps:get(stall_get, Cfg) of
                 true ->
                     timer:sleep(3600000),
                     catch gen_tcp:close(Socket);
                 false ->
-                    case maps:get(status_on_get, Opts) of
+                    maybe_hold_get(Tab),
+                    case maps:get(status_on_get, Cfg) of
                         undefined ->
                             Key = maps:get(key, Request),
                             case maps:get(Key, Store, undefined) of
                                 undefined ->
-                                    reply(Socket, glyphastore_protocol:status_not_found(), Request, Meta#{
-                                        owner_worker => Bound
-                                    }),
-                                    client_loop(Socket, Opts, Bound, Store);
+                                    reply(
+                                        Socket,
+                                        Cfg,
+                                        glyphastore_protocol:status_not_found(),
+                                        Request,
+                                        Meta#{owner_worker => Bound}
+                                    ),
+                                    client_loop(Socket, Tab, Bound, Store);
                                 Value ->
-                                    reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{
-                                        owner_worker => Bound, value => Value
-                                    }),
-                                    client_loop(Socket, Opts, Bound, Store)
+                                    reply(
+                                        Socket,
+                                        Cfg,
+                                        glyphastore_protocol:status_ok(),
+                                        Request,
+                                        Meta#{owner_worker => Bound, value => Value}
+                                    ),
+                                    client_loop(Socket, Tab, Bound, Store)
                             end;
                         Status ->
-                            reply(Socket, Status, Request, Meta#{owner_worker => Bound}),
-                            client_loop(Socket, Opts, Bound, Store)
+                            reply(Socket, Cfg, Status, Request, Meta#{owner_worker => Bound}),
+                            client_loop(Socket, Tab, Bound, Store)
                     end
             end;
         ?GS_OP_ERASE ->
             Key = maps:get(key, Request),
-            reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => Bound}),
-            client_loop(Socket, Opts, Bound, maps:remove(Key, Store));
+            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => Bound}),
+            client_loop(Socket, Tab, Bound, maps:remove(Key, Store));
         ?GS_OP_PING ->
-            reply(Socket, glyphastore_protocol:status_ok(), Request, Meta#{
+            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
                 value => maps:get(value, Request)
             }),
-            client_loop(Socket, Opts, Bound, Store);
+            client_loop(Socket, Tab, Bound, Store);
         _ ->
-            reply(Socket, glyphastore_protocol:status_unsupported(), Request, Meta),
-            client_loop(Socket, Opts, Bound, Store)
+            reply(Socket, Cfg, glyphastore_protocol:status_unsupported(), Request, Meta),
+            client_loop(Socket, Tab, Bound, Store)
     end.
 
 read_frame(Socket) ->
@@ -143,13 +261,28 @@ read_frame(Socket) ->
             Err
     end.
 
-reply(Socket, Status, Request, Fields) ->
-    {ok, Frame} = glyphastore_protocol:encode_response(
-        Status,
-        maps:get(request_id, Request),
-        maps:get(value, Fields, <<>>),
-        maps:get(owner_worker, Fields),
-        maps:get(worker_count, Fields),
-        maps:get(routing_epoch, Fields)
-    ),
-    gen_tcp:send(Socket, Frame).
+reply(Socket, Cfg, Status, Request, Fields) ->
+    case maps:get(oversized_response, Cfg) of
+        true ->
+            gen_tcp:send(Socket, <<(16#7fffffff):32/little, 0:(36 * 8)>>);
+        false ->
+            RequestId =
+                case maps:get(wrong_request_id, Cfg) of
+                    true -> maps:get(request_id, Request) bxor 1;
+                    false -> maps:get(request_id, Request)
+                end,
+            Owner =
+                case maps:get(wrong_owner, Cfg) of
+                    true -> (maps:get(owner_worker, Fields) + 1) rem 256;
+                    false -> maps:get(owner_worker, Fields)
+                end,
+            {ok, Frame} = glyphastore_protocol:encode_response(
+                Status,
+                RequestId,
+                maps:get(value, Fields, <<>>),
+                Owner,
+                maps:get(worker_count, Fields),
+                maps:get(routing_epoch, Fields)
+            ),
+            gen_tcp:send(Socket, Frame)
+    end.

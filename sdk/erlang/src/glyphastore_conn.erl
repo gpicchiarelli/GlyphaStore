@@ -1,7 +1,7 @@
 -module(glyphastore_conn).
 -behaviour(gen_server).
 
--export([start_link/2, exchange/3, send/3, receive_response/2, reset/1, dial/1]).
+-export([start_link/2, exchange/3, send/3, receive_response/2, reset/1, dial/1, inject_send_failure/2, run_pipeline/4]).
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
 
 -record(state, {
@@ -9,7 +9,8 @@
     config :: glyphastore_client:config(),
     socket :: term() | undefined,
     use_ssl = false :: boolean(),
-    input = <<>> :: binary()
+    input = <<>> :: binary(),
+    test_send_failure :: undefined | before_any | {after_bytes, non_neg_integer()}
 }).
 
 start_link(Worker, Config) ->
@@ -24,14 +25,23 @@ send(Pid, Frame, Deadline) ->
 receive_response(Pid, Deadline) ->
     gen_server:call(Pid, {receive_response, Deadline}, infinity).
 
+%% Atomic pipeline on one connection: send all frames then collect Count responses.
+%% Prevents interleaving when multiple callers share the same Worker conn.
+run_pipeline(Pid, Frames, Count, Deadline) ->
+    gen_server:call(Pid, {run_pipeline, Frames, Count, Deadline}, infinity).
+
 reset(Pid) ->
     gen_server:cast(Pid, reset).
 
 dial(Pid) ->
     gen_server:call(Pid, dial, infinity).
 
+%% Test-only: inject a send failure on subsequent sends (after bootstrap).
+inject_send_failure(Pid, Spec) ->
+    gen_server:call(Pid, {inject_send_failure, Spec}).
+
 init({Worker, Config}) ->
-    {ok, #state{worker = Worker, config = Config}}.
+    {ok, #state{worker = Worker, config = Config, test_send_failure = undefined}}.
 
 handle_call(dial, _From, State) ->
     case do_dial(State) of
@@ -44,6 +54,8 @@ handle_call(connected, _From, #state{socket = undefined} = State) ->
     {reply, false, State};
 handle_call(connected, _From, State) ->
     {reply, true, State};
+handle_call({inject_send_failure, Spec}, _From, State) ->
+    {reply, ok, State#state{test_send_failure = Spec}};
 handle_call({exchange, Frame, Deadline}, _From, State) ->
     case send_frame(State, Frame, Deadline) of
         {ok, State1} ->
@@ -69,6 +81,18 @@ handle_call({receive_response, Deadline}, _From, State) ->
             {reply, {ok, Response}, State1};
         {error, Reason, State1} ->
             {reply, {error, Reason}, State1}
+    end;
+handle_call({run_pipeline, Frames, Count, Deadline}, _From, State) ->
+    case send_frame(State, Frames, Deadline) of
+        {ok, State1} ->
+            case collect_n(State1, Count, Deadline, []) of
+                {ok, Responses, State2} ->
+                    {reply, {ok, Responses}, State2};
+                {error, Reason, Partial, State2} ->
+                    {reply, {recv_error, Reason, lists:reverse(Partial)}, State2}
+            end;
+        {error, Reason, State1} ->
+            {reply, {send_error, Reason}, State1}
     end;
 handle_call(_Request, _From, State) ->
     {reply, {error, glyphastore_error:internal(<<"unexpected call">>)}, State}.
@@ -157,10 +181,19 @@ do_dial_tls(Host, Port, TimeoutMs, TLS, State) ->
 
 send_frame(#state{socket = undefined} = State, _Frame, _Deadline) ->
     {error, glyphastore_error:transport(<<"socket is not connected">>), State};
+send_frame(#state{test_send_failure = before_any} = State, _Frame, _Deadline) ->
+    {error, send_failure(0, transport(<<"injected send failure before any bytes">>)), reset_state(State)};
+send_frame(#state{test_send_failure = {after_bytes, N}} = State, Frame, _Deadline) when is_integer(N), N >= 0 ->
+    Total =
+        case is_binary(Frame) of
+            true -> byte_size(Frame);
+            false -> iolist_size(Frame)
+        end,
+    Sent = min(N, Total),
+    {error, send_failure(Sent, transport(<<"injected send failure after partial bytes">>)), reset_state(State)};
 send_frame(State, Frame, Deadline) when is_binary(Frame) ->
     send_loop(State, Frame, 0, byte_size(Frame), Deadline);
 send_frame(State, Frame, Deadline) ->
-    %% Accept iolist pipelines without forcing a contiguous copy up front.
     send_loop(State, Frame, 0, iolist_size(Frame), Deadline).
 
 send_loop(State, Frame, Sent, Total, Deadline) ->
@@ -214,6 +247,16 @@ iolist_or_part(Data, Sent, Len) ->
 
 receive_one(State, Deadline) ->
     read_response(State, Deadline).
+
+collect_n(State, 0, _Deadline, Acc) ->
+    {ok, lists:reverse(Acc), State};
+collect_n(State, N, Deadline, Acc) ->
+    case receive_one(State, Deadline) of
+        {ok, Response, State1} ->
+            collect_n(State1, N - 1, Deadline, [Response | Acc]);
+        {error, Reason, State1} ->
+            {error, Reason, Acc, State1}
+    end.
 
 read_response(State, Deadline) ->
     Input = State#state.input,

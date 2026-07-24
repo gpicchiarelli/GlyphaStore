@@ -11,6 +11,7 @@ host="127.0.0.1"
 ops="${OPS:-100000}"
 warmup="${WARMUP:-1}"
 repeats="${REPEATS:-7}"
+callers="${CALLERS:-1}"
 
 prefer_bins=(
   "$root/build/macos-native-release"
@@ -54,10 +55,10 @@ chmod +x "$bench"
   echo "rebar3=$(rebar3 version | head -1)"
   echo "erlang_sdk_version=$(erl -noshell -pa "$sdk/_build/default/lib/glyphastore/ebin" -eval 'io:format("~s~n",[glyphastore_version:version()]),halt().')"
   echo "glyphastored=$daemon"
-  echo "ops=$ops warmup=$warmup repeats=$repeats"
+  echo "ops=$ops warmup=$warmup repeats=$repeats callers=$callers"
   echo "workload=ordered PUT/GET pipeline read-after-write, value_size=64"
   echo "storage_mode=volatile"
-  echo "note=publishes both sequential and execute_worker_pipelines concurrent modes"
+  echo "note=publishes sequential, concurrent execute_worker_pipelines, and optional multi-caller modes"
 } >"$outdir/environment.txt"
 
 start_server() {
@@ -126,6 +127,7 @@ for w in "${workers[@]}"; do
     escript "$bench" \
       --host "$host" --port "$port" --workers "$w" --ops "$ops" \
       --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+      --callers 1 --mode worker_pipelines \
       --no-concurrent \
       | tee "$outdir/erlang/sequential-${label}.txt"
 
@@ -134,8 +136,18 @@ for w in "${workers[@]}"; do
       escript "$bench" \
         --host "$host" --port "$port" --workers "$w" --ops "$ops" \
         --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+        --callers 1 --mode worker_pipelines \
         --concurrent \
         | tee "$outdir/erlang/concurrent-${label}.txt"
+    fi
+    if [[ "$callers" -gt 1 ]]; then
+      echo "running erlang multi-caller $label (callers=$callers)"
+      escript "$bench" \
+        --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+        --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+        --callers "$callers" --mode worker_pipelines \
+        --concurrent \
+        | tee "$outdir/erlang/multicaller-${label}.txt"
     fi
   done
   stop_server "$port_file"

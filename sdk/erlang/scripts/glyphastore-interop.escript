@@ -157,7 +157,7 @@ parse_hex("") -> <<>>;
 parse_hex(Hex) ->
     Clean = re:replace(Hex, "\\s+", "", [global, {return, binary}]),
     true = (byte_size(Clean) rem 2) =:= 0,
-    << <<X:8>> || <<X:2/utf8>> <= Clean >>.
+    binary:decode_hex(Clean).
 
 to_hex(Bin) ->
     binary:encode_hex(Bin, lowercase).

@@ -26,9 +26,24 @@
     execute_worker_pipelines/3,
     build_tls_options/2
 ]).
--export([init/1, handle_call/3, handle_cast/2, terminate/2]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -export_type([config/0, client/0, mutation_result/0, pipeline_request/0, pipeline_response/0]).
+
+%% Concurrency model (preferred strategy):
+%% glyphastore_client is a coordinator only. handle_call resolves Worker, Conn,
+%% request ID, and deadline, then delegates socket I/O to a monitored process that
+%% calls glyphastore_conn. The coordinator returns {noreply, State} so callers
+%% targeting different Workers proceed in parallel on the BEAM. Each glyphastore_conn
+%% still serializes request/response on its single TCP/TLS stream.
+%%
+%% Request IDs are allocated only inside this gen_server (never copied to concurrent
+%% callers). Wire protocol v2 treats request_id as correlation-only with no server
+%% deduplication; we still keep a single client-wide counter so in-flight IDs stay
+%% unique across Workers and wrap 16#FFFFFFFFFFFFFFFF -> 1.
+%%
+%% close/1 is synchronous: rejects new work, lets in-flight ops finish (or fail
+%% after socket reset), then stops Worker conns. Late io_result/DOWN messages are ignored.
 
 -type config() :: #{
     host => string() | binary(),
@@ -61,14 +76,28 @@
     routing_epoch = 0 :: non_neg_integer(),
     request_id = 1 :: non_neg_integer(),
     healthy = true :: boolean(),
-    workers = #{} :: #{non_neg_integer() => pid()}
+    workers = #{} :: #{non_neg_integer() => pid()},
+    pending = #{} :: #{reference() => map()},
+    mon_index = #{} :: #{reference() => reference()},
+    closing = false :: boolean(),
+    close_from :: gen_server:from() | undefined
 }).
 
 connect(Config0) ->
     Config = glyphastore_util:merge_config(Config0),
     case glyphastore_util:validate_config(Config) of
-        ok -> gen_server:start_link(?MODULE, Config, []);
-        {error, Err} -> {error, Err}
+        ok ->
+            %% Use start/3 (not start_link) so bootstrap failures cannot kill the caller via link.
+            case gen_server:start(?MODULE, Config, []) of
+                {ok, Pid} ->
+                    {ok, Pid};
+                {error, {shutdown, Err}} ->
+                    {error, Err};
+                {error, Err} ->
+                    {error, Err}
+            end;
+        {error, Err} ->
+            {error, Err}
     end.
 
 %% Synchronous close (sibling SDKs wait until sockets are released).
@@ -87,19 +116,19 @@ routing_epoch(Client) -> gen_server:call(Client, routing_epoch).
 worker_for(Client, Key) -> gen_server:call(Client, {worker_for, Key}).
 
 get(Client, Key) -> get(Client, Key, #{}).
-get(Client, Key, Opts) -> gen_server:call(Client, {read, get, Key, <<>>, Opts}).
+get(Client, Key, Opts) -> gen_server:call(Client, {read, get, Key, <<>>, Opts}, infinity).
 
 ping(Client, Payload) -> ping(Client, Payload, #{}).
-ping(Client, Payload, Opts) -> gen_server:call(Client, {read, ping, <<>>, Payload, Opts}).
+ping(Client, Payload, Opts) -> gen_server:call(Client, {read, ping, <<>>, Payload, Opts}, infinity).
 
 put(Client, Key, Value) -> put(Client, Key, Value, #{}).
 put(Client, Key, Value, Opts) ->
     Expire = maps:get(expire_at_ns, Opts, 0),
     CallOpts = maps:without([expire_at_ns], Opts),
-    gen_server:call(Client, {mutate, put, Key, Value, Expire, CallOpts}).
+    gen_server:call(Client, {mutate, put, Key, Value, Expire, CallOpts}, infinity).
 
 erase(Client, Key) -> erase(Client, Key, #{}).
-erase(Client, Key, Opts) -> gen_server:call(Client, {mutate, erase, Key, <<>>, 0, Opts}).
+erase(Client, Key, Opts) -> gen_server:call(Client, {mutate, erase, Key, <<>>, 0, Opts}, infinity).
 
 execute_pipeline(Client, Requests) -> execute_pipeline(Client, Requests, #{}).
 execute_pipeline(Client, Requests, Opts) ->
@@ -127,7 +156,8 @@ init(Config) ->
                     request_id = NextId
                 }};
         {error, Err} ->
-            {stop, Err}
+            %% Use {shutdown, Err} so start_link callers are not killed by an abnormal exit reason.
+            {stop, {shutdown, Err}}
     end.
 
 handle_call(healthy, _From, State) -> {reply, State#state.healthy, State};
@@ -137,31 +167,52 @@ handle_call({worker_for, _Key}, _From, #state{worker_count = 0} = State) ->
     {reply, {error, glyphastore_error:unavailable(<<"client is not connected">>)}, State};
 handle_call({worker_for, Key}, _From, #state{worker_count = WC} = State) ->
     {reply, glyphastore_protocol:worker_for(Key, WC), State};
-handle_call({read, Op, Key, Value, Opts}, _From, State) ->
-    {Reply, State1} = do_read(Op, Key, Value, Opts, State),
-    {reply, Reply, State1};
-handle_call({mutate, Op, Key, Value, Expire, Opts}, _From, State) ->
-    {Reply, State1} = do_mutate(Op, Key, Value, Expire, Opts, State),
-    {reply, Reply, State1};
-handle_call({execute_pipeline, Requests, Opts}, _From, State) ->
-    {Reply, State1} = do_execute_pipeline(Requests, Opts, State),
-    {reply, Reply, State1};
-handle_call({execute_batch, Requests, Opts}, _From, State) ->
-    {Reply, State1} = do_execute_batch(Requests, Opts, State),
-    {reply, Reply, State1};
-handle_call({execute_worker_pipelines, Batches, Opts}, _From, State) ->
-    {Reply, State1} = do_execute_worker_pipelines(Batches, Opts, State),
-    {reply, Reply, State1};
-handle_call(close, _From, State) ->
-    maps:foreach(fun(_W, Pid) -> glyphastore_conn:reset(Pid) end, State#state.workers),
-    {stop, normal, ok, State#state{healthy = false}};
+handle_call({read, Op, Key, Value, Opts}, From, State) ->
+    dispatch_read(Op, Key, Value, Opts, From, State);
+handle_call({mutate, Op, Key, Value, Expire, Opts}, From, State) ->
+    dispatch_mutate(Op, Key, Value, Expire, Opts, From, State);
+handle_call({execute_pipeline, Requests, Opts}, From, State) ->
+    dispatch_pipeline(Requests, Opts, From, State);
+handle_call({execute_batch, Requests, Opts}, From, State) ->
+    dispatch_batch(Requests, Opts, From, State);
+handle_call({execute_worker_pipelines, Batches, Opts}, From, State) ->
+    dispatch_worker_pipelines(Batches, Opts, From, State);
+handle_call(close, From, State) ->
+    begin_close(From, State);
 handle_call(_Req, _From, State) ->
     {reply, {error, glyphastore_error:internal(<<"unexpected call">>)}, State}.
 
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
+handle_info({io_result, Tag, Result}, State) ->
+    handle_io_result(Tag, Result, State);
+handle_info({fanout_result, Tag, Mon, Worker, Items, GroupResponses, Healthy}, State) ->
+    handle_fanout_result(Tag, Mon, Worker, Items, GroupResponses, Healthy, State);
+handle_info({'DOWN', Mon, process, _Pid, Reason}, State) ->
+    handle_down(Mon, Reason, State);
+handle_info({timeout, TimerRef, {op_deadline, Tag}}, State) ->
+    handle_op_timeout(Tag, TimerRef, State);
+handle_info(_Msg, State) ->
+    {noreply, State}.
+
 terminate(_Reason, State) ->
+    maps:foreach(
+        fun(_Tag, Pending) ->
+            cancel_pending_timer(Pending),
+            case maps:get(pid, Pending, undefined) of
+                undefined -> ok;
+                Pid -> exit(Pid, kill)
+            end,
+            maps:foreach(
+                fun(_Mon, Child) ->
+                    exit(maps:get(pid, Child), kill)
+                end,
+                maps:get(children, Pending, #{})
+            )
+        end,
+        State#state.pending
+    ),
     maps:foreach(fun(_W, Pid) -> catch gen_server:stop(Pid) end, State#state.workers),
     ok.
 
@@ -255,47 +306,858 @@ bump_id(State) ->
     Id = State#state.request_id,
     {Id, State#state{request_id = advance_id(Id)}}.
 
-do_read(_Op, _Key, _Value, _Opts, #state{healthy = false} = State) ->
-    {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
-do_read(Op, Key, Value, Opts, State) ->
+%% ---------------------------------------------------------------------------
+%% Dispatch: resolve quickly, then delegate I/O off the coordinator callback.
+%% ---------------------------------------------------------------------------
+
+dispatch_read(_Op, _Key, _Value, _Opts, _From, #state{healthy = false} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_read(_Op, _Key, _Value, _Opts, _From, #state{closing = true} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_read(Op, Key, Value, Opts, From, State) ->
     case resolve_deadline(State, Opts) of
         {ok, Deadline} ->
             {Opcode, OpName, RouteKey} = read_op(Op, Key),
             case worker_index(State, RouteKey) of
                 {ok, Worker, Conn} ->
-                    do_read_attempt(Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, 2);
+                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, 2);
                 {error, Err} ->
-                    {{error, Err}, State}
+                    {reply, {error, Err}, State}
             end;
         {error, Err} ->
-            {{error, Err}, State}
+            {reply, {error, Err}, State}
     end.
 
-do_read_attempt(_O, _N, _K, _V, _D, _W, _C, State, 0) ->
-    {{error, glyphastore_error:unavailable(<<"request was not attempted">>)}, State};
-do_read_attempt(Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts) ->
+launch_read(_Opcode, _OpName, _Key, _Value, _Deadline, _Worker, _Conn, From, State, 0) ->
+    finish_reply(From, {error, glyphastore_error:unavailable(<<"request was not attempted">>)}, State);
+launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts) ->
     case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
             {RequestId, State2} = bump_id(State1),
             case encode_request(Opcode, RequestId, Key, Value, 0, State2) of
                 {ok, Frame, State3} ->
-                    case glyphastore_conn:exchange(Conn, Frame, Deadline) of
-                        {ok, Response} ->
-                            handle_read_response(Response, OpName, RequestId, Worker, Conn, State3);
-                        {error, SF = #{send_failure := true}} ->
-                            glyphastore_conn:reset(Conn),
-                            Err = promote_send_sf(SF, OpName, RequestId, Worker, State3, false),
-                            retry_read(Err, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State3, Attempts);
-                        {error, Err} ->
-                            glyphastore_conn:reset(Conn),
-                            Ann = annotate(Err, OpName, RequestId, Worker, State3),
-                            retry_read(Ann, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State3, Attempts)
-                    end;
+                    Meta = snapshot_meta(State3),
+                    start_io(
+                        From,
+                        State3,
+                        Deadline,
+                        fun() -> glyphastore_conn:exchange(Conn, Frame, Deadline) end,
+                        #{
+                            type => read,
+                            opcode => Opcode,
+                            op_name => OpName,
+                            key => Key,
+                            value => Value,
+                            deadline => Deadline,
+                            worker => Worker,
+                            conn => Conn,
+                            request_id => RequestId,
+                            attempts => Attempts,
+                            meta => Meta
+                        }
+                    );
                 {{error, Err}, State3} ->
-                    {{error, Err}, State3}
+                    finish_reply(From, {error, Err}, State3)
             end;
         {{error, Err}, State1} ->
-            retry_read(Err, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State1, Attempts)
+            case Attempts > 1 andalso retryable_read(Err, State1) of
+                true ->
+                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State1, Attempts - 1);
+                false ->
+                    finish_reply(From, {error, Err}, State1)
+            end
+    end.
+
+dispatch_mutate(Op, _Key, _Value, _Expire, _Opts, _From, #state{healthy = false} = State) ->
+    {reply, mutation_rejected(Op, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>), State), State};
+dispatch_mutate(Op, _Key, _Value, _Expire, _Opts, _From, #state{closing = true} = State) ->
+    {reply, mutation_rejected(Op, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>), State), State};
+dispatch_mutate(Op, Key, Value, Expire, Opts, From, State) ->
+    OpName = atom_to_binary(Op, utf8),
+    case resolve_deadline(State, Opts) of
+        {ok, Deadline} ->
+            case worker_index(State, Key) of
+                {ok, Worker, Conn} ->
+                    launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, State, 2);
+                {error, Err} ->
+                    {reply, mutation_rejected(Op, Err, State), State}
+            end;
+        {error, Err} ->
+            {reply, mutation_rejected(Op, Err, State), State}
+    end.
+
+launch_mutate(_Op, OpName, _Key, _Value, _Expire, _Deadline, Worker, _Conn, From, State, 0) ->
+    Err = enrich_mutation(
+        annotate(glyphastore_error:unavailable(<<"could not send mutation">>), OpName, undefined, Worker, State),
+        rejected
+    ),
+    finish_reply(From, #{outcome => rejected, error => Err}, State);
+launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, State, Attempts) ->
+    case ensure_connected(Conn, Worker, State) of
+        {ok, State1} ->
+            {RequestId, State2} = bump_id(State1),
+            Opcode = mutate_opcode(Op),
+            case encode_request(Opcode, RequestId, Key, Value, Expire, State2) of
+                {ok, Frame, State3} ->
+                    Meta = snapshot_meta(State3),
+                    start_io(
+                        From,
+                        State3,
+                        Deadline,
+                        fun() -> glyphastore_conn:exchange(Conn, Frame, Deadline) end,
+                        #{
+                            type => mutate,
+                            op => Op,
+                            op_name => OpName,
+                            key => Key,
+                            value => Value,
+                            expire => Expire,
+                            deadline => Deadline,
+                            worker => Worker,
+                            conn => Conn,
+                            request_id => RequestId,
+                            attempts => Attempts,
+                            meta => Meta
+                        }
+                    );
+                {{error, Err}, State3} ->
+                    finish_reply(
+                        From,
+                        mutation_rejected(Op, annotate(Err, OpName, RequestId, Worker, State3), State3),
+                        State3
+                    )
+            end;
+        {{error, Err}, State1} ->
+            finish_reply(
+                From,
+                mutation_rejected(Op, annotate(Err, OpName, undefined, Worker, State1), State1),
+                State1
+            )
+    end.
+
+dispatch_pipeline([], _Opts, _From, State) ->
+    {reply, {ok, []}, State};
+dispatch_pipeline(_R, _O, _From, #state{healthy = false} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_pipeline(_R, _O, _From, #state{closing = true} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_pipeline(Requests, Opts, From, State) ->
+    case resolve_deadline(State, Opts) of
+        {ok, Deadline} ->
+            case plan_pipeline(Requests, State) of
+                {ok, Worker, Conn, Plan, State1} ->
+                    launch_pipeline(Plan, Deadline, Worker, Conn, From, State1, length(Requests));
+                {error, Err} ->
+                    {reply, {error, Err}, State}
+            end;
+        {error, Err} ->
+            {reply, {error, Err}, State}
+    end.
+
+launch_pipeline(Plan, Deadline, Worker, Conn, From, State, Count) ->
+    case ensure_connected(Conn, Worker, State) of
+        {ok, State1} ->
+            Meta = snapshot_meta(State1),
+            start_io(
+                From,
+                State1,
+                Deadline,
+                fun() -> run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, Count) end,
+                #{
+                    type => pipeline,
+                    deadline => Deadline,
+                    worker => Worker,
+                    conn => Conn,
+                    meta => Meta
+                }
+            );
+        {{error, Err}, State1} ->
+            Responses = array:new(Count, {default, failed_response()}),
+            finish_reply(
+                From,
+                {ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, metadata_from_plan(Plan)))},
+                State1
+            )
+    end.
+
+dispatch_batch([], _Opts, _From, State) ->
+    {reply, {ok, []}, State};
+dispatch_batch(_R, _O, _From, #state{healthy = false} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_batch(_R, _O, _From, #state{closing = true} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_batch(Requests, Opts, From, State) ->
+    case resolve_deadline(State, Opts) of
+        {ok, Deadline} ->
+            case group_batch(Requests, State) of
+                {ok, Groups} ->
+                    launch_batch(Groups, Deadline, From, State, length(Requests));
+                {error, Err} ->
+                    {reply, {error, Err}, State}
+            end;
+        {error, Err} ->
+            {reply, {error, Err}, State}
+    end.
+
+launch_batch(Groups, Deadline, From, State, Count) ->
+    Responses0 = array:new(Count, {default, failed_response()}),
+    case prepare_batch_groups(Groups, State, []) of
+        {ok, Prepared, State1} ->
+            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
+                {ok, State2} ->
+                    fanout_prepared(
+                        Prepared,
+                        Deadline,
+                        From,
+                        State2,
+                        fun(_Worker, Items, GroupResponses, Acc) ->
+                            merge_group_by_index(Acc, Items, GroupResponses)
+                        end,
+                        Responses0,
+                        batch
+                    );
+                {{error, Err}, State2} ->
+                    {reply, {error, Err}, State2}
+            end;
+        {error, Err} ->
+            {reply, {error, Err}, State}
+    end.
+
+dispatch_worker_pipelines(_Batches, _Opts, _From, #state{healthy = false} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_worker_pipelines(_Batches, _Opts, _From, #state{closing = true} = State) ->
+    {reply, {error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
+dispatch_worker_pipelines(Batches, Opts, From, State) when is_list(Batches) ->
+    WC = State#state.worker_count,
+    case length(Batches) =:= WC of
+        false ->
+            {reply, {error, glyphastore_error:invalid_argument(<<"worker pipeline vector does not match Worker count">>)}, State};
+        true ->
+            case resolve_deadline(State, Opts) of
+                {ok, Deadline} ->
+                    case plan_worker_pipelines(Batches, 0, State, []) of
+                        {ok, Prepared, State1} ->
+                            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
+                                {ok, State2} ->
+                                    Empty = array:new(WC, {default, []}),
+                                    fanout_prepared(
+                                        Prepared,
+                                        Deadline,
+                                        From,
+                                        State2,
+                                        fun(Worker, _Items, GroupResponses, Acc) ->
+                                            array:set(Worker, GroupResponses, Acc)
+                                        end,
+                                        Empty,
+                                        worker_pipelines
+                                    );
+                                {{error, Err}, State2} ->
+                                    {reply, {error, Err}, State2}
+                            end;
+                        {error, Err} ->
+                            {reply, {error, Err}, State}
+                    end;
+                {error, Err} ->
+                    {reply, {error, Err}, State}
+            end
+    end;
+dispatch_worker_pipelines(_Batches, _Opts, _From, State) ->
+    {reply, {error, glyphastore_error:invalid_argument(<<"worker pipelines must be a list">>)}, State}.
+
+%% ---------------------------------------------------------------------------
+%% Monitored I/O helpers
+%% ---------------------------------------------------------------------------
+
+start_io(From, State, Deadline, IoFun, Pending0) ->
+    Client = self(),
+    Tag = make_ref(),
+    {Pid, Mon} = spawn_monitor(fun() ->
+        Result =
+            try IoFun() of
+                R -> {ok, R}
+            catch
+                Class:Reason:Stack ->
+                    {crash, Class, Reason, Stack}
+            end,
+        Client ! {io_result, Tag, Result}
+    end),
+    Timer = start_deadline_timer(Tag, Deadline),
+    Pending = Pending0#{
+        from => From,
+        pid => Pid,
+        mon => Mon,
+        tag => Tag,
+        timer => Timer
+    },
+    State1 = track_pending(Tag, Mon, Pending, State),
+    {noreply, State1}.
+
+track_pending(Tag, Mon, Pending, State) ->
+    State#state{
+        pending = maps:put(Tag, Pending, State#state.pending),
+        mon_index = maps:put(Mon, Tag, State#state.mon_index)
+    }.
+
+untrack_pending(Tag, State) ->
+    case maps:take(Tag, State#state.pending) of
+        {Pending, PendingMap} ->
+            Mon = maps:get(mon, Pending, undefined),
+            cancel_pending_timer(Pending),
+            MonIndex =
+                case Mon of
+                    undefined -> State#state.mon_index;
+                    _ -> maps:remove(Mon, State#state.mon_index)
+                end,
+            Children = maps:get(children, Pending, #{}),
+            MonIndex1 = maps:fold(
+                fun(ChildMon, _, Acc) -> maps:remove(ChildMon, Acc) end,
+                MonIndex,
+                Children
+            ),
+            {Pending, State#state{pending = PendingMap, mon_index = MonIndex1}};
+        error ->
+            error
+    end.
+
+start_deadline_timer(Tag, Deadline) ->
+    case glyphastore_util:remaining_timeout(Deadline) of
+        {ok, Left} ->
+            erlang:start_timer(glyphastore_util:timeout_ms(Left), self(), {op_deadline, Tag});
+        {error, _} ->
+            erlang:start_timer(1, self(), {op_deadline, Tag})
+    end.
+
+cancel_pending_timer(Pending) ->
+    case maps:get(timer, Pending, undefined) of
+        undefined -> ok;
+        TimerRef -> erlang:cancel_timer(TimerRef), ok
+    end.
+
+finish_reply(From, Reply, State) ->
+    gen_server:reply(From, Reply),
+    maybe_finish_close(State).
+
+snapshot_meta(State) ->
+    #{
+        config => State#state.config,
+        worker_count => State#state.worker_count,
+        routing_epoch => State#state.routing_epoch,
+        healthy => State#state.healthy
+    }.
+
+meta_state(Meta) ->
+    #state{
+        config = maps:get(config, Meta),
+        worker_count = maps:get(worker_count, Meta),
+        routing_epoch = maps:get(routing_epoch, Meta),
+        healthy = maps:get(healthy, Meta, true)
+    }.
+
+begin_close(From, State) ->
+    State1 = State#state{closing = true, healthy = false, close_from = From},
+    maps:foreach(fun(_W, Pid) -> glyphastore_conn:reset(Pid) end, State1#state.workers),
+    case maps:size(State1#state.pending) of
+        0 ->
+            {stop, normal, ok, State1#state{close_from = undefined}};
+        _ ->
+            {noreply, State1}
+    end.
+
+maybe_finish_close(State) ->
+    case State#state.closing andalso maps:size(State#state.pending) =:= 0 of
+        true ->
+            case State#state.close_from of
+                undefined ->
+                    {stop, normal, State};
+                From ->
+                    gen_server:reply(From, ok),
+                    {stop, normal, State#state{close_from = undefined}}
+            end;
+        false ->
+            {noreply, State}
+    end.
+
+handle_io_result(Tag, Result, State) ->
+    case untrack_pending(Tag, State) of
+        error ->
+            {noreply, State};
+        {Pending, State1} ->
+            _ = erlang:demonitor(maps:get(mon, Pending), [flush]),
+            case maps:get(type, Pending) of
+                read -> complete_read(Pending, Result, State1);
+                mutate -> complete_mutate(Pending, Result, State1);
+                pipeline -> complete_pipeline(Pending, Result, State1)
+            end
+    end.
+
+handle_down(Mon, Reason, State) ->
+    case maps:get(Mon, State#state.mon_index, undefined) of
+        undefined ->
+            {noreply, State};
+        Tag ->
+            case maps:get(Tag, State#state.pending, undefined) of
+                undefined ->
+                    {noreply, State#state{mon_index = maps:remove(Mon, State#state.mon_index)}};
+                Pending ->
+                    case maps:get(type, Pending) of
+                        fanout ->
+                            handle_fanout_down(Tag, Mon, Reason, Pending, State);
+                        _ ->
+                            case Reason of
+                                normal ->
+                                    %% Result message should arrive (or already did). Keep pending.
+                                    {noreply, State};
+                                _ ->
+                                    case untrack_pending(Tag, State) of
+                                        error ->
+                                            {noreply, State};
+                                        {P, State1} ->
+                                            fail_pending_crash(P, Reason, State1)
+                                    end
+                            end
+                    end
+            end
+    end.
+
+handle_op_timeout(Tag, TimerRef, State) ->
+    case maps:get(Tag, State#state.pending, undefined) of
+        undefined ->
+            {noreply, State};
+        Pending ->
+            case maps:get(timer, Pending, undefined) of
+                TimerRef ->
+                    case maps:get(type, Pending) of
+                        fanout ->
+                            timeout_fanout(Tag, Pending, State);
+                        _ ->
+                            case untrack_pending(Tag, State) of
+                                error ->
+                                    {noreply, State};
+                                {P, State1} ->
+                                    kill_pending_pid(P),
+                                    maybe_reset_conn(P),
+                                    fail_pending_timeout(P, State1)
+                            end
+                    end;
+                _ ->
+                    {noreply, State}
+            end
+    end.
+
+kill_pending_pid(Pending) ->
+    case maps:get(pid, Pending, undefined) of
+        undefined -> ok;
+        Pid -> exit(Pid, kill)
+    end.
+
+maybe_reset_conn(Pending) ->
+    case maps:get(conn, Pending, undefined) of
+        undefined -> ok;
+        Conn -> glyphastore_conn:reset(Conn)
+    end.
+
+fail_pending_crash(Pending, _Reason, State) ->
+    maybe_reset_conn(Pending),
+    From = maps:get(from, Pending),
+    case maps:get(type, Pending) of
+        read ->
+            finish_reply(
+                From,
+                {error, annotate(glyphastore_error:transport(<<"worker I/O process crashed">>), maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State)},
+                State
+            );
+        mutate ->
+            Err = enrich_mutation(
+                annotate(glyphastore_error:transport(<<"worker I/O process crashed">>), maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                indeterminate
+            ),
+            finish_reply(From, #{outcome => indeterminate, error => Err}, State);
+        pipeline ->
+            finish_reply(From, {error, glyphastore_error:transport(<<"worker I/O process crashed">>)}, State)
+    end.
+
+fail_pending_timeout(Pending, State) ->
+    From = maps:get(from, Pending),
+    Err = glyphastore_error:transport(<<"request deadline expired">>),
+    case maps:get(type, Pending) of
+        read ->
+            finish_reply(
+                From,
+                {error, annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State)},
+                State
+            );
+        mutate ->
+            %% Timeout while waiting: bytes may have been sent → indeterminate.
+            Ann = enrich_mutation(
+                annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                indeterminate
+            ),
+            finish_reply(From, #{outcome => indeterminate, error => Ann}, State);
+        pipeline ->
+            finish_reply(From, {error, Err}, State)
+    end.
+
+complete_read(Pending, {crash, _C, _R, _S}, State) ->
+    fail_pending_crash(Pending, crash, State);
+complete_read(Pending, {ok, IoResult}, State) ->
+    OpName = maps:get(op_name, Pending),
+    RequestId = maps:get(request_id, Pending),
+    Worker = maps:get(worker, Pending),
+    Conn = maps:get(conn, Pending),
+    Opcode = maps:get(opcode, Pending),
+    Key = maps:get(key, Pending),
+    Value = maps:get(value, Pending),
+    Deadline = maps:get(deadline, Pending),
+    Attempts = maps:get(attempts, Pending),
+    From = maps:get(from, Pending),
+    case IoResult of
+        {ok, Response} ->
+            {Reply, State1} = handle_read_response(Response, OpName, RequestId, Worker, Conn, State),
+            finish_reply(From, Reply, State1);
+        {error, SF = #{send_failure := true}} ->
+            glyphastore_conn:reset(Conn),
+            Err = promote_send_sf(SF, OpName, RequestId, Worker, State, false),
+            case Attempts > 1 andalso retryable_read(Err, State) of
+                true ->
+                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                false ->
+                    finish_reply(From, {error, Err}, State)
+            end;
+        {error, Err} ->
+            glyphastore_conn:reset(Conn),
+            Ann = annotate(Err, OpName, RequestId, Worker, State),
+            case Attempts > 1 andalso retryable_read(Ann, State) of
+                true ->
+                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                false ->
+                    finish_reply(From, {error, Ann}, State)
+            end
+    end.
+
+complete_mutate(Pending, {crash, _C, _R, _S}, State) ->
+    fail_pending_crash(Pending, crash, State);
+complete_mutate(Pending, {ok, IoResult}, State) ->
+    Op = maps:get(op, Pending),
+    OpName = maps:get(op_name, Pending),
+    RequestId = maps:get(request_id, Pending),
+    Worker = maps:get(worker, Pending),
+    Conn = maps:get(conn, Pending),
+    Key = maps:get(key, Pending),
+    Value = maps:get(value, Pending),
+    Expire = maps:get(expire, Pending),
+    Deadline = maps:get(deadline, Pending),
+    Attempts = maps:get(attempts, Pending),
+    From = maps:get(from, Pending),
+    case IoResult of
+        {ok, Response} ->
+            {Reply, State1} = handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State),
+            finish_reply(From, Reply, State1);
+        {error, SF = #{send_failure := true}} ->
+            glyphastore_conn:reset(Conn),
+            case maps:get(bytes_sent, SF, 0) of
+                0 when Attempts > 1 ->
+                    launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, State, Attempts - 1);
+                0 ->
+                    Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), rejected),
+                    finish_reply(From, #{outcome => rejected, error => Err}, State);
+                _ ->
+                    Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), indeterminate),
+                    finish_reply(From, #{outcome => indeterminate, error => Err}, State)
+            end;
+        {error, Err} ->
+            glyphastore_conn:reset(Conn),
+            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State), indeterminate),
+            finish_reply(From, #{outcome => indeterminate, error => Ann}, State)
+    end.
+
+complete_pipeline(Pending, {crash, _C, _R, _S}, State) ->
+    fail_pending_crash(Pending, crash, State);
+complete_pipeline(Pending, {ok, {ok, Responses, Healthy}}, State) ->
+    State1 =
+        case Healthy of
+            true -> State;
+            false -> State#state{healthy = false}
+        end,
+    finish_reply(maps:get(from, Pending), {ok, Responses}, State1);
+complete_pipeline(Pending, {ok, {error, Err}}, State) ->
+    maybe_reset_conn(Pending),
+    finish_reply(maps:get(from, Pending), {error, Err}, State).
+
+%% ---------------------------------------------------------------------------
+%% Pipeline I/O (runs in delegated process; returns {ok, Responses, Healthy})
+%% ---------------------------------------------------------------------------
+
+run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, Count) ->
+    Responses = array:new(Count, {default, failed_response()}),
+    Output = [maps:get(frame, I) || I <- Plan],
+    TotalBytes = iolist_size(Output),
+    Metadata = [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan],
+    State0 = meta_state(Meta),
+    case glyphastore_conn:run_pipeline(Conn, Output, Count, Deadline) of
+        {ok, RawResponses} ->
+            fold_pipeline_responses(RawResponses, Metadata, 0, Responses, Worker, Conn, State0, TotalBytes);
+        {send_error, SF = #{send_failure := true}} ->
+            glyphastore_conn:reset(Conn),
+            {ok,
+                array:to_list(
+                    mark_unresolved(
+                        Responses,
+                        0,
+                        promote_send_sf(SF, undefined, undefined, Worker, State0, false),
+                        maps:get(bytes_sent, SF, 0),
+                        Metadata
+                    )
+                ),
+                State0#state.healthy};
+        {send_error, Err} ->
+            glyphastore_conn:reset(Conn),
+            {ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, Metadata)), State0#state.healthy};
+        {recv_error, Err, Partial} ->
+            glyphastore_conn:reset(Conn),
+            case fold_pipeline_responses(Partial, lists:sublist(Metadata, length(Partial)), 0, Responses, Worker, Conn, State0, TotalBytes) of
+                {ok, PartialList, Healthy} ->
+                    PartialArr = array:from_list(PartialList),
+                    Start = length(Partial),
+                    {ok,
+                        array:to_list(mark_unresolved(PartialArr, Start, Err, TotalBytes, lists:nthtail(Start, Metadata))),
+                        Healthy};
+                Other ->
+                    Other
+            end
+    end.
+
+fold_pipeline_responses([], [], _Idx, Responses, _Worker, _Conn, State, _Sent) ->
+    {ok, array:to_list(Responses), State#state.healthy};
+fold_pipeline_responses([Response | RestResp], [{RequestId, Req, Begin} | RestMeta], Idx, Responses, Worker, Conn, State, SentBytes) ->
+    case validate_response(Response, RequestId, Worker, State) of
+        ok ->
+            case maps:get(status, Response) of
+                ?GS_ST_OK ->
+                    case pipeline_ok(Req, Response) of
+                        ok ->
+                            Responses1 = array:set(
+                                Idx,
+                                #{outcome => succeeded, value => maps:get(value, Response)},
+                                Responses
+                            ),
+                            fold_pipeline_responses(
+                                RestResp, RestMeta, Idx + 1, Responses1, Worker, Conn, State, SentBytes
+                            );
+                        {error, Err} ->
+                            glyphastore_conn:reset(Conn),
+                            {ok,
+                                array:to_list(
+                                    mark_unresolved(Responses, Idx, Err, SentBytes, [
+                                        {RequestId, Req, Begin} | RestMeta
+                                    ])
+                                ),
+                                State#state.healthy}
+                    end;
+                Status ->
+                    Err = status_err(Status, pipeline_op(Req), RequestId, Worker, State),
+                    Outcome = pipeline_status_outcome(Req, Status),
+                    Responses1 = array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
+                    State1 = maybe_unhealthy_state(Status, State),
+                    fold_pipeline_responses(
+                        RestResp, RestMeta, Idx + 1, Responses1, Worker, Conn, State1, SentBytes
+                    )
+            end;
+        {error, Err} ->
+            glyphastore_conn:reset(Conn),
+            {ok,
+                array:to_list(
+                    mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | RestMeta])
+                ),
+                State#state.healthy}
+    end.
+
+%% ---------------------------------------------------------------------------
+%% Fan-out with spawn_monitor (batch / worker pipelines)
+%% ---------------------------------------------------------------------------
+
+fanout_prepared([], _Deadline, _From, State, _Merge, Acc, Kind) ->
+    Reply =
+        case Kind of
+            batch -> {ok, array:to_list(Acc)};
+            worker_pipelines -> {ok, array:to_list(Acc)}
+        end,
+    {reply, Reply, State};
+fanout_prepared([{Worker, Items, Plan}], Deadline, From, State, Merge, Acc, Kind) ->
+    %% Single Worker: one monitored I/O process (still off the coordinator callback).
+    Conn = maps:get(Worker, State#state.workers),
+    Meta = snapshot_meta(State),
+    start_io(
+        From,
+        State,
+        Deadline,
+        fun() ->
+            {ok, GroupResponses, Healthy} = run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, length(Plan)),
+            Acc1 = Merge(Worker, Items, GroupResponses, Acc),
+            case Kind of
+                batch -> {ok, array:to_list(Acc1), Healthy};
+                worker_pipelines -> {ok, array:to_list(Acc1), Healthy}
+            end
+        end,
+        #{type => pipeline, deadline => Deadline, worker => Worker, conn => Conn, meta => Meta}
+    );
+fanout_prepared(Prepared, Deadline, From, State, Merge, Acc0, Kind) ->
+    Client = self(),
+    Tag = make_ref(),
+    Meta = snapshot_meta(State),
+    {Children, MonIndex} = lists:foldl(
+        fun({Worker, Items, Plan}, {ChAcc, MonAcc}) ->
+            Conn = maps:get(Worker, State#state.workers),
+            {Pid, Mon} = spawn_monitor(fun() ->
+                receive
+                    {start, ResultMon} ->
+                        {ok, GroupResponses, Healthy} =
+                            run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, length(Plan)),
+                        Client !
+                            {fanout_result, Tag, ResultMon, Worker, Items, GroupResponses, Healthy}
+                end
+            end),
+            Pid ! {start, Mon},
+            {
+                ChAcc#{Mon => #{worker => Worker, items => Items, pid => Pid, conn => Conn}},
+                MonAcc#{Mon => Tag}
+            }
+        end,
+        {#{}, State#state.mon_index},
+        Prepared
+    ),
+    Timer = start_deadline_timer(Tag, Deadline),
+    Pending = #{
+        type => fanout,
+        kind => Kind,
+        from => From,
+        tag => Tag,
+        children => Children,
+        merge => Merge,
+        acc => Acc0,
+        timer => Timer,
+        deadline => Deadline
+    },
+    State1 = State#state{
+        pending = maps:put(Tag, Pending, State#state.pending),
+        mon_index = MonIndex
+    },
+    {noreply, State1}.
+
+handle_fanout_result(Tag, Mon, Worker, Items, GroupResponses, Healthy, State) ->
+    case maps:get(Tag, State#state.pending, undefined) of
+        undefined ->
+            {noreply, State};
+        Pending ->
+            Children0 = maps:get(children, Pending),
+            case maps:take(Mon, Children0) of
+                error ->
+                    {noreply, State};
+                {_Child, Children1} ->
+                    _ = erlang:demonitor(Mon, [flush]),
+                    Acc1 = (maps:get(merge, Pending))(Worker, Items, GroupResponses, maps:get(acc, Pending)),
+                    StateH =
+                        case Healthy of
+                            true -> State;
+                            false -> State#state{healthy = false}
+                        end,
+                    Pending1 = Pending#{children := Children1, acc := Acc1},
+                    State1 = StateH#state{
+                        pending = maps:put(Tag, Pending1, StateH#state.pending),
+                        mon_index = maps:remove(Mon, StateH#state.mon_index)
+                    },
+                    case maps:size(Children1) of
+                        0 ->
+                            finish_fanout(Tag, Pending1, State1);
+                        _ ->
+                            {noreply, State1}
+                    end
+            end
+    end.
+
+handle_fanout_down(Tag, Mon, Reason, Pending, State) ->
+    Children0 = maps:get(children, Pending),
+    case maps:take(Mon, Children0) of
+        error ->
+            {noreply, State};
+        {Child, Children1} ->
+            case Reason of
+                normal ->
+                    %% Result should follow; keep waiting unless already removed.
+                    {noreply, State};
+                _ ->
+                    glyphastore_conn:reset(maps:get(conn, Child)),
+                    Worker = maps:get(worker, Child),
+                    Items = maps:get(items, Child),
+                    CrashResponses = [
+                        #{
+                            outcome => failed,
+                            error => glyphastore_error:transport(<<"worker I/O process crashed">>)
+                        }
+                     || _ <- lists:seq(1, max(1, length(Items)))
+                    ],
+                    %% Prefer indeterminate for mutation-heavy pipelines when crash is mid-flight.
+                    Acc1 = (maps:get(merge, Pending))(Worker, Items, CrashResponses, maps:get(acc, Pending)),
+                    Pending1 = Pending#{children := Children1, acc := Acc1},
+                    State1 = State#state{
+                        pending = maps:put(Tag, Pending1, State#state.pending),
+                        mon_index = maps:remove(Mon, State#state.mon_index)
+                    },
+                    case maps:size(Children1) of
+                        0 -> finish_fanout(Tag, Pending1, State1);
+                        _ -> {noreply, State1}
+                    end
+            end
+    end.
+
+timeout_fanout(Tag, Pending, State) ->
+    maps:foreach(
+        fun(Mon, Child) ->
+            exit(maps:get(pid, Child), kill),
+            glyphastore_conn:reset(maps:get(conn, Child)),
+            _ = erlang:demonitor(Mon, [flush])
+        end,
+        maps:get(children, Pending)
+    ),
+    case untrack_pending(Tag, State) of
+        error ->
+            {noreply, State};
+        {P, State1} ->
+            Reply1 = fanout_timeout_reply(P, maps:get(acc, P)),
+            finish_reply(maps:get(from, P), Reply1, State1)
+    end.
+
+fanout_timeout_reply(Pending, Acc) ->
+    Err = glyphastore_error:transport(<<"request deadline expired">>),
+    Kind = maps:get(kind, Pending),
+    Children = maps:get(children, Pending),
+    Acc1 = maps:fold(
+        fun(_Mon, Child, A) ->
+            Worker = maps:get(worker, Child),
+            Items = maps:get(items, Child),
+            Failed = [#{outcome => failed, error => Err} || _ <- Items],
+            (maps:get(merge, Pending))(Worker, Items, Failed, A)
+        end,
+        Acc,
+        Children
+    ),
+    case Kind of
+        batch -> {ok, array:to_list(Acc1)};
+        worker_pipelines -> {ok, array:to_list(Acc1)}
+    end.
+
+finish_fanout(Tag, _Pending, State) ->
+    case untrack_pending(Tag, State) of
+        error ->
+            {noreply, State};
+        {P, State1} ->
+            Kind = maps:get(kind, P),
+            Acc = maps:get(acc, P),
+            Reply =
+                case Kind of
+                    batch -> {ok, array:to_list(Acc)};
+                    worker_pipelines -> {ok, array:to_list(Acc)}
+                end,
+            finish_reply(maps:get(from, P), Reply, State1)
     end.
 
 handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
@@ -311,71 +1173,8 @@ handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            {{error, annotate(Err, OpName, RequestId, Worker, State)}, State}
-    end.
-
-%% At-most-one auto-retry (Attempts starts at 2). Preserve the last error — do not
-%% collapse a second transport failure into a synthetic "not attempted" unavailable.
-retry_read(Err, Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts) ->
-    case Attempts > 1 andalso retryable_read(Err, State) of
-        true -> do_read_attempt(Opcode, OpName, Key, Value, Deadline, Worker, Conn, State, Attempts - 1);
-        false -> {{error, Err}, State}
-    end.
-
-do_mutate(Op, _Key, _Value, _Expire, _Opts, #state{healthy = false} = State) ->
-    {mutation_rejected(Op, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>), State), State};
-do_mutate(Op, Key, Value, Expire, Opts, State) ->
-    OpName = atom_to_binary(Op, utf8),
-    case resolve_deadline(State, Opts) of
-        {ok, Deadline} ->
-            case worker_index(State, Key) of
-                {ok, Worker, Conn} ->
-                    do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, 2);
-                {error, Err} ->
-                    {mutation_rejected(Op, Err, State), State}
-            end;
-        {error, Err} ->
-            {mutation_rejected(Op, Err, State), State}
-    end.
-
-do_mutate_attempt(_Op, OpName, _K, _V, _E, _D, Worker, _C, State, 0) ->
-    Err = enrich_mutation(annotate(glyphastore_error:unavailable(<<"could not send mutation">>), OpName, undefined, Worker, State), rejected),
-    {#{outcome => rejected, error => Err}, State};
-do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, Attempts) ->
-    case ensure_connected(Conn, Worker, State) of
-        {ok, State1} ->
-            {RequestId, State2} = bump_id(State1),
-            Opcode = mutate_opcode(Op),
-            case encode_request(Opcode, RequestId, Key, Value, Expire, State2) of
-                {ok, Frame, State3} ->
-                    case glyphastore_conn:exchange(Conn, Frame, Deadline) of
-                        {ok, Response} ->
-                            handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State3);
-                        {error, SF = #{send_failure := true}} ->
-                            glyphastore_conn:reset(Conn),
-                            handle_mutate_send(SF, OpName, RequestId, Worker, Op, Key, Value, Expire, Deadline, Conn, State3, Attempts);
-                        {error, Err} ->
-                            glyphastore_conn:reset(Conn),
-                            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State3), indeterminate),
-                            {#{outcome => indeterminate, error => Ann}, State3}
-                    end;
-                {{error, Err}, State3} ->
-                    {mutation_rejected(Op, annotate(Err, OpName, RequestId, Worker, State3), State3), State3}
-            end;
-        {{error, Err}, State1} ->
-            {mutation_rejected(Op, annotate(Err, OpName, undefined, Worker, State1), State1), State1}
-    end.
-
-handle_mutate_send(SF, OpName, RequestId, Worker, Op, Key, Value, Expire, Deadline, Conn, State, Attempts) ->
-    case maps:get(bytes_sent, SF, 0) of
-        0 when Attempts > 1 ->
-            do_mutate_attempt(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, State, Attempts - 1);
-        0 ->
-            Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), rejected),
-            {#{outcome => rejected, error => Err}, State};
-        _ ->
-            Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), indeterminate),
-            {#{outcome => indeterminate, error => Err}, State}
+            State1 = mark_unhealthy_if_metadata(Err, State),
+            {{error, annotate(Err, OpName, RequestId, Worker, State1)}, State1}
     end.
 
 handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State) ->
@@ -409,40 +1208,15 @@ handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State) ->
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State), indeterminate),
-            {#{outcome => indeterminate, error => Ann}, State}
+            State1 = mark_unhealthy_if_metadata(Err, State),
+            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State1), indeterminate),
+            {#{outcome => indeterminate, error => Ann}, State1}
     end.
 
-do_execute_pipeline([], _Opts, State) -> {{ok, []}, State};
-do_execute_pipeline(_R, _O, #state{healthy = false} = State) ->
-    {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
-do_execute_pipeline(Requests, Opts, State) ->
-    case resolve_deadline(State, Opts) of
-        {ok, Deadline} ->
-            case plan_pipeline(Requests, State) of
-                {ok, Worker, Conn, Plan, State1} ->
-                    run_pipeline(Plan, Deadline, Worker, Conn, State1, length(Requests));
-                {error, Err} ->
-                    {{error, Err}, State}
-            end;
-        {error, Err} ->
-            {{error, Err}, State}
-    end.
-
-do_execute_batch([], _Opts, State) -> {{ok, []}, State};
-do_execute_batch(_R, _O, #state{healthy = false} = State) ->
-    {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
-do_execute_batch(Requests, Opts, State) ->
-    case resolve_deadline(State, Opts) of
-        {ok, Deadline} ->
-            case group_batch(Requests, State) of
-                {ok, Groups} ->
-                    run_batch(Groups, Deadline, State, length(Requests));
-                {error, Err} ->
-                    {{error, Err}, State}
-            end;
-        {error, Err} ->
-            {{error, Err}, State}
+mark_unhealthy_if_metadata(Err, State) ->
+    case maps:get(category, Err) of
+        unavailable -> State#state{healthy = false};
+        _ -> State
     end.
 
 plan_pipeline(Requests, State) ->
@@ -506,64 +1280,6 @@ plan_pipeline_items([Req | Rest], State, Worker0, Need, Acc, MaxBytes, StateAcc)
             end
     end.
 
-run_pipeline(Plan, Deadline, Worker, Conn, State, Count) ->
-    %% Pre-size with array for O(1) updates (list setnth is O(n²) on long pipelines).
-    Responses = array:new(Count, {default, failed_response()}),
-    case ensure_connected(Conn, Worker, State) of
-        {ok, State1} ->
-            %% Keep frames as an iolist — gen_tcp/ssl send accepts iodata without a contig copy.
-            Output = [maps:get(frame, I) || I <- Plan],
-            TotalBytes = iolist_size(Output),
-            Metadata = [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan],
-            case glyphastore_conn:send(Conn, Output, Deadline) of
-                ok ->
-                    collect_pipeline(Metadata, 0, Responses, Deadline, Worker, Conn, State1, TotalBytes);
-                {error, SF = #{send_failure := true}} ->
-                    glyphastore_conn:reset(Conn),
-                    {{ok, array:to_list(mark_unresolved(Responses, 0, promote_send_sf(SF, undefined, undefined, Worker, State1, false), maps:get(bytes_sent, SF, 0), Metadata))}, State1};
-                {error, Err} ->
-                    glyphastore_conn:reset(Conn),
-                    {{ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, Metadata))}, State1}
-            end;
-        {{error, Err}, State1} ->
-            {{ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, metadata_from_plan(Plan)))}, State1}
-    end.
-
-collect_pipeline([], _Idx, Responses, _Deadline, _Worker, _Conn, State, _Sent) ->
-    {{ok, array:to_list(Responses)}, State};
-collect_pipeline([{RequestId, Req, Begin} | Rest], Idx, Responses, Deadline, Worker, Conn, State, SentBytes) ->
-    case glyphastore_conn:receive_response(Conn, Deadline) of
-        {ok, Response} ->
-            case validate_response(Response, RequestId, Worker, State) of
-                ok ->
-                    case maps:get(status, Response) of
-                        ?GS_ST_OK ->
-                            case pipeline_ok(Req, Response) of
-                                ok ->
-                                    Responses1 = array:set(Idx, #{
-                                        outcome => succeeded, value => maps:get(value, Response)
-                                    }, Responses),
-                                    collect_pipeline(Rest, Idx + 1, Responses1, Deadline, Worker, Conn, State, SentBytes);
-                                {error, Err} ->
-                                    glyphastore_conn:reset(Conn),
-                                    {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
-                            end;
-                        Status ->
-                            Err = status_err(Status, pipeline_op(Req), RequestId, Worker, State),
-                            Outcome = pipeline_status_outcome(Req, Status),
-                            Responses1 = array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
-                            State1 = maybe_unhealthy_state(Status, State),
-                            collect_pipeline(Rest, Idx + 1, Responses1, Deadline, Worker, Conn, State1, SentBytes)
-                    end;
-                {error, Err} ->
-                    glyphastore_conn:reset(Conn),
-                    {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
-            end;
-        {error, Err} ->
-            glyphastore_conn:reset(Conn),
-            {{ok, array:to_list(mark_unresolved(Responses, Idx, Err, SentBytes, [{RequestId, Req, Begin} | Rest]))}, State}
-    end.
-
 group_batch(Requests, State) ->
     group_batch(Requests, State, 0, #{}).
 
@@ -589,34 +1305,6 @@ group_batch([Req | Rest], State, Idx, Groups) ->
             {error, Err}
     end.
 
-run_batch(Groups, Deadline, State, Count) ->
-    Responses0 = array:new(Count, {default, failed_response()}),
-    case prepare_batch_groups(Groups, State, []) of
-        {ok, Prepared, State1} ->
-            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
-                {ok, State2} ->
-                    case fanout_prepared(
-                        Prepared,
-                        Deadline,
-                        State2,
-                        fun(_Worker, Items, GroupResponses, Acc) ->
-                            merge_group_by_index(Acc, Items, GroupResponses)
-                        end,
-                        Responses0
-                    ) of
-                        {{ok, Acc}, State3} when is_tuple(Acc) ->
-                            %% Acc is an array when Merge builds via merge_group_by_index
-                            {{ok, array:to_list(Acc)}, State3};
-                        Other ->
-                            Other
-                    end;
-                {{error, Err}, State2} ->
-                    {{error, Err}, State2}
-            end;
-        {error, Err} ->
-            {{error, Err}, State}
-    end.
-
 prepare_batch_groups([], State, Acc) ->
     {ok, lists:reverse(Acc), State};
 prepare_batch_groups([{Worker, Items} | Rest], State, Acc) ->
@@ -627,43 +1315,6 @@ prepare_batch_groups([{Worker, Items} | Rest], State, Acc) ->
         {error, Err} ->
             {error, Err}
     end.
-
-do_execute_worker_pipelines(_Batches, _Opts, #state{healthy = false} = State) ->
-    {{error, glyphastore_error:unavailable(<<"client is closed or routing metadata changed">>)}, State};
-do_execute_worker_pipelines(Batches, Opts, State) when is_list(Batches) ->
-    WC = State#state.worker_count,
-    case length(Batches) =:= WC of
-        false ->
-            {{error, glyphastore_error:invalid_argument(<<"worker pipeline vector does not match Worker count">>)}, State};
-        true ->
-            case resolve_deadline(State, Opts) of
-                {ok, Deadline} ->
-                    case plan_worker_pipelines(Batches, 0, State, []) of
-                        {ok, Prepared, State1} ->
-                            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
-                                {ok, State2} ->
-                                    Empty = [[] || _ <- lists:seq(1, WC)],
-                                    fanout_prepared(
-                                        Prepared,
-                                        Deadline,
-                                        State2,
-                                        fun(Worker, _Items, GroupResponses, Acc) ->
-                                            set_nth(Acc, Worker + 1, GroupResponses)
-                                        end,
-                                        Empty
-                                    );
-                                {{error, Err}, State2} ->
-                                    {{error, Err}, State2}
-                            end;
-                        {error, Err} ->
-                            {{error, Err}, State}
-                    end;
-                {error, Err} ->
-                    {{error, Err}, State}
-            end
-    end;
-do_execute_worker_pipelines(_Batches, _Opts, State) ->
-    {{error, glyphastore_error:invalid_argument(<<"worker pipelines must be a list">>)}, State}.
 
 plan_worker_pipelines([], _Worker, State, Acc) ->
     {ok, lists:reverse(Acc), State};
@@ -746,52 +1397,6 @@ ensure_workers_connected([Worker | Rest], State) ->
         {{error, Err}, State1} ->
             {{error, Err}, State1}
     end.
-
-fanout_prepared([], _Deadline, State, _Merge, Acc) ->
-    {{ok, Acc}, State};
-fanout_prepared([{Worker, Items, Plan}], Deadline, State, Merge, Acc) ->
-    %% Single Worker: stay on the client process (Go ExecuteBatch fast path).
-    Conn = maps:get(Worker, State#state.workers),
-    {{ok, GroupResponses}, State1} = run_pipeline(Plan, Deadline, Worker, Conn, State, length(Plan)),
-    {{ok, Merge(Worker, Items, GroupResponses, Acc)}, State1};
-fanout_prepared(Prepared, Deadline, State, Merge, Acc0) ->
-    Parent = self(),
-    Pending = lists:map(
-        fun({Worker, Items, Plan}) ->
-            Ref = make_ref(),
-            Conn = maps:get(Worker, State#state.workers),
-            spawn(fun() ->
-                {{ok, GroupResponses}, StateOut} =
-                    run_pipeline(Plan, Deadline, Worker, Conn, State, length(Plan)),
-                Parent ! {Ref, Worker, Items, GroupResponses, StateOut#state.healthy}
-            end),
-            {Ref, Worker, Items}
-        end,
-        Prepared
-    ),
-    collect_fanout(Pending, Acc0, State, Merge).
-
-collect_fanout([], Acc, State, _Merge) ->
-    {{ok, Acc}, State};
-collect_fanout(Pending, Acc, State, Merge) ->
-    receive
-        {Ref, Worker, Items, GroupResponses, Healthy} ->
-            case lists:keytake(Ref, 1, Pending) of
-                {value, {Ref, Worker, Items}, Rest} ->
-                    Acc1 = Merge(Worker, Items, GroupResponses, Acc),
-                    State1 =
-                        case Healthy of
-                            true -> State;
-                            false -> State#state{healthy = false}
-                        end,
-                    collect_fanout(Rest, Acc1, State1, Merge);
-                false ->
-                    collect_fanout(Pending, Acc, State, Merge)
-            end
-    end.
-
-set_nth(List, Idx, Value) ->
-    lists:sublist(List, 1, Idx - 1) ++ [Value] ++ lists:nthtail(Idx, List).
 
 build_group_plan(Items, State) ->
     build_group_plan(Items, State, 0, []).
