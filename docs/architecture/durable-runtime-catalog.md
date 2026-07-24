@@ -60,18 +60,24 @@ dropped immediately. Compaction remains the durable TTL cleanup path (`expired_r
 A zero backlog limit forces synchronous Index reclaim. Repeated GETs after a successful drain are
 Index misses and perform no Segment I/O.
 
-The per-Worker active-Record hot cache is bounded by deterministic shares of a global byte budget,
-a per-Worker byte cap, a staging-byte cap, and an entry cap. Admission allocates the immutable value
-and publication node before persistent writes; exhaustion bypasses the cache and never rejects an
-otherwise valid mutation. Accounted resident/staged/bucket bytes, limits, hits, misses, stale hits, evictions, size rejects,
-expired-TTL GETs, and admission bypasses are observable without a global cache lock. Durable GET path
-timing (mutex wait, prepare/complete hold, Index/hot/pin lookup, cold read, CRC/value copy,
-relinearization retries) is published through `get_path_stats()` with relaxed atomics so the Worker
-critical section stays short. A hot read snapshots shared immutable ownership under
-the Worker mutex and performs the value-sized owning copy after unlocking. On an active-generation
-miss, the pinned runtime reader may exceed its handle's opening boundary only for the exact
-authoritative `RecordRef`; the mandatory post-I/O Index and pin revalidation above is its
-linearization point. Rotation removes all entries charged to the retired active generation.
+The per-Worker active-Record hot cache is a Swiss-style flat open-addressed table (power-of-two
+capacity, load 0.5, 8-slot control groups, H2 fingerprints, SIMD/scalar group matching shared with
+the Index via `swiss_control_group.hpp`, values inlined up to 48 bytes). It is bounded by
+deterministic shares of a global byte budget, a per-Worker byte cap, a staging-byte cap, and an
+entry cap. Admission prepares the immutable value before persistent writes; exhaustion bypasses the
+cache and never rejects an otherwise valid mutation. Hash is never identity — full key bytes are
+compared on every fingerprint candidate. Accounted resident/staged/bucket bytes, limits, hits,
+misses, stale hits, evictions, size rejects, expired-TTL GETs, and admission bypasses are observable
+without a global cache lock. Durable GET path timing (mutex wait, prepare/complete hold, Index/hot/
+pin lookup, cold read, CRC/value copy, relinearization retries) is published through
+`get_path_stats()` with relaxed atomics so the Worker critical section stays short; fine-grained
+clock sampling compiles out of Release unless `GLYPHASTORE_GET_PATH_TIMING` is set. Ordinary hot
+`prepare_get` holds only the Worker mutex (catalog shared lock is taken only on cold-miss pin
+acquire). A hot read snapshots shared immutable ownership under the Worker mutex and performs the
+value-sized owning copy after unlocking. On an active-generation miss, the pinned runtime reader may
+exceed its handle's opening boundary only for the exact authoritative `RecordRef`; the mandatory
+post-I/O Index and pin revalidation above is its linearization point. Rotation removes all entries
+charged to the retired active generation.
 
 The steady-state Segment-descriptor bound is the catalog Segment count plus the Worker count. Cold
 read concurrency reuses immutable pins and therefore does not increase that bound. Catalog lookup on

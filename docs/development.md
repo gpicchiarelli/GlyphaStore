@@ -58,7 +58,8 @@ hard regression gates or publishing absolute throughput claims.
 
 Local maintenance and durable matrices write under gitignored `benchmark-results*/` via
 `./scripts/dev.sh benchmark`, `benchmark-durable`, and related harness scripts. Do not commit raw
-run outputs.
+run outputs. Comparative GET/hot-cache notes live under `docs/benchmarks/` (methodology + medians
+only); reproduce with `./scripts/benchmark_get_path.sh` or the focused filters in those notes.
 
 Cleartext vs TLS 1.3 tax on the Go pipeline harness:
 `./scripts/benchmark_tls_tax.sh` (see [TLS performance note](security/tls-performance.md)).

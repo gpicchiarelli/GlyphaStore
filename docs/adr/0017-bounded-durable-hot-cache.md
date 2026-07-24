@@ -30,25 +30,30 @@ authoritative Index after I/O.
 The global hot-cache byte budget is deterministically partitioned across Workers and capped by an
 explicit per-Worker byte limit. Each Worker also has entry and pre-commit staging-byte limits.
 Admission is also gated by `hot_cache_enabled` and `max_hot_cache_value_bytes` (default 64 KiB):
-oversized values never admit and cannot blow the Worker budget. Accounting conservatively charges
-keys, immutable value buffers, map nodes, and bucket/control storage. Strict-group staging
-additionally charges its pending mutation and duplicated publication key. The counters, hit/miss/
-stale/eviction/size-rejected counts, hit-rate, and effective limits are available as a single locked
-Worker snapshot; no global cache mutex or shared admission counter is introduced.
+oversized values never admit and cannot blow the Worker budget. The per-Worker table is a Swiss-style
+flat open-addressed map (H2 control fingerprints, 8-slot SIMD/scalar group probe, load 0.5, values
+inlined up to 48 bytes). Accounting conservatively charges keys, immutable value buffers, and
+slot/control storage. Strict-group staging additionally charges its pending mutation and duplicated
+publication key. The counters, hit/miss/stale/eviction/size-rejected counts, hit-rate, and effective
+limits are available as a single locked Worker snapshot; no global cache mutex or shared admission
+counter is introduced.
 
-PUT prepares map capacity, key node, and a single-allocation `shared_ptr<const byte[]>` value before
-the first persistent write. Publication only moves prepared ownership. If any cache limit is exhausted,
-admission is bypassed; after authoritative Index publication an older cached value is removed and
-the mutation still succeeds. Erase, replacement, failed group publication, and rotation release
-their exact charges. A zero limit or `hot_cache_enabled=false` intentionally disables admission.
+PUT prepares table capacity and a single-allocation `shared_ptr<const byte[]>` value (when above the
+inline threshold) before the first persistent write. Publication only moves prepared ownership. If
+any cache limit is exhausted, admission is bypassed; after authoritative Index publication an older
+cached value is removed and the mutation still succeeds. Erase, replacement, failed group
+publication, and rotation release their exact charges. A zero limit or `hot_cache_enabled=false`
+intentionally disables admission.
 
 A hot GET snapshots the immutable value owner and metadata while holding the Worker mutex, then
-copies the public owning value after releasing it. A miss captures the exact Index `RecordRef` and
-shared generation pin under the Worker/catalog locks. The runtime-only Segment visitor may read up
-to the fixed physical Segment boundary because this reader's persisted boundary can predate the
-active append. It is callable only through that authoritative pinned path. After positional I/O,
-decode, CRC, key/hash, sequence, and expiration checks, GET reacquires both locks and linearizes only
-if the Index still names the exact reference and the catalog still names the same pin object.
+copies the public owning value after releasing it. Ordinary hot `prepare_get` does not take the
+catalog shared lock. A miss captures the exact Index `RecordRef` and shared generation pin under the
+Worker mutex plus a catalog shared lock for pin/manifest identity. The runtime-only Segment visitor
+may read up to the fixed physical Segment boundary because this reader's persisted boundary can
+predate the active append. It is callable only through that authoritative pinned path. After
+positional I/O, decode, CRC, key/hash, sequence, and expiration checks, GET reacquires the Worker
+mutex, rechecks the Index reference, and (only when that still matches) takes the catalog shared lock
+to confirm the same pin object.
 
 ## Alternatives considered
 

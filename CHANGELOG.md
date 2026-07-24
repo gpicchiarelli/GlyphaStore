@@ -5,6 +5,11 @@ public API exists.
 
 ## [Unreleased]
 
+- Advance durable hot-cache probing to Swiss-style H2 control bytes with SIMD/scalar 8-slot group
+  matching (shared `swiss_control_group.hpp`), and keep full-key identity checks. Defer catalog
+  shared-lock acquisition in `prepare_get` / cold revalidation off the ordinary hot path (Worker
+  mutex only until a cold miss needs a generation pin). Add `hot_record_table` unit coverage and
+  record comparative GET medians in `docs/benchmarks/get-path-hot-cache-simd-2026-07-25.md`.
 - Finish durable GET path follow-up optimizations: slim `prepare_get` critical section (hot snapshot
   then unlock; pin only on cold miss; deferred TTL drain only when backlog non-empty), move hot-cache
   bookkeeping to cache-line-aligned relaxed atomics, gate fine-grained GET timing out of Release
