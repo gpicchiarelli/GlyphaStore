@@ -8,7 +8,7 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "persistence/adaptive_batch_sizer.hpp"
-#include "persistence/hot_record_capacity.hpp"
+#include "persistence/hot_record_table.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,11 +20,20 @@
 #include <ranges>
 #include <span>
 #include <string>
-#include <unordered_map>
 #include <utility>
 
 namespace glyphastore {
 namespace {
+
+#if defined(NDEBUG) && !defined(GLYPHASTORE_GET_PATH_TIMING)
+inline constexpr bool kGetPathTimingEnabled = false;
+#else
+inline constexpr bool kGetPathTimingEnabled = true;
+#endif
+
+using detail::HotRecordEntry;
+using detail::HotRecordSnapshot;
+using detail::HotRecordTable;
 
 [[nodiscard]] auto as_string_view(const std::span<const std::byte> bytes) noexcept -> std::string_view {
     if (bytes.empty()) {
@@ -45,6 +54,36 @@ namespace {
     return steady_duration_ns(start, std::chrono::steady_clock::now());
 }
 
+[[nodiscard]] auto timing_now() noexcept -> std::optional<std::chrono::steady_clock::time_point> {
+    if constexpr (!kGetPathTimingEnabled) {
+        return std::nullopt;
+    }
+    return std::chrono::steady_clock::now();
+}
+
+[[nodiscard]] auto timing_elapsed_ns(const std::optional<std::chrono::steady_clock::time_point> start) noexcept
+    -> std::uint64_t {
+    if constexpr (!kGetPathTimingEnabled) {
+        return 0;
+    }
+    if (!start) {
+        return 0;
+    }
+    return steady_elapsed_ns(*start);
+}
+
+[[nodiscard]] auto timing_duration_ns(const std::optional<std::chrono::steady_clock::time_point> start,
+                                      const std::optional<std::chrono::steady_clock::time_point> end) noexcept
+    -> std::uint64_t {
+    if constexpr (!kGetPathTimingEnabled) {
+        return 0;
+    }
+    if (!start || !end) {
+        return 0;
+    }
+    return steady_duration_ns(*start, *end);
+}
+
 struct ReadContext {
     std::span<const std::byte> expected_key;
     std::uint64_t expected_hash{};
@@ -55,17 +94,17 @@ struct ReadContext {
 
 auto copy_verified_value(void* opaque, const RecordView& record) -> Status {
     auto& context = *static_cast<ReadContext*>(opaque);
-    const auto copy_started = std::chrono::steady_clock::now();
+    const auto copy_started = timing_now();
     if (record.opcode != Opcode::put) {
-        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
+        context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
         return fail(ErrorCode::corrupted_data, "durable Index references a non-value Record");
     }
     if (record.key_hash != context.expected_hash || !std::ranges::equal(record.key, context.expected_key)) {
-        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
+        context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
         return fail(ErrorCode::corrupted_data, "durable Index key does not match its referenced Record");
     }
     if (record.expired(context.now_ns)) {
-        context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
+        context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
         return fail(ErrorCode::not_found, "key has expired");
     }
     context.value = {
@@ -73,7 +112,7 @@ auto copy_verified_value(void* opaque, const RecordView& record) -> Status {
         .sequence = record.sequence.value,
         .expire_at_ns = record.expire_at_ns,
     };
-    context.crc_value_copy_ns = steady_elapsed_ns(copy_started);
+    context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
     return {};
 }
 
@@ -133,93 +172,35 @@ template <typename Callback> class ScopeExit final {
 
 template <typename Callback> ScopeExit(Callback) -> ScopeExit<Callback>;
 
-struct HotRecordEntry {
-    static constexpr std::size_t kInlineValueBytes = 32;
-
-    RecordRef reference{};
-    std::shared_ptr<const std::byte[]> heap_value;
-    alignas(std::max_align_t) std::byte inline_value[kInlineValueBytes]{};
-    std::size_t value_size{};
-    SequenceNumber sequence{};
-    std::uint64_t expire_at_ns{};
-    std::uint64_t accounted_bytes{};
-    bool value_inline{};
-
-    [[nodiscard]] auto value_span() const noexcept -> std::span<const std::byte> {
-        if (value_size == 0) {
-            return {};
-        }
-        if (value_inline) {
-            return {inline_value, value_size};
-        }
-        return {heap_value.get(), value_size};
-    }
-};
-
-struct HotRecordSnapshot {
-    std::shared_ptr<const std::byte[]> heap_value;
-    alignas(std::max_align_t) std::byte inline_value[HotRecordEntry::kInlineValueBytes]{};
-    std::size_t value_size{};
-    SequenceNumber sequence{};
-    std::uint64_t expire_at_ns{};
-    bool value_inline{};
-
-    [[nodiscard]] auto value_span() const noexcept -> std::span<const std::byte> {
-        if (value_size == 0) {
-            return {};
-        }
-        if (value_inline) {
-            return {inline_value, value_size};
-        }
-        return {heap_value.get(), value_size};
-    }
-};
-
-struct TransparentStringHash {
-    using is_transparent = void;
-
-    [[nodiscard]] auto operator()(const std::string_view value) const noexcept -> std::size_t {
-        return std::hash<std::string_view>{}(value);
-    }
-
-    [[nodiscard]] auto operator()(const std::string& value) const noexcept -> std::size_t {
-        return (*this)(std::string_view{value});
-    }
-};
-
-struct TransparentStringEqual {
-    using is_transparent = void;
-
-    [[nodiscard]] auto operator()(const std::string_view left, const std::string_view right) const noexcept
-        -> bool {
-        return left == right;
-    }
-};
-
-using HotRecordMap =
-    std::unordered_map<std::string, HotRecordEntry, TransparentStringHash, TransparentStringEqual>;
-
+// Staged hot-cache admission held outside the resident flat table until Index
+// publication. RAII releases staged byte/entry charges if publication aborts.
 class PreparedHotRecord final {
   public:
     PreparedHotRecord() = default;
-    PreparedHotRecord(HotRecordMap::node_type node, std::uint64_t* staged_bytes, std::size_t* staged_entries,
+    PreparedHotRecord(std::string key, const std::uint64_t key_hash, HotRecordEntry entry,
+                      std::uint64_t* staged_bytes, std::size_t* staged_entries,
                       const std::uint64_t staged_charge) noexcept
-        : node_(std::move(node)), staged_bytes_(staged_bytes), staged_entries_(staged_entries),
-          staged_charge_(staged_charge) {}
+        : key_(std::move(key)), key_hash_(key_hash), entry_(std::move(entry)), staged_bytes_(staged_bytes),
+          staged_entries_(staged_entries), staged_charge_(staged_charge), active_(true) {}
     ~PreparedHotRecord() {
         release_stage();
     }
     PreparedHotRecord(PreparedHotRecord&& other) noexcept
-        : node_(std::move(other.node_)), staged_bytes_(std::exchange(other.staged_bytes_, nullptr)),
+        : key_(std::move(other.key_)), key_hash_(std::exchange(other.key_hash_, 0)),
+          entry_(std::move(other.entry_)), staged_bytes_(std::exchange(other.staged_bytes_, nullptr)),
           staged_entries_(std::exchange(other.staged_entries_, nullptr)),
-          staged_charge_(std::exchange(other.staged_charge_, 0)) {}
+          staged_charge_(std::exchange(other.staged_charge_, 0)),
+          active_(std::exchange(other.active_, false)) {}
     auto operator=(PreparedHotRecord&& other) noexcept -> PreparedHotRecord& {
         if (this != &other) {
             release_stage();
-            node_ = std::move(other.node_);
+            key_ = std::move(other.key_);
+            key_hash_ = std::exchange(other.key_hash_, 0);
+            entry_ = std::move(other.entry_);
             staged_bytes_ = std::exchange(other.staged_bytes_, nullptr);
             staged_entries_ = std::exchange(other.staged_entries_, nullptr);
             staged_charge_ = std::exchange(other.staged_charge_, 0);
+            active_ = std::exchange(other.active_, false);
         }
         return *this;
     }
@@ -227,17 +208,21 @@ class PreparedHotRecord final {
     auto operator=(const PreparedHotRecord&) -> PreparedHotRecord& = delete;
 
     [[nodiscard]] auto empty() const noexcept -> bool {
-        return node_.empty();
+        return !active_;
     }
     [[nodiscard]] auto key() const -> const std::string& {
-        return node_.key();
+        return key_;
+    }
+    [[nodiscard]] auto key_hash() const noexcept -> std::uint64_t {
+        return key_hash_;
     }
     [[nodiscard]] auto mapped() -> HotRecordEntry& {
-        return node_.mapped();
+        return entry_;
     }
-    [[nodiscard]] auto release_node() -> HotRecordMap::node_type {
+    [[nodiscard]] auto take_entry() -> HotRecordEntry {
         release_stage();
-        return std::move(node_);
+        active_ = false;
+        return std::move(entry_);
     }
 
   private:
@@ -252,40 +237,26 @@ class PreparedHotRecord final {
         staged_charge_ = 0;
     }
 
-    HotRecordMap::node_type node_;
+    std::string key_;
+    std::uint64_t key_hash_{};
+    HotRecordEntry entry_{};
     std::uint64_t* staged_bytes_{};
     std::size_t* staged_entries_{};
     std::uint64_t staged_charge_{};
+    bool active_{};
 };
 
-constexpr std::uint64_t kHotCacheBucketAccountingMultiplier = 2;
-constexpr std::size_t kHotCacheStagingBucketFloor = 16;
-
-[[nodiscard]] auto hot_cache_bucket_bytes(const std::size_t buckets) noexcept -> std::uint64_t {
-    constexpr auto bytes_per_bucket =
-        static_cast<std::uint64_t>(sizeof(void*)) * kHotCacheBucketAccountingMultiplier;
-    if (buckets > std::numeric_limits<std::uint64_t>::max() / bytes_per_bucket) {
+[[nodiscard]] auto hot_cache_table_bytes(const std::size_t capacity) noexcept -> std::uint64_t {
+    const auto per_slot = detail::hot_record_slot_bytes();
+    if (capacity > std::numeric_limits<std::uint64_t>::max() / per_slot) {
         return std::numeric_limits<std::uint64_t>::max();
     }
-    return static_cast<std::uint64_t>(buckets) * bytes_per_bucket;
+    return static_cast<std::uint64_t>(capacity) * per_slot;
 }
 
 [[nodiscard]] auto hot_record_accounted_bytes(const std::size_t key_bytes, const std::size_t value_bytes)
     -> Result<std::uint64_t> {
-    // Per-entry overhead (unordered_map node + control): value_type plus ~4 pointers.
-    // Keys are owned by the map node (no second key copy). Values <= 32B are inlined in the
-    // entry; larger values charge the heap buffer size. Hash is never treated as identity.
-    constexpr auto fixed = static_cast<std::uint64_t>(sizeof(HotRecordMap::value_type) + 4U * sizeof(void*));
-    if (key_bytes > std::numeric_limits<std::uint64_t>::max() - fixed) {
-        return fail(ErrorCode::arithmetic_overflow, "hot-cache key accounting overflow");
-    }
-    const auto with_key = fixed + static_cast<std::uint64_t>(key_bytes);
-    const auto charged_value =
-        value_bytes <= HotRecordEntry::kInlineValueBytes ? 0U : static_cast<std::uint64_t>(value_bytes);
-    if (charged_value > std::numeric_limits<std::uint64_t>::max() - with_key) {
-        return fail(ErrorCode::arithmetic_overflow, "hot-cache value accounting overflow");
-    }
-    return with_key + charged_value;
+    return detail::hot_record_accounted_bytes(key_bytes, value_bytes);
 }
 
 [[nodiscard]] auto hot_cache_worker_budget(const std::size_t worker_index, const std::size_t worker_count,
@@ -300,23 +271,6 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
     return std::min(partition, limits.max_hot_cache_bytes_per_worker);
 }
 
-[[nodiscard]] auto prepare_hot_record_insertions(HotRecordMap& records, const std::size_t additional_records)
-    -> Status {
-    const auto raw_capacity =
-        static_cast<double>(records.bucket_count()) * static_cast<double>(records.max_load_factor());
-    const auto current_capacity = raw_capacity >= static_cast<double>(std::numeric_limits<std::size_t>::max())
-                                      ? std::numeric_limits<std::size_t>::max()
-                                      : static_cast<std::size_t>(raw_capacity);
-    const auto plan = detail::plan_hot_record_reserve(records.size(), additional_records, current_capacity);
-    if (plan.overflow) {
-        return fail(ErrorCode::arithmetic_overflow, "hot Record publication capacity overflow");
-    }
-    if (plan.target != 0) {
-        records.reserve(plan.target);
-    }
-    return {};
-}
-
 [[nodiscard]] auto hot_record_matches(const HotRecordEntry& entry, const RecordRef& reference) noexcept
     -> bool {
     return entry.reference == reference;
@@ -329,14 +283,6 @@ constexpr std::size_t kHotCacheStagingBucketFloor = 16;
         std::copy_n(bytes.begin(), entry.value_size, value.begin());
     }
     return {.bytes = std::move(value), .sequence = entry.sequence.value, .expire_at_ns = entry.expire_at_ns};
-}
-
-[[nodiscard]] auto make_hot_record_map() -> HotRecordMap {
-    HotRecordMap records;
-    // Keep load factor low to reduce collision chains; identity is full-key compare.
-    records.max_load_factor(0.5f);
-    records.reserve(64);
-    return records;
 }
 
 auto rotation_manifest(const Manifest& current, const ManifestSegmentEntry& old_active,
@@ -636,8 +582,9 @@ struct DurableRuntimeCatalog::RuntimeWorker {
         std::atomic_uint64_t deadline_closes{};
     };
 
-    // GET path timing totals. Prefer publishing after unlock so the Worker
-    // mutex critical section stays short; under-lock counters remain local.
+    // GET path timing + bookkeeping. Timing atomics are only updated when
+    // kGetPathTimingEnabled (Debug / explicit define); counters always use
+    // relaxed atomics published outside or at the edge of the critical section.
     struct alignas(64) GetPathMetrics final {
         std::atomic_uint64_t prepare_calls{};
         std::atomic_uint64_t complete_calls{};
@@ -650,14 +597,20 @@ struct DurableRuntimeCatalog::RuntimeWorker {
         std::atomic_uint64_t cold_read_ns{};
         std::atomic_uint64_t crc_value_copy_ns{};
         std::atomic_uint64_t relinearization_retries{};
+        std::atomic_uint64_t hot_hits{};
+        std::atomic_uint64_t hot_misses{};
+        std::atomic_uint64_t hot_stale_hits{};
+        std::atomic_uint64_t hot_evictions{};
+        std::atomic_uint64_t admission_bypasses{};
+        std::atomic_uint64_t size_rejected{};
+        std::atomic_uint64_t expired_ttl_gets{};
     };
 
     explicit RuntimeWorker(RecoveredWorkerState recovered)
         : worker_id(recovered.worker_id), index(std::move(recovered.index)),
           next_sequence(recovered.next_sequence), active_segment(recovered.active_segment),
           active_live_record_bytes(recovered.active_live_record_bytes),
-          sealed_live_record_bytes(recovered.sealed_live_record_bytes),
-          hot_records(make_hot_record_map()), hot_record_staging(make_hot_record_map()) {}
+          sealed_live_record_bytes(recovered.sealed_live_record_bytes) {}
 
     [[nodiscard]] auto update_live_record_bytes(const std::optional<RecordRef>& previous,
                                                 const std::optional<RecordRef>& current) -> Status {
@@ -693,18 +646,10 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::optional<DurableSegmentFile> cached_file;
     bool cached_writable{};
     std::vector<std::byte> encode_scratch;
-    HotRecordMap hot_records;
-    HotRecordMap hot_record_staging;
+    HotRecordTable hot_records;
     std::uint64_t hot_record_resident_bytes{};
     std::uint64_t hot_record_staged_bytes{};
     std::size_t hot_record_staged_entries{};
-    std::uint64_t hot_record_hits{};
-    std::uint64_t hot_record_misses{};
-    std::uint64_t hot_record_stale_hits{};
-    std::uint64_t hot_record_evictions{};
-    std::uint64_t hot_record_admission_bypasses{};
-    std::uint64_t hot_record_size_rejected{};
-    std::uint64_t get_expired_ttl{};
     std::vector<DeferredTtlReclaim> deferred_ttl_reclaims;
     std::uint64_t deferred_ttl_enqueued{};
     std::uint64_t deferred_ttl_applied{};
@@ -723,7 +668,8 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     std::condition_variable compaction_commit_finished;
 
     [[nodiscard]] auto hot_cache_total_bytes() const noexcept -> std::uint64_t;
-    void erase_hot_record(std::string_view key) noexcept;
+    void erase_hot_record(std::string_view key, std::uint64_t key_hash) noexcept;
+    void erase_hot_record(const HashedKey& key) noexcept { erase_hot_record(key.key, key.hash); }
     // Drain up to `limit` deferred TTL reclamations. Verifies exact RecordRef
     // before erase so a reinsert/update is never deleted. Caller holds mutex.
     [[nodiscard]] auto drain_deferred_ttl(std::size_t limit) -> Status;
@@ -733,8 +679,8 @@ struct DurableRuntimeCatalog::RuntimeWorker {
                                                 std::size_t backlog_limit) -> Status;
     [[nodiscard]] auto prepare_hot_record(std::size_t worker_index, std::size_t worker_count,
                                           const DurableResourceLimits& limits, std::string_view key,
-                                          std::span<const std::byte> value, std::uint64_t expire_at_ns,
-                                          std::uint64_t publication_staging_bytes)
+                                          std::uint64_t key_hash, std::span<const std::byte> value,
+                                          std::uint64_t expire_at_ns, std::uint64_t publication_staging_bytes)
         -> Result<PreparedHotRecord>;
     [[nodiscard]] auto publish_hot_record(PreparedHotRecord& prepared, const RecordRef& reference,
                                           SequenceNumber sequence) -> Status;
@@ -742,28 +688,23 @@ struct DurableRuntimeCatalog::RuntimeWorker {
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::hot_cache_total_bytes() const noexcept
     -> std::uint64_t {
-    const auto buckets = hot_cache_bucket_bytes(hot_records.bucket_count());
-    const auto staging_buckets = hot_cache_bucket_bytes(hot_record_staging.bucket_count());
+    const auto table_bytes = hot_cache_table_bytes(hot_records.capacity());
     const auto first =
         hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
             ? std::numeric_limits<std::uint64_t>::max()
             : hot_record_resident_bytes + hot_record_staged_bytes;
-    const auto second = first > std::numeric_limits<std::uint64_t>::max() - buckets
-                            ? std::numeric_limits<std::uint64_t>::max()
-                            : first + buckets;
-    return second > std::numeric_limits<std::uint64_t>::max() - staging_buckets
+    return first > std::numeric_limits<std::uint64_t>::max() - table_bytes
                ? std::numeric_limits<std::uint64_t>::max()
-               : second + staging_buckets;
+               : first + table_bytes;
 }
 
-void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_view key) noexcept {
-    const auto existing = hot_records.find(key);
-    if (existing == hot_records.end()) {
-        return;
+void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_view key,
+                                                             const std::uint64_t key_hash) noexcept {
+    if (auto* existing = hot_records.find(key, key_hash); existing != nullptr) {
+        hot_record_resident_bytes -= existing->accounted_bytes;
+        static_cast<void>(hot_records.erase(key, key_hash));
+        get_path_metrics.hot_evictions.fetch_add(1U, std::memory_order_relaxed);
     }
-    hot_record_resident_bytes -= existing->second.accounted_bytes;
-    hot_records.erase(existing);
-    ++hot_record_evictions;
 }
 
 auto DurableRuntimeCatalog::RuntimeWorker::drain_deferred_ttl(const std::size_t limit) -> Status {
@@ -782,7 +723,7 @@ auto DurableRuntimeCatalog::RuntimeWorker::drain_deferred_ttl(const std::size_t 
         if (auto counted = update_live_record_bytes(erased.previous, std::nullopt); !counted) {
             return counted;
         }
-        erase_hot_record(key.key);
+        erase_hot_record(key);
         ++deferred_ttl_applied;
     }
     return {};
@@ -794,8 +735,8 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
     -> Status {
     // Drop any matching hot row immediately so the expired value cannot be
     // served; Index removal may wait for a bounded Worker drain.
-    erase_hot_record(key.key);
-    ++get_expired_ttl;
+    erase_hot_record(key);
+    get_path_metrics.expired_ttl_gets.fetch_add(1U, std::memory_order_relaxed);
 
     if (backlog_limit == 0) {
         const auto current = index.find(key);
@@ -839,16 +780,17 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::prepare_hot_record(
     const std::size_t worker_index, const std::size_t worker_count, const DurableResourceLimits& limits,
-    const std::string_view key, const std::span<const std::byte> value, const std::uint64_t expire_at_ns,
-    const std::uint64_t publication_staging_bytes) -> Result<PreparedHotRecord> {
+    const std::string_view key, const std::uint64_t key_hash, const std::span<const std::byte> value,
+    const std::uint64_t expire_at_ns, const std::uint64_t publication_staging_bytes)
+    -> Result<PreparedHotRecord> {
     if (!limits.hot_cache_enabled) {
-        ++hot_record_admission_bypasses;
+        get_path_metrics.admission_bypasses.fetch_add(1U, std::memory_order_relaxed);
         return PreparedHotRecord{};
     }
     if (limits.max_hot_cache_value_bytes == 0 ||
         value.size() > static_cast<std::size_t>(limits.max_hot_cache_value_bytes)) {
-        ++hot_record_size_rejected;
-        ++hot_record_admission_bypasses;
+        get_path_metrics.size_rejected.fetch_add(1U, std::memory_order_relaxed);
+        get_path_metrics.admission_bypasses.fetch_add(1U, std::memory_order_relaxed);
         return PreparedHotRecord{};
     }
     auto charge = hot_record_accounted_bytes(key.size(), value.size());
@@ -871,7 +813,7 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
         hot_record_staged_bytes > limits.max_hot_cache_staging_bytes_per_worker ||
         staged_charge > limits.max_hot_cache_staging_bytes_per_worker - hot_record_staged_bytes;
     if (budget == 0 || entry_exhausted || staging_exhausted) {
-        ++hot_record_admission_bypasses;
+        get_path_metrics.admission_bypasses.fetch_add(1U, std::memory_order_relaxed);
         return PreparedHotRecord{};
     }
 
@@ -880,36 +822,30 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
         return fail(ErrorCode::arithmetic_overflow, "hot-cache staged entry accounting overflow");
     }
     const auto additional = hot_record_staged_entries + 1U;
-    const auto projected_bucket_count =
-        projected_entries + 1U > std::numeric_limits<std::size_t>::max() / 2U
-            ? std::numeric_limits<std::size_t>::max()
-            : std::max(hot_records.bucket_count(), (projected_entries + 1U) * 2U);
-    const auto projected_staging_buckets =
-        std::max(hot_record_staging.bucket_count(), kHotCacheStagingBucketFloor);
-    const auto projected_buckets = hot_cache_bucket_bytes(projected_bucket_count);
-    const auto projected_staging = hot_cache_bucket_bytes(projected_staging_buckets);
+    const auto plan =
+        detail::plan_hot_record_reserve(hot_records.size(), additional, hot_records.capacity());
+    if (plan.overflow) {
+        return fail(ErrorCode::arithmetic_overflow, "hot Record publication capacity overflow");
+    }
+    const auto projected_capacity = plan.target == 0 ? hot_records.capacity() : plan.target;
+    const auto projected_table = hot_cache_table_bytes(projected_capacity);
     const auto fixed =
         hot_record_resident_bytes > std::numeric_limits<std::uint64_t>::max() - hot_record_staged_bytes
             ? std::numeric_limits<std::uint64_t>::max()
             : hot_record_resident_bytes + hot_record_staged_bytes;
     const auto available = fixed >= budget ? 0 : budget - fixed;
-    if (projected_buckets > available || projected_staging > available - projected_buckets ||
-        staged_charge > available - projected_buckets - projected_staging) {
-        ++hot_record_admission_bypasses;
+    if (projected_table > available || staged_charge > available - projected_table) {
+        get_path_metrics.admission_bypasses.fetch_add(1U, std::memory_order_relaxed);
         return PreparedHotRecord{};
     }
-
-    const auto resident_bucket_count = hot_records.bucket_count();
-    const auto staging_bucket_count = hot_record_staging.bucket_count();
-    if (auto prepared = prepare_hot_record_insertions(hot_records, additional); !prepared) {
-        return unexpected(prepared.error());
+    if (plan.target != 0) {
+        if (auto reserved = hot_records.reserve(plan.target / 2U); !reserved) {
+            return unexpected(reserved.error());
+        }
     }
     const auto after_reserve = hot_cache_total_bytes();
     if (after_reserve >= budget || staged_charge > budget - after_reserve) {
-        if (hot_records.bucket_count() != resident_bucket_count) {
-            hot_records.rehash(resident_bucket_count);
-        }
-        ++hot_record_admission_bypasses;
+        get_path_metrics.admission_bypasses.fetch_add(1U, std::memory_order_relaxed);
         return PreparedHotRecord{};
     }
 
@@ -925,26 +861,10 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
         staged_entry.heap_value = std::move(mutable_value);
         staged_entry.value_inline = false;
     }
-    const auto staged = hot_record_staging.emplace(std::string{key}, std::move(staged_entry));
-    if (!staged.second) {
-        return fail(ErrorCode::corrupted_data, "hot Record staging map was not empty");
-    }
-    auto node = hot_record_staging.extract(staged.first);
-    const auto after_staging = hot_cache_total_bytes();
-    if (after_staging >= budget || staged_charge > budget - after_staging) {
-        if (hot_record_staging.bucket_count() != staging_bucket_count) {
-            hot_record_staging.rehash(staging_bucket_count);
-        }
-        if (hot_records.bucket_count() != resident_bucket_count) {
-            hot_records.rehash(resident_bucket_count);
-        }
-        ++hot_record_admission_bypasses;
-        return PreparedHotRecord{};
-    }
     hot_record_staged_bytes += staged_charge;
     ++hot_record_staged_entries;
-    return PreparedHotRecord{std::move(node), &hot_record_staged_bytes, &hot_record_staged_entries,
-                             staged_charge};
+    return PreparedHotRecord{std::string{key}, key_hash, std::move(staged_entry), &hot_record_staged_bytes,
+                             &hot_record_staged_entries, staged_charge};
 }
 
 [[nodiscard]] auto DurableRuntimeCatalog::RuntimeWorker::publish_hot_record(PreparedHotRecord& prepared,
@@ -957,15 +877,16 @@ auto DurableRuntimeCatalog::RuntimeWorker::defer_or_reclaim_expired(const Hashed
     prepared.mapped().reference = reference;
     prepared.mapped().sequence = sequence;
     const auto charge = prepared.mapped().accounted_bytes;
-    const auto existing = hot_records.find(prepared.key());
-    if (existing != hot_records.end()) {
-        hot_record_resident_bytes -= existing->second.accounted_bytes;
-        existing->second = std::move(prepared.mapped());
-        static_cast<void>(prepared.release_node());
+    const auto key_hash = prepared.key_hash();
+    auto key = prepared.key();
+    if (auto* existing = hot_records.find(key, key_hash); existing != nullptr) {
+        hot_record_resident_bytes -= existing->accounted_bytes;
+        *existing = prepared.take_entry();
     } else {
-        auto inserted = hot_records.insert(prepared.release_node());
-        if (!inserted.inserted) {
-            return fail(ErrorCode::corrupted_data, "prepared hot Record publication conflicted");
+        auto entry = prepared.take_entry();
+        if (auto inserted = hot_records.insert_or_assign(std::move(key), key_hash, std::move(entry));
+            !inserted) {
+            return unexpected(inserted.error());
         }
     }
     hot_record_resident_bytes += charge;
@@ -1168,7 +1089,7 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
                 return publication_failed(counted.error());
             }
             if (mutation->hot_record.empty()) {
-                worker.erase_hot_record(mutation->key);
+                worker.erase_hot_record(mutation->key, mutation->key_hash);
             } else if (auto hot_published = worker.publish_hot_record(
                            mutation->hot_record, mutation->reference, mutation->reference.sequence);
                        !hot_published) {
@@ -1179,7 +1100,7 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker, const Segm
             if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
                 return publication_failed(counted.error());
             }
-            worker.erase_hot_record(mutation->key);
+            worker.erase_hot_record(mutation->key, mutation->key_hash);
         }
         mutation->completed = true;
     }
@@ -1450,95 +1371,107 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
     std::uint64_t index_lookup_ns = 0;
     std::uint64_t hot_cache_lookup_ns = 0;
     std::uint64_t generation_pin_lookup_ns = 0;
+    std::uint64_t local_hits = 0;
+    std::uint64_t local_misses = 0;
+    std::uint64_t local_stale = 0;
     ScopeExit publish_prepare_metrics{[&]() noexcept {
-        atomic_saturating_add(metrics.prepare_calls, 1U);
-        atomic_saturating_add(metrics.mutex_wait_ns, mutex_wait_ns);
-        atomic_saturating_add(metrics.prepare_hold_ns, prepare_hold_ns);
-        atomic_saturating_add(metrics.index_lookup_ns, index_lookup_ns);
-        atomic_saturating_add(metrics.hot_cache_lookup_ns, hot_cache_lookup_ns);
-        atomic_saturating_add(metrics.generation_pin_lookup_ns, generation_pin_lookup_ns);
+        metrics.prepare_calls.fetch_add(1U, std::memory_order_relaxed);
+        if (local_hits != 0) {
+            metrics.hot_hits.fetch_add(local_hits, std::memory_order_relaxed);
+        }
+        if (local_misses != 0) {
+            metrics.hot_misses.fetch_add(local_misses, std::memory_order_relaxed);
+        }
+        if (local_stale != 0) {
+            metrics.hot_stale_hits.fetch_add(local_stale, std::memory_order_relaxed);
+        }
+        if constexpr (kGetPathTimingEnabled) {
+            atomic_saturating_add(metrics.mutex_wait_ns, mutex_wait_ns);
+            atomic_saturating_add(metrics.prepare_hold_ns, prepare_hold_ns);
+            atomic_saturating_add(metrics.index_lookup_ns, index_lookup_ns);
+            atomic_saturating_add(metrics.hot_cache_lookup_ns, hot_cache_lookup_ns);
+            atomic_saturating_add(metrics.generation_pin_lookup_ns, generation_pin_lookup_ns);
+        }
     }};
     {
-        const auto wait_started = std::chrono::steady_clock::now();
+        const auto wait_started = timing_now();
         const std::lock_guard worker_lock{worker.mutex};
-        const auto locked_at = std::chrono::steady_clock::now();
-        mutex_wait_ns = steady_duration_ns(wait_started, locked_at);
-        ScopeExit observe_hold{[&]() noexcept { prepare_hold_ns = steady_elapsed_ns(locked_at); }};
+        const auto locked_at = timing_now();
+        mutex_wait_ns = timing_duration_ns(wait_started, locked_at);
+        ScopeExit observe_hold{[&]() noexcept { prepare_hold_ns = timing_elapsed_ns(locked_at); }};
         const std::shared_lock catalog_lock{catalog_mutex_};
         if (!healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
         }
-        if (auto drained =
-                worker.drain_deferred_ttl(std::min<std::size_t>(8, worker.deferred_ttl_reclaims.size()));
-            !drained) {
-            return fail_closed(drained.error());
+
+        // Drain deferred TTL only when the backlog is non-empty, and before Index
+        // lookup so a reclaimed key becomes an Index miss (not a second cold read).
+        // Empty-backlog hot GETs skip this entirely.
+        if (!worker.deferred_ttl_reclaims.empty()) {
+            if (auto drained = worker.drain_deferred_ttl(
+                    std::min<std::size_t>(8, worker.deferred_ttl_reclaims.size()));
+                !drained) {
+                return fail_closed(drained.error());
+            }
         }
 
-        const auto index_started = std::chrono::steady_clock::now();
+        // Ordinary hot path under mutex: Index lookup, hot match + snapshot, unlock.
+        // No I/O/CRC/value copy under the lock.
+        const auto index_started = timing_now();
         const auto reference = worker.index.find(key);
-        index_lookup_ns = steady_elapsed_ns(index_started);
+        index_lookup_ns = timing_elapsed_ns(index_started);
         if (!reference) {
             return fail(ErrorCode::not_found, "key is not present");
         }
-        const auto pin_started = std::chrono::steady_clock::now();
-        const auto catalog_index = catalog_index_for_segment(reference->segment_id);
-        if (!catalog_index) {
-            generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
-            return fail_closed(Error{ErrorCode::corrupted_data,
-                                     "durable Index references a Segment absent from the catalog"});
-        }
-        const auto& found = manifest_.segments[*catalog_index];
-        if (found.generation != reference->generation || found.owner_worker != worker.worker_id) {
-            generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
-            return fail_closed(Error{ErrorCode::corrupted_data,
-                                     "durable Index reference disagrees with catalog identity or ownership"});
-        }
-        generation_pin_lookup_ns = steady_elapsed_ns(pin_started);
 
-        const auto hot_started = std::chrono::steady_clock::now();
-        if (const auto cached = worker.hot_records.find(key.key); cached != worker.hot_records.end()) {
-            if (hot_record_matches(cached->second, *reference)) {
-                ++worker.hot_record_hits;
-                if (cached->second.expire_at_ns != 0 && now_ns != 0 &&
-                    cached->second.expire_at_ns <= now_ns) {
-                    // Return not_found immediately; Index reclaim is deferred to a
-                    // bounded Worker backlog drained by prepare_get/mutate.
+        const auto hot_started = timing_now();
+        if (const auto* cached = worker.hot_records.find(key); cached != nullptr) {
+            if (hot_record_matches(*cached, *reference)) {
+                ++local_hits;
+                if (cached->expire_at_ns != 0 && now_ns != 0 && cached->expire_at_ns <= now_ns) {
                     if (auto reclaimed = worker.defer_or_reclaim_expired(
                             key, *reference, options_.limits.max_deferred_ttl_reclaims_per_worker);
                         !reclaimed) {
-                        hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
+                        hot_cache_lookup_ns = timing_elapsed_ns(hot_started);
                         return fail_closed(reclaimed.error());
                     }
-                    hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
+                    hot_cache_lookup_ns = timing_elapsed_ns(hot_started);
                     return fail(ErrorCode::not_found, "key has expired");
                 }
-                HotRecordSnapshot snapshot{.value_size = cached->second.value_size,
-                                           .sequence = cached->second.sequence,
-                                           .expire_at_ns = cached->second.expire_at_ns,
-                                           .value_inline = cached->second.value_inline};
-                if (cached->second.value_inline) {
-                    std::copy_n(cached->second.inline_value, cached->second.value_size,
-                                snapshot.inline_value);
-                } else {
-                    snapshot.heap_value = cached->second.heap_value;
-                }
-                hot.emplace(std::move(snapshot));
+                hot.emplace(HotRecordSnapshot::from_entry(*cached));
             } else {
-                ++worker.hot_record_stale_hits;
-                worker.erase_hot_record(key.key);
+                ++local_stale;
+                worker.erase_hot_record(key);
             }
         }
-        hot_cache_lookup_ns = steady_elapsed_ns(hot_started);
+        hot_cache_lookup_ns = timing_elapsed_ns(hot_started);
 
         if (!hot) {
-            ++worker.hot_record_misses;
+            ++local_misses;
+
+            const auto pin_started = timing_now();
+            const auto catalog_index = catalog_index_for_segment(reference->segment_id);
+            if (!catalog_index) {
+                generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
+                return fail_closed(Error{ErrorCode::corrupted_data,
+                                         "durable Index references a Segment absent from the catalog"});
+            }
+            const auto& found = manifest_.segments[*catalog_index];
+            if (found.generation != reference->generation || found.owner_worker != worker.worker_id) {
+                generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
+                return fail_closed(
+                    Error{ErrorCode::corrupted_data,
+                          "durable Index reference disagrees with catalog identity or ownership"});
+            }
             const auto& pin = generation_pins_[*catalog_index];
             if (!pin || pin->identity.segment_id != reference->segment_id ||
                 pin->identity.generation != reference->generation ||
                 pin->identity.owner_worker != worker.worker_id) {
+                generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
                 return fail_closed(Error{ErrorCode::corrupted_data,
                                          "durable Segment generation pin disagrees with the Index"});
             }
+            generation_pin_lookup_ns = timing_elapsed_ns(pin_started);
             cold_reference = *reference;
             cold_pin = pin;
         }
@@ -1559,43 +1492,55 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
         }
         auto& worker = *workers_[read.worker_index_];
         auto& metrics = worker.get_path_metrics;
-        atomic_saturating_add(metrics.complete_calls, 1U);
+        metrics.complete_calls.fetch_add(1U, std::memory_order_relaxed);
         const auto key_bytes = std::span<const std::byte>{
             reinterpret_cast<const std::byte*>(read.key_.data()), read.key_.size()};
         ReadContext context{
             .expected_key = key_bytes, .expected_hash = read.key_hash_, .now_ns = read.now_ns_};
-        const auto cold_started = std::chrono::steady_clock::now();
+        const auto cold_started = timing_now();
         auto visited =
             read.generation_->file.visit_runtime_record(read.reference_, &context, &copy_verified_value);
-        atomic_saturating_add(metrics.cold_read_ns, steady_elapsed_ns(cold_started));
-        atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
+        if constexpr (kGetPathTimingEnabled) {
+            atomic_saturating_add(metrics.cold_read_ns, timing_elapsed_ns(cold_started));
+            atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
+        }
 
         // Linearization point for a cold GET: the Worker index must still
         // designate both the exact RecordRef and immutable generation pin
         // captured by prepare_get(). No file I/O or CRC work holds either lock.
         bool still_current{};
         {
-            const auto wait_started = std::chrono::steady_clock::now();
+            const auto wait_started = timing_now();
             const std::lock_guard worker_lock{worker.mutex};
-            const auto locked_at = std::chrono::steady_clock::now();
-            atomic_saturating_add(metrics.mutex_wait_ns, steady_duration_ns(wait_started, locked_at));
+            const auto locked_at = timing_now();
+            if constexpr (kGetPathTimingEnabled) {
+                atomic_saturating_add(metrics.mutex_wait_ns, timing_duration_ns(wait_started, locked_at));
+            }
             ScopeExit observe_hold{[&]() noexcept {
-                atomic_saturating_add(metrics.complete_revalidate_hold_ns, steady_elapsed_ns(locked_at));
+                if constexpr (kGetPathTimingEnabled) {
+                    atomic_saturating_add(metrics.complete_revalidate_hold_ns,
+                                          timing_elapsed_ns(locked_at));
+                }
             }};
             const std::shared_lock catalog_lock{catalog_mutex_};
             if (!healthy()) {
                 return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
             }
             const HashedKey key{.key = read.key_, .hash = read.key_hash_};
-            const auto index_started = std::chrono::steady_clock::now();
+            const auto index_started = timing_now();
             const auto current = worker.index.find(key);
-            atomic_saturating_add(metrics.index_lookup_ns, steady_elapsed_ns(index_started));
+            if constexpr (kGetPathTimingEnabled) {
+                atomic_saturating_add(metrics.index_lookup_ns, timing_elapsed_ns(index_started));
+            }
             if (current && *current == read.reference_) {
-                const auto pin_started = std::chrono::steady_clock::now();
+                const auto pin_started = timing_now();
                 const auto catalog_index = catalog_index_for_segment(current->segment_id);
                 still_current = catalog_index.has_value() &&
                                 generation_pins_[*catalog_index] == read.generation_;
-                atomic_saturating_add(metrics.generation_pin_lookup_ns, steady_elapsed_ns(pin_started));
+                if constexpr (kGetPathTimingEnabled) {
+                    atomic_saturating_add(metrics.generation_pin_lookup_ns,
+                                          timing_elapsed_ns(pin_started));
+                }
             }
         }
         if (!still_current) {
@@ -1623,14 +1568,18 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
                 // Visitor not_found is validated expiry only. Defer Index reclaim
                 // while verifying the exact RecordRef when the backlog drains.
                 {
-                    const auto wait_started = std::chrono::steady_clock::now();
+                    const auto wait_started = timing_now();
                     const std::lock_guard worker_lock{worker.mutex};
-                    const auto locked_at = std::chrono::steady_clock::now();
-                    atomic_saturating_add(metrics.mutex_wait_ns,
-                                          steady_duration_ns(wait_started, locked_at));
+                    const auto locked_at = timing_now();
+                    if constexpr (kGetPathTimingEnabled) {
+                        atomic_saturating_add(metrics.mutex_wait_ns,
+                                              timing_duration_ns(wait_started, locked_at));
+                    }
                     ScopeExit observe_hold{[&]() noexcept {
-                        atomic_saturating_add(metrics.complete_revalidate_hold_ns,
-                                              steady_elapsed_ns(locked_at));
+                        if constexpr (kGetPathTimingEnabled) {
+                            atomic_saturating_add(metrics.complete_revalidate_hold_ns,
+                                                  timing_elapsed_ns(locked_at));
+                        }
                     }};
                     const std::shared_lock catalog_lock{catalog_mutex_};
                     if (healthy()) {
@@ -1878,15 +1827,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker) -> DurableMutat
     worker.sealed_live_record_bytes.store(next_sealed_live_record_bytes, std::memory_order_release);
     worker.cached_file.emplace(std::move(*created.file));
     worker.cached_writable = true;
-    for (auto current = worker.hot_records.begin(); current != worker.hot_records.end();) {
-        if (current->second.reference.segment_id == old_entry.segment_id) {
-            worker.hot_record_resident_bytes -= current->second.accounted_bytes;
-            current = worker.hot_records.erase(current);
-            ++worker.hot_record_evictions;
-        } else {
-            ++current;
+    worker.hot_records.erase_if([&](const std::string&, std::uint64_t, HotRecordEntry& entry) {
+        if (entry.reference.segment_id != old_entry.segment_id) {
+            return false;
         }
-    }
+        worker.hot_record_resident_bytes -= entry.accounted_bytes;
+        worker.get_path_metrics.hot_evictions.fetch_add(1U, std::memory_order_relaxed);
+        return true;
+    });
     rotation_committed = true;
     return {.outcome = DurableMutationOutcome::committed, .sequence = std::nullopt, .error = std::nullopt};
 }
@@ -2031,8 +1979,8 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                            : group_publication_fixed_bytes + static_cast<std::uint64_t>(key.size()))
                     : 0U;
             auto prepared =
-                worker.prepare_hot_record(worker_index, workers_.size(), options_.limits, hashed.key, value,
-                                          expire_at_ns, publication_staging_bytes);
+                worker.prepare_hot_record(worker_index, workers_.size(), options_.limits, hashed.key,
+                                          hashed.hash, value, expire_at_ns, publication_staging_bytes);
             if (!prepared) {
                 return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }
@@ -2236,7 +2184,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .error = counted.error()};
                 }
                 if (prepared_hot_record.empty()) {
-                    worker.erase_hot_record(hashed.key);
+                    worker.erase_hot_record(hashed);
                 } else if (auto hot_published =
                                worker.publish_hot_record(prepared_hot_record, reference, committed_sequence);
                            !hot_published) {
@@ -2253,7 +2201,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .sequence = committed_sequence,
                             .error = counted.error()};
                 }
-                worker.erase_hot_record(hashed.key);
+                worker.erase_hot_record(hashed);
             }
             final_record_committed = true;
             return {.outcome = DurableMutationOutcome::committed,
@@ -2308,36 +2256,43 @@ auto DurableRuntimeCatalog::hot_cache_stats() const -> std::vector<DurableHotCac
     result.reserve(workers_.size());
     for (std::size_t index = 0; index < workers_.size(); ++index) {
         auto& worker = *workers_[index];
-        const std::lock_guard lock{worker.mutex};
-        const auto bucket_bytes = hot_cache_bucket_bytes(worker.hot_records.bucket_count());
-        const auto staging_bucket_bytes = hot_cache_bucket_bytes(worker.hot_record_staging.bucket_count());
-        const auto all_bucket_bytes =
-            bucket_bytes > std::numeric_limits<std::uint64_t>::max() - staging_bucket_bytes
-                ? std::numeric_limits<std::uint64_t>::max()
-                : bucket_bytes + staging_bucket_bytes;
+        const auto& metrics = worker.get_path_metrics;
+        std::size_t resident_entries{};
+        std::uint64_t resident_bytes{};
+        std::size_t staged_entries{};
+        std::uint64_t staged_bytes{};
+        std::uint64_t table_bytes{};
+        std::uint64_t total_accounted{};
+        {
+            const std::lock_guard lock{worker.mutex};
+            resident_entries = worker.hot_records.size();
+            resident_bytes = worker.hot_record_resident_bytes;
+            staged_entries = worker.hot_record_staged_entries;
+            staged_bytes = worker.hot_record_staged_bytes;
+            table_bytes = hot_cache_table_bytes(worker.hot_records.capacity());
+            total_accounted = worker.hot_cache_total_bytes();
+        }
+        const auto hits = metrics.hot_hits.load(std::memory_order_relaxed);
+        const auto misses = metrics.hot_misses.load(std::memory_order_relaxed);
         result.push_back({
             .worker_id = worker.worker_id,
-            .resident_entries = worker.hot_records.size(),
-            .resident_bytes = worker.hot_record_resident_bytes,
-            .staged_entries = worker.hot_record_staged_entries,
-            .staged_bytes = worker.hot_record_staged_bytes,
-            .bucket_bytes = all_bucket_bytes,
-            .total_accounted_bytes = worker.hot_cache_total_bytes(),
+            .resident_entries = resident_entries,
+            .resident_bytes = resident_bytes,
+            .staged_entries = staged_entries,
+            .staged_bytes = staged_bytes,
+            .bucket_bytes = table_bytes,
+            .total_accounted_bytes = total_accounted,
             .byte_budget = hot_cache_worker_budget(index, workers_.size(), options_.limits),
             .staging_byte_budget = options_.limits.max_hot_cache_staging_bytes_per_worker,
             .entry_budget = options_.limits.max_hot_cache_entries_per_worker,
-            .hits = worker.hot_record_hits,
-            .misses = worker.hot_record_misses,
-            .stale_hits = worker.hot_record_stale_hits,
-            .evictions = worker.hot_record_evictions,
-            .admission_bypasses = worker.hot_record_admission_bypasses,
-            .size_rejected = worker.hot_record_size_rejected,
-            .expired_gets = worker.get_expired_ttl,
-            .hit_rate_bp =
-                (worker.hot_record_hits + worker.hot_record_misses) == 0
-                    ? 0
-                    : (worker.hot_record_hits * 10'000ULL) /
-                          (worker.hot_record_hits + worker.hot_record_misses),
+            .hits = hits,
+            .misses = misses,
+            .stale_hits = metrics.hot_stale_hits.load(std::memory_order_relaxed),
+            .evictions = metrics.hot_evictions.load(std::memory_order_relaxed),
+            .admission_bypasses = metrics.admission_bypasses.load(std::memory_order_relaxed),
+            .size_rejected = metrics.size_rejected.load(std::memory_order_relaxed),
+            .expired_gets = metrics.expired_ttl_gets.load(std::memory_order_relaxed),
+            .hit_rate_bp = (hits + misses) == 0 ? 0 : (hits * 10'000ULL) / (hits + misses),
             .enabled = options_.limits.hot_cache_enabled &&
                        hot_cache_worker_budget(index, workers_.size(), options_.limits) > 0 &&
                        options_.limits.max_hot_cache_entries_per_worker > 0 &&
@@ -2355,20 +2310,10 @@ auto DurableRuntimeCatalog::get_path_stats() const -> std::vector<DurableGetPath
         const auto& metrics = worker->get_path_metrics;
         std::size_t resident_entries{};
         std::uint64_t resident_bytes{};
-        std::uint64_t hot_hits{};
-        std::uint64_t hot_misses{};
-        std::uint64_t hot_stale{};
-        std::uint64_t hot_evictions{};
-        std::uint64_t expired_ttl{};
         {
             const std::lock_guard lock{worker->mutex};
             resident_entries = worker->hot_records.size();
             resident_bytes = worker->hot_record_resident_bytes;
-            hot_hits = worker->hot_record_hits;
-            hot_misses = worker->hot_record_misses;
-            hot_stale = worker->hot_record_stale_hits;
-            hot_evictions = worker->hot_record_evictions;
-            expired_ttl = worker->get_expired_ttl;
         }
         result.push_back({
             .worker_id = worker->worker_id,
@@ -2384,11 +2329,11 @@ auto DurableRuntimeCatalog::get_path_stats() const -> std::vector<DurableGetPath
             .cold_read_ns = metrics.cold_read_ns.load(std::memory_order_relaxed),
             .crc_value_copy_ns = metrics.crc_value_copy_ns.load(std::memory_order_relaxed),
             .relinearization_retries = metrics.relinearization_retries.load(std::memory_order_relaxed),
-            .hot_hits = hot_hits,
-            .hot_misses = hot_misses,
-            .hot_stale = hot_stale,
-            .hot_evictions = hot_evictions,
-            .expired_ttl_gets = expired_ttl,
+            .hot_hits = metrics.hot_hits.load(std::memory_order_relaxed),
+            .hot_misses = metrics.hot_misses.load(std::memory_order_relaxed),
+            .hot_stale = metrics.hot_stale_hits.load(std::memory_order_relaxed),
+            .hot_evictions = metrics.hot_evictions.load(std::memory_order_relaxed),
+            .expired_ttl_gets = metrics.expired_ttl_gets.load(std::memory_order_relaxed),
             .hot_resident_entries = resident_entries,
             .hot_resident_bytes = resident_bytes,
         });

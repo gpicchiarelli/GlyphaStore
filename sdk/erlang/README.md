@@ -41,6 +41,7 @@ Confirm `/opt/local/bin` is on `PATH`, then `erl` and `rebar3` resolve from MacP
 | `glyphastore_protocol` | Wire codec, FNV-1a routing, golden fixture tests |
 | `glyphastore_error` | Structured client-semantics v1 errors |
 | `glyphastore_conn` | Per-Worker TCP/TLS connection `gen_server` (serial I/O) |
+| `glyphastore_conn_sup` | OTP supervisor for Worker conns (`temporary`, intensity 0) |
 | `glyphastore_client` | Public sync API + coordinator (noreply I/O delegation) |
 | `scripts/glyphastore-interop` | CLI for `scripts/test-sdk-interop.sh` |
 | `benchmarks/client_benchmark.escript` | Throughput / latency harness |
@@ -55,15 +56,17 @@ Confirm `/opt/local/bin` is on `PATH`, then `erl` and `rebar3` resolve from MacP
 | Many callers, one client | Safe; request IDs allocated only inside the coordinator |
 | Request ID wrap | `16#FFFFFFFFFFFFFFFF → 1` (correlation-only on the wire; no server dedup) |
 | Fan-out | `spawn_monitor` + deadline timer; DOWN/timeout/late messages handled safely |
+| Conn supervision | `glyphastore_conn_sup`: one temporary child per Worker, intensity 0 (no auto-restart) |
+| Conn crash | Monitored; next request replaces via `replace_conn` + INIT/BIND + epoch/count check |
 | `close/1` | **Synchronous**: rejects new work, drains/fails in-flight, stops conns |
 | Retry | At most one auto-retry for reads / zero-byte mutations; shared monotonic deadline |
 | Routing epoch | Metadata mismatch → `unavailable`, client unhealthy (fail-closed) |
 
 ### Known limits
 
-- No permanent OTP supervisor tree yet (monitor + explicit lifecycle; reconnect verifies epoch/count).
 - Bootstrap/reconnect still runs on the coordinator (rare path).
 - Same-Worker throughput remains connection-bound by design.
+- No permanent auto-restart of Worker conns (intentional: avoids hiding epoch changes).
 
 ## Intentional differences vs other SDKs
 

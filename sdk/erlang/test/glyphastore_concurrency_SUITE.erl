@@ -18,6 +18,7 @@ all() ->
         late_message_after_timeout,
         close_with_inflight_requests,
         single_connection_reconnect,
+        conn_process_crash_then_reconnect,
         routing_epoch_changed,
         worker_count_changed,
         send_fail_before_zero_bytes,
@@ -350,12 +351,32 @@ single_connection_reconnect(_Config) ->
     try
         {ok, Client} = connect(Server),
         #{outcome := committed} = glyphastore_client:put(Client, <<"k">>, <<"v">>),
-        State = sys:get_state(Client),
-        Conn = maps:get(0, element(7, State)),
+        Conn = worker_conn(Client, 0),
         glyphastore_conn:reset(Conn),
         %% Fresh TCP session: re-bootstrap then rewrite the key.
         #{outcome := committed} = glyphastore_client:put(Client, <<"k">>, <<"v2">>),
         {ok, <<"v2">>} = glyphastore_client:get(Client, <<"k">>),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+%% 12b — Worker conn process crash: temporary supervisor child is not auto-restarted;
+%% the next request must explicitly replace + INIT/BIND under the supervisor.
+conn_process_crash_then_reconnect(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
+    try
+        {ok, Client} = connect(Server),
+        #{outcome := committed} = glyphastore_client:put(Client, <<"k">>, <<"v">>),
+        Conn = worker_conn(Client, 0),
+        true = is_process_alive(Conn),
+        exit(Conn, kill),
+        wait_until_dead(Conn, 50),
+        #{outcome := committed} = glyphastore_client:put(Client, <<"k">>, <<"v3">>),
+        {ok, <<"v3">>} = glyphastore_client:get(Client, <<"k">>),
+        NewConn = worker_conn(Client, 0),
+        true = NewConn =/= Conn,
+        true = is_process_alive(NewConn),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -393,8 +414,7 @@ send_fail_before_zero_bytes(_Config) ->
     {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
     try
         {ok, Client} = connect(Server),
-        State = sys:get_state(Client),
-        Conn = maps:get(0, element(7, State)),
+        Conn = worker_conn(Client, 0),
         ok = glyphastore_conn:inject_send_failure(Conn, before_any),
         #{outcome := rejected, error := Err} = glyphastore_client:put(Client, <<"k">>, <<"v">>),
         0 = maps:get(bytes_sent, Err),
@@ -408,8 +428,7 @@ partial_send(_Config) ->
     {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
     try
         {ok, Client} = connect(Server),
-        State = sys:get_state(Client),
-        Conn = maps:get(0, element(7, State)),
+        Conn = worker_conn(Client, 0),
         ok = glyphastore_conn:inject_send_failure(Conn, {after_bytes, 8}),
         #{outcome := indeterminate, error := Err} = glyphastore_client:put(Client, <<"k">>, <<"v">>),
         true = maps:get(bytes_sent, Err) > 0,
@@ -568,6 +587,11 @@ tls_unavailable_fail_closed(_Config) ->
 
 connect(Server) ->
     glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}).
+
+%% workers map is record field #state.workers (element 7 with current record layout).
+worker_conn(Client, Worker) ->
+    State = sys:get_state(Client),
+    maps:get(Worker, element(7, State)).
 
 receive_n(_Tag, 0) ->
     ok;

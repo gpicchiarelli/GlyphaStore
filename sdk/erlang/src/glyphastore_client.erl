@@ -42,6 +42,11 @@
 %% deduplication; we still keep a single client-wide counter so in-flight IDs stay
 %% unique across Workers and wrap 16#FFFFFFFFFFFFFFFF -> 1.
 %%
+%% OTP supervision: glyphastore_conn_sup (linked from this process) owns one
+%% temporary child per Worker with intensity 0 — never auto-restart. Reconnect is
+%% explicit in ensure_connected (re-INIT+BIND, verify epoch/count, fail-closed).
+%% Conn crashes are monitored; they do not kill the coordinator via link.
+%%
 %% close/1 is synchronous: rejects new work, lets in-flight ops finish (or fail
 %% after socket reset), then stops Worker conns. Late io_result/DOWN messages are ignored.
 
@@ -80,7 +85,10 @@
     pending = #{} :: #{reference() => map()},
     mon_index = #{} :: #{reference() => reference()},
     closing = false :: boolean(),
-    close_from :: gen_server:from() | undefined
+    close_from :: gen_server:from() | undefined,
+    %% Conn supervisor + monitor index (Worker process death ≠ auto-reconnect).
+    sup :: pid() | undefined,
+    conn_mons = #{} :: #{reference() => non_neg_integer()}
 }).
 
 connect(Config0) ->
@@ -145,19 +153,27 @@ execute_worker_pipelines(Client, Batches, Opts) ->
     gen_server:call(Client, {execute_worker_pipelines, Batches, Opts}, infinity).
 
 init(Config) ->
-    case bootstrap_all(Config, 1) of
-        {ok, Workers, WorkerCount, RoutingEpoch, NextId} ->
-            {ok,
-                #state{
-                    config = Config,
-                    workers = Workers,
-                    worker_count = WorkerCount,
-                    routing_epoch = RoutingEpoch,
-                    request_id = NextId
-                }};
+    case glyphastore_conn_sup:start_link() of
+        {ok, Sup} ->
+            case bootstrap_all(Sup, Config, 1) of
+                {ok, Workers, WorkerCount, RoutingEpoch, NextId, ConnMons} ->
+                    {ok,
+                        #state{
+                            config = Config,
+                            workers = Workers,
+                            worker_count = WorkerCount,
+                            routing_epoch = RoutingEpoch,
+                            request_id = NextId,
+                            sup = Sup,
+                            conn_mons = ConnMons
+                        }};
+                {error, Err} ->
+                    stop_conn_sup(Sup),
+                    %% Use {shutdown, Err} so start_link callers are not killed by an abnormal exit reason.
+                    {stop, {shutdown, Err}}
+            end;
         {error, Err} ->
-            %% Use {shutdown, Err} so start_link callers are not killed by an abnormal exit reason.
-            {stop, {shutdown, Err}}
+            {stop, {shutdown, glyphastore_error:internal(iolist_to_binary(io_lib:format("~p", [Err])))}}
     end.
 
 handle_call(healthy, _From, State) -> {reply, State#state.healthy, State};
@@ -189,8 +205,13 @@ handle_info({io_result, Tag, Result}, State) ->
     handle_io_result(Tag, Result, State);
 handle_info({fanout_result, Tag, Mon, Worker, Items, GroupResponses, Healthy}, State) ->
     handle_fanout_result(Tag, Mon, Worker, Items, GroupResponses, Healthy, State);
-handle_info({'DOWN', Mon, process, _Pid, Reason}, State) ->
-    handle_down(Mon, Reason, State);
+handle_info({'DOWN', Mon, process, Pid, Reason}, State) ->
+    case maps:take(Mon, State#state.conn_mons) of
+        {Worker, ConnMons} ->
+            handle_conn_down(Worker, Pid, Reason, State#state{conn_mons = ConnMons});
+        error ->
+            handle_down(Mon, Reason, State)
+    end;
 handle_info({timeout, TimerRef, {op_deadline, Tag}}, State) ->
     handle_op_timeout(Tag, TimerRef, State);
 handle_info(_Msg, State) ->
@@ -213,29 +234,72 @@ terminate(_Reason, State) ->
         end,
         State#state.pending
     ),
-    maps:foreach(fun(_W, Pid) -> catch gen_server:stop(Pid) end, State#state.workers),
+    maps:foreach(fun(_Mon, _) -> ok end, State#state.conn_mons),
+    stop_conn_sup(State#state.sup),
     ok.
 
-bootstrap_all(Config, NextId) ->
-    {ok, Conn0} = glyphastore_conn:start_link(0, Config),
-    case bootstrap_conn(Conn0, 0, undefined, Config, NextId) of
-        {ok, WC, Epoch, NextId1} ->
-            bootstrap_rest(1, WC, Epoch, Config, #{0 => Conn0}, NextId1);
-        {error, Err} ->
-            catch gen_server:stop(Conn0),
-            {error, Err}
+stop_conn_sup(undefined) ->
+    ok;
+stop_conn_sup(Sup) when is_pid(Sup) ->
+    case is_process_alive(Sup) of
+        true ->
+            unlink(Sup),
+            exit(Sup, shutdown),
+            ok;
+        false ->
+            ok
     end.
 
-bootstrap_rest(W, WC, Epoch, _Config, Workers, NextId) when W >= WC ->
-    {ok, Workers, WC, Epoch, NextId};
-bootstrap_rest(W, WC, Epoch, Config, Workers, NextId) ->
-    {ok, Conn} = glyphastore_conn:start_link(W, Config),
-    case bootstrap_conn(Conn, W, {WC, Epoch}, Config, NextId) of
-        {ok, WC, Epoch, NextId1} ->
-            bootstrap_rest(W + 1, WC, Epoch, Config, Workers#{W => Conn}, NextId1);
+%% Conn process exited. Do not auto-reconnect (fail-closed for in-flight work).
+%% Next request path recreates via ensure_connected → replace_conn + INIT/BIND.
+handle_conn_down(Worker, Pid, _Reason, State) ->
+    case maps:get(Worker, State#state.workers, undefined) of
+        Pid ->
+            {noreply, State#state{workers = maps:remove(Worker, State#state.workers)}};
+        _ ->
+            %% Stale DOWN after an explicit replace_conn — ignore.
+            {noreply, State}
+    end.
+
+bootstrap_all(Sup, Config, NextId) ->
+    case glyphastore_conn_sup:start_conn(Sup, 0, Config) of
+        {ok, Conn0} ->
+            Mon0 = monitor(process, Conn0),
+            case bootstrap_conn(Conn0, 0, undefined, Config, NextId) of
+                {ok, WC, Epoch, NextId1} ->
+                    bootstrap_rest(Sup, 1, WC, Epoch, Config, #{0 => Conn0}, #{Mon0 => 0}, NextId1);
+                {error, Err} ->
+                    demonitor(Mon0, [flush]),
+                    {error, Err}
+            end;
         {error, Err} ->
-            maps:foreach(fun(_I, Pid) -> catch gen_server:stop(Pid) end, Workers#{W => Conn}),
-            {error, Err}
+            {error, glyphastore_error:internal(iolist_to_binary(io_lib:format("conn start: ~p", [Err])))}
+    end.
+
+bootstrap_rest(_Sup, W, WC, Epoch, _Config, Workers, ConnMons, NextId) when W >= WC ->
+    {ok, Workers, WC, Epoch, NextId, ConnMons};
+bootstrap_rest(Sup, W, WC, Epoch, Config, Workers, ConnMons, NextId) ->
+    case glyphastore_conn_sup:start_conn(Sup, W, Config) of
+        {ok, Conn} ->
+            Mon = monitor(process, Conn),
+            case bootstrap_conn(Conn, W, {WC, Epoch}, Config, NextId) of
+                {ok, WC, Epoch, NextId1} ->
+                    bootstrap_rest(
+                        Sup,
+                        W + 1,
+                        WC,
+                        Epoch,
+                        Config,
+                        Workers#{W => Conn},
+                        ConnMons#{Mon => W},
+                        NextId1
+                    );
+                {error, Err} ->
+                    demonitor(Mon, [flush]),
+                    {error, Err}
+            end;
+        {error, Err} ->
+            {error, glyphastore_error:internal(iolist_to_binary(io_lib:format("conn start: ~p", [Err])))}
     end.
 
 bootstrap_conn(Conn, Worker, Expected, Config, NextId) ->
@@ -333,6 +397,7 @@ launch_read(_Opcode, _OpName, _Key, _Value, _Deadline, _Worker, _Conn, From, Sta
 launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts) ->
     case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
+            Conn1 = maps:get(Worker, State1#state.workers),
             {RequestId, State2} = bump_id(State1),
             case encode_request(Opcode, RequestId, Key, Value, 0, State2) of
                 {ok, Frame, State3} ->
@@ -341,7 +406,7 @@ launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Att
                         From,
                         State3,
                         Deadline,
-                        fun() -> glyphastore_conn:exchange(Conn, Frame, Deadline) end,
+                        fun() -> glyphastore_conn:exchange(Conn1, Frame, Deadline) end,
                         #{
                             type => read,
                             opcode => Opcode,
@@ -350,7 +415,7 @@ launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Att
                             value => Value,
                             deadline => Deadline,
                             worker => Worker,
-                            conn => Conn,
+                            conn => Conn1,
                             request_id => RequestId,
                             attempts => Attempts,
                             meta => Meta
@@ -395,6 +460,7 @@ launch_mutate(_Op, OpName, _Key, _Value, _Expire, _Deadline, Worker, _Conn, From
 launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, State, Attempts) ->
     case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
+            Conn1 = maps:get(Worker, State1#state.workers),
             {RequestId, State2} = bump_id(State1),
             Opcode = mutate_opcode(Op),
             case encode_request(Opcode, RequestId, Key, Value, Expire, State2) of
@@ -404,7 +470,7 @@ launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, Stat
                         From,
                         State3,
                         Deadline,
-                        fun() -> glyphastore_conn:exchange(Conn, Frame, Deadline) end,
+                        fun() -> glyphastore_conn:exchange(Conn1, Frame, Deadline) end,
                         #{
                             type => mutate,
                             op => Op,
@@ -414,7 +480,7 @@ launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, Stat
                             expire => Expire,
                             deadline => Deadline,
                             worker => Worker,
-                            conn => Conn,
+                            conn => Conn1,
                             request_id => RequestId,
                             attempts => Attempts,
                             meta => Meta
@@ -457,17 +523,18 @@ dispatch_pipeline(Requests, Opts, From, State) ->
 launch_pipeline(Plan, Deadline, Worker, Conn, From, State, Count) ->
     case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
+            Conn1 = maps:get(Worker, State1#state.workers),
             Meta = snapshot_meta(State1),
             start_io(
                 From,
                 State1,
                 Deadline,
-                fun() -> run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, Count) end,
+                fun() -> run_pipeline_io(Plan, Deadline, Worker, Conn1, Meta, Count) end,
                 #{
                     type => pipeline,
                     deadline => Deadline,
                     worker => Worker,
-                    conn => Conn,
+                    conn => Conn1,
                     meta => Meta
                 }
             );
@@ -914,16 +981,22 @@ run_pipeline_io(Plan, Deadline, Worker, Conn, Meta, Count) ->
             {ok, array:to_list(mark_unresolved(Responses, 0, Err, 0, Metadata)), State0#state.healthy};
         {recv_error, Err, Partial} ->
             glyphastore_conn:reset(Conn),
-            case fold_pipeline_responses(Partial, lists:sublist(Metadata, length(Partial)), 0, Responses, Worker, Conn, State0, TotalBytes) of
-                {ok, PartialList, Healthy} ->
-                    PartialArr = array:from_list(PartialList),
-                    Start = length(Partial),
-                    {ok,
-                        array:to_list(mark_unresolved(PartialArr, Start, Err, TotalBytes, lists:nthtail(Start, Metadata))),
-                        Healthy};
-                Other ->
-                    Other
-            end
+            {ok, PartialList, Healthy} =
+                fold_pipeline_responses(
+                    Partial,
+                    lists:sublist(Metadata, length(Partial)),
+                    0,
+                    Responses,
+                    Worker,
+                    Conn,
+                    State0,
+                    TotalBytes
+                ),
+            PartialArr = array:from_list(PartialList),
+            Start = length(Partial),
+            {ok,
+                array:to_list(mark_unresolved(PartialArr, Start, Err, TotalBytes, lists:nthtail(Start, Metadata))),
+                Healthy}
     end.
 
 fold_pipeline_responses([], [], _Idx, Responses, _Worker, _Conn, State, _Sent) ->
@@ -1390,7 +1463,7 @@ plan_pipeline_for_worker_items([Req | Rest], ExpectedWorker, StateAcc, Need, Acc
 ensure_workers_connected([], State) ->
     {ok, State};
 ensure_workers_connected([Worker | Rest], State) ->
-    Conn = maps:get(Worker, State#state.workers),
+    Conn = maps:get(Worker, State#state.workers, undefined),
     case ensure_connected(Conn, Worker, State) of
         {ok, State1} ->
             ensure_workers_connected(Rest, State1);
@@ -1499,25 +1572,80 @@ worker_index(#state{worker_count = 0}, _Key) ->
     {error, glyphastore_error:unavailable(<<"client is not connected">>)};
 worker_index(#state{worker_count = WC, workers = Workers}, Key) ->
     case glyphastore_protocol:worker_for(Key, WC) of
-        {ok, Worker} -> {ok, Worker, maps:get(Worker, Workers)};
+        {ok, Worker} ->
+            case maps:find(Worker, Workers) of
+                {ok, Conn} ->
+                    {ok, Worker, Conn};
+                error ->
+                    %% Conn process died; ensure_connected will replace under the supervisor.
+                    {ok, Worker, undefined}
+            end;
         {error, {invalid_argument, Msg}} ->
             {error, glyphastore_error:invalid_argument(Msg)}
     end.
 
+ensure_connected(undefined, Worker, State) ->
+    replace_and_bootstrap(Worker, State);
 ensure_connected(Conn, Worker, State) ->
-    case gen_server:call(Conn, connected, 5000) of
-        true ->
-            {ok, State};
+    case is_process_alive(Conn) of
         false ->
-            WC = State#state.worker_count,
-            Epoch = State#state.routing_epoch,
-            case bootstrap_conn(Conn, Worker, {WC, Epoch}, State#state.config, State#state.request_id) of
-                {ok, WC, Epoch, NextId} ->
-                    {ok, State#state{request_id = NextId}};
-                {error, Err} ->
-                    {{error, Err}, State}
+            replace_and_bootstrap(Worker, State);
+        true ->
+            case gen_server:call(Conn, connected, 5000) of
+                true ->
+                    {ok, State};
+                false ->
+                    WC = State#state.worker_count,
+                    Epoch = State#state.routing_epoch,
+                    case bootstrap_conn(Conn, Worker, {WC, Epoch}, State#state.config, State#state.request_id) of
+                        {ok, WC, Epoch, NextId} ->
+                            {ok, State#state{request_id = NextId}};
+                        {error, Err} ->
+                            {{error, Err}, State}
+                    end
             end
     end.
+
+%% Recreate a Worker conn under glyphastore_conn_sup, then INIT+BIND with epoch checks.
+replace_and_bootstrap(_Worker, #state{sup = undefined} = State) ->
+    {{error, glyphastore_error:unavailable(<<"client connection supervisor is not running">>)}, State};
+replace_and_bootstrap(Worker, State) ->
+    Sup = State#state.sup,
+    Config = State#state.config,
+    State0 = drop_worker_monitors(Worker, State),
+    case glyphastore_conn_sup:replace_conn(Sup, Worker, Config) of
+        {ok, Conn} ->
+            Mon = monitor(process, Conn),
+            State1 = State0#state{
+                workers = maps:put(Worker, Conn, State0#state.workers),
+                conn_mons = maps:put(Mon, Worker, State0#state.conn_mons)
+            },
+            WC = State1#state.worker_count,
+            Epoch = State1#state.routing_epoch,
+            case bootstrap_conn(Conn, Worker, {WC, Epoch}, Config, State1#state.request_id) of
+                {ok, WC, Epoch, NextId} ->
+                    {ok, State1#state{request_id = NextId}};
+                {error, Err} ->
+                    {{error, Err}, State1}
+            end;
+        {error, Reason} ->
+            Msg = iolist_to_binary(io_lib:format("cannot replace worker ~B connection: ~p", [Worker, Reason])),
+            {{error, glyphastore_error:unavailable(Msg)}, State0}
+    end.
+
+drop_worker_monitors(Worker, State) ->
+    {Drop, Keep} = maps:fold(
+        fun(Mon, W, {D, K}) ->
+            case W =:= Worker of
+                true -> {[Mon | D], K};
+                false -> {D, K#{Mon => W}}
+            end
+        end,
+        {[], #{}},
+        State#state.conn_mons
+    ),
+    lists:foreach(fun(Mon) -> demonitor(Mon, [flush]) end, Drop),
+    State#state{conn_mons = Keep}.
 
 validate_response(Response, RequestId, Worker, #state{worker_count = WC, routing_epoch = Epoch}) ->
     case maps:get(request_id, Response) =:= RequestId of

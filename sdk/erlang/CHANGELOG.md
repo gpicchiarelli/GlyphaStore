@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **OTP supervision:** `glyphastore_conn_sup` owns one `temporary` child per Worker with
+  intensity 0 (never auto-restart). Conn crashes are monitored; the next request
+  explicitly `replace_conn` + re-`INIT`/`BIND_WORKER` and verifies epoch/count (fail-closed).
+  Permanent restart is rejected so epoch changes cannot be masked.
 - **Concurrency:** `glyphastore_client` is a coordinator; normal I/O is delegated via
   `spawn_monitor` so concurrent callers targeting different Workers proceed in parallel.
   Each `glyphastore_conn` still serializes its stream. Fan-out uses monitors, deadline
@@ -11,7 +15,8 @@
 - Synchronous `close/1` drains in-flight work after rejecting new requests.
 - Metadata mismatch (`routing_epoch` / `worker_count`) marks the client unhealthy.
 - Connect uses `gen_server:start/3` so bootstrap failure cannot kill the caller via link.
-- CT: `glyphastore_concurrency_SUITE` (25 targeted cases) plus extended fake server barriers.
+- CT: `glyphastore_concurrency_SUITE` (including `conn_process_crash_then_reconnect`) plus
+  extended fake server barriers.
 - Benchmark harness measures single/multi caller, same vs different Workers, and pipeline APIs
   with p50/p95/p99.
 

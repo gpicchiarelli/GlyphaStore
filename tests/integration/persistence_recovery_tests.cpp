@@ -1828,6 +1828,148 @@ GLYPHA_TEST("hot-cache accounting remains bounded across hit overwrite and erase
     GLYPHA_REQUIRE(stats[0].total_accounted_bytes <= stats[0].byte_budget);
 }
 
+GLYPHA_TEST("concurrent GET PUT DELETE on one Worker keep linearized values") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const std::string key{"race-key"};
+    const std::string v0{"v0"};
+    GLYPHA_REQUIRE((*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{v0})).committed());
+
+    std::atomic_bool failed{};
+    std::thread readers([&] {
+        for (std::size_t i = 0; i < 200; ++i) {
+            const auto got = (*runtime)->get(key);
+            if (!got) {
+                if (got.error().code != glyphastore::ErrorCode::not_found) {
+                    failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+                continue;
+            }
+            const auto text = owned_text(*got);
+            if (text != "v0" && text != "v1" && text != "v2") {
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+    });
+    std::thread writer([&] {
+        for (const auto* value : {"v1", "v2"}) {
+            const std::string payload{value};
+            if (!(*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{payload})).committed()) {
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+        if (!(*runtime)->erase(std::as_bytes(std::span{key})).committed()) {
+            failed.store(true, std::memory_order_relaxed);
+        }
+    });
+    readers.join();
+    writer.join();
+    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
+    const auto after = (*runtime)->get(key);
+    GLYPHA_REQUIRE(!after.has_value());
+    GLYPHA_REQUIRE(after.error().code == glyphastore::ErrorCode::not_found);
+}
+
+GLYPHA_TEST("stale hot entry is dropped after overwrite bypass and cold GET sees new value") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto limits = glyphastore::DurableResourceLimits{};
+    limits.max_hot_cache_entries_per_worker = 1;
+    auto runtime =
+        glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, {.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    const std::string key{"stale-hot"};
+    const std::string first(48, 'a');
+    const std::string second(48, 'b');
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{first})).committed());
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == first);
+    GLYPHA_REQUIRE((*runtime)->hot_cache_stats()[0].hits >= 1);
+
+    GLYPHA_REQUIRE(
+        (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{second})).committed());
+    // Entry limit forces admission bypass + eviction; next GET must not return first.
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == second);
+    const auto stats = (*runtime)->hot_cache_stats();
+    GLYPHA_REQUIRE(stats[0].admission_bypasses >= 1);
+    GLYPHA_REQUIRE(stats[0].stale_hits + stats[0].misses >= 1);
+}
+
+GLYPHA_TEST("flat hot-cache full-key compare rejects colliding probe neighbors") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const glyphastore::ManifestSegmentEntry active{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{1},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::active,
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_segment(*directory, store_id, active));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, {active})).durable());
+    }
+
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+
+    // Many short keys force open-addressing probe chains; identity remains full key bytes.
+    for (std::size_t i = 0; i < 64; ++i) {
+        const auto key = std::string{"k"} + std::to_string(i);
+        const auto value = std::string{"v"} + std::to_string(i);
+        GLYPHA_REQUIRE(
+            (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value})).committed());
+    }
+    for (std::size_t i = 0; i < 64; ++i) {
+        const auto key = std::string{"k"} + std::to_string(i);
+        const auto value = std::string{"v"} + std::to_string(i);
+        GLYPHA_REQUIRE(owned_text(*(*runtime)->get(key)) == value);
+    }
+    const auto stats = (*runtime)->hot_cache_stats();
+    GLYPHA_REQUIRE(stats[0].hits >= 64);
+    GLYPHA_REQUIRE(stats[0].resident_entries == 64);
+}
+
 GLYPHA_TEST("durable runtime commits different Worker mutations concurrently") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();

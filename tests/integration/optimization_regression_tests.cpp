@@ -34,11 +34,12 @@ GLYPHA_TEST("hot record capacity grows geometrically instead of rehashing every 
     GLYPHA_REQUIRE(!initial.overflow);
     GLYPHA_REQUIRE(initial.target == 64);
 
-    const auto within_capacity = glyphastore::detail::plan_hot_record_reserve(63, 1, 64);
+    // Flat table load 0.5: 64 slots hold 32 live entries.
+    const auto within_capacity = glyphastore::detail::plan_hot_record_reserve(31, 1, 64);
     GLYPHA_REQUIRE(!within_capacity.overflow);
     GLYPHA_REQUIRE(within_capacity.target == 0);
 
-    const auto next_growth = glyphastore::detail::plan_hot_record_reserve(64, 1, 64);
+    const auto next_growth = glyphastore::detail::plan_hot_record_reserve(32, 1, 64);
     GLYPHA_REQUIRE(!next_growth.overflow);
     GLYPHA_REQUIRE(next_growth.target == 128);
 
