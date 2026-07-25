@@ -44,7 +44,7 @@ changes require ADRs and compatibility evidence first.
 | --- | --- |
 | Transport | Cleartext TCP (protocol v2) by default; optional TLS 1.3 outer transport when built with LibreSSL/OpenSSL (`--tls-cert`/`--tls-key`); optional dual cleartext+TLS via `--tls-port` (ADR 0020) |
 | Authn / authz | Secure profile: mTLS principals + coarse `--authz-map` capabilities (ADR 0021/0022); cleartext trusted profile unchanged |
-| Quotas / rate limits | Frame/buffer bounds only; no per-client identity quotas (Phase 5 open) |
+| Quotas / rate limits | Phase 5 abuse controls: accept/connection/principal rate limits, idle + request deadlines (secure-profile defaults; cleartext 0=off) |
 | Audit | Lifecycle JSON logs; thin auth-specific audit trail (Phase 6 open) |
 | At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
 | Safe deployment | Embedded trusted caller, or daemon on trusted loopback/private network only |
@@ -102,7 +102,7 @@ Phase 8  Later: UDS, at-rest crypto, multi-tenant keyed routing
 | 1.5 | Spec sketch: TLS wrapper, protocol v2 unchanged | **done** (in ADR 0020) |
 | 1.6 | Security release process stub | **done** ([SECURITY.md](../../SECURITY.md) reporting + supported window) |
 
-**Next:** Phase 5 abuse controls (rate/idle limits) before public bind; Phase 6 audit polish.
+**Next:** Phase 6 audit polish; Phase 5 abuse controls landed 2026-07-25.
 Phase 2 outer-transport TLS is complete; Phases 3–4 (mTLS principal + capabilities) landed
 2026-07-23 — see [secure-profile.md](secure-profile.md).
 
@@ -177,7 +177,7 @@ unless ADR 1.5 requires an in-band upgrade — default is outer TLS.
 
 ---
 
-## Phase 5 — Abuse controls and limits
+## Phase 5 — Abuse controls and limits — **done (2026-07-25)**
 
 **Goal:** Bound damage from authenticated or pre-auth peers (DoS, slowloris, fan-out).
 
@@ -185,10 +185,13 @@ Split so transport-agnostic work can start early:
 
 | ID | When | Deliverable | Acceptance |
 | --- | --- | --- | --- |
-| 5.1 | Parallel to Phase 2 | Connection / handshake rate limits; max connections | Load test + metrics |
-| 5.2 | Parallel to Phase 2 | Idle and request deadlines (daemon-side), aligned with client semantics | Spec + tests |
-| 5.3 | After Phase 3 | Per-principal request and bandwidth quotas | Fairness under overload |
-| 5.4 | After Phase 3 | Pipeline / frame admission policy under overload | Existing buffer bounds + explicit reject/close |
+| 5.1 | Parallel to Phase 2 | Connection / handshake rate limits; max connections | **done** — `--max-accepts-per-sec` + existing `--max-connections`; `STATS` `abuse_accepts_rejected` |
+| 5.2 | Parallel to Phase 2 | Idle and request deadlines (daemon-side), aligned with client semantics | **done** — `--idle-timeout-ms` / `--request-timeout-ms` (monotonic); Store mutations already executing are never cancelled |
+| 5.3 | After Phase 3 | Per-principal request and bandwidth quotas | **done** — `--principal-max-requests-per-sec` / `--principal-max-bytes-per-sec` + `--connection-max-requests-per-sec` |
+| 5.4 | After Phase 3 | Pipeline / frame admission policy under overload | **done** — existing frame/buffer bounds; quota exceed ⇒ wire `overloaded`; accept flood ⇒ drop |
+
+`--secure-profile` applies non-zero Phase 5 defaults and refuses explicit `0` (fail closed). Trusted
+cleartext keeps limits at `0` (disabled) unless operators set them.
 
 **Effort:** 2–3 weeks cumulative; 5.1–5.2 are high leverage even before public exposure.
 

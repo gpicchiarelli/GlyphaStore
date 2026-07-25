@@ -6,6 +6,7 @@
 #include "glyphastore/server/tls.hpp"
 #include "glyphastore/server/wakeup.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -25,6 +26,10 @@ struct ConnectionHandoff {
     std::optional<std::uint32_t> bound_worker;
     bool initialized{};
     bool peer_read_closed{};
+    std::chrono::steady_clock::time_point last_activity{};
+    std::chrono::steady_clock::time_point partial_request_since{};
+    std::uint64_t connection_rate_window_start_ns{};
+    std::uint32_t connection_rate_used{};
 };
 
 // The only cross-executor data structure in the server data path. It transfers

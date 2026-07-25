@@ -104,6 +104,24 @@ auto ServerStatsReporter::render(const ServerStatsSnapshot& snapshot, const std:
         out += "connections_adopted=";
         out += std::to_string(connections_adopted);
         out += '\n';
+        out += "abuse_accepts_rejected=";
+        out += std::to_string(snapshot.abuse.accepts_rejected);
+        out += '\n';
+        out += "abuse_idle_closed=";
+        out += std::to_string(snapshot.abuse.idle_closed);
+        out += '\n';
+        out += "abuse_request_timeout_closed=";
+        out += std::to_string(snapshot.abuse.request_timeout_closed);
+        out += '\n';
+        out += "abuse_connection_rate_rejected=";
+        out += std::to_string(snapshot.abuse.connection_rate_rejected);
+        out += '\n';
+        out += "abuse_principal_request_rejected=";
+        out += std::to_string(snapshot.abuse.principal_request_rejected);
+        out += '\n';
+        out += "abuse_principal_bandwidth_rejected=";
+        out += std::to_string(snapshot.abuse.principal_bandwidth_rejected);
+        out += '\n';
 
         const auto& maintenance = snapshot.maintenance;
         out += "maintenance_state=";

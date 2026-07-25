@@ -144,8 +144,11 @@ probes return `INTERNAL_ERROR` with an empty value.
 **Fail closed for traffic:** orchestrators must gate on `READY`, not `HEALTH` alone. During
 graceful drain or sticky storage faults, `HEALTH` may succeed while `READY` fails.
 
-`STATS` is an unauthenticated admin surface until secure-profile auth ships
-([ADR 0021](../adr/0021-secure-profile-authentication.md)). Restrict network access accordingly.
+`STATS` requires the `read` capability under `--authz-map` / `--secure-profile`
+([ADR 0021](../adr/0021-secure-profile-authentication.md),
+[secure-profile reference](../security/secure-profile.md)). On cleartext trusted binds it remains
+an unauthenticated admin surface — restrict network access accordingly. Phase 5 exports `abuse_*`
+reject/close counters when limits are enabled.
 
 Structured lifecycle logs (`--log-format json`) emit `ready`, `maintenance_emergency`,
 `maintenance_fault`, and shutdown drain events on stderr for log aggregation.

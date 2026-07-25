@@ -67,6 +67,12 @@ enum OptionId : std::size_t {
     tls_port,
     authz_map,
     secure_profile,
+    max_accepts_per_sec,
+    idle_timeout_ms,
+    request_timeout_ms,
+    connection_max_requests_per_sec,
+    principal_max_requests_per_sec,
+    principal_max_bytes_per_sec,
 };
 
 constexpr std::array kOptionSpecs{
@@ -202,7 +208,29 @@ constexpr std::array kOptionSpecs{
                     cli::OptionArity::none,
                     {},
                     "Fail-closed secure profile: require TLS+mTLS+--authz-map; refuse --tls-port dual "
-                    "cleartext"},
+                    "cleartext; apply Phase 5 abuse-limit defaults (explicit 0 refused)"},
+    cli::OptionSpec{max_accepts_per_sec, "max-accepts-per-sec", '\0', cli::OptionArity::required, "COUNT",
+                    "Limit accepted connections/handshakes per second (default: 0=unlimited; "
+                    "secure-profile default 128)"},
+    cli::OptionSpec{idle_timeout_ms, "idle-timeout-ms", '\0', cli::OptionArity::required, "MILLISECONDS",
+                    "Close idle connections after this wait (default: 0=disabled; secure-profile default "
+                    "60000)"},
+    cli::OptionSpec{request_timeout_ms, "request-timeout-ms", '\0', cli::OptionArity::required,
+                    "MILLISECONDS",
+                    "Bound partial-frame assembly and in-flight response wait (default: 0=disabled; "
+                    "secure-profile default 30000). Store mutations already executing are not cancelled"},
+    cli::OptionSpec{connection_max_requests_per_sec, "connection-max-requests-per-sec", '\0',
+                    cli::OptionArity::required, "COUNT",
+                    "Per-connection request admission per second (default: 0=unlimited; secure-profile "
+                    "default 256)"},
+    cli::OptionSpec{principal_max_requests_per_sec, "principal-max-requests-per-sec", '\0',
+                    cli::OptionArity::required, "COUNT",
+                    "Per-principal request admission per second (default: 0=unlimited; secure-profile "
+                    "default 1024)"},
+    cli::OptionSpec{principal_max_bytes_per_sec, "principal-max-bytes-per-sec", '\0',
+                    cli::OptionArity::required, "BYTES",
+                    "Per-principal request+response byte budget per second (default: 0=unlimited; "
+                    "secure-profile default 32MiB)"},
 };
 
 using SettingMap = std::map<std::string, std::string, std::less<>>;
@@ -494,6 +522,49 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
         return unexpected(status.error());
     }
     options.server.shutdown_drain_ms = static_cast<std::uint32_t>(shutdown_drain_ms);
+    std::size_t max_accepts = options.server.abuse.max_accepts_per_sec;
+    if (auto status = set_size_option(max_accepts_per_sec, "--max-accepts-per-sec", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), max_accepts);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.max_accepts_per_sec = static_cast<std::uint32_t>(max_accepts);
+    std::size_t idle_timeout = options.server.abuse.idle_timeout_ms;
+    if (auto status = set_size_option(idle_timeout_ms, "--idle-timeout-ms", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), idle_timeout);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.idle_timeout_ms = static_cast<std::uint32_t>(idle_timeout);
+    std::size_t request_timeout = options.server.abuse.request_timeout_ms;
+    if (auto status = set_size_option(request_timeout_ms, "--request-timeout-ms", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), request_timeout);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.request_timeout_ms = static_cast<std::uint32_t>(request_timeout);
+    std::size_t connection_requests = options.server.abuse.connection_max_requests_per_sec;
+    if (auto status = set_size_option(connection_max_requests_per_sec, "--connection-max-requests-per-sec",
+                                      0, std::numeric_limits<std::uint32_t>::max(), connection_requests);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.connection_max_requests_per_sec = static_cast<std::uint32_t>(connection_requests);
+    std::size_t principal_requests = options.server.abuse.principal_max_requests_per_sec;
+    if (auto status = set_size_option(principal_max_requests_per_sec, "--principal-max-requests-per-sec", 0,
+                                      std::numeric_limits<std::uint32_t>::max(), principal_requests);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.principal_max_requests_per_sec = static_cast<std::uint32_t>(principal_requests);
+    std::size_t principal_bytes = options.server.abuse.principal_max_bytes_per_sec;
+    if (auto status =
+            set_byte_size_option(principal_max_bytes_per_sec, "--principal-max-bytes-per-sec", 0,
+                                 maximum_size, principal_bytes);
+        !status) {
+        return unexpected(status.error());
+    }
+    options.server.abuse.principal_max_bytes_per_sec = principal_bytes;
     if (parsed->has(reuse_port) && parsed->has(no_reuse_port)) {
         return fail(ErrorCode::invalid_argument, "--reuse-port and --no-reuse-port are mutually exclusive");
     }
@@ -746,6 +817,41 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
             return fail(ErrorCode::invalid_argument,
                         "--secure-profile refuses dual cleartext (--tls-port); use TLS-only on --port");
         }
+        // Phase 5: apply secure defaults for unset (zero) knobs; refuse explicit disable.
+        const auto defaults = secure_profile_abuse_defaults();
+        const bool accepts_set = parsed->has(max_accepts_per_sec);
+        const bool idle_set = parsed->has(idle_timeout_ms);
+        const bool request_set = parsed->has(request_timeout_ms);
+        const bool connection_set = parsed->has(connection_max_requests_per_sec);
+        const bool principal_req_set = parsed->has(principal_max_requests_per_sec);
+        const bool principal_bytes_set = parsed->has(principal_max_bytes_per_sec);
+        if ((accepts_set && options.server.abuse.max_accepts_per_sec == 0) ||
+            (idle_set && options.server.abuse.idle_timeout_ms == 0) ||
+            (request_set && options.server.abuse.request_timeout_ms == 0) ||
+            (connection_set && options.server.abuse.connection_max_requests_per_sec == 0) ||
+            (principal_req_set && options.server.abuse.principal_max_requests_per_sec == 0) ||
+            (principal_bytes_set && options.server.abuse.principal_max_bytes_per_sec == 0)) {
+            return fail(ErrorCode::invalid_argument,
+                        "--secure-profile refuses disabling Phase 5 abuse limits (explicit 0)");
+        }
+        if (!accepts_set) {
+            options.server.abuse.max_accepts_per_sec = defaults.max_accepts_per_sec;
+        }
+        if (!idle_set) {
+            options.server.abuse.idle_timeout_ms = defaults.idle_timeout_ms;
+        }
+        if (!request_set) {
+            options.server.abuse.request_timeout_ms = defaults.request_timeout_ms;
+        }
+        if (!connection_set) {
+            options.server.abuse.connection_max_requests_per_sec = defaults.connection_max_requests_per_sec;
+        }
+        if (!principal_req_set) {
+            options.server.abuse.principal_max_requests_per_sec = defaults.principal_max_requests_per_sec;
+        }
+        if (!principal_bytes_set) {
+            options.server.abuse.principal_max_bytes_per_sec = defaults.principal_max_bytes_per_sec;
+        }
     }
     if (auto tls = validate_tls_config(options.server.tls); !tls) {
         return unexpected(tls.error());
@@ -976,6 +1082,18 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += std::to_string(options.server.authz.size());
     out += "\nsecure-profile=";
     out += options.secure_profile ? "true" : "false";
+    out += "\nmax-accepts-per-sec=";
+    out += std::to_string(options.server.abuse.max_accepts_per_sec);
+    out += "\nidle-timeout-ms=";
+    out += std::to_string(options.server.abuse.idle_timeout_ms);
+    out += "\nrequest-timeout-ms=";
+    out += std::to_string(options.server.abuse.request_timeout_ms);
+    out += "\nconnection-max-requests-per-sec=";
+    out += std::to_string(options.server.abuse.connection_max_requests_per_sec);
+    out += "\nprincipal-max-requests-per-sec=";
+    out += std::to_string(options.server.abuse.principal_max_requests_per_sec);
+    out += "\nprincipal-max-bytes-per-sec=";
+    out += std::to_string(options.server.abuse.principal_max_bytes_per_sec);
     out += '\n';
     return out;
 }

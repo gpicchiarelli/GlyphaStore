@@ -63,11 +63,11 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
                  TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
                  ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                  DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
-                 std::shared_ptr<TlsContext> tls)
+                 std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(cleartext_listener)),
       tls_listener_(std::move(tls_listener)), poller_(std::move(poller)), wakeup_(std::move(wakeup)),
       store_(store), mesh_(mesh), disk_reads_(disk_reads), durable_mutations_(durable_mutations),
-      lifecycle_probes_(lifecycle_probes), tls_(std::move(tls)),
+      lifecycle_probes_(lifecycle_probes), tls_(std::move(tls)), abuse_(std::move(abuse)),
       disk_read_completions_(config_.disk_read_queue_capacity),
       durable_mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
@@ -81,7 +81,7 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
                      TcpListener cleartext_listener, TcpListener tls_listener, Store& store,
                      ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                      DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
-                     std::shared_ptr<TlsContext> tls)
+                     std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse)
     -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "reactor executor id is outside the Worker mesh");
@@ -97,10 +97,13 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     if (!wakeup) {
         return unexpected(wakeup.error());
     }
+    if (!abuse && config.abuse.any_enabled()) {
+        abuse = std::make_shared<AbuseController>(config.abuse);
+    }
     auto reactor = std::unique_ptr<Reactor>(
         new Reactor(config, executor_id, std::move(cleartext_listener), std::move(tls_listener),
                     std::move(*poller), std::move(*wakeup), store, mesh, disk_reads, durable_mutations,
-                    lifecycle_probes, std::move(tls)));
+                    lifecycle_probes, std::move(tls), std::move(abuse)));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
                 reactor->poller_.add(reactor->listener_.descriptor(), kListenerToken, IoInterest::read);
@@ -157,6 +160,11 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->write_armed = false;
     current->request_in_flight = false;
     current->read_cancellation.reset();
+    current->last_activity = {};
+    current->partial_request_since = {};
+    current->in_flight_since = {};
+    current->connection_rate_window_start_ns = 0;
+    current->connection_rate_used = 0;
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -203,6 +211,7 @@ void Reactor::close_all_connections() noexcept {
 
 auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
     auto& listener = tls_endpoint ? tls_listener_ : listener_;
+    const auto now = std::chrono::steady_clock::now();
     while (true) {
         auto accepted = listener.accept();
         if (!accepted) {
@@ -211,7 +220,11 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
         if (!accepted->has_value()) {
             return {};
         }
-        ConnectionHandoff handoff{.socket = std::move(**accepted)};
+        if (abuse_ && !abuse_->try_admit_accept(now)) {
+            // Drop the peer without adopting; SocketHandle closes on destroy.
+            continue;
+        }
+        ConnectionHandoff handoff{.socket = std::move(**accepted), .last_activity = now};
         if (tls_endpoint) {
             if (!tls_) {
                 continue;
@@ -262,6 +275,13 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.write_armed = !current.output.empty();
     current.request_in_flight = false;
     current.read_cancellation.reset();
+    current.last_activity = handoff.last_activity.time_since_epoch().count() == 0
+                                ? std::chrono::steady_clock::now()
+                                : handoff.last_activity;
+    current.partial_request_since = handoff.partial_request_since;
+    current.in_flight_since = {};
+    current.connection_rate_window_start_ns = handoff.connection_rate_window_start_ns;
+    current.connection_rate_used = handoff.connection_rate_used;
     const ConnectionToken token{.slot = slot, .generation = current.generation};
     auto interest = IoInterest::none;
     if (!current.peer_read_closed) {
@@ -318,6 +338,10 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
         current->output.resize(output_offset);
         return unexpected(encoded.error());
     }
+    if (abuse_ && !current->principal.empty() && !response.value.empty()) {
+        abuse_->record_principal_response_bytes(current->principal, response.value.size(),
+                                                std::chrono::steady_clock::now());
+    }
     return {};
 }
 
@@ -327,6 +351,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
+    const auto now = std::chrono::steady_clock::now();
     while (!current->request_in_flight && current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
@@ -335,8 +360,12 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             return unexpected(decoded.error());
         }
         if (!decoded->complete) {
+            if (current->partial_request_since.time_since_epoch().count() == 0) {
+                current->partial_request_since = now;
+            }
             break;
         }
+        current->partial_request_since = {};
         if (shutting_down_ && decoded->frame.opcode != RequestOpcode::health &&
             decoded->frame.opcode != RequestOpcode::ready &&
             decoded->frame.opcode != RequestOpcode::stats) {
@@ -364,8 +393,42 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             current->input_offset += decoded->consumed;
             continue;
         }
+        // Lifecycle probes stay exempt from request/bandwidth quotas so HEALTH/READY/STATS remain
+        // observable under overload (same posture as shutdown drain).
+        const bool lifecycle_probe = decoded->frame.opcode == RequestOpcode::health ||
+                                     decoded->frame.opcode == RequestOpcode::ready ||
+                                     decoded->frame.opcode == RequestOpcode::stats;
+        if (!lifecycle_probe && abuse_) {
+            if (!abuse_->try_admit_connection_request(current->connection_rate_window_start_ns,
+                                                     current->connection_rate_used, now)) {
+                ResponseView refused{.status = ResponseStatus::overloaded,
+                                     .request_id = decoded->frame.request_id,
+                                     .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                                     .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                     .routing_epoch = kRoutingEpoch};
+                if (auto queued = queue_response(token, refused); !queued) {
+                    return queued;
+                }
+                current->input_offset += decoded->consumed;
+                continue;
+            }
+            const auto request_bytes = decoded->frame.key.size() + decoded->frame.value.size();
+            if (!abuse_->try_admit_principal(current->principal, request_bytes, now)) {
+                ResponseView refused{.status = ResponseStatus::overloaded,
+                                     .request_id = decoded->frame.request_id,
+                                     .owner_worker = static_cast<std::uint32_t>(executor_id_),
+                                     .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                     .routing_epoch = kRoutingEpoch};
+                if (auto queued = queue_response(token, refused); !queued) {
+                    return queued;
+                }
+                current->input_offset += decoded->consumed;
+                continue;
+            }
+        }
         if (decoded->frame.opcode == RequestOpcode::bind_worker) {
             current->input_offset += decoded->consumed;
+            touch_activity(*current, now);
             return bind_connection(token, decoded->frame);
         }
 
@@ -445,13 +508,18 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             }
         }
         current->input_offset += decoded->consumed;
+        touch_activity(*current, now);
         if (current->request_in_flight) {
+            current->in_flight_since = now;
             break;
         }
     }
     if (current->input_offset == current->input.size()) {
         current->input.clear();
         current->input_offset = 0;
+        if (!current->request_in_flight) {
+            current->partial_request_since = {};
+        }
     } else if (current->input_offset > 0) {
         current->input.erase(current->input.begin(),
                              current->input.begin() + static_cast<std::ptrdiff_t>(current->input_offset));
@@ -509,7 +577,11 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
                               .output = std::move(current->output),
                               .bound_worker = static_cast<std::uint32_t>(target_worker),
                               .initialized = current->initialized,
-                              .peer_read_closed = current->peer_read_closed};
+                              .peer_read_closed = current->peer_read_closed,
+                              .last_activity = current->last_activity,
+                              .partial_request_since = current->partial_request_since,
+                              .connection_rate_window_start_ns = current->connection_rate_window_start_ns,
+                              .connection_rate_used = current->connection_rate_used};
     current->principal.clear();
     current->capabilities = Capability::none;
     current->bound_worker.reset();
@@ -518,6 +590,11 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->write_armed = false;
     current->request_in_flight = false;
     current->read_cancellation.reset();
+    current->last_activity = {};
+    current->partial_request_since = {};
+    current->in_flight_since = {};
+    current->connection_rate_window_start_ns = 0;
+    current->connection_rate_used = 0;
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
@@ -796,7 +873,9 @@ auto Reactor::process_disk_read_completions() -> Status {
             return fail(ErrorCode::corrupted_data, "unexpected disk-read completion");
         }
         current->request_in_flight = false;
+        current->in_flight_since = {};
         current->read_cancellation.reset();
+        touch_activity(*current, std::chrono::steady_clock::now());
         OwnedValue owned;
         ResponseView response{.status = ResponseStatus::ok,
                               .request_id = completion->request_id,
@@ -846,6 +925,8 @@ auto Reactor::process_durable_mutation_completions() -> Status {
             return fail(ErrorCode::corrupted_data, "unexpected durable-mutation completion");
         }
         current->request_in_flight = false;
+        current->in_flight_since = {};
+        touch_activity(*current, std::chrono::steady_clock::now());
         ResponseView response{.status = ResponseStatus::ok,
                               .request_id = completion->request_id,
                               .owner_worker = static_cast<std::uint32_t>(executor_id_),
@@ -950,6 +1031,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
         }
         current->input.insert(current->input.end(), buffer.begin(),
                               buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
+        touch_activity(*current, std::chrono::steady_clock::now());
         if (auto processed = process_frames(token); !processed) {
             return processed;
         }
@@ -1020,6 +1102,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     }
     current->output.clear();
     current->output_offset = 0;
+    touch_activity(*current, std::chrono::steady_clock::now());
     if (current->peer_read_closed && !current->request_in_flight) {
         close_connection(token);
         return {};
@@ -1039,10 +1122,15 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
+    const auto now = std::chrono::steady_clock::now();
+    enforce_timeouts(now);
     if (auto messages = process_messages(); !messages) {
         return messages;
     }
-    auto ready = poller_.wait(events_, timeout_ms);
+    const auto wait_ms = next_timeout_ms(now);
+    const auto effective_timeout =
+        timeout_ms < 0 ? wait_ms : (wait_ms < 0 ? timeout_ms : std::min(timeout_ms, wait_ms));
+    auto ready = poller_.wait(events_, effective_timeout);
     if (!ready) {
         return unexpected(ready.error());
     }
@@ -1092,7 +1180,107 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
             }
         }
     }
+    enforce_timeouts(std::chrono::steady_clock::now());
     return {};
+}
+
+void Reactor::touch_activity(Connection& current,
+                             const std::chrono::steady_clock::time_point now) noexcept {
+    current.last_activity = now;
+}
+
+void Reactor::enforce_timeouts(const std::chrono::steady_clock::time_point now) noexcept {
+    if (!abuse_) {
+        return;
+    }
+    const auto idle_ms = abuse_->limits().idle_timeout_ms;
+    const auto request_ms = abuse_->limits().request_timeout_ms;
+    if (idle_ms == 0 && request_ms == 0) {
+        return;
+    }
+    for (std::uint32_t slot = 0; slot < connections_.size(); ++slot) {
+        auto& candidate = connections_[slot];
+        if (!candidate.socket.valid()) {
+            continue;
+        }
+        bool timed_out = false;
+        bool request_timeout = false;
+        if (request_ms != 0) {
+            const auto budget = std::chrono::milliseconds{request_ms};
+            if (candidate.partial_request_since.time_since_epoch().count() != 0 &&
+                now - candidate.partial_request_since >= budget) {
+                timed_out = true;
+                request_timeout = true;
+            } else if (candidate.request_in_flight &&
+                       candidate.in_flight_since.time_since_epoch().count() != 0 &&
+                       now - candidate.in_flight_since >= budget) {
+                timed_out = true;
+                request_timeout = true;
+            }
+        }
+        if (!timed_out && idle_ms != 0 && !candidate.request_in_flight &&
+            candidate.output_offset >= candidate.output.size() &&
+            candidate.input_offset >= candidate.input.size() &&
+            candidate.last_activity.time_since_epoch().count() != 0 &&
+            now - candidate.last_activity >= std::chrono::milliseconds{idle_ms}) {
+            timed_out = true;
+        }
+        if (!timed_out) {
+            continue;
+        }
+        if (request_timeout) {
+            abuse_->note_request_timeout_closed();
+        } else {
+            abuse_->note_idle_closed();
+        }
+        close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
+    }
+}
+
+auto Reactor::next_timeout_ms(const std::chrono::steady_clock::time_point now) const noexcept -> int {
+    if (!abuse_) {
+        return -1;
+    }
+    const auto idle_ms = abuse_->limits().idle_timeout_ms;
+    const auto request_ms = abuse_->limits().request_timeout_ms;
+    if (idle_ms == 0 && request_ms == 0) {
+        return -1;
+    }
+    std::optional<std::chrono::steady_clock::duration> soonest;
+    const auto consider = [&](const std::chrono::steady_clock::time_point since, const std::uint32_t budget_ms) {
+        if (budget_ms == 0 || since.time_since_epoch().count() == 0) {
+            return;
+        }
+        const auto deadline = since + std::chrono::milliseconds{budget_ms};
+        const auto remaining = deadline - now;
+        if (!soonest.has_value() || remaining < *soonest) {
+            soonest = remaining;
+        }
+    };
+    for (const auto& candidate : connections_) {
+        if (!candidate.socket.valid()) {
+            continue;
+        }
+        consider(candidate.partial_request_since, request_ms);
+        if (candidate.request_in_flight) {
+            consider(candidate.in_flight_since, request_ms);
+        }
+        if (!candidate.request_in_flight && candidate.output_offset >= candidate.output.size() &&
+            candidate.input_offset >= candidate.input.size()) {
+            consider(candidate.last_activity, idle_ms);
+        }
+    }
+    if (!soonest.has_value()) {
+        return -1;
+    }
+    if (*soonest <= std::chrono::steady_clock::duration::zero()) {
+        return 0;
+    }
+    const auto millis = std::chrono::duration_cast<std::chrono::milliseconds>(*soonest).count();
+    if (millis > std::numeric_limits<int>::max()) {
+        return std::numeric_limits<int>::max();
+    }
+    return static_cast<int>(millis);
 }
 
 } // namespace glyphastore::server

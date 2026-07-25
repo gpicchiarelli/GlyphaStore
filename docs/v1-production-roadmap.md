@@ -28,11 +28,12 @@ Open release gates (summary):
   controlled native baselines and power-loss certification remain open (software policy closed).
 - Embedded durable resource policy is implemented; per-candidate normal copy limits and
   per-second/CPU maintenance rate budgets are daemon-configurable (zero disables; pressure/emergency
-  bypass). Connection/handshake rate limits (Phase 5) remain open.
+  bypass). Phase 5 connection/handshake/principal rate limits and idle/request deadlines are
+  implemented (`--secure-profile` applies defaults).
 - Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification (E3/E4 open).
 - Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; live/hot
-  backup and release provenance remain open. Secure-profile authn/authz is implemented; Phase 5
-  abuse controls remain open before public bind.
+  backup and release provenance remain open. Secure-profile authn/authz + Phase 5 abuse controls are
+  implemented; Phase 6 audit and CRL/OCSP remain residual before hostile public Internet.
 
 Local throughput gains do not close these gates.
 

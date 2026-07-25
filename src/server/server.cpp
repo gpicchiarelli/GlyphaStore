@@ -111,6 +111,9 @@ auto Server::stats_report() const -> Result<std::string> {
             .adopted_connections = reactor->adopted_connections(),
         });
     }
+    if (!reactors_.empty()) {
+        snapshot.abuse = reactors_.front()->abuse_stats();
+    }
     constexpr std::size_t kStatsBudgetBytes = 256U * 1024U;
     return ServerStatsReporter::render(snapshot, kStatsBudgetBytes);
 }

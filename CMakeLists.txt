@@ -206,6 +206,7 @@ else()
 endif()
 
 add_library(glyphastore_server_core
+    src/server/abuse_limits.cpp
     src/server/authz.cpp
     src/server/connection_handoff.cpp
     src/server/daemon_config.cpp
@@ -287,6 +288,7 @@ if(BUILD_TESTING)
         tests/unit/daemon_config_tests.cpp
         tests/unit/daemon_log_tests.cpp
         tests/unit/authz_tests.cpp
+        tests/unit/abuse_limits_tests.cpp
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/client_tests.cpp

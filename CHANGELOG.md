@@ -5,6 +5,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Implement Secure profile Phase 5 abuse / DoS controls: process-wide `--max-accepts-per-sec`,
+  `--idle-timeout-ms` / `--request-timeout-ms`, per-connection and per-principal request/bandwidth
+  quotas, shared `AbuseController`, `STATS` `abuse_*` counters, and `--secure-profile` defaults that
+  refuse explicit `0`. Trusted cleartext keeps limits disabled unless set. Document residual public
+  bind blockers (Phase 6 audit, CRL/OCSP, multi-tenant).
+
 - Close Ruby SDK TLS honesty gap: opt-in TLS 1.3 (`ClientConfig#tls`, CA / mTLS / hostname verify,
   lab `insecure_skip_verify`) matching Go/Python/Perl; include Ruby in the TLS interop matrix;
   retire the “Ruby cleartext exception” from the security same-train docs.

@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
+#include "glyphastore/server/abuse_limits.hpp"
 #include "glyphastore/server/durable_mutation_executor.hpp"
 #include "glyphastore/store/maintenance_types.hpp"
 
@@ -28,6 +29,7 @@ struct ServerStatsSnapshot final {
     MaintenanceSnapshot maintenance;
     std::vector<DurableMutationWorkerStats> mutations;
     std::vector<DurableBatchWorkerStats> batches;
+    AbuseStats abuse{};
 };
 
 class ServerStatsReporter final {

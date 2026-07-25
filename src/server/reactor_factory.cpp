@@ -9,7 +9,8 @@ namespace glyphastore::server {
 auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, ConnectionHandoffMesh& mesh,
                                 DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations,
                                 const ServerLifecycleProbes lifecycle_probes,
-                                std::shared_ptr<TlsContext> tls_context)
+                                std::shared_ptr<TlsContext> tls_context,
+                                std::shared_ptr<AbuseController> abuse)
     -> Result<std::vector<std::unique_ptr<Reactor>>> {
 #if defined(__linux__)
     const bool kernel_distribution = config.reuse_port && store.worker_count() > 1;
@@ -22,6 +23,10 @@ auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, Conne
     const bool listen_tls = tls_only || dual_listen;
     std::uint16_t shared_cleartext_port = config.port;
     std::uint16_t shared_tls_port = dual_listen ? *config.tls_port : config.port;
+
+    if (!abuse && config.abuse.any_enabled()) {
+        abuse = std::make_shared<AbuseController>(config.abuse);
+    }
 
     std::vector<std::unique_ptr<Reactor>> reactors;
     reactors.reserve(store.worker_count());
@@ -54,7 +59,7 @@ auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, Conne
         }
         auto reactor =
             Reactor::create(config, executor, std::move(cleartext_listener), std::move(tls_listener), store,
-                            mesh, disk_reads, durable_mutations, lifecycle_probes, tls_context);
+                            mesh, disk_reads, durable_mutations, lifecycle_probes, tls_context, abuse);
         if (!reactor) {
             return unexpected(reactor.error());
         }

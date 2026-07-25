@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/server/abuse_limits.hpp"
 #include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
@@ -14,6 +15,7 @@
 #include "glyphastore/store/store.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -74,6 +76,8 @@ struct ReactorConfig {
     TlsConfig tls{};
     // When enabled, data-plane opcodes require capabilities from --authz-map.
     AuthzPolicy authz{};
+    // Phase 5 abuse / DoS controls. Zero disables each limit (trusted cleartext default).
+    AbuseLimits abuse{};
 };
 
 class Reactor final {
@@ -85,7 +89,8 @@ class Reactor final {
                                      ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                                      DurableMutationExecutor* durable_mutations,
                                      ServerLifecycleProbes lifecycle_probes = {},
-                                     std::shared_ptr<TlsContext> tls = {})
+                                     std::shared_ptr<TlsContext> tls = {},
+                                     std::shared_ptr<AbuseController> abuse = {})
         -> Result<std::unique_ptr<Reactor>>;
 
     Reactor(const Reactor&) = delete;
@@ -129,6 +134,9 @@ class Reactor final {
     [[nodiscard]] auto adopted_connections() const noexcept -> std::size_t {
         return adopted_connections_;
     }
+    [[nodiscard]] auto abuse_stats() const noexcept -> AbuseStats {
+        return abuse_ ? abuse_->stats() : AbuseStats{};
+    }
 
   private:
     struct Connection {
@@ -149,13 +157,20 @@ class Reactor final {
         // response order and prevents one pipelined client monopolizing a lane.
         bool request_in_flight{};
         std::shared_ptr<std::atomic_bool> read_cancellation;
+        std::chrono::steady_clock::time_point last_activity{};
+        // Set while a partial request frame is buffered; cleared on complete frame.
+        std::chrono::steady_clock::time_point partial_request_since{};
+        // Set when request_in_flight becomes true; cleared when the response is queued.
+        std::chrono::steady_clock::time_point in_flight_since{};
+        std::uint64_t connection_rate_window_start_ns{};
+        std::uint32_t connection_rate_used{};
     };
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener cleartext_listener,
             TcpListener tls_listener, Poller poller, Wakeup wakeup, Store& store,
             ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
             DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
-            std::shared_ptr<TlsContext> tls);
+            std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse);
 
     [[nodiscard]] auto accept_ready(bool tls_endpoint) -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
@@ -176,6 +191,9 @@ class Reactor final {
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;
     void close_connection(ConnectionToken token) noexcept;
+    void touch_activity(Connection& current, std::chrono::steady_clock::time_point now) noexcept;
+    void enforce_timeouts(std::chrono::steady_clock::time_point now) noexcept;
+    [[nodiscard]] auto next_timeout_ms(std::chrono::steady_clock::time_point now) const noexcept -> int;
 
     static constexpr std::uint64_t kListenerToken = std::numeric_limits<std::uint64_t>::max();
     static constexpr std::uint64_t kMessageToken = kListenerToken - 1U;
@@ -194,6 +212,7 @@ class Reactor final {
     DurableMutationExecutor* durable_mutations_{};
     ServerLifecycleProbes lifecycle_probes_{};
     std::shared_ptr<TlsContext> tls_;
+    std::shared_ptr<AbuseController> abuse_;
     BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
     BoundedMpscQueue<DurableMutationCompletion> durable_mutation_completions_;
     std::vector<Connection> connections_;

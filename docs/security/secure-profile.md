@@ -3,7 +3,7 @@
 Status: normative for the secure daemon profile (ADR 0020–0022)  
 Applies to: `glyphastored` TLS/mTLS/authz; official SDK TLS credential options  
 Owner: security maintainers  
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-25
 
 This document freezes the **secure profile** operators enable before binding beyond a trusted
 loopback/private perimeter. Protocol v2 framing is unchanged; TLS is an outer transport
@@ -16,7 +16,8 @@ loopback/private perimeter. Protocol v2 framing is unchanged; TLS is an outer tr
 | Confidentiality / integrity | TLS 1.3 only (`--tls-cert` / `--tls-key`) |
 | Authentication | Mutual TLS (`--tls-client-ca`); anonymous peers rejected |
 | Authorization | Static principal capability map (`--authz-map`); default deny |
-| Fail closed | `--secure-profile` refuses dual cleartext+TLS (`--tls-port`), missing mTLS, or missing authz map |
+| Abuse / DoS bounds | Phase 5 accept/connection/principal rate limits + idle/request deadlines |
+| Fail closed | `--secure-profile` refuses dual cleartext+TLS (`--tls-port`), missing mTLS, missing authz map, or disabled Phase 5 limits |
 
 Trusted cleartext (default loopback) remains valid **without** this profile. The secure profile is
 opt-in.
@@ -41,9 +42,24 @@ glyphastored --secure-profile \
   --authz-map /etc/glyphastore/authz.map
 ```
 
-Non-loopback bind without `--secure-profile` prints a warning. Public / hostile exposure still
-requires Phase 5 abuse controls ([security roadmap](roadmap.md)); this profile closes authn/authz
-gates only.
+Non-loopback bind without `--secure-profile` prints a warning. Leaving the trusted perimeter requires
+`--secure-profile` (Phases 2–5). Hostile public Internet still needs Phase 6 audit polish and an
+explicit CRL/OCSP policy ([security roadmap](roadmap.md)).
+
+## 1a. Phase 5 abuse controls
+
+| Flag | Secure-profile default | Effect |
+| --- | --- | --- |
+| `--max-accepts-per-sec` | 128 | Process-wide accept/handshake admissions per second; excess peers are dropped |
+| `--idle-timeout-ms` | 60000 | Close quiet connections (monotonic idle) |
+| `--request-timeout-ms` | 30000 | Bound partial-frame assembly and in-flight response wait; Store work already executing is not cancelled |
+| `--connection-max-requests-per-sec` | 256 | Per-connection request admission; exceed ⇒ wire `overloaded` |
+| `--principal-max-requests-per-sec` | 1024 | Per-mTLS-principal request admission |
+| `--principal-max-bytes-per-sec` | 32MiB | Per-principal request key+value + response value bytes |
+
+Trusted cleartext leaves these at `0` (disabled). `--secure-profile` fills zeros with the defaults
+above and refuses explicit `0`. `HEALTH` / `READY` / `STATS` stay exempt from request/bandwidth
+quotas. `STATS` exports `abuse_*` reject/close counters.
 
 ## 2. Principal extraction (ADR 0021)
 
@@ -107,13 +123,17 @@ Every official SDK in the same release must expose TLS 1.3 connect options with 
 by default (lab `insecure_skip_verify` / equivalent only). mTLS uses the same client cert/key
 paths. Cleartext remains available for trusted deployments.
 
-## 7. Residual risks (still block public bind)
+## 7. Residual risks (still block hostile public bind)
 
-- Phase 5: connection/handshake rate limits, idle/request deadlines, per-principal quotas.  
 - Phase 6: full security audit trail and admin principal counts (structured lifecycle logs exist;
   auth-specific events remain thin).  
 - CRL/OCSP fail-closed policy when revocation is configured.  
 - Hostile multi-tenant isolation (Phase 8).
+
+Phase 5 abuse controls (accept/connection/principal rates, idle/request deadlines) are implemented;
+see §1a. The security roadmap treats Phases 0–5 as the gate for leaving a trusted perimeter with
+`--secure-profile`. Production readiness still lists Phase 6 audit before calling a deployment
+“public Internet ready.”
 
 ## References
 

@@ -47,9 +47,8 @@ Phase 2 (outer TLS) is implemented; Phases 3–4 (mTLS principals + `--authz-map
 remains cleartext-only until its SDK Phase 3 (explicit exception to the “same train” TLS policy).
 **OpenBSD** is a first-class portability target (LibreSSL; later `pledge`/`unveil` remain open —
 not a durable storage certification). CI builds and tests the daemon against system LibreSSL
-([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Until the full
-secure profile (TLS + mTLS + capabilities) is enabled in production deployments, treat the daemon as
-sidecar / private-network only. Phase 5 abuse controls remain open before public bind.
+([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Enable the full secure profile (TLS + mTLS + capabilities + Phase 5 abuse limits) before leaving a
+trusted perimeter. Phase 6 audit polish and CRL/OCSP remain residual before hostile public Internet.
 
 Threat model: [docs/security/threat-model.md](docs/security/threat-model.md).
 

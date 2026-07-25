@@ -379,6 +379,8 @@ GLYPHA_TEST("daemon config maintenance rate budgets and secure-profile fail clos
     GLYPHA_REQUIRE(dump.find("maintenance-max-cpu-ms-per-window=25\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("secure-profile=false\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("authz-enabled=false\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("max-accepts-per-sec=0\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("idle-timeout-ms=0\n") != std::string::npos);
 
     const std::array insecure{"glyphastored", "--secure-profile"};
     const auto missing = parse(insecure);
@@ -403,6 +405,61 @@ GLYPHA_TEST("daemon config maintenance rate budgets and secure-profile fail clos
                           "7380"};
     const auto dual_result = parse(dual);
     GLYPHA_REQUIRE(!dual_result.has_value());
+}
+
+GLYPHA_TEST("daemon config Phase 5 abuse limits parse and dump") {
+    const std::array arguments{"glyphastored",
+                               "--max-accepts-per-sec",
+                               "10",
+                               "--idle-timeout-ms",
+                               "1000",
+                               "--request-timeout-ms",
+                               "2000",
+                               "--connection-max-requests-per-sec",
+                               "3",
+                               "--principal-max-requests-per-sec",
+                               "4",
+                               "--principal-max-bytes-per-sec",
+                               "1MiB"};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->server.abuse.max_accepts_per_sec == 10);
+    GLYPHA_REQUIRE(parsed->server.abuse.idle_timeout_ms == 1000);
+    GLYPHA_REQUIRE(parsed->server.abuse.request_timeout_ms == 2000);
+    GLYPHA_REQUIRE(parsed->server.abuse.connection_max_requests_per_sec == 3);
+    GLYPHA_REQUIRE(parsed->server.abuse.principal_max_requests_per_sec == 4);
+    GLYPHA_REQUIRE(parsed->server.abuse.principal_max_bytes_per_sec == 1U * 1024U * 1024U);
+    const auto dump = glyphastore::server::format_daemon_config_dump(*parsed);
+    GLYPHA_REQUIRE(dump.find("max-accepts-per-sec=10\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("idle-timeout-ms=1000\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("request-timeout-ms=2000\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("connection-max-requests-per-sec=3\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("principal-max-requests-per-sec=4\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("principal-max-bytes-per-sec=1048576\n") != std::string::npos);
+}
+
+GLYPHA_TEST("daemon config secure-profile refuses explicit Phase 5 zero") {
+    ConfigTemporaryDirectory temporary;
+    const auto map_path = temporary.path() / "authz.map";
+    write_file(map_path, "reader.example read\n");
+    const auto map_arg = map_path.string();
+    const std::array arguments{"glyphastored",
+                               "--secure-profile",
+                               "--tls-cert",
+                               "missing.crt",
+                               "--tls-key",
+                               "missing.key",
+                               "--tls-client-ca",
+                               "missing-ca.crt",
+                               "--authz-map",
+                               map_arg.c_str(),
+                               "--idle-timeout-ms",
+                               "0"};
+    const auto parsed = parse(arguments);
+    GLYPHA_REQUIRE(!parsed.has_value());
+    GLYPHA_REQUIRE(parsed.error().message.find("Phase 5") != std::string::npos ||
+                   parsed.error().message.find("abuse") != std::string::npos ||
+                   parsed.error().message.find("secure-profile") != std::string::npos);
 }
 
 GLYPHA_TEST("daemon config authz-map enables default-deny policy") {

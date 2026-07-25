@@ -142,8 +142,9 @@ below has automated evidence. A design document or implementation alone does not
   [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md).
   Phase 2 outer TLS is complete ([secure-profile.md](security/secure-profile.md)): daemon TLS 1.3,
   dual `--tls-port`, SDK TLS train (C++/Python/Perl/Go/Erlang/Ruby),
-  interop, LibreSSL CI. Phases 3–4 mTLS principals + `--authz-map` / `--secure-profile` landed.
-  Phase 5 rate/idle limits and Phase 6 full audit remain open before public bind.
+  interop, LibreSSL CI. Phases 3–5 mTLS principals + `--authz-map` / `--secure-profile` + abuse
+  controls (accept/connection/principal rates, idle/request deadlines) landed. Phase 6 full audit
+  and CRL/OCSP remain open before calling a deployment public-Internet ready.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.

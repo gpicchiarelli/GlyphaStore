@@ -102,6 +102,9 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
         }
         tls_context_ = std::move(*created);
     }
+    if (config_.abuse.any_enabled()) {
+        abuse_ = std::make_shared<AbuseController>(config_.abuse);
+    }
     const auto worker_count = (*store)->worker_count();
     ServerRuntime runtime{
         .store = std::move(*store),
@@ -119,7 +122,7 @@ auto ServerBuilder::create_reactors(Store& store, ConnectionHandoffMesh& mesh,
                                     const ServerLifecycleProbes probes)
     -> Result<std::vector<std::unique_ptr<Reactor>>> {
     return ReactorFactory::create_all(config_, store, mesh, disk_reads, durable_mutations, probes,
-                                      tls_context_);
+                                      tls_context_, abuse_);
 }
 
 } // namespace glyphastore::server

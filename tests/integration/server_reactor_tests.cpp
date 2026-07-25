@@ -1827,3 +1827,130 @@ GLYPHA_TEST("multi-Reactor executors distribute connections and share one Store"
     GLYPHA_REQUIRE(affinity[0].mode != glyphastore::server::ExecutorAffinityMode::disabled);
     GLYPHA_REQUIRE(affinity[1].mode != glyphastore::server::ExecutorAffinityMode::disabled);
 }
+
+GLYPHA_TEST("server connection rate limit returns overloaded") {
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 8,
+        .worker_count = 1,
+        .abuse =
+            {
+                .connection_max_requests_per_sec = 2,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    // INIT + BIND consume the two-request budget; the next PING must be overloaded.
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 99,
+        .value = bytes("x"),
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *ping));
+    const auto frame = receive_response(socket);
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+
+    const auto stats = probe_lifecycle(socket, glyphastore::server::RequestOpcode::stats, 100);
+    GLYPHA_REQUIRE(stats.has_value());
+    GLYPHA_REQUIRE(stats->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto report = text(stats->decoded.frame.value);
+    GLYPHA_REQUIRE(report.find("abuse_connection_rate_rejected=") != std::string_view::npos);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server idle timeout closes quiet connections") {
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 4,
+        .worker_count = 1,
+        .abuse =
+            {
+                .idle_timeout_ms = 50,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    bool closed = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        char byte{};
+        const auto received = ::recv(socket, &byte, 1, 0);
+        if (received == 0) {
+            closed = true;
+            break;
+        }
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            continue;
+        }
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(closed);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server accept rate limit drops excess handshakes") {
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 32,
+        .worker_count = 1,
+        .abuse =
+            {
+                .max_accepts_per_sec = 1,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first = connect_to(server.port());
+    GLYPHA_REQUIRE(first >= 0);
+    // Give the reactor time to accept the first connection against the budget.
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+    const auto second = connect_to(server.port());
+    GLYPHA_REQUIRE(second >= 0);
+
+    // First peer can still speak; the second accept is dropped so INIT should fail.
+    GLYPHA_REQUIRE(initialize_and_bind(first, 0, 1));
+    const auto init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
+        .request_id = 1,
+    });
+    GLYPHA_REQUIRE(init.has_value());
+    static_cast<void>(send_all(second, *init));
+    const auto frame = receive_response(second);
+    GLYPHA_REQUIRE(frame.empty());
+
+    const auto stats = probe_lifecycle(first, glyphastore::server::RequestOpcode::stats, 7);
+    GLYPHA_REQUIRE(stats.has_value());
+    const auto report = text(stats->decoded.frame.value);
+    GLYPHA_REQUIRE(report.find("abuse_accepts_rejected=") != std::string_view::npos);
+
+    static_cast<void>(::close(first));
+    static_cast<void>(::close(second));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}

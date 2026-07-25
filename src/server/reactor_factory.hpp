@@ -21,7 +21,8 @@ class ReactorFactory final {
                                          ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
                                          DurableMutationExecutor* durable_mutations,
                                          ServerLifecycleProbes lifecycle_probes,
-                                         std::shared_ptr<TlsContext> tls_context)
+                                         std::shared_ptr<TlsContext> tls_context,
+                                         std::shared_ptr<AbuseController> abuse = {})
         -> Result<std::vector<std::unique_ptr<Reactor>>>;
 };
 

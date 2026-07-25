@@ -118,16 +118,36 @@ glyphastored --bind 127.0.0.1 --port 7379 --tls-port 7380 \
 glyphastored ... --tls-cert ... --tls-key ... --tls-client-ca /etc/glyphastore/clients-ca.crt \
   --authz-map /etc/glyphastore/authz.map
 
-# Fail-closed secure profile (TLS-only on --port; refuses --tls-port dual cleartext)
+# Fail-closed secure profile (TLS-only on --port; refuses --tls-port dual cleartext;
+# applies Phase 5 abuse-limit defaults)
 glyphastored --secure-profile --bind 127.0.0.1 --port 7379 \
   --tls-cert ... --tls-key ... --tls-client-ca ... --authz-map ...
 ```
 
 `--tls-cert` and `--tls-key` are both required when any TLS path is set. Without `--tls-port`, TLS
 makes `--port` TLS-only. With `--tls-port`, cleartext and TLS use distinct ports (collision fails
-closed). `--secure-profile` requires TLS + mTLS + `--authz-map` and refuses `--tls-port`. Cleartext
-remains the default when TLS flags are omitted. Capability `admin` is a v1 convenience alias that
-implies `write` ⇒ `read`; data-plane opcodes use `read`/`write` (no separate admin-only opcodes yet).
+closed). `--secure-profile` requires TLS + mTLS + `--authz-map`, refuses `--tls-port`, and applies
+Phase 5 abuse defaults (explicit `0` refused). Cleartext remains the default when TLS flags are
+omitted. Capability `admin` is a v1 convenience alias that implies `write` ⇒ `read`; data-plane
+opcodes use `read`/`write` (no separate admin-only opcodes yet).
+
+### Phase 5 abuse controls
+
+Distinct from maintenance rate budgets. Zero disables each limit (trusted cleartext default):
+
+```bash
+glyphastored ... \
+  --max-accepts-per-sec 128 \
+  --idle-timeout-ms 60000 \
+  --request-timeout-ms 30000 \
+  --connection-max-requests-per-sec 256 \
+  --principal-max-requests-per-sec 1024 \
+  --principal-max-bytes-per-sec 32MiB
+```
+
+Accept floods drop the peer; request/bandwidth quota exceed returns wire `overloaded`.
+`HEALTH`/`READY`/`STATS` stay exempt from request/bandwidth quotas. `STATS` exports `abuse_*`
+counters. Store mutations already in execution are never cancelled by `--request-timeout-ms`.
 
 Maintenance rate budgets (distinct from connection rate limits / Phase 5 and from E3 power-loss):
 

@@ -29,6 +29,7 @@ class ServerBuilder final {
     ReactorConfig config_;
     StoreConfig store_config_;
     std::shared_ptr<TlsContext> tls_context_;
+    std::shared_ptr<AbuseController> abuse_;
 };
 
 } // namespace glyphastore::server
