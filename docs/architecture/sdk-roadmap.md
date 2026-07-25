@@ -1,5 +1,5 @@
 Status: roadmap
-Applies to: native SDKs (C++, Python, Perl, Go, Erlang; Ruby Phase 3 TLS still open) and shared wire contract
+Applies to: native SDKs (C++, Python, Perl, Go, Erlang, Ruby) and shared wire contract
 Owner: maintainer
 Last reviewed: 2026-07-24
 
@@ -27,7 +27,7 @@ Related: [production readiness](../production-readiness.md),
 | Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
 | Go | Complete as a synchronous client (protocol + client + interop + CI + benches) |
 | Erlang | Complete as a synchronous OTP client (protocol + client + TLS + interop + CI + benches) |
-| Ruby | **Phase 1+2 sync/async landed** — C-ext/TLS still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
+| Ruby | **Phase 1+2 sync/async + Phase 3.1 TLS landed** — C-ext still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
 
 Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
 [client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
@@ -157,7 +157,7 @@ Minimum useful ops metrics for a web app: `connections_active`, `requests_total`
 6. Go client. **(`sdk/go`, interop + CI)**
 7. Structured errors + per-call timeouts on every official client. **(done)**
 8. Ruby client Phase 1 (sync, isomorphic). **(`sdk/ruby`, interop + CI)**
-9. Authentication and TLS (all SDKs in the same train, including Ruby Phase 3).
+9. Authentication and TLS (all SDKs in the same train).
 10. Metrics, health, and diagnostics.
 11. Backup/restore and operational procedures.
 12. Cross-release compatibility and artifact signing. **(packaging gates: [sdk-packaging](sdk-packaging.md); publish/signing credentials still operator-owned)**

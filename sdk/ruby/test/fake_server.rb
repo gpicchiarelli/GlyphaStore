@@ -1,17 +1,19 @@
 # frozen_string_literal: true
 
 require "socket"
+require "openssl"
 require "glypha_store"
 
 class FakeServer
   attr_reader :port
 
   def initialize(workers: 1, internal_error_on_put: false, drop_after_mutation: false,
-                 deny_data_plane: false)
+                 deny_data_plane: false, ssl_context: nil)
     @workers = workers
     @internal_error_on_put = internal_error_on_put
     @drop_after_mutation = drop_after_mutation
     @deny_data_plane = deny_data_plane
+    @ssl_context = ssl_context
     @server = TCPServer.new("127.0.0.1", 0)
     @port = @server.addr[1]
     @thread = Thread.new { accept_loop }
@@ -33,7 +35,23 @@ class FakeServer
     end
   end
 
-  def handle(socket)
+  def handle(raw)
+    socket = raw
+    if @ssl_context
+      begin
+        ssl = OpenSSL::SSL::SSLSocket.new(raw, @ssl_context)
+        ssl.sync_close = true
+        ssl.accept
+        socket = ssl
+      rescue OpenSSL::SSL::SSLError, SystemCallError, IOError
+        begin
+          raw.close
+        rescue StandardError
+          nil
+        end
+        return
+      end
+    end
     bound = nil
     store = {}
     loop do
@@ -89,11 +107,11 @@ class FakeServer
                       owner_worker: bound || 0, worker_count: @workers, routing_epoch: 9)
       end
     end
-  rescue EOFError, Errno::EPIPE, Errno::ECONNRESET, IOError
+  rescue EOFError, Errno::EPIPE, Errno::ECONNRESET, IOError, OpenSSL::SSL::SSLError
     nil
   ensure
     begin
-      socket.close
+      socket&.close
     rescue StandardError
       nil
     end

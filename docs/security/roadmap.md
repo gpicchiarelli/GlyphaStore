@@ -15,10 +15,8 @@ changes require ADRs and compatibility evidence first.
 1. **Correctness before exposure.** Fail-closed storage/recovery rules are never weakened for auth
    convenience.
 2. **Same train for all official SDKs.** When TLS or session auth lands, C++ / Python / Perl / Go /
-   Erlang ship in the **same release**. **Ruby is an explicit temporary exception:** it remains
-   cleartext-only until [ruby-sdk-roadmap](../architecture/ruby-sdk-roadmap.md) Phase 3; interop and
-   docs must not imply Ruby TLS. No other SDK may silently keep cleartext defaults while peers go
-   secure ([sdk-roadmap.md](../architecture/sdk-roadmap.md)).
+   Erlang / Ruby ship in the **same release**. No official SDK may silently keep cleartext defaults
+   while peers go secure ([sdk-roadmap.md](../architecture/sdk-roadmap.md)).
 3. **Secure profiles fail closed.** A deployment that asks for TLS/auth must not fall back to
    cleartext or anonymous access by default.
 4. **OS/network boundary is not a product feature.** Loopback / private / sidecar remains the
@@ -118,8 +116,8 @@ Phase 2 outer-transport TLS is complete; Phases 3–4 (mTLS principal + capabili
 | --- | --- | --- |
 | 2.1 | Daemon secure listen profile (cert, key, CA, min TLS 1.3, cipher policy) | **done** — `TlsContext` + `--tls-cert`/`--tls-key`/`--tls-client-ca`; TLS 1.3-only; explicit AEAD cipher suites; CMake `GLYPHASTORE_ENABLE_TLS` (LibreSSL on OpenBSD, OpenSSL 3.x elsewhere); [secure-profile.md](secure-profile.md) |
 | 2.2 | Cleartext vs TLS listeners: explicit flags; no dual-mode “opportunistic TLS” | **done** (2026-07-20) — TLS without `--tls-port` keeps `--port` TLS-only; `--tls-port` enables dual cleartext+TLS on distinct ports (fail closed if ports collide); never opportunistic on one endpoint |
-| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **done** for C++ / Python / Perl / Go / Erlang — opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); fail closed; no silent cleartext fallback. **Ruby** remains cleartext-only until [ruby-sdk-roadmap](../architecture/ruby-sdk-roadmap.md) Phase 3 |
-| 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs; Erlang included when OTP available; Ruby cleartext-only; Perl TLS soft-excluded when `IO::Socket::SSL` is missing) |
+| 2.3 | Official SDKs: TLS connect options (CA, cert, hostname verify on by default in secure profile) | **done** for C++ / Python / Perl / Go / Erlang / Ruby — opt-in TLS 1.3 (`tls`/`Enable`, `ca_file`/`tls_ca`, `cert_file`/`key_file`, `server_name`, insecure lab escape); fail closed; no silent cleartext fallback |
+| 2.4 | Interop matrix: every SDK PUT→GET over TLS | **done** — `test-sdk-interop.sh` cleartext + TLS matrices (ephemeral certs; Erlang included when OTP available; Perl TLS soft-excluded when `IO::Socket::SSL` is missing) |
 | 2.5 | Perf note: TLS tax measured on same harness as Go/TCP benches | **done** (2026-07-20) — `scripts/benchmark_tls_tax.sh` + [tls-performance.md](tls-performance.md); Go bench gained `--tls` flags |
 | 2.6 | OpenBSD CI: native LibreSSL build + TLS smoke | **done** (2026-07-20) — `.github/workflows/openbsd-libressl.yml` via `vmactions/openbsd-vm` + `scripts/ci-openbsd-libressl.sh` (LibreSSL-only configure, full ctest, Go TLS PUT→GET) |
 

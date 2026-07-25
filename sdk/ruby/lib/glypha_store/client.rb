@@ -8,7 +8,8 @@ module GlyphaStore
   #
   # One bound connection per Worker with a mutex. Safe to share across MRI threads.
   # Do not reuse across +fork+ — construct a new client in the child.
-  # Cleartext TCP: private network / sidecar / loopback until TLS exists.
+  # Cleartext TCP by default (private network / sidecar / loopback). Opt-in TLS 1.3
+  # via ClientConfig#tls (ADR 0020); fails closed with no cleartext fallback.
   class Client
     class SendFailure < StandardError
       attr_reader :error, :bytes_sent
@@ -180,7 +181,13 @@ module GlyphaStore
         request_timeout: config.request_timeout.nil? || config.request_timeout.zero? ? defaults.request_timeout : config.request_timeout,
         maximum_frame_bytes: config.maximum_frame_bytes.nil? || config.maximum_frame_bytes.zero? ? defaults.maximum_frame_bytes : config.maximum_frame_bytes,
         maximum_pipeline_requests: config.maximum_pipeline_requests.nil? || config.maximum_pipeline_requests.zero? ? defaults.maximum_pipeline_requests : config.maximum_pipeline_requests,
-        maximum_pipeline_bytes: config.maximum_pipeline_bytes.nil? || config.maximum_pipeline_bytes.zero? ? defaults.maximum_pipeline_bytes : config.maximum_pipeline_bytes
+        maximum_pipeline_bytes: config.maximum_pipeline_bytes.nil? || config.maximum_pipeline_bytes.zero? ? defaults.maximum_pipeline_bytes : config.maximum_pipeline_bytes,
+        tls: config.tls.nil? ? defaults.tls : config.tls,
+        tls_ca: config.tls_ca.nil? || config.tls_ca.empty? ? defaults.tls_ca : config.tls_ca,
+        cert_file: config.cert_file.nil? || config.cert_file.empty? ? defaults.cert_file : config.cert_file,
+        key_file: config.key_file.nil? || config.key_file.empty? ? defaults.key_file : config.key_file,
+        server_name: config.server_name.nil? || config.server_name.empty? ? defaults.server_name : config.server_name,
+        insecure_skip_verify: config.insecure_skip_verify.nil? ? defaults.insecure_skip_verify : config.insecure_skip_verify
       )
     end
     private_class_method :merge_config
@@ -195,6 +202,14 @@ module GlyphaStore
          config.maximum_pipeline_requests <= 0 ||
          config.maximum_pipeline_bytes < 40
         raise Error.invalid_argument("client configuration is outside protocol limits")
+      end
+      has_cert = !(config.cert_file.nil? || config.cert_file.empty?)
+      has_key = !(config.key_file.nil? || config.key_file.empty?)
+      if config.tls && has_cert != has_key
+        raise Error.invalid_argument("TLS mTLS requires both cert_file and key_file (fail closed)")
+      end
+      if (has_cert || has_key) && !config.tls
+        raise Error.invalid_argument("cert_file/key_file require tls=true (fail closed)")
       end
     end
     private_class_method :validate_config!
@@ -273,7 +288,18 @@ module GlyphaStore
         raise Error.unavailable("could not connect to GlyphaStore: #{e.message}")
       end
       socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-      socket
+      return socket unless @config.tls
+
+      begin
+        Tls.wrap_socket(socket, @config)
+      rescue Error
+        begin
+          socket.close
+        rescue StandardError
+          nil
+        end
+        raise
+      end
     end
 
     def bootstrap!(conn, expected)

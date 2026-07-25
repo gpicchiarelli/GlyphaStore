@@ -232,7 +232,18 @@ module GlyphaStore
         raise Error.unavailable("could not connect to GlyphaStore: #{e.message}")
       end
       socket.setsockopt(Socket::IPPROTO_TCP, Socket::TCP_NODELAY, 1)
-      socket
+      return socket unless @config.tls
+
+      begin
+        Tls.wrap_socket(socket, @config)
+      rescue Error
+        begin
+          socket.close
+        rescue StandardError
+          nil
+        end
+        raise
+      end
     end
 
     def bootstrap!(conn, expected)

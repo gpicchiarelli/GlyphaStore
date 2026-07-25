@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Cross-SDK interoperability matrix against a real volatile glyphastored.
 # Runs cleartext by default, then an opt-in TLS 1.3 matrix (Phase 2.4) when the
-# daemon was built with TLS and openssl is available. Ruby is cleartext-only until
-# its Phase 3 TLS train lands. Erlang is included in both matrices when OTP/rebar3
-# are available.
+# daemon was built with TLS and openssl is available. Erlang is included in both
+# matrices when OTP/rebar3 are available. Ruby ships the same TLS train as peers.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -157,7 +156,7 @@ put_sdk() {
       "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     ruby)
-      "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
+      "$ruby_bin" "$ruby_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
       ;;
     erlang)
       escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" --expire-at-ns "$expire" put
@@ -180,7 +179,7 @@ get_sdk() {
     python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" get --key-hex "$key_hex" ;;
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
-    ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" get ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" get ;;
     *)
       echo "unknown sdk: $sdk" >&2
@@ -200,7 +199,7 @@ pipeline_sdk() {
     python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" pipeline-put-get --key-hex "$key_hex" --value-hex "$value_hex" ;;
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
-    ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" --value-hex "$value_hex" pipeline-put-get ;;
     *) return 1 ;;
   esac
@@ -227,7 +226,7 @@ expect_not_found_sdk() {
     python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-not-found --key-hex "$key_hex" ;;
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
-    ruby) "$ruby_bin" "$ruby_helper" --port "$port" --key-hex "$key_hex" expect-not-found ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" --key-hex "$key_hex" expect-not-found ;;
     *) return 1 ;;
   esac
@@ -244,7 +243,7 @@ expect_frame_limit_sdk() {
     python) "$python" "$py_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     perl) "$perl" "$pl_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     go) "$go_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
-    ruby) "$ruby_bin" "$ruby_helper" --port "$port" expect-frame-limit ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     erlang) escript "$erlang_helper" --port "$port" "${extra[@]+"${extra[@]}"}" expect-frame-limit ;;
     *) return 1 ;;
   esac
@@ -346,12 +345,8 @@ run_matrix_for_workers() {
   local server_extra=()
   tls_args=()
 
-  local writers=(cpp python perl go)
-  local readers=(cpp python perl go)
-  if [[ "$mode" == "cleartext" ]]; then
-    writers+=(ruby)
-    readers+=(ruby)
-  fi
+  local writers=(cpp python perl go ruby)
+  local readers=(cpp python perl go ruby)
   if [[ "$erlang_ready" == "1" ]]; then
     # Erlang ships TLS 1.3 (Phase 2); include in both cleartext and TLS matrices.
     writers+=(erlang)

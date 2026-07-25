@@ -60,8 +60,10 @@ line:
 - Newer required format versions fail closed on older binaries; there is no automatic downgrade
   rewrite.
 - Cross-release tagged artifact drops use `tests/fixtures/released/<label>/` and
-  `scripts/package-release-compatibility-artifacts.sh`; until labels are regularly published,
-  cross-release binary evidence remains an open alpha gate.
+  `scripts/package-release-compatibility-artifacts.sh`. CI job `released-artifact-compat`
+  (workflow `.github/workflows/release-compat.yml`) decodes in-tree labels, packages a per-commit
+  self artifact on push/PR, and on version tags packages + uploads `released/<label>/`. Committing
+  tagged trees into the permanent fixture drop remains a release-process step.
 
 Before the first durable alpha release, every writer version must still have:
 

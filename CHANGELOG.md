@@ -5,6 +5,13 @@ public API exists.
 
 ## [Unreleased]
 
+- Close Ruby SDK TLS honesty gap: opt-in TLS 1.3 (`ClientConfig#tls`, CA / mTLS / hostname verify,
+  lab `insecure_skip_verify`) matching Go/Python/Perl; include Ruby in the TLS interop matrix;
+  retire the “Ruby cleartext exception” from the security same-train docs.
+- Wire tagged release-artifact compatibility into CI (`released-artifact-compat` job in
+  `.github/workflows/release-compat.yml`): decode in-tree `tests/fixtures/released/` (including
+  `self-v1`), package a per-SHA self artifact on push/PR, and on tags package + upload
+  `released/<label>/`. Register `released_artifact_compat_tests` in the unit test binary.
 - Advance E3/E4 durability certification scaffolding: `scripts/run-e3-block-reset.sh` provisions
   disposable linux-ext4 (loopback + optional dm-flakey) and macOS APFS (hdiutil) rows, arms abrupt
   block-device reset at crash-harness checkpoints, remounts with non-repairing fsck, and records
@@ -49,8 +56,8 @@ public API exists.
   `--tls-port`); durable lanes export `LatencyHistogram` needles plus
   `maintenance_rate_window_*` in `STATS`; daemon CLI exposes
   `--maintenance-max-copy-bytes-per-sec` / `--maintenance-max-cpu-ms-per-window` and extends
-  `--dump-config`. Document Ruby as an explicit cleartext exception to the TLS “same train”
-  policy until Ruby SDK Phase 3.
+  `--dump-config`. Official SDKs (including Ruby) share the TLS “same train” policy for opt-in
+  TLS 1.3 connect options.
 - Complete durable TCP daemon software path (P0-01). Extend `--dump-config` with maintenance
   thresholds, durable resource defaults, disk-read settings, and group batch fields. Extend
   `glyphastore_crash_daemon` with pre-commit PUT and post-ack ERASE checkpoints. Mark P0-01

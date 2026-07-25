@@ -304,6 +304,7 @@ if(BUILD_TESTING)
         tests/unit/vacuum_tests.cpp
         tests/unit/worker_tests.cpp
         tests/unit/format_compatibility_tests.cpp
+        tests/unit/released_artifact_compat_tests.cpp
         tests/integration/compaction_builder_tests.cpp
         tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp

@@ -27,7 +27,7 @@ Related: [SDK roadmap](sdk-roadmap.md), [client semantics v1](../spec/client-sem
 | Isomorphic semantics | Same categories, outcomes, retry counts, deadline rules, unhealthy rules as [client semantics v1](../spec/client-semantics-v1.md). |
 | Fail closed | Malformed frames, owner/epoch mismatch, non-empty mutation `OK` → protocol/unhealthy/`indeterminate` as specified; never “best effort” success. |
 | Binary-safe | Keys and values are opaque byte strings (`String` with `Encoding::BINARY` / `ASCII-8BIT`). No implicit UTF-8, no string encoding conversions on the hot path. |
-| Secure by posture | Until Ruby TLS exists, document private-network/sidecar-only. **Ruby is an explicit temporary exception** to the security “same train” policy: peers (C++/Python/Perl/Go/Erlang) already ship TLS; Ruby remains cleartext-only until Phase 3 below—docs and interop must not imply Ruby TLS. |
+| Secure by posture | Opt-in TLS 1.3 on the same train as C++/Python/Perl/Go/Erlang (ADR 0020). Cleartext remains the default for trusted-boundary deployments; secure profile fails closed (no silent cleartext fallback). |
 | Measure before cleverness | Ship a correct pure-Ruby hot path first; C extension / Fiber async / `connections_per_worker` only after benchmarks prove the bottleneck. |
 
 ## 2. Isomorphism checklist (definition of “complete”)
@@ -143,13 +143,13 @@ Ruby must not lag other SDKs when product security lands.
 
 | Step | Deliverable | Notes |
 | ---: | --- | --- |
-| 3.1 | TLS client options (`ssl_context` / CA bundle / hostname verify) | Fail closed; no “TLS optional default on” surprise in secure profiles |
+| 3.1 | TLS client options (`ssl_context` / CA bundle / hostname verify) | **done** — `ClientConfig#tls` + `GlyphaStore::Tls`; fail closed; interop matrix includes Ruby |
 | 3.2 | Authn hooks (whatever wire/session auth the server grows) | Same credential model as Python/Go |
 | 3.3 | No secrets in exceptions/logs by default | Keys/values redacted unless explicit debug |
 | 3.4 | Gem provenance | Checksums/SBOM when release policy requires; pinned CI Rubies |
 | 3.5 | Hostile-input fuzz on codec | Feed malformed lengths/status; assert no crash / no desync |
 
-Until 3.1–3.2 exist on the server, Ruby README keeps the same **private network** banner as Go/Python.
+Cleartext remains valid for trusted-boundary deployments; README documents both postures.
 
 ### Phase 4 — Parity with shared SDK roadmap leftovers
 
@@ -264,8 +264,9 @@ Ruby `0.1.0` may be published when:
 5. A baseline benchmark folder exists (even if numbers trail Go)—methodology matches peers.
 6. No known silent divergence from [client semantics v1](../spec/client-semantics-v1.md).
 
-AsyncClient, C extension, and TLS may follow in `0.2.x` without blocking `0.1.0` **only if** documented
-as such; they remain on this roadmap until checked off.
+AsyncClient and the optional C extension may follow in `0.2.x` without blocking `0.1.0` **only if**
+documented as such; they remain on this roadmap until checked off. TLS 1.3 connect options are
+required for the security “same train” policy (Phase 3.1).
 
 ## 10. Recommended build order (summary)
 

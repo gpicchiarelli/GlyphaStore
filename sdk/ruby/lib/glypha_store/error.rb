@@ -195,9 +195,13 @@ module GlyphaStore
     end
   end
 
+  # Opt-in TLS 1.3 (ADR 0020). Cleartext remains the default. When +tls+ is true the
+  # client fails closed (no cleartext fallback). Hostname/SNI verification is on
+  # unless +insecure_skip_verify+ is set (lab escape only).
   ClientConfig = Struct.new(
     :host, :port, :connect_timeout, :request_timeout,
     :maximum_frame_bytes, :maximum_pipeline_requests, :maximum_pipeline_bytes,
+    :tls, :tls_ca, :cert_file, :key_file, :server_name, :insecure_skip_verify,
     keyword_init: true
   ) do
     def self.defaults
@@ -208,7 +212,13 @@ module GlyphaStore
         request_timeout: 5.0,
         maximum_frame_bytes: Protocol::MAX_FRAME_BYTES,
         maximum_pipeline_requests: 256,
-        maximum_pipeline_bytes: 1024 * 1024
+        maximum_pipeline_bytes: 1024 * 1024,
+        tls: false,
+        tls_ca: nil,
+        cert_file: nil,
+        key_file: nil,
+        server_name: nil,
+        insecure_skip_verify: false
       )
     end
   end

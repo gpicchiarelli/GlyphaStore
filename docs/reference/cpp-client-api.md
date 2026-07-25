@@ -183,7 +183,7 @@ contract: zero-byte final send failures are `rejected`, and a successful mutatio
 non-empty value is `indeterminate` (pipeline: unresolved from that position). Concurrency models may
 differ by language, but observable request/response semantics must not.
 
-Prioritized remaining client work (ops metrics, Ruby TLS Phase 3, etc.) lives in
+Prioritized remaining client work (ops metrics, optional Ruby C-ext, etc.) lives in
 [SDK roadmap](../architecture/sdk-roadmap.md) and [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md).
 Secure-profile follow-ons (mTLS principals / authz) are tracked in
 [security roadmap](../security/roadmap.md); OpenBSD LibreSSL CI and the

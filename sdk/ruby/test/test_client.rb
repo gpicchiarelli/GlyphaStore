@@ -155,4 +155,81 @@ class ClientTest < Minitest::Test
   ensure
     server&.join
   end
+
+  def test_tls_config_requires_cert_and_key_pair
+    err = assert_raises(GlyphaStore::Error) do
+      GlyphaStore::Client.connect(
+        GlyphaStore::ClientConfig.defaults.tap do |c|
+          c.port = 1
+          c.tls = true
+          c.cert_file = "only-cert.pem"
+        end
+      )
+    end
+    assert_equal GlyphaStore::Category::INVALID_ARGUMENT, err.category
+  end
+
+  def test_build_ssl_context_requires_tls_1_3
+    skip "TLS 1.3 unavailable in this Ruby/OpenSSL" unless GlyphaStore::Tls.tls13_available?
+
+    context = GlyphaStore::Tls.build_ssl_context(
+      GlyphaStore::ClientConfig.defaults.tap do |c|
+        c.tls = true
+        c.insecure_skip_verify = true
+      end
+    )
+    assert_equal OpenSSL::SSL::TLS1_3_VERSION, context.min_version
+    assert_equal OpenSSL::SSL::TLS1_3_VERSION, context.max_version
+    assert_equal OpenSSL::SSL::VERIFY_NONE, context.verify_mode
+  end
+
+  def test_sync_and_async_tls_ping
+    skip "TLS 1.3 unavailable in this Ruby/OpenSSL" unless GlyphaStore::Tls.tls13_available?
+
+    material = self_signed_material
+    skip "openssl CLI unavailable for ephemeral certs" if material.nil?
+
+    cert_path, key_path = material
+    server_context = OpenSSL::SSL::SSLContext.new
+    server_context.min_version = OpenSSL::SSL::TLS1_3_VERSION
+    server_context.max_version = OpenSSL::SSL::TLS1_3_VERSION
+    server_context.cert = OpenSSL::X509::Certificate.new(File.binread(cert_path))
+    server_context.key = OpenSSL::PKey.read(File.binread(key_path))
+    server = FakeServer.new(ssl_context: server_context)
+    config = GlyphaStore::ClientConfig.defaults.tap do |c|
+      c.port = server.port
+      c.tls = true
+      c.tls_ca = cert_path
+      c.server_name = "localhost"
+    end
+    client = GlyphaStore::Client.connect(config)
+    assert_equal "tls-ping".b, client.ping("tls-ping".b)
+    client.close
+
+    require "glypha_store/async_client"
+    Async do
+      async_client = GlyphaStore::AsyncClient.connect(config)
+      assert_equal "tls-async".b, async_client.ping("tls-async".b)
+      async_client.close
+    end
+  ensure
+    server&.join
+  end
+
+  def self_signed_material
+    require "tmpdir"
+    require "open3"
+    directory = Dir.mktmpdir("glyphastore-rb-tls-")
+    cert_path = File.join(directory, "server.crt")
+    key_path = File.join(directory, "server.key")
+    _out, _err, status = Open3.capture3(
+      "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+      "-keyout", key_path, "-out", cert_path, "-days", "1", "-subj", "/CN=localhost"
+    )
+    return nil unless status.success?
+
+    [cert_path, key_path]
+  rescue Errno::ENOENT
+    nil
+  end
 end

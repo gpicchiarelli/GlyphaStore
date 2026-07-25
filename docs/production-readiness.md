@@ -27,8 +27,10 @@ below has automated evidence. A design document or implementation alone does not
   compatibility tests, exact encoder checks, and durable artifact round-trip evidence exist. Wire
   v2 request/response golden fixtures are verified across the C++, Python, Perl, Go, and Ruby
   codecs. Released-artifact harness and packaging script exist
-  (`tests/fixtures/released/`, `scripts/package-release-compatibility-artifacts.sh`); regular
-  tagged drops remain open.
+  (`tests/fixtures/released/`, `scripts/package-release-compatibility-artifacts.sh`); CI job
+  `released-artifact-compat` decodes in-tree labels (including `self-v1`), packages a per-SHA self
+  artifact on every push/PR, and on tags packages + uploads `released/<label>/`. Publishing those
+  trees into the permanent fixture drop still remains a release-process step.
   Target disk contract: [durability and recovery](architecture/durability-recovery.md).
 - [ ] Error behavior, limits, time semantics, and concurrency guarantees are normative specifications.
   Official TCP client error categories, mutation outcomes, automatic retries, and monotonic request
@@ -139,7 +141,7 @@ below has automated evidence. A design document or implementation alone does not
   Planning: [security/roadmap.md](security/roadmap.md). Decisions: ADRs
   [0020](adr/0020-tls-outer-transport.md)–[0022](adr/0022-authorization-capabilities.md).
   Phase 2 outer TLS is complete ([secure-profile.md](security/secure-profile.md)): daemon TLS 1.3,
-  dual `--tls-port`, SDK TLS train (C++/Python/Perl/Go/Erlang; Ruby cleartext until its Phase 3),
+  dual `--tls-port`, SDK TLS train (C++/Python/Perl/Go/Erlang/Ruby),
   interop, LibreSSL CI. Phases 3–4 mTLS principals + `--authz-map` / `--secure-profile` landed.
   Phase 5 rate/idle limits and Phase 6 full audit remain open before public bind.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.

@@ -8,15 +8,27 @@ options = {
   host: "127.0.0.1",
   key_hex: "",
   value_hex: "",
-  expire_at_ns: 0
+  expire_at_ns: 0,
+  tls: false,
+  tls_ca: nil,
+  tls_cert: nil,
+  tls_key: nil,
+  server_name: nil,
+  insecure_skip_verify: false
 }
 parser = OptionParser.new do |opts|
-  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit>"
+  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]"
   opts.on("--host HOST", String) { |v| options[:host] = v }
   opts.on("--port PORT", Integer) { |v| options[:port] = v }
   opts.on("--key-hex HEX", String) { |v| options[:key_hex] = v }
   opts.on("--value-hex HEX", String) { |v| options[:value_hex] = v }
   opts.on("--expire-at-ns N", Integer) { |v| options[:expire_at_ns] = v }
+  opts.on("--tls", "opt-in TLS 1.3") { options[:tls] = true }
+  opts.on("--tls-ca PATH", String) { |v| options[:tls_ca] = v }
+  opts.on("--tls-cert PATH", String) { |v| options[:tls_cert] = v }
+  opts.on("--tls-key PATH", String) { |v| options[:tls_key] = v }
+  opts.on("--server-name NAME", String) { |v| options[:server_name] = v }
+  opts.on("--insecure-skip-verify", "lab escape: skip cert/hostname verify") { options[:insecure_skip_verify] = true }
 end
 parser.parse!
 command = ARGV.shift
@@ -39,6 +51,12 @@ value = parse_hex(options[:value_hex])
 config = GlyphaStore::ClientConfig.defaults
 config.host = options[:host]
 config.port = options[:port]
+config.tls = options[:tls]
+config.tls_ca = options[:tls_ca]
+config.cert_file = options[:tls_cert]
+config.key_file = options[:tls_key]
+config.server_name = options[:server_name]
+config.insecure_skip_verify = options[:insecure_skip_verify]
 client = GlyphaStore::Client.connect(config)
 begin
   case command

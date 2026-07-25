@@ -70,8 +70,9 @@ behavior; minors may break source with changelog notes. Disk/wire follow encoded
 | `tests/fixtures/released/<label>/` | Optional dropped fixture trees from a tag or packaging script |
 | `scripts/package-release-compatibility-artifacts.sh` | Packages current fixtures for a release label |
 
-Until tagged artifacts are regularly dropped, cross-release binary evidence remains an open alpha
-gate even though the policy and harness exist.
+Until tagged trees are committed into `tests/fixtures/released/` as a release-process step, permanent
+cross-release binary evidence still depends on those drops; CI already packages and decodes
+self/tag artifacts on every push/PR and tag.
 
 ## Explicit non-goals (persistence v1)
 

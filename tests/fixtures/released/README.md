@@ -19,7 +19,9 @@ tests/fixtures/released/<label>/
 
 The unit target `released_artifact_compat_tests` decodes every `*.hex` under each subdirectory
 using the current tree's codecs. An empty `released/` tree (only this README) is a successful
-no-op: the harness exists, but tagged artifact drops remain an alpha gate.
+no-op: the harness exists. In-tree `self-v1/` is the local self-check; CI job
+`released-artifact-compat` (`.github/workflows/release-compat.yml`) also packages a per-SHA self
+artifact on every push/PR and, on version tags, packages + uploads `released/<label>/`.
 
 Package the current tree's fixtures for a label:
 
