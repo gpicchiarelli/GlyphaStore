@@ -25,6 +25,8 @@ Options:
 
 This collector records at most E2 process-kill evidence. It never performs,
 and never labels its output as, a device reset or physical power-loss test.
+For disposable block-reset rehearsal (still e3_certified=no), use
+scripts/run-e3-block-reset.sh instead.
 EOF
 }
 

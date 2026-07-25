@@ -208,7 +208,7 @@ mount, or config), not by overwriting the live path in place.
 | In-place restore over production data | **Forbidden** — copy into a new path, verify, then swap |
 | Filesystem snapshot without stopped writers | **Insufficient** — freeze writers and run `glyphastore_verify_store` on the image |
 | `glyphastore_rebuild_index` for durable v1 | **Permanently refused** — Indexes rebuild via Store recovery or `glyphastore_repair_store` |
-| E3/E4 sudden power-loss certification | **Pending** — process-kill (E2) evidence exists; no pinned native filesystem row is certified ([platform durability evidence](../architecture/platform-durability-evidence.md)) |
+| E3/E4 sudden power-loss certification | **Pending** — process-kill (E2) evidence and an in-repo E3 block-reset harness exist; no pinned native filesystem row is certified ([platform durability evidence](../architecture/platform-durability-evidence.md)) |
 | `HEALTH` as readiness during deploys | **Wrong signal** — use `READY` |
 | Blind retry after `OVERLOADED` | **Unsafe** — same logical mutation may be uncommitted; reconcile or start a new attempt |
 

@@ -72,3 +72,6 @@ fuzz-corpus-local/
 *.gsf
 *.glyphatmp
 erl_crash.dump
+
+# Local durability campaign outputs (retain outside the tree or as CI artifacts)
+/durability-evidence/

@@ -51,11 +51,15 @@ below has automated evidence. A design document or implementation alone does not
   implemented for `durable_sync`, `durable_group`, and `durable_periodic`; process-kill evidence
   covers their persistent write boundaries. The
   [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines E0–E4
-  claims; no native filesystem row has E3/E4 sudden-power-loss certification.
+  claims; no native filesystem row has E3/E4 sudden-power-loss certification. In-repo E2 collector and
+  E3 block-reset harness (`scripts/collect-durability-evidence.sh`,
+  `scripts/run-e3-block-reset.sh`, `.github/workflows/durability-evidence.yml`) produce rehearsal
+  artifacts that must keep `e3_certified=no` until a reviewed pinned campaign is published.
 - [ ] Write ordering, synchronization, manifest publication, and directory synchronization are specified.
   Platform-aware descriptor, locking, full-I/O, atomic manifest publication, preallocated Segment
   creation, alternating commit-slot layer, and Store integration are implemented with fault and
-  process-kill tests. Filesystem/power-loss matrices are open.
+  process-kill tests. Filesystem/power-loss certification matrices remain open; the E3 harness
+  rehearses ext4 loopback / APFS diskimage abrupt detach only.
 - [ ] Recovery is deterministic after process termination at every persistent state transition.
   Manifest-driven committed scans rebuild partitioned Indexes, next Worker sequences, and the
   sealed-active rotation marker. A bounded descriptor-relative namespace audit tolerates only

@@ -42,6 +42,9 @@ SOAK_SECONDS=1800 ./scripts/soak_daemon.sh   # longer local/CI soak
 
 GitHub Actions: `.github/workflows/ops-runbooks.yml` runs the runbook exercise on every PR/push and
 a weekly 30-minute soak (manual `workflow_dispatch` can raise `soak_seconds`).
+`.github/workflows/durability-evidence.yml` archives E2 collector metadata (and scheduled
+process-kill) plus linux-ext4 E3 harness smoke; those uploads are rehearsal artifacts, not E3/E4
+certification.
 
 ## Related architecture
 

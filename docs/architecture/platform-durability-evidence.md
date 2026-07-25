@@ -3,7 +3,7 @@
 Status: roadmap
 Applies to: persistence v1 and every storage mode that claims restart durability
 Owner: release and storage maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-25
 
 This document records what each kind of test can establish and what GlyphaStore has established on
 each platform/filesystem row. A hosted runner whose filesystem, mount options, cache path, and
@@ -31,13 +31,15 @@ test.
 
 ## Current evidence
 
-No platform/filesystem row is E3 or E4 certified. The repository has extensive E1 coverage and E2
-crash harnesses. Retained evidence from pinned native power-loss campaigns does not exist yet.
+**No platform/filesystem row is E3 or E4 certified.** The repository has extensive E1 coverage, E2
+crash harnesses, an attributable E2 collector, and an in-repo E3 *block-reset harness* for the first
+pinned rehearsal rows (Linux ext4 loopback; macOS APFS disk image). Harness PASS is rehearsal
+evidence only. Retained release-grade E3/E4 campaign artifacts do not exist yet.
 
 | Platform/filesystem row | Automated evidence available | Highest defensible current claim | Missing before certification |
 |---|---|---|---|
-| macOS / APFS | Native build/test workflow; local deterministic faults; embedded and daemon `SIGKILL`/reopen suites | E2 when a collector artifact records an actual passing native run; otherwise only “workflow configured” | Pinned Apple hardware/storage, APFS and mount metadata, controlled abrupt-loss campaign, repetitions and retained artifacts |
-| Linux / ext4 | Hosted Linux workflow and the same E1/E2 suites; hosted backing storage is not pinned | E2 only for a separately recorded run on a declared ext4 mount | Dedicated ext4 block device or VM image, mount/cache/barrier metadata, reset campaign |
+| macOS / APFS | Native build/test workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform macos-apfs` (hdiutil sparsebundle + `detach -force`); scheduled CI harness smoke | E2 when a collector artifact records an actual passing native run; E3-harness rehearsal when the APFS diskimage campaign artifact is retained — **not E3 certified** | Pinned Apple hardware/storage (not only a disk image on a hosted runner), APFS and mount metadata, reviewed abrupt-loss campaign with repetitions, then E4 |
+| Linux / ext4 | Hosted Linux workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform linux-ext4` (sparse image + losetup + optional dm-flakey); PR/schedule CI harness smoke | E2 only for a separately recorded run on a declared ext4 mount; E3-harness rehearsal on loopback/mapper — **not E3 certified** for production NVMe/SATA ext4 | Dedicated ext4 block device or VM disk (beyond loopback-on-hosted-FS), mount/cache/barrier metadata, reviewed reset campaign, then E4 |
 | Linux / XFS | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native XFS job, E2 run, reset campaign and artifacts |
 | Linux / btrfs | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native btrfs job, E2 run, reset campaign and artifacts |
 | FreeBSD / UFS | Native FreeBSD VM workflow builds and runs the general suite (`.github/workflows/freebsd.yml`); guest storage row is not pinned | Portability/regression signal, not UFS certification | Pin UFS mount metadata, E2 collector artifact, then E3/E4 campaign |
@@ -46,7 +48,8 @@ crash harnesses. Retained evidence from pinned native power-loss campaigns does 
 | NFS, SMB, FUSE, overlay, remote or user-space storage | Deliberately outside the local-filesystem contract | Unsupported | Not eligible for certification under persistence v1 |
 
 “Hosted workflow” never means that its provider’s current backing filesystem has been inferred or
-certified. A row advances only from an artifact that names the tested stack.
+certified. A row advances only from an artifact that names the tested stack. Loopback and disk-image
+rows must be labeled as such in provenance (`guest_host_boundary=…`).
 
 ## Evidence artifact contract
 
@@ -69,7 +72,7 @@ An artifact from a dirty worktree is diagnostic only. An artifact with missing f
 metadata cannot be promoted by manually relabeling it. Evidence is attached to the tested commit and
 row; it does not automatically transfer to later source, OS, kernel, firmware, or mount changes.
 
-## Safe native collector
+## Safe native E2 collector
 
 The repository collector records provenance and optionally runs all six embedded/daemon
 process-kill tests:
@@ -97,6 +100,100 @@ scripts/collect-durability-evidence.sh \
   --metadata-only
 ```
 
+CI: `.github/workflows/durability-evidence.yml` archives metadata on every change, process-kill on the
+weekly schedule / manual dispatch, and never labels the upload as power-loss certification.
+
+## E3 block-reset harness (first pinned rehearsal rows)
+
+`scripts/run-e3-block-reset.sh` provisions a **disposable** filesystem row, arms an external reset
+below the process boundary at named persistence checkpoints (worker `SIGSTOP` via the existing crash
+hooks), remounts, runs `fsck` without repair (`-n`), and evaluates the same recovery oracle as
+`glyphastore_crash_persistence`.
+
+Preferred first-row paths:
+
+| Row label | Provisioning | Reset mechanisms |
+|---|---|---|
+| `linux-ext4` | sparse image → `losetup` → `mkfs.ext4` → mount; optional `dm-flakey` mapper | `abrupt-detach` (lazy umount + `losetup -d`); `dm-flakey` (`drop_writes` then force-remove) |
+| `macos-apfs` | `hdiutil` APFS sparsebundle attached at a private mountpoint | `hdiutil detach -force` |
+
+```sh
+# Linux ext4 loopback smoke (requires sudo for loop/dm/mount/fsck)
+scripts/run-e3-block-reset.sh \
+  --output /path/to/new/e3-artifact \
+  --build-dir build/unix-debug \
+  --platform linux-ext4 \
+  --profile smoke \
+  --reset-mechanism auto
+
+# macOS APFS disk-image smoke
+scripts/run-e3-block-reset.sh \
+  --output /path/to/new/e3-artifact \
+  --build-dir build/macos-debug \
+  --platform macos-apfs \
+  --profile smoke \
+  --reset-mechanism abrupt-detach
+```
+
+Profiles:
+
+- `smoke` — `put` checkpoints `write_record`, `sync_record`, `write_commit_slot`, `sync_commit_slot`
+- `campaign` — smoke plus `bootstrap sync_commit_slot` and `rotate sync_commit_slot#2`
+
+Checkpoint markers live on the **host** (`host-scratch/`); the Store data directory lives on the
+test volume so a block reset cannot erase the arming evidence. For macOS detach, prefer the mounted
+APFS volume node from `hdiutil attach` output (not the first `/dev/disk*` line, which is often the
+GUID partition scheme). Image size defaults (1 GiB smoke / 2 GiB campaign) exceed the Store’s
+default 256 MiB free-space reserve plus Segment preallocate.
+
+Every harness artifact sets `e3_certified=no` and `physical_power_cut=no`. A green CI job means the
+harness and recovery oracle rehearsed successfully on that disposable row, not that GlyphaStore is
+certified for sudden power loss on production hardware.
+
+### dm-flakey notes (Linux)
+
+- Requires root, `dmsetup`, and a loop (or real) block device underneath.
+- Keep the flakey table fully available while seeding and reaching the checkpoint; switch to
+  `drop_writes` only at the armed reset, then `dmsetup remove --force`.
+- Confirm mapper removal separately from “reload succeeded.” A timeout, lost console, or failed
+  remove is **INCONCLUSIVE**, not PASS.
+- dm-flakey on loopback-over-ext4-on-hosted-disk still inherits the host’s durability; treat it as
+  block-layer rehearsal for the named loop/mapper row, not as NVMe firmware certification.
+
+## E3 / E4 PASS–FAIL criteria
+
+### E3 case outcome (single checkpoint × repetition)
+
+| Outcome | When |
+|---|---|
+| **PASS** | Reset confirmed below the process boundary; remount succeeds; `fsck -n` (or platform equivalent) runs without silent repair; recovery oracle accepts the required/optional/forbidden visibility for that checkpoint |
+| **FAIL** | Reset confirmed, but reopen/oracle disagrees with the recovery matrix, or the Store corrupts committed state that must survive |
+| **INCONCLUSIVE** | Checkpoint not reached, reset not confirmed, host/harness crash, lost console, or fsck/remount infrastructure failure |
+
+Failed and inconclusive rows are retained; they are never discarded to beautify a campaign.
+
+### E3 row claim (promotion)
+
+A storage row may be labeled **E3 certified** only when all of the following hold:
+
+1. Exact row identity is pinned (OS/kernel, FS type, mkfs/mount options, backing device/image class,
+   cache/barrier policy, guest/host boundary, reset mechanism).
+2. Clean source commit; E0/E1/E2 already passed on that same row.
+3. Campaign covers the normative persistent checkpoints for the claimed scope (at least the smoke set
+   for a narrow put-scope claim; full recovery-matrix scope for a general durable claim).
+4. Each checkpoint has enough repetitions to cover timing variability; zero unexplained outcomes.
+5. Artifact matches the evidence contract, including SHA-256 manifest and explicit
+   `reset_confirmed=yes` per case.
+6. A release maintainer reviews and records the artifact reference in the release notes.
+
+Until then, keep `e3_certified=no` even if the harness exits 0.
+
+### E4 row claim
+
+E4 additionally requires a repeated release campaign on the same pinned row and source artifact
+lineage, retained provenance for every attempt, and zero unexplained outcomes across the campaign
+set. E4 is never granted by CI smoke alone.
+
 ## E3 campaign protocol
 
 Power-loss work must run only in a disposable, controlled environment with no unrelated data on the
@@ -117,6 +214,8 @@ sequence:
 
 The campaign controller must distinguish “reset command issued” from “power was actually removed.”
 A timeout, host crash, lost console, or test-harness error is inconclusive, not a passing recovery.
+Physical chassis power cuts remain the strongest E3 mechanism for hardware rows; loopback/diskimage
+resets are valid only for the exact virtual-device row they name.
 
 ## Promotion and regression rules
 
@@ -125,6 +224,7 @@ Any change to write ordering, synchronization primitives, manifest/intent public
 handling, recovery authority, filesystem policy, or power-loss harness invalidates the affected
 campaign. Kernel/filesystem/device changes require review and usually a new campaign.
 
-CI may archive E2 collector output for every change. E3 should run on dedicated scheduled
-infrastructure, and E4 is a reviewed release campaign. Until those gates exist, GlyphaStore remains
-experimental for durable deployment even when every process-kill test passes.
+CI may archive E2 collector output for every change and E3 harness smoke for the linux-ext4
+rehearsal row. E3 certification campaigns should run on dedicated scheduled infrastructure, and E4
+is a reviewed release campaign. Until those gates exist, GlyphaStore remains experimental for durable
+deployment even when every process-kill and harness-smoke test passes.

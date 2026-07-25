@@ -50,10 +50,10 @@ Inject failure before and after every durability ordering boundary. Each checkpo
 
 Crash tests retain failing directories or a reproducible artifact description. Recovery must produce the same outcome regardless of file enumeration order.
 
-Native evidence uses the levels, row metadata, promotion rules, and safe process-kill collector in
-the [platform durability evidence matrix](../architecture/platform-durability-evidence.md). A
-hosted-runner pass without a pinned filesystem row must not be reported as power-loss or release
-certification.
+Native evidence uses the levels, row metadata, promotion rules, E2 collector, and E3 block-reset
+harness in the [platform durability evidence matrix](../architecture/platform-durability-evidence.md).
+A hosted-runner pass without a pinned filesystem row must not be reported as power-loss or release
+certification. Harness smoke (`linux-ext4` loopback / `macos-apfs` diskimage) is rehearsal only.
 
 ## 6. CI tiers
 
@@ -103,4 +103,14 @@ scripts/collect-durability-evidence.sh \
   --build-dir build/macos-debug \
   --probe-path . \
   --run process-kill
+```
+
+To rehearse an E3 block-reset on a disposable pinned row (still `e3_certified=no`):
+
+```sh
+scripts/run-e3-block-reset.sh \
+  --output /path/to/new/e3-artifact \
+  --build-dir build/unix-debug \
+  --platform linux-ext4 \
+  --profile smoke
 ```

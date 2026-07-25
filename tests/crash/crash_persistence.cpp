@@ -112,7 +112,7 @@ struct Options {
 
 void print_usage(const char* program) {
     std::cerr << "usage: " << program
-              << " --mode {worker|verify|matrix|copy-matrix|random-matrix|periodic-matrix|group-matrix} "
+              << " --mode {seed|worker|verify|matrix|copy-matrix|random-matrix|periodic-matrix|group-matrix} "
                  "[--scenario bootstrap|put|rotate|compact|compact-multi-build|compact-multi-random|"
                  "compact-multi-rollback|compact-multi-retire] "
                  "[--boundary OP]\n"
@@ -280,7 +280,7 @@ void seed_put_store(const std::filesystem::path& data_dir) {
                                             .data_directory = data_dir,
                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
     if (!opened) {
-        throw std::runtime_error("failed to seed durable store");
+        throw std::runtime_error(std::string{"failed to seed durable store: "} + opened.error().message);
     }
     if (!(*opened)->put(kSeedKey, bytes(kSeedValue)).has_value()) {
         throw std::runtime_error("failed to seed durable key");
@@ -1188,6 +1188,44 @@ void cleanup_matrix_case(const Options& options) {
     return success;
 }
 
+void seed_scenario(const Options& options) {
+    std::error_code ignored;
+    std::filesystem::remove_all(options.data_dir, ignored);
+    if (options.scenario == "bootstrap") {
+        std::filesystem::create_directories(options.data_dir.parent_path());
+        return;
+    }
+    if (options.scenario == "put") {
+        seed_put_store(options.data_dir);
+        return;
+    }
+    if (options.scenario == "rotate") {
+        seed_rotate_store(options.data_dir);
+        return;
+    }
+    if (options.scenario == "compact") {
+        seed_compaction_store(options.data_dir);
+        return;
+    }
+    if (options.scenario == "compact-multi-build") {
+        seed_multi_output_compaction_build(options.data_dir);
+        return;
+    }
+    if (options.scenario == "compact-multi-random") {
+        seed_multi_output_random_compaction(options.data_dir, options.history_seed);
+        return;
+    }
+    if (options.scenario == "compact-multi-rollback") {
+        seed_multi_output_compaction_recovery(options.data_dir, false);
+        return;
+    }
+    if (options.scenario == "compact-multi-retire") {
+        seed_multi_output_compaction_recovery(options.data_dir, true);
+        return;
+    }
+    throw std::runtime_error("unknown seed scenario");
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1198,6 +1236,14 @@ int main(int argc, char** argv) {
     }
 
     try {
+        if (options->mode == "seed") {
+            if (options->scenario.empty() || options->data_dir.empty()) {
+                print_usage(argv[0]);
+                return 2;
+            }
+            seed_scenario(*options);
+            return 0;
+        }
         if (options->mode == "worker") {
             run_worker(*options);
             return 0;

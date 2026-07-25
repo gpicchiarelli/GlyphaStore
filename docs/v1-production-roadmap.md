@@ -200,9 +200,10 @@ implemented; hardware/filesystem certification is open. v1 process-kill tests co
 periodic/group put, and rotation checkpoints. Instance-local raw I/O seams force short
 `pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS`. The
 [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines
-cumulative E0–E4 claims, provenance, promotion rules, and a collector for native E2 artifacts.
-Controller caches, torn sectors, sudden power loss, and pinned native filesystem rows require
-out-of-process reset infrastructure.
+cumulative E0–E4 claims, provenance, promotion rules, a collector for native E2 artifacts, and an
+in-repo E3 block-reset harness for linux-ext4 loopback / macOS APFS diskimage rehearsal.
+Controller caches, torn sectors, sudden physical power loss, and reviewed pinned native filesystem
+rows still require dedicated campaign infrastructure beyond CI smoke.
 
 **Required change:** add deterministic short-write/read, `EINTR`, delayed writeback `EIO`, `ENOSPC`,
 `EDQUOT`, `EROFS`, missing file, corrupt directory entry, rename, file-sync, and directory-sync
@@ -219,8 +220,9 @@ Durable mutation tests cross write, Record sync, commit-slot write, and commit-s
 `io_error`, `storage_exhausted`, and `read_only_filesystem`, then reopen and verify the recovery
 oracle. Namespace recovery rejects missing catalog files, malformed names, symlinks, hard links,
 and unlisted entries without adopting them. NFS, SMB, FUSE, overlay, and other remote/user-space
-storage are unsupported. VM/block-device power-cut automation, repeated E3 campaigns, and reviewed
-E4 release artifacts remain open.
+storage are unsupported. In-repo VM/block-device reset automation exists as a rehearsal harness
+(`scripts/run-e3-block-reset.sh`); repeated reviewed E3 campaigns and E4 release artifacts remain
+open. No row is E3/E4 certified.
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 
@@ -427,8 +429,10 @@ Primary references:
 - Partition sanitizer work so ASan/UBSan, TSan, and crash matrices are independently attributable.
   Add MSan only with a fully instrumented supported toolchain.
 - Add filesystem jobs for ext4/XFS/btrfs, APFS, UFS/ZFS/FFS where available, with mount metadata in
-  artifacts. Use `scripts/collect-durability-evidence.sh` for attributable E2 process-kill artifacts,
-  then separate controlled E3 reset infrastructure. Add disk quota and tiny block-device jobs.
+  artifacts. Use `scripts/collect-durability-evidence.sh` for attributable E2 process-kill artifacts
+  and `scripts/run-e3-block-reset.sh` for disposable linux-ext4 / macOS APFS block-reset rehearsal
+  (always `e3_certified=no` until a reviewed pinned campaign). Add disk quota and tiny block-device
+  jobs.
 
 ### Build, hardening, and supply chain
 

@@ -231,4 +231,6 @@ repair, and salvage are separate explicit operator workflows.
 These tests establish process-termination and deterministic injected-I/O evidence on development and
 CI filesystems. They do not certify controller power-loss behavior, storage-device write caches,
 filesystem-specific guarantees, or cross-release artifacts. Those require the separate platform
-durability evidence matrix.
+durability evidence matrix. The in-repo E3 block-reset harness
+(`scripts/run-e3-block-reset.sh`) rehearses abrupt detach / dm-flakey on disposable ext4/APFS image
+rows only and must not be reported as E3 certification.

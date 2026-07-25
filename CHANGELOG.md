@@ -5,6 +5,12 @@ public API exists.
 
 ## [Unreleased]
 
+- Advance E3/E4 durability certification scaffolding: `scripts/run-e3-block-reset.sh` provisions
+  disposable linux-ext4 (loopback + optional dm-flakey) and macOS APFS (hdiutil) rows, arms abrupt
+  block-device reset at crash-harness checkpoints, remounts with non-repairing fsck, and records
+  honest `e3_certified=no` artifacts; expose `glyphastore_crash_persistence --mode seed`; add
+  `.github/workflows/durability-evidence.yml` for E2 collector + E3 harness smoke; document PASS/FAIL
+  and promotion rules in `platform-durability-evidence.md`. No filesystem row is E3/E4 certified.
 - Advance durable hot-cache probing to Swiss-style H2 control bytes with SIMD/scalar 8-slot group
   matching (shared `swiss_control_group.hpp`), and keep full-key identity checks. Defer catalog
   shared-lock acquisition in `prepare_get` / cold revalidation off the ordinary hot path (Worker
