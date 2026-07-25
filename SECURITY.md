@@ -45,8 +45,8 @@ The **secure profile** is specified in [docs/security/roadmap.md](docs/security/
 Phase 2 (outer TLS) is implemented; Phases 3–4 (mTLS principals + `--authz-map` /
 `--secure-profile`) are implemented in the daemon and C++/Python/Perl/Go/Erlang clients. **Ruby**
 remains cleartext-only until its SDK Phase 3 (explicit exception to the “same train” TLS policy).
-**OpenBSD** is a first-class portability target (LibreSSL; later `pledge`/`unveil` remain open —
-not a durable storage certification). CI builds and tests the daemon against system LibreSSL
+**OpenBSD** is a first-class portability target (LibreSSL; `pledge`/`unveil` after
+`Server::create` — Phase 6.5; not a durable storage certification). CI builds and tests the daemon against system LibreSSL
 ([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Enable the full secure profile (TLS + mTLS + capabilities + Phase 5 abuse limits) before leaving a
 trusted perimeter. Phase 6 audit polish and CRL/OCSP remain residual before hostile public Internet.
 

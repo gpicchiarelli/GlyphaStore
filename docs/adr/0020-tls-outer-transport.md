@@ -66,8 +66,9 @@ TLS library is not acceptable as the first-class secure profile.
 - Positive: protocol v2 and client semantics stay stable; security is a transport concern; OpenBSD
   is not a second-class port.
 - Negative: build matrices grow (LibreSSL + OpenSSL); cert lifecycle and rotation become ops work.
-- Follow-on: ADR 0021 (authn), ADR 0022 (authz); `pledge`/`unveil` on OpenBSD must allow TLS and
-  configured cert paths without widening the filesystem view unnecessarily (Phase 2/6 hardening).
+- Follow-on: ADR 0021 (authn), ADR 0022 (authz); OpenBSD `pledge`/`unveil` (Phase 6.5) unveils the
+  data directory plus configured cert/key/CA/authz paths after `Server::create`, then pledges
+  `stdio rpath wpath cpath dpath inet flock fattr` (fail closed; no-op on other OS).
 
 ## Compatibility and migration
 

@@ -33,7 +33,7 @@ changes require ADRs and compatibility evidence first.
 
 | OS | TLS library expectation | Extra confinement |
 | --- | --- | --- |
-| OpenBSD | LibreSSL (system) | `pledge` / `unveil` for data dir + cert paths (Phase 2/6) |
+| OpenBSD | LibreSSL (system) | `pledge` / `unveil` for data dir + cert paths (**done** Phase 6.5) |
 | FreeBSD | LibreSSL or OpenSSL 3.x | Capsicum evaluation later (existing v1 roadmap note) |
 | Linux | OpenSSL 3.x or LibreSSL | standard file perms; optional Landlock later |
 | macOS | LibreSSL/OpenSSL as provided by build | Keychain integration optional later |
@@ -207,8 +207,10 @@ cleartext keeps limits at `0` (disabled) unless operators set them.
 | 6.2 | Admin/diagnostic surface: listener mode, TLS status, principal counts (no secret material) | Readiness fails on sticky storage errors still holds |
 | 6.3 | Runbooks: rotate certs/tokens, revoke principal, incident response | Linked from production readiness |
 | 6.4 | Backup/restore note: credentials and data-dir permissions | Threat model § updated |
+| 6.5 | OpenBSD `pledge`/`unveil` after `Server::create` (data dir + TLS/authz paths) | **done (2026-07-25)** — fail-closed apply; no-op on Linux/macOS/FreeBSD; promise set reviewed in `openbsd_sandbox.hpp`; OpenBSD CI greps `openbsd-sandbox=pledge+unveil` |
 
-**Effort:** 1–2 weeks (+ ongoing polish).
+**Effort:** 1–2 weeks (+ ongoing polish). Item 6.5 is platform confinement, not a substitute for
+6.1–6.4 audit polish or CRL/OCSP.
 
 ---
 

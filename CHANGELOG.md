@@ -5,6 +5,14 @@ public API exists.
 
 ## [Unreleased]
 
+- Add multi-hour soak profiles (`smoke`/`long`/`1h`/`4h`) to `scripts/soak_daemon.sh` with optional
+  RSS and STATS sampling (rotation/compaction counters); document honesty in
+  `docs/operations/soak.md` and production-readiness. Wire optional CI via
+  `.github/workflows/soak-extended.yml` (`workflow_dispatch` + monthly 1h only — not every PR).
+- Implement OpenBSD Phase 6.5 `pledge`/`unveil` confinement after `Server::create` (data dir +
+  TLS/authz paths; fail closed; no-op on Linux/macOS/FreeBSD). Cover promise-set unit tests and
+  OpenBSD CI grep for `openbsd-sandbox=pledge+unveil`.
+
 - Implement Secure profile Phase 5 abuse / DoS controls: process-wide `--max-accepts-per-sec`,
   `--idle-timeout-ms` / `--request-timeout-ms`, per-connection and per-principal request/bandwidth
   quotas, shared `AbuseController`, `STATS` `abuse_*` counters, and `--secure-profile` defaults that

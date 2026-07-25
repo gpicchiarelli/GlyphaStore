@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# OpenBSD / LibreSSL CI gate (security roadmap Phase 2.6, ADR 0020).
+# OpenBSD / LibreSSL CI gate (security roadmap Phase 2.6 + Phase 6.5, ADR 0020).
 #
 # Builds glyphastored with system LibreSSL, runs the unit/integration suite,
-# and smokes TLS PUT→GET with the official Go client.
+# and smokes TLS PUT→GET with the official Go client (including pledge/unveil
+# apply after Server::create).
 #
 # Intended for:
 #   - GitHub Actions via vmactions/openbsd-vm
@@ -141,6 +142,12 @@ if [[ -z "$port" ]]; then
   exit 1
 fi
 echo "daemon tls_port=$port backend=LibreSSL"
+if ! grep -q 'openbsd-sandbox=pledge+unveil' "$work/daemon.log"; then
+  echo "error: expected openbsd-sandbox=pledge+unveil in daemon log after Server::create" >&2
+  cat "$work/daemon.log" >&2
+  exit 1
+fi
+echo "openbsd sandbox applied"
 
 key_hex="$(printf 'openbsd-tls-smoke' | od -An -tx1 | tr -d ' \n')"
 value_hex="$(printf 'libressl-ok' | od -An -tx1 | tr -d ' \n')"

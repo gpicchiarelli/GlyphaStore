@@ -126,7 +126,8 @@ paths. Cleartext remains available for trusted deployments.
 ## 7. Residual risks (still block hostile public bind)
 
 - Phase 6: full security audit trail and admin principal counts (structured lifecycle logs exist;
-  auth-specific events remain thin).  
+  auth-specific events remain thin). OpenBSD `pledge`/`unveil` confinement (6.5) is implemented
+  and is not a substitute for audit polish.  
 - CRL/OCSP fail-closed policy when revocation is configured.  
 - Hostile multi-tenant isolation (Phase 8).
 

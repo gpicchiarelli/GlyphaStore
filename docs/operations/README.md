@@ -17,6 +17,7 @@ in [cli.md](../cli.md), [wire protocol v2](../spec/wire-protocol-v2.md), and
 | [Backup and restore](backup-restore.md) | Planned copy, migration to new host, disaster recovery from verified backup |
 | [Worker count change](worker-resharding.md) | Offline reshard / logical rewrite via `glyphastore_migrate_store` |
 | [Corruption detection and repair](corruption-repair.md) | Startup failure, verify errors, namespace anomalies, post-incident salvage |
+| [Soak profiles](soak.md) | Smoke / 30m / 1h / 4h durable soak; CI vs multi-hour honesty |
 
 ## Tool and exit-code contract
 
@@ -32,19 +33,21 @@ reshard are **not** supported.
 
 ## CI / staging exercise
 
-Automated smoke (not multi-hour soak):
+Automated smoke (not multi-hour certification):
 
 ```bash
 ./scripts/exercise_ops_runbooks.sh
-./scripts/soak_daemon.sh            # default ~45s
-SOAK_SECONDS=1800 ./scripts/soak_daemon.sh   # longer local/CI soak
+./scripts/soak_daemon.sh                 # profile smoke ~45s
+./scripts/soak_daemon.sh --profile long  # 30m
+./scripts/soak_daemon.sh --profile 1h    # multi-hour path + RSS/STATS samples
 ```
 
-GitHub Actions: `.github/workflows/ops-runbooks.yml` runs the runbook exercise on every PR/push and
-a weekly 30-minute soak (manual `workflow_dispatch` can raise `soak_seconds`).
-`.github/workflows/durability-evidence.yml` archives E2 collector metadata (and scheduled
-process-kill) plus linux-ext4 E3 harness smoke; those uploads are rehearsal artifacts, not E3/E4
-certification.
+Profiles and CI wiring: [soak.md](soak.md). GitHub Actions:
+`.github/workflows/ops-runbooks.yml` runs the runbook exercise on every PR/push and a weekly
+30-minute soak; `.github/workflows/soak-extended.yml` is **workflow_dispatch / monthly 1h only**
+(not every PR). `.github/workflows/durability-evidence.yml` archives E2 collector metadata (and
+scheduled process-kill) plus linux-ext4 E3 harness smoke; those uploads are rehearsal artifacts,
+not E3/E4 certification.
 
 ## Related architecture
 

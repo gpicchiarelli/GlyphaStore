@@ -1,11 +1,17 @@
 #!/usr/bin/env bash
-# CI-friendly durable daemon soak/stress entry point.
+# Durable daemon soak / stress entry point.
 #
-# Default (smoke): ~45s of PUT/GET, reconnect, compact-friendly churn, and
-# graceful drain. Suitable for PR/nightly labeled CI.
+# Profiles (SOAK_PROFILE or --profile):
+#   smoke  — default ~45s PUT/GET + reconnect + overwrite churn + drain (PR CI)
+#   long   — 30 minutes (weekly schedule / local)
+#   1h     — 3600s multi-hour path with RSS + STATS sampling
+#   4h     — 14400s multi-hour path with RSS + STATS sampling
 #
-# Long soak: set SOAK_SECONDS (e.g. 3600) or pass --seconds N. Multi-hour
-# hardware matrices remain a release gate outside this script.
+# Or set SOAK_SECONDS / --seconds N directly (overrides profile duration).
+#
+# Honesty: smoke and weekly 30m are CI-friendly evidence, not multi-hour hardware
+# certification. 1h/4h profiles sample RSS and STATS (rotation/compaction counters)
+# when feasible; rotation may still be zero depending on segment growth.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -17,13 +23,45 @@ prefer_bins=(
   "$root/build/unix-release"
 )
 
-seconds="${SOAK_SECONDS:-45}"
+profile="${SOAK_PROFILE:-smoke}"
+seconds_override="${SOAK_SECONDS:-}"
 workers=1
 storage_mode=durable-periodic
+sample_every="${SOAK_SAMPLE_EVERY:-}"
+rss_fail_factor="${SOAK_RSS_FAIL_FACTOR:-3}"
+rss_fail_delta_kb="${SOAK_RSS_FAIL_DELTA_KB:-262144}" # 256 MiB
+
+profile_seconds() {
+  case "$1" in
+    smoke) echo 45 ;;
+    long) echo 1800 ;;
+    1h) echo 3600 ;;
+    4h) echo 14400 ;;
+    *)
+      echo "unknown soak profile: $1 (expected smoke|long|1h|4h)" >&2
+      return 2
+      ;;
+  esac
+}
+
+default_sample_every() {
+  case "$1" in
+    smoke) echo 0 ;;
+    long) echo 60 ;;
+    1h) echo 60 ;;
+    4h) echo 120 ;;
+    *) echo 0 ;;
+  esac
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --seconds)
-      seconds="$2"
+      seconds_override="$2"
+      shift 2
+      ;;
+    --profile)
+      profile="$2"
       shift 2
       ;;
     --workers)
@@ -34,10 +72,16 @@ while [[ $# -gt 0 ]]; do
       storage_mode="$2"
       shift 2
       ;;
+    --sample-every)
+      sample_every="$2"
+      shift 2
+      ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--seconds N] [--workers N] [--storage-mode MODE]
-Env: SOAK_SECONDS, GLYPHASTORED, GLYPHASTORE_INTEROP_CLIENT
+Usage: $0 [--profile smoke|long|1h|4h] [--seconds N] [--workers N]
+          [--storage-mode MODE] [--sample-every SEC]
+Env: SOAK_PROFILE, SOAK_SECONDS, SOAK_SAMPLE_EVERY, GLYPHASTORED,
+     GLYPHASTORE_INTEROP_CLIENT, SOAK_RSS_FAIL_FACTOR, SOAK_RSS_FAIL_DELTA_KB
 EOF
       exit 0
       ;;
@@ -47,6 +91,15 @@ EOF
       ;;
   esac
 done
+
+if [[ -n "$seconds_override" ]]; then
+  seconds="$seconds_override"
+else
+  seconds="$(profile_seconds "$profile")"
+fi
+if [[ -z "$sample_every" ]]; then
+  sample_every="$(default_sample_every "$profile")"
+fi
 
 resolve_bin() {
   local name="$1"
@@ -76,6 +129,43 @@ to_hex() {
   else
     od -An -tx1 | tr -d ' \n'
   fi
+}
+
+rss_kb() {
+  local pid="$1"
+  # Portable: RSS in kilobytes (ps on macOS/Linux/OpenBSD).
+  ps -o rss= -p "$pid" 2>/dev/null | tr -d ' ' || echo 0
+}
+
+fetch_stats() {
+  local port="$1"
+  PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}" python3 - "$port" <<'PY'
+import socket
+import struct
+import sys
+from glyphastore.protocol import Opcode, Status, encode_request, decode_response
+
+port = int(sys.argv[1])
+frame = encode_request(Opcode.STATS, 42)
+with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
+    sock.sendall(frame)
+    buf = b""
+    while len(buf) < 40:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise SystemExit("short STATS response")
+        buf += chunk
+    frame_size = struct.unpack_from("<I", buf, 0)[0]
+    while len(buf) < frame_size:
+        chunk = sock.recv(frame_size - len(buf))
+        if not chunk:
+            break
+        buf += chunk
+    response = decode_response(buf)
+    if response.status != Status.OK:
+        raise SystemExit(f"STATS status={response.status}")
+    sys.stdout.write(response.value.decode("ascii", errors="replace"))
+PY
 }
 
 daemon="$(resolve_bin glyphastored "${GLYPHASTORED:-}" || true)"
@@ -125,11 +215,23 @@ if [[ -z "$port" ]]; then
   exit 1
 fi
 
-echo "soak start seconds=$seconds workers=$workers storage=$storage_mode port=$port"
+rss0="$(rss_kb "$daemon_pid")"
+echo "soak start profile=$profile seconds=$seconds workers=$workers storage=$storage_mode port=$port rss_kb=$rss0 sample_every=$sample_every"
 deadline=$((SECONDS + seconds))
 ops=0
 reconnects=0
+samples=0
+rss_peak="$rss0"
+last_sample_at=$SECONDS
+rotation_committed=0
+useful_compactions=0
+
 while (( SECONDS < deadline )); do
+  if ! kill -0 "$daemon_pid" 2>/dev/null; then
+    echo "soak daemon died mid-run:" >&2
+    cat "$work/daemon.out" "$work/daemon.err" >&2 || true
+    exit 1
+  fi
   key="soak-key-$ops"
   value="soak-value-$ops-$(date +%s)"
   key_hex="$(printf '%s' "$key" | to_hex)"
@@ -154,47 +256,57 @@ while (( SECONDS < deadline )); do
     overwrite_hex="$(printf 'overwrite-%s' "$ops" | to_hex)"
     "$client" --host 127.0.0.1 --port "$port" put --key-hex "$key_hex" --value-hex "$overwrite_hex" >/dev/null
   fi
+
+  if (( sample_every > 0 )) && (( SECONDS - last_sample_at >= sample_every )); then
+    last_sample_at=$SECONDS
+    samples=$((samples + 1))
+    rss_now="$(rss_kb "$daemon_pid")"
+    if (( rss_now > rss_peak )); then
+      rss_peak="$rss_now"
+    fi
+    stats_text="$(fetch_stats "$port" || true)"
+    if [[ -n "$stats_text" ]]; then
+      rotation_committed="$(printf '%s\n' "$stats_text" | sed -n 's/^durable_rotations_committed=//p' | head -1)"
+      useful_compactions="$(printf '%s\n' "$stats_text" | sed -n 's/^useful_compactions=//p' | head -1)"
+      rotation_committed="${rotation_committed:-0}"
+      useful_compactions="${useful_compactions:-0}"
+    fi
+    echo "soak sample t=${SECONDS}s ops=$ops rss_kb=$rss_now rss_peak_kb=$rss_peak rotations=$rotation_committed useful_compactions=$useful_compactions"
+  fi
 done
 
-PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}" python3 - "$port" <<'PY'
-import socket
-import struct
-import sys
-from glyphastore.protocol import Opcode, Status, encode_request, decode_response
+stats_final="$(fetch_stats "$port")"
+required=(
+  "lane[0].queue_wait_ns.count="
+  "lane[0].service_ns.le_inf="
+  "maintenance_rate_window_bytes_copied="
+  "useful_compactions="
+  "durable_rotations_committed="
+)
+for needle in "${required[@]}"; do
+  if [[ "$stats_final" != *"$needle"* ]]; then
+    echo "STATS missing $needle" >&2
+    exit 1
+  fi
+done
+rotation_committed="$(printf '%s\n' "$stats_final" | sed -n 's/^durable_rotations_committed=//p' | head -1)"
+useful_compactions="$(printf '%s\n' "$stats_final" | sed -n 's/^useful_compactions=//p' | head -1)"
+echo "soak STATS ok rotations=${rotation_committed:-0} useful_compactions=${useful_compactions:-0}"
 
-port = int(sys.argv[1])
-frame = encode_request(Opcode.STATS, 42)
-with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
-    sock.sendall(frame)
-    buf = b""
-    while len(buf) < 40:
-        chunk = sock.recv(4096)
-        if not chunk:
-            raise SystemExit("short STATS response")
-        buf += chunk
-    frame_size = struct.unpack_from("<I", buf, 0)[0]
-    while len(buf) < frame_size:
-        chunk = sock.recv(frame_size - len(buf))
-        if not chunk:
-            break
-        buf += chunk
-    response = decode_response(buf)
-    if response.status != Status.OK:
-        raise SystemExit(f"STATS status={response.status}")
-    text = response.value.decode("ascii", errors="replace")
-    required = (
-        "lane[0].queue_wait_ns.count=",
-        "lane[0].service_ns.le_inf=",
-        "maintenance_rate_window_bytes_copied=",
-        "useful_compactions=",
-    )
-    for needle in required:
-        if needle not in text:
-            raise SystemExit(f"STATS missing {needle}")
-    print("soak STATS ok")
-PY
+rss_final="$(rss_kb "$daemon_pid")"
+if (( rss_final > rss_peak )); then
+  rss_peak="$rss_final"
+fi
+
+# Multi-hour profiles: fail closed on runaway RSS (factor AND absolute delta).
+if [[ "$profile" == "1h" || "$profile" == "4h" ]] || (( seconds >= 3600 )); then
+  if (( rss0 > 0 && rss_peak > rss0 * rss_fail_factor && rss_peak - rss0 > rss_fail_delta_kb )); then
+    echo "soak RSS growth failed: rss0=$rss0 peak=$rss_peak factor>$rss_fail_factor delta_kb>$rss_fail_delta_kb" >&2
+    exit 1
+  fi
+fi
 
 kill -TERM "$daemon_pid"
 wait "$daemon_pid"
 daemon_pid=""
-echo "soak ok ops=$ops reconnects=$reconnects seconds=$seconds"
+echo "soak ok profile=$profile ops=$ops reconnects=$reconnects seconds=$seconds samples=$samples rss_kb=$rss0->$rss_final peak=$rss_peak rotations=${rotation_committed:-0} useful_compactions=${useful_compactions:-0}"

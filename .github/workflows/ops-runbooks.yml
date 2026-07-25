@@ -7,11 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       soak_seconds:
-        description: Soak duration in seconds (smoke default 45; long soak e.g. 1800)
+        description: Soak duration in seconds (smoke default 45; long e.g. 1800). Multi-hour 1h/4h → soak-extended.yml
         required: false
         default: "45"
   schedule:
-    # Weekly longer soak; still CI-friendly (30 minutes), not multi-hour hardware.
+    # Weekly longer soak; CI-friendly 30 minutes, not multi-hour hardware certification.
+    # Multi-hour profiles: .github/workflows/soak-extended.yml (workflow_dispatch / monthly 1h).
     - cron: "17 4 * * 1"
 
 permissions:

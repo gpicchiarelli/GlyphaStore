@@ -1,6 +1,7 @@
 #include "cli/arguments.hpp"
 #include "glyphastore/server/daemon_config.hpp"
 #include "glyphastore/server/daemon_log.hpp"
+#include "glyphastore/server/openbsd_sandbox.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/server/tls.hpp"
 
@@ -130,6 +131,16 @@ int main(const int argc, char** argv) try {
     if (!server) {
         std::cerr << program << ": error: " << server.error().message << '\n';
         return 1;
+    }
+    // OpenBSD: unveil data/TLS/authz paths then pledge. Fail closed (ADR 0020 /
+    // security roadmap Phase 6.5). No-op on Linux/macOS/FreeBSD.
+    if (auto sandboxed = glyphastore::server::apply_openbsd_sandbox(*arguments); !sandboxed) {
+        std::cerr << program << ": error: " << sandboxed.error().message << '\n';
+        return 1;
+    }
+    if (glyphastore::server::openbsd_sandbox_supported() && !arguments->quiet) {
+        std::cerr << program << ": openbsd-sandbox=pledge+unveil promises="
+                  << glyphastore::server::openbsd_sandbox_promises() << '\n';
     }
     if (auto installed = install_signal_handler(SIGINT, "SIGINT"); !installed) {
         std::cerr << program << ": error: " << installed.error().message << '\n';

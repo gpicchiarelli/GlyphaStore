@@ -19,7 +19,7 @@ Protected assets are availability and integrity of Store state, confidentiality 
 | Data-directory parent and OS | trusted for configured permissions and documented filesystem semantics |
 | Same-host process | untrusted unless OS permissions deny namespace/socket access |
 | Hardware/filesystem durability | trusted only to the extent explicitly certified |
-| Platform targets | Linux, macOS, FreeBSD, and OpenBSD are in-scope; OpenBSD uses LibreSSL and may apply `pledge`/`unveil` once implemented |
+| Platform targets | Linux, macOS, FreeBSD, and OpenBSD are in-scope; OpenBSD uses LibreSSL and applies `pledge`/`unveil` after `Server::create` (Phase 6.5; fail closed) |
 
 ## 3. Current security posture
 

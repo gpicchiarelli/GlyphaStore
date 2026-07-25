@@ -101,9 +101,14 @@ below has automated evidence. A design document or implementation alone does not
   executes each libFuzzer target with a bounded budget (60s on PR/push, 120s on the Monday schedule
   and manual dispatch). Longer soak and additional Manifest/Segment/intent corpora remain open.
 - [ ] Long-running stress and soak tests cover memory stability, rotation, vacuum, reconnect, and shutdown.
-  CI-friendly entry point: `scripts/soak_daemon.sh` (default ~45s PUT/GET/reconnect/churn + drain)
-  exercised by `.github/workflows/ops-runbooks.yml` on PRs and a weekly 30-minute schedule as smoke.
-  Multi-hour hardware soak with RSS/rotation evidence remains a release gate.
+  CI-friendly entry point: `scripts/soak_daemon.sh` with profiles `smoke` (~45s), `long` (30m),
+  `1h`, and `4h` (RSS + STATS sampling for rotation/compaction counters when present).
+  `.github/workflows/ops-runbooks.yml` runs smoke on PRs and a weekly 30-minute schedule.
+  Multi-hour profiles are **optional** via `.github/workflows/soak-extended.yml`
+  (`workflow_dispatch` + monthly 1h schedule only — not every PR). See
+  [operations/soak.md](operations/soak.md). Controlled multi-hour **hardware** soak with
+  mandatory rotation/vacuum evidence remains a release gate; software soaks may report zero
+  rotations depending on segment growth.
 - [ ] Performance tests track tail latency, throughput, memory, and regressions without hiding variance.
   Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous baseline.
   Weekly PGO smoke training includes durable open/put/reopen workloads. Local filters:
