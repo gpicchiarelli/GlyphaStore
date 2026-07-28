@@ -360,6 +360,7 @@ int main(int argc, char** argv) {
         }
         seed(current.front(), material);
         seed(paired.front(), material);
+        const auto pair_before = paired_server.reactor().pair_stats();
         std::vector<Measurement> measurements;
         std::cout << "# paired Reactor TCP A/B git=" << GLYPHASTORE_GIT_SHA << " ops=" << options.operations
                   << " keys=" << options.keys << " value_bytes=" << options.value_bytes
@@ -388,10 +389,22 @@ int main(int argc, char** argv) {
         summary(measurements, "paired");
         const auto reactor = paired_server.reactor().stats();
         const auto pair = paired_server.reactor().pair_stats();
+        const auto measured_publications = pair.publications - pair_before.publications;
+        const auto measured_publication_records =
+            pair.publication_records - pair_before.publication_records;
+        const auto average_publication_batch =
+            measured_publications == 0
+                ? 0.0
+                : static_cast<double>(measured_publication_records) /
+                      static_cast<double>(measured_publications);
         std::cout << "telemetry,writev_calls," << reactor.writev_calls << ",partial_writes,"
                   << reactor.partial_writes << ",slow_output_pins," << reactor.slow_output_pins
-                  << ",mutation_backpressure," << reactor.mutation_backpressure << ",publications,"
-                  << pair.publications << ",generation_output_pin_high_watermark,"
+                  << ",mutation_backpressure," << reactor.mutation_backpressure
+                  << ",measured_publications," << measured_publications
+                  << ",measured_publication_records," << measured_publication_records
+                  << ",average_publication_batch," << average_publication_batch
+                  << ",maximum_writer_batch," << pair.maximum_writer_batch_size
+                  << ",generation_output_pin_high_watermark,"
                   << pair.generation_output_pin_high_watermark << ",publication_backpressure,"
                   << pair.publication_backpressure << '\n';
         if (paired_server.failed()) {

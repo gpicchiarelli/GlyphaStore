@@ -515,6 +515,15 @@ struct PairedReactorPrototype::Impl final {
             free_slots.pop_back();
             auto& current = connections[slot];
             current.socket = std::move(**accepted);
+            if (config.accepted_socket_send_buffer_bytes != 0) {
+                const auto bytes = static_cast<int>(config.accepted_socket_send_buffer_bytes);
+                if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes,
+                                 sizeof(bytes)) != 0) {
+                    current.socket.reset();
+                    free_slots.push_back(slot);
+                    return server::system_error("paired Reactor SO_SNDBUF");
+                }
+            }
             const ConnectionToken token{.slot = slot, .generation = current.generation};
             if (auto added = poller.add(current.socket.descriptor(), token.encode(), IoInterest::read);
                 !added) {
@@ -714,6 +723,7 @@ auto PairedReactorPrototype::create(PairedReactorPrototypeConfig config)
         config.maximum_output_bytes < server::kResponseHeaderBytes ||
         config.output_frames_per_connection == 0 ||
         config.output_frames_per_connection > kMaximumOutputFrames || config.maximum_value_bytes == 0 ||
+        config.accepted_socket_send_buffer_bytes > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         config.maximum_value_bytes > server::kMaxFrameBytes - server::kResponseHeaderBytes) {
         return fail(ErrorCode::invalid_argument, "invalid paired Reactor prototype limits");
     }

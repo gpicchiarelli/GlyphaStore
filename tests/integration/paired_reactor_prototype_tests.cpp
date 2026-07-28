@@ -16,8 +16,9 @@ namespace {
 
 class RunningPairedReactor final {
   public:
-    RunningPairedReactor() {
-        auto created = glyphastore::experimental::PairedReactorPrototype::create();
+    explicit RunningPairedReactor(
+        const glyphastore::experimental::PairedReactorPrototypeConfig config = {}) {
+        auto created = glyphastore::experimental::PairedReactorPrototype::create(config);
         if (!created) {
             throw std::runtime_error{created.error().message};
         }
@@ -115,4 +116,24 @@ GLYPHA_TEST("paired experimental Reactor preserves ordered owner-bound TCP pipel
     GLYPHA_REQUIRE(text((*responses)[1].value) == "first");
     GLYPHA_REQUIRE(text((*responses)[3].value) == "second");
     GLYPHA_REQUIRE(!running.failed());
+}
+
+GLYPHA_TEST("paired experimental Reactor pins a generation only across slow socket output") {
+    constexpr std::size_t value_bytes = 256U * 1024U;
+    RunningPairedReactor running{{.accepted_socket_send_buffer_bytes = 4U * 1024U,
+                                  .maximum_value_bytes = value_bytes}};
+    auto client = running.connect();
+    const std::string key{"slow-output-key"};
+    std::vector<std::byte> value(value_bytes, std::byte{0x5A});
+    GLYPHA_REQUIRE(client.put(bytes(key), value).committed());
+    const auto found = client.get(key);
+    GLYPHA_REQUIRE(found.has_value());
+    GLYPHA_REQUIRE(*found == value);
+    GLYPHA_REQUIRE(!running.failed());
+    const auto reactor = running.reactor().stats();
+    const auto pair = running.reactor().pair_stats();
+    GLYPHA_REQUIRE(reactor.partial_writes > 0);
+    GLYPHA_REQUIRE(reactor.slow_output_pins > 0);
+    GLYPHA_REQUIRE(pair.generation_output_pin_high_watermark > 0);
+    GLYPHA_REQUIRE(pair.generation_output_pins == 0);
 }
