@@ -7,6 +7,10 @@ zero-byte mutations, and `committed` / `rejected` / `indeterminate` outcomes.
 Implements [client semantics v1](../../docs/spec/client-semantics-v1.md). Roadmap:
 [Ruby SDK roadmap](../../docs/architecture/ruby-sdk-roadmap.md).
 
+Current routing limit: the Ruby client accepts the plain FNV `GlyphaStore/2` identity only. It fails
+closed on the keyed SipHash `INIT` extension used by `--secure-profile`; see the shared
+[SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+
 **Gem:** `glyphastore` · **Module:** `GlyphaStore` · **Ruby:** ≥ 3.2 · **License:** BSD-3-Clause
 
 Cleartext TCP by default: treat the server as loopback / private network / sidecar. Opt-in TLS 1.3

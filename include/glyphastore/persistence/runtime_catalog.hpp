@@ -150,6 +150,44 @@ class DurableRuntimeCatalog final {
     struct RuntimeSegmentGeneration;
 
   public:
+    // Immutable logical record captured together with the exact on-disk
+    // Segment generation that owns its RecordRef. Copies retain the file pin;
+    // the reference is therefore never observable without lifetime ownership.
+    class PublishedReadRecord final {
+      public:
+        PublishedReadRecord(const PublishedReadRecord&) = default;
+        auto operator=(const PublishedReadRecord&) -> PublishedReadRecord& = default;
+        PublishedReadRecord(PublishedReadRecord&&) noexcept = default;
+        auto operator=(PublishedReadRecord&&) noexcept -> PublishedReadRecord& = default;
+
+        [[nodiscard]] auto key() const noexcept -> std::string_view {
+            return key_;
+        }
+        [[nodiscard]] auto key_hash() const noexcept -> std::uint64_t {
+            return key_hash_;
+        }
+        [[nodiscard]] auto worker_index() const noexcept -> std::size_t {
+            return worker_index_;
+        }
+        [[nodiscard]] auto reference() const noexcept -> const RecordRef& {
+            return reference_;
+        }
+
+      private:
+        PublishedReadRecord(std::string key, std::uint64_t key_hash, std::size_t worker_index,
+                            RecordRef reference, std::shared_ptr<const RuntimeSegmentGeneration> generation)
+            : key_(std::move(key)), key_hash_(key_hash), worker_index_(worker_index), reference_(reference),
+              generation_(std::move(generation)) {}
+
+        std::string key_;
+        std::uint64_t key_hash_{};
+        std::size_t worker_index_{};
+        RecordRef reference_;
+        std::shared_ptr<const RuntimeSegmentGeneration> generation_;
+
+        friend class DurableRuntimeCatalog;
+    };
+
     class PinnedRead final {
       public:
         PinnedRead(PinnedRead&&) noexcept = default;
@@ -159,9 +197,11 @@ class DurableRuntimeCatalog final {
 
       private:
         PinnedRead(std::string key, std::uint64_t key_hash, std::uint64_t now_ns, std::size_t worker_index,
-                   RecordRef reference, std::shared_ptr<const RuntimeSegmentGeneration> generation)
+                   RecordRef reference, std::shared_ptr<const RuntimeSegmentGeneration> generation,
+                   bool generation_linearized = false)
             : key_(std::move(key)), key_hash_(key_hash), now_ns_(now_ns), worker_index_(worker_index),
-              reference_(reference), generation_(std::move(generation)) {}
+              reference_(reference), generation_(std::move(generation)),
+              generation_linearized_(generation_linearized) {}
 
         std::string key_;
         std::uint64_t key_hash_{};
@@ -169,6 +209,10 @@ class DurableRuntimeCatalog final {
         std::size_t worker_index_{};
         RecordRef reference_;
         std::shared_ptr<const RuntimeSegmentGeneration> generation_;
+        // True when an immutable Reader generation, rather than the mutable
+        // Worker Index, is the GET linearization authority. Such reads need no
+        // post-I/O Worker/catalog revalidation.
+        bool generation_linearized_{};
 
         friend class DurableRuntimeCatalog;
         friend class detail::StoreAccess;
@@ -249,16 +293,27 @@ class DurableRuntimeCatalog final {
                                         std::shared_lock<std::shared_mutex>& catalog_lock) -> Status;
     [[nodiscard]] auto should_flush_batch(RuntimeWorker& worker) const noexcept -> bool;
     void abandon_pending_batches() noexcept;
-    void wait_for_batch_close(RuntimeWorker& worker, PendingGroupMutation& mutation,
+    void wait_for_batch_close(RuntimeWorker& worker, SequenceNumber sequence,
                               std::unique_lock<std::mutex>& lock);
+    [[nodiscard]] auto commit_writer_batch(std::size_t worker_index) -> Status;
+    [[nodiscard]] auto writer_batch_config() const noexcept -> std::optional<DurableGroupConfig>;
     [[nodiscard]] auto fail_closed(Error error) -> Unexpected;
     [[nodiscard]] auto mutate(std::span<const std::byte> key, std::span<const std::byte> value, Opcode opcode,
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
-                              std::uint32_t flags) -> DurableMutationResult;
+                              std::uint32_t flags, bool writer_batch = false) -> DurableMutationResult;
     [[nodiscard]] auto rotate_active(RuntimeWorker& worker, std::unique_lock<std::mutex>& worker_lock)
         -> DurableMutationResult;
     void record_rotation_final_commit(std::uint64_t duration_ns, bool committed) noexcept;
     [[nodiscard]] auto prepare_get(const HashedKey& key, std::uint64_t now_ns) -> Result<PreparedRead>;
+    // Writer-side publication helpers. Both capture methods may take runtime
+    // locks but never perform file I/O. The returned records are immutable and
+    // retain exact Segment-generation pins for lock-free Reader lookup.
+    [[nodiscard]] auto snapshot_published_reads(std::size_t worker_index)
+        -> Result<std::vector<PublishedReadRecord>>;
+    [[nodiscard]] auto capture_published_read(std::size_t worker_index, const HashedKey& key)
+        -> Result<PublishedReadRecord>;
+    [[nodiscard]] auto prepare_published_get(PublishedReadRecord read, std::uint64_t now_ns)
+        -> Result<PreparedRead>;
     [[nodiscard]] auto complete_get(PinnedRead read, const std::atomic_bool* cancelled = nullptr)
         -> Result<OwnedValue>;
     // Build SegmentId → catalog/pin slot mapping before a persistent publication.

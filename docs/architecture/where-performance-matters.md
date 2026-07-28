@@ -1,7 +1,7 @@
 Status: descriptive
 Applies to: product positioning and benchmark interpretation (not a wire or disk contract)
 Owner: maintainer
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-28
 
 # Where GlyphaStore performance matters
 
@@ -54,33 +54,35 @@ where the hot path is lookup-heavy; it does not hide slow dependencies.
 
 ## Engine vs SDK
 
-Published engine and raw-TCP suites reach far higher operations per second than the official
-language SDKs on the same host. The SDK 0.1.0 baseline (~10⁵ ops/s class on loopback) measures
-client overhead; it does not cap GlyphaStore capacity.
+Engine, raw-TCP and public-SDK suites measure different work. The public SDK path includes API
+validation, routing, request encoding, owned results and outcome construction; a raw-wire harness
+may pre-encode frames. A slower SDK number therefore does not by itself cap server capacity.
 
 Track client and engine regressions separately. Multi-language clients should not force continuous
 core rewrites for framing costs.
 
-See [SDK 0.1.0 analysis](../../benchmark-results-sdk-0.1.0-20260719-161956/analysis.md) and the
-[benchmark standard](../spec/benchmark-standard.md).
+Use `./scripts/benchmark_sdk_clients.sh` for the current comparison matrix and interpret it under
+the [benchmark standard](../spec/benchmark-standard.md). Local `benchmark-results*` directories are
+gitignored and must not be cited as durable repository documentation.
 
 ## Perl SDK: where further speed comes from
 
-The pure-Perl hot path is already tight (`pack 'Q<'`, in-place `sysread`, reused `IO::Select`,
-`encode_request_hot`, multi-Worker overlap). Closing the remaining gap versus Python sequential at
-deep pipelines needs structural changes, not generic micro-tuning.
+The Perl client already aggregates a Worker pipeline, buffers reads and overlaps Worker sockets in
+one `IO::Select` loop. It still creates public request/result hashes, assembles encoded frames per
+call and materializes owned GET scalars. Those costs are candidates for profiling, not presumed
+single-digit details.
 
 | Priority | Action | Effect |
 | --- | --- | --- |
-| Use the API correctly | Deep pipelines + `execute_worker_pipelines` / `execute_batch` | Overlap Workers inside one process; concurrent ≈ sequential on loopback at deep pipelines, more stable under multi-Worker load ([Perl re-bench](../../benchmark-results-perl-0.1.0-20260720-170225/analysis.md)) |
+| Use the API correctly | Pipelines + `execute_worker_pipelines` / `execute_batch` | Amortize syscalls and overlap independent Workers; select depth from throughput and tail latency |
 | Production scale | One client per Hypnotoad/prefork worker process; no shared ithreads | Parallelism = N processes |
-| Later | Mojolicious / `IO::Async` / AnyEvent adapter | Raises web-app throughput by not blocking the reactor |
-| Optional | XS on encode/decode/FNV | Largest remaining SDK-side leap; FFI around the C++ client is out of design |
-| Secondary | Fewer response hashrefs, less FNV/`substr` copying | Typically single-digit % |
-| Like other SDKs | `connections_per_worker` only after measure; p50/p95 in suite 0.2 | Locate time before changing connection shape |
+| Profile first | Allocation/copy counts, parser/buffer work, `IO::Select`, syscalls | Locate CPU and waiting time before choosing a technique |
+| Pure Perl | Flatten internal metadata/results, avoid eager hashes/copies, reuse buffers where ownership permits | Reduce interpreter and allocator work without packaging cost |
+| Optional native kernel | Narrow XS codec/routing path, only if the profile is dominated there | Trade packaging complexity for measured CPU reduction |
+| Concurrency candidates | Event-loop adapter or `connections_per_worker`, after workload evidence | Improve application or hot-Worker concurrency; not automatically single-pipeline speed |
 
-Production scale: processes plus pipelines/overlap, then an event loop. Microbench gap: XS on
-framing.
+The performance mindset is empirical: preserve semantics, change one cost centre, and rerun the same
+validated workload. XS is one possible outcome of that process, not the starting assumption.
 
 ## Product claim
 

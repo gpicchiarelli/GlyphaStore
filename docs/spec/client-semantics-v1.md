@@ -1,7 +1,7 @@
 Status: normative for official GlyphaStore TCP clients
-Applies to: wire protocol v2 clients (C++, Python, Perl, Go; Ruby when official)
+Applies to: wire protocol v2 clients (C++, Python, Perl, Go, Erlang, Ruby)
 Owner: networking maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-28
 
 # Client semantics v1 — errors, retry, and timeouts
 
@@ -163,9 +163,10 @@ acknowledgements in v2.
 
 ### 6.3 Application cancellation (async runtimes)
 
-Python `AsyncClient` (and future async SDKs): if the awaiting task is cancelled, the implementation
+Python `AsyncClient` and Ruby `AsyncClient`: if the awaiting task is cancelled, the implementation
 must poison/reset the Worker connection and not reuse buffered bytes for another logical request.
-Outcome classification for in-flight mutations follows §6.1 using `bytes_sent`.
+Any future async SDK has the same obligation. Outcome classification for in-flight mutations
+follows §6.1 using `bytes_sent`.
 
 ### 6.4 Connect timeout
 
@@ -181,7 +182,8 @@ Official clients may accept an optional per-call request timeout that **override
 - Python: `timeout=0.05`
 - Perl: `timeout => 0.05`
 - Go: `CallOptions{Timeout: 50 * time.Millisecond}`
-- Ruby (planned): `timeout:` keyword / options — see [Ruby SDK roadmap](../architecture/ruby-sdk-roadmap.md)
+- Ruby: `timeout:` keyword
+- Erlang: timeout option map
 
 Rules:
 

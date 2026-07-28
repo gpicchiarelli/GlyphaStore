@@ -161,6 +161,9 @@ below has automated evidence. A design document or implementation alone does not
   remains unsupported. Hostile public bind still wants operator CRL configuration, multi-tenant
   Phase 8, and physical E3 honesty. Runbook:
   [secure-profile-certs.md](operations/secure-profile-certs.md).
+  **Open compatibility gap:** `--secure-profile` activates keyed Worker routing; only the C++ client
+  currently parses that extended `INIT` identity. Other SDKs fail closed until the shared keyed
+  routing work lands.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.

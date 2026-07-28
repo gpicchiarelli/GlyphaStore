@@ -102,16 +102,22 @@ For `durable-periodic` (and periodic batch fields shared with group limits):
 | `--group-max-bytes` | 4 MiB / 64 KiB | batch byte limit |
 | `--group-max-wait-ms` | 1000 / 10 | batch close wait |
 
-For `durable-group`, `--durable-group-concurrency` (default 4) bounds strict-group producers per
-Worker.
+For 0.1.0 every shard has exactly one Writer. The former `--durable-group-concurrency` setting has
+been removed: group aggregation is a Writer-owned policy, never a way to create competing shard
+mutators.
+
+The Writer drains up to `group-max-records` from its bounded SPSC lane. It waits up to the configured
+deadline to satisfy `min-records`, then uses only a short bounded burst-coalescing window. All staged
+records share the commit boundary and are published before their completions become visible to the
+Reader/Reactor.
 
 ### Admission and overload bounds
 
 | Flag | Default | Purpose |
 |---|---|---|
-| `--durable-mutation-queue-capacity` | 256 | admitted mutations per Worker |
-| `--durable-mutation-queue-bytes` | 16 MiB | owned mutation bytes per Worker |
-| `--durable-mutation-queue-wait-ms` | 1000 | expire queued work before Store entry (`0` disables) |
+| `--durable-mutation-queue-capacity` | 256 | admitted mutations per ShardPair |
+| `--durable-mutation-queue-bytes` | 16 MiB | owned mutation bytes per ShardPair |
+| `--durable-mutation-queue-wait-ms` | 0 | optional pre-Store expiry (`0` disables) |
 
 When limits or maintenance emergency are hit, clients see `OVERLOADED` — treat as **not committed**
 without application reconciliation ([client semantics v1 §5](../spec/client-semantics-v1.md)).

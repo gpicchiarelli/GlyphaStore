@@ -21,8 +21,7 @@ class ServerBuilder final {
     [[nodiscard]] auto build() -> Result<ServerRuntime>;
 
     [[nodiscard]] auto create_reactors(Store& store, ConnectionHandoffMesh& mesh,
-                                       DiskReadExecutor& disk_reads,
-                                       DurableMutationExecutor* durable_mutations,
+                                       DiskReadExecutor& disk_reads, PairWriterPool& pair_writers,
                                        ServerLifecycleProbes probes)
         -> Result<std::vector<std::unique_ptr<Reactor>>>;
 

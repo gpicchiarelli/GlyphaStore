@@ -65,18 +65,20 @@ namespace {
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener cleartext_listener,
                  TcpListener tls_listener, UnixListener unix_listener, Poller poller, Wakeup wakeup,
                  Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                 DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
+                 PairWriterPool& pair_writers, ServerLifecycleProbes lifecycle_probes,
                  std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse,
                  std::shared_ptr<SecurityAudit> security_audit)
     : config_(std::move(config)), executor_id_(executor_id), listener_(std::move(cleartext_listener)),
       tls_listener_(std::move(tls_listener)), unix_listener_(std::move(unix_listener)),
       poller_(std::move(poller)), wakeup_(std::move(wakeup)), store_(store),
       worker_routing_(detail::StoreAccess::worker_routing(store)), mesh_(mesh), disk_reads_(disk_reads),
-      durable_mutations_(durable_mutations), lifecycle_probes_(lifecycle_probes), tls_(std::move(tls)),
+      pair_writers_(pair_writers), lifecycle_probes_(lifecycle_probes), tls_(std::move(tls)),
       abuse_(std::move(abuse)), security_audit_(std::move(security_audit)),
       disk_read_completions_(config_.disk_read_queue_capacity),
-      durable_mutation_completions_(config_.durable_mutation_queue_capacity),
+      mutation_completions_(config_.durable_mutation_queue_capacity),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
+    durable_store_ = detail::StoreAccess::is_durable(store_);
+    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
     free_slots_.reserve(config_.maximum_connections);
     for (std::size_t slot = config_.maximum_connections; slot > 0; --slot) {
         free_slots_.push_back(static_cast<std::uint32_t>(slot - 1U));
@@ -86,7 +88,7 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
 auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
                      TcpListener cleartext_listener, TcpListener tls_listener, UnixListener unix_listener,
                      Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-                     DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
+                     PairWriterPool& pair_writers, ServerLifecycleProbes lifecycle_probes,
                      std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse,
                      std::shared_ptr<SecurityAudit> security_audit) -> Result<std::unique_ptr<Reactor>> {
     if (executor_id >= mesh.size() || executor_id >= store.worker_count()) {
@@ -112,7 +114,7 @@ auto Reactor::create(const ReactorConfig& config, const std::size_t executor_id,
     }
     auto reactor = std::unique_ptr<Reactor>(new Reactor(
         config, executor_id, std::move(cleartext_listener), std::move(tls_listener), std::move(unix_listener),
-        std::move(*poller), std::move(*wakeup), store, mesh, disk_reads, durable_mutations, lifecycle_probes,
+        std::move(*poller), std::move(*wakeup), store, mesh, disk_reads, pair_writers, lifecycle_probes,
         std::move(tls), std::move(abuse), std::move(security_audit)));
     if (reactor->listener_.descriptor() >= 0) {
         if (auto added =
@@ -743,7 +745,27 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (cached_now_ns == 0) {
             cached_now_ns = current_time_ns();
         }
-        auto record = detail::StoreAccess::prepare_get_owned(store_, executor_id_, key, cached_now_ns);
+        if (!local_read_generation_) {
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        if (!durable_store_) {
+            auto record = local_read_generation_->get(key, cached_now_ns);
+            if (!record) {
+                response.status = response_status(record.error());
+            } else {
+                owned_response = std::move(*record);
+                response.value = owned_response.bytes;
+            }
+            break;
+        }
+        auto published = local_read_generation_->prepare_durable(key);
+        if (!published) {
+            response.status = response_status(published.error());
+            break;
+        }
+        auto record = detail::StoreAccess::prepare_published_durable_get(
+            store_, executor_id_, std::move(*published), cached_now_ns);
         if (!record) {
             response.status = response_status(record.error());
         } else if (record->value) {
@@ -790,144 +812,119 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         }
         break;
     }
-    case RequestOpcode::put:
-        if (detail::StoreAccess::is_durable(store_)) {
-            auto* current = connection(token);
-            if (current == nullptr) {
-                return {};
-            }
-            if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
-                if (durable_mutations_) {
-                    durable_mutations_->note_rejected(executor_id_);
-                }
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            if (durable_mutations_ == nullptr ||
-                durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
-                if (durable_mutations_) {
-                    durable_mutations_->note_rejected(executor_id_);
-                }
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            if (request.key.size() > config_.durable_mutation_queue_bytes ||
-                request.value.size() > config_.durable_mutation_queue_bytes - request.key.size()) {
-                durable_mutations_->note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            try {
-                DurableMutationTask task{
-                    .connection = token,
-                    .request_id = request.request_id,
-                    .worker_index = executor_id_,
-                    .kind = DurableMutationKind::put,
-                    .key = std::string{key_string},
-                    .key_hash = key_hash,
-                    .value = std::vector<std::byte>{request.value.begin(), request.value.end()},
-                    .expire_at_ns = request.expire_at_ns,
-                    .completions = &durable_mutation_completions_,
-                    .wakeup = &wakeup_,
-                };
-                task.admission_bytes =
-                    sizeof(DurableMutationTask) + task.key.capacity() + task.value.capacity();
-                if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
-                    durable_mutation_bytes_outstanding_ >
-                        config_.durable_mutation_queue_bytes - task.admission_bytes) {
-                    durable_mutations_->note_rejected(executor_id_);
-                    response.status = ResponseStatus::overloaded;
-                    break;
-                }
-                const auto admission_bytes = task.admission_bytes;
-                ++durable_mutations_outstanding_;
-                durable_mutation_bytes_outstanding_ += admission_bytes;
-                if (!durable_mutations_->try_submit(std::move(task))) {
-                    --durable_mutations_outstanding_;
-                    durable_mutation_bytes_outstanding_ -= admission_bytes;
-                    response.status = ResponseStatus::overloaded;
-                    break;
-                }
-            } catch (const std::bad_alloc&) {
-                durable_mutations_->note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            current->request_in_flight = true;
-            return update_connection_interest(token);
+    case RequestOpcode::put: {
+        auto* current = connection(token);
+        if (current == nullptr) {
+            return {};
         }
-        if (auto stored =
-                detail::StoreAccess::put(store_, executor_id_, key, request.value, request.expire_at_ns);
-            !stored) {
-            response.status = response_status(stored.error());
+        if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
         }
-        break;
-    case RequestOpcode::erase:
-        if (detail::StoreAccess::is_durable(store_)) {
-            auto* current = connection(token);
-            if (current == nullptr) {
-                return {};
-            }
-            if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
-                if (durable_mutations_) {
-                    durable_mutations_->note_rejected(executor_id_);
-                }
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            if (durable_mutations_ == nullptr ||
-                durable_mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
-                if (durable_mutations_) {
-                    durable_mutations_->note_rejected(executor_id_);
-                }
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            if (request.key.size() > config_.durable_mutation_queue_bytes) {
-                durable_mutations_->note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            try {
-                DurableMutationTask task{
-                    .connection = token,
-                    .request_id = request.request_id,
-                    .worker_index = executor_id_,
-                    .kind = DurableMutationKind::erase,
-                    .key = std::string{key_string},
-                    .key_hash = key_hash,
-                    .completions = &durable_mutation_completions_,
-                    .wakeup = &wakeup_,
-                };
-                task.admission_bytes = sizeof(DurableMutationTask) + task.key.capacity();
-                if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
-                    durable_mutation_bytes_outstanding_ >
-                        config_.durable_mutation_queue_bytes - task.admission_bytes) {
-                    durable_mutations_->note_rejected(executor_id_);
-                    response.status = ResponseStatus::overloaded;
-                    break;
-                }
-                const auto admission_bytes = task.admission_bytes;
-                ++durable_mutations_outstanding_;
-                durable_mutation_bytes_outstanding_ += admission_bytes;
-                if (!durable_mutations_->try_submit(std::move(task))) {
-                    --durable_mutations_outstanding_;
-                    durable_mutation_bytes_outstanding_ -= admission_bytes;
-                    response.status = ResponseStatus::overloaded;
-                    break;
-                }
-            } catch (const std::bad_alloc&) {
-                durable_mutations_->note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            current->request_in_flight = true;
-            return update_connection_interest(token);
+        if (mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
         }
-        if (auto erased = detail::StoreAccess::erase(store_, executor_id_, key); !erased) {
-            response.status = response_status(erased.error());
+        if (request.key.size() > config_.durable_mutation_queue_bytes ||
+            request.value.size() > config_.durable_mutation_queue_bytes - request.key.size()) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
         }
-        break;
+        try {
+            MutationTask task{
+                .connection = token,
+                .request_id = request.request_id,
+                .worker_index = executor_id_,
+                .kind = MutationKind::put,
+                .key = std::string{key_string},
+                .key_hash = key_hash,
+                .value = std::vector<std::byte>{request.value.begin(), request.value.end()},
+                .expire_at_ns = request.expire_at_ns,
+                .completions = &mutation_completions_,
+                .wakeup = &wakeup_,
+            };
+            task.admission_bytes = sizeof(MutationTask) + task.key.capacity() + task.value.capacity();
+            if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
+                mutation_bytes_outstanding_ > config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                pair_writers_.note_rejected(executor_id_);
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            const auto admission_bytes = task.admission_bytes;
+            ++mutations_outstanding_;
+            mutation_bytes_outstanding_ += admission_bytes;
+            if (!pair_writers_.try_submit(std::move(task))) {
+                --mutations_outstanding_;
+                mutation_bytes_outstanding_ -= admission_bytes;
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+        } catch (const std::bad_alloc&) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        current->request_in_flight = true;
+        return update_connection_interest(token);
+    } break;
+    case RequestOpcode::erase: {
+        auto* current = connection(token);
+        if (current == nullptr) {
+            return {};
+        }
+        if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        if (mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        if (request.key.size() > config_.durable_mutation_queue_bytes) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        try {
+            MutationTask task{
+                .connection = token,
+                .request_id = request.request_id,
+                .worker_index = executor_id_,
+                .kind = MutationKind::erase,
+                .key = std::string{key_string},
+                .key_hash = key_hash,
+                .completions = &mutation_completions_,
+                .wakeup = &wakeup_,
+            };
+            task.admission_bytes = sizeof(MutationTask) + task.key.capacity();
+            if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
+                mutation_bytes_outstanding_ > config_.durable_mutation_queue_bytes - task.admission_bytes) {
+                pair_writers_.note_rejected(executor_id_);
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+            const auto admission_bytes = task.admission_bytes;
+            ++mutations_outstanding_;
+            mutation_bytes_outstanding_ += admission_bytes;
+            if (!pair_writers_.try_submit(std::move(task))) {
+                --mutations_outstanding_;
+                mutation_bytes_outstanding_ -= admission_bytes;
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+        } catch (const std::bad_alloc&) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        current->request_in_flight = true;
+        return update_connection_interest(token);
+    } break;
     case RequestOpcode::init:
     case RequestOpcode::ping:
     case RequestOpcode::health:
@@ -947,7 +944,7 @@ auto Reactor::process_messages() -> Status {
     if (auto completed = process_disk_read_completions(); !completed) {
         return completed;
     }
-    if (auto completed = process_durable_mutation_completions(); !completed) {
+    if (auto completed = process_mutation_completions(); !completed) {
         return completed;
     }
     return process_handoffs();
@@ -1001,22 +998,29 @@ auto Reactor::process_disk_read_completions() -> Status {
     return {};
 }
 
-auto Reactor::process_durable_mutation_completions() -> Status {
-    while (auto completion = durable_mutation_completions_.try_pop()) {
-        if (durable_mutations_outstanding_ == 0) {
-            return fail(ErrorCode::corrupted_data, "durable-mutation completion accounting underflow");
+auto Reactor::process_mutation_completions() -> Status {
+    while (auto completion = mutation_completions_.try_pop()) {
+        // Writer publishes with release before enqueueing the completion. Load
+        // with acquire before allowing the same connection to parse a following
+        // GET, establishing acknowledged PUT -> visible GET.
+        local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
+        if (!local_read_generation_) {
+            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
         }
-        --durable_mutations_outstanding_;
-        if (completion->admission_bytes > durable_mutation_bytes_outstanding_) {
-            return fail(ErrorCode::corrupted_data, "durable-mutation byte accounting underflow");
+        if (mutations_outstanding_ == 0) {
+            return fail(ErrorCode::corrupted_data, "mutation completion accounting underflow");
         }
-        durable_mutation_bytes_outstanding_ -= completion->admission_bytes;
+        --mutations_outstanding_;
+        if (completion->admission_bytes > mutation_bytes_outstanding_) {
+            return fail(ErrorCode::corrupted_data, "mutation byte accounting underflow");
+        }
+        mutation_bytes_outstanding_ -= completion->admission_bytes;
         auto* current = connection(completion->connection);
         if (current == nullptr) {
             continue;
         }
         if (!current->request_in_flight || current->read_cancellation) {
-            return fail(ErrorCode::corrupted_data, "unexpected durable-mutation completion");
+            return fail(ErrorCode::corrupted_data, "unexpected mutation completion");
         }
         current->request_in_flight = false;
         current->in_flight_since = {};
@@ -1216,6 +1220,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
+    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
+    if (!local_read_generation_) {
+        return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+    }
     const auto now = std::chrono::steady_clock::now();
     enforce_timeouts(now);
     if (auto messages = process_messages(); !messages) {

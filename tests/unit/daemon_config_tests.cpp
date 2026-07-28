@@ -80,7 +80,19 @@ GLYPHA_TEST("daemon config CLI keeps workers distinct from maximum connections")
     const std::array invalid_workers{"glyphastored", "--workers", "257"};
     const auto invalid = parse(invalid_workers);
     GLYPHA_REQUIRE(!invalid.has_value());
-    GLYPHA_REQUIRE(invalid.error().message.find("--workers") != std::string::npos);
+    GLYPHA_REQUIRE(invalid.error().message.find("--shard-pairs") != std::string::npos);
+}
+
+GLYPHA_TEST("daemon config canonicalizes shard pairs and the workers compatibility alias") {
+    const std::array canonical{"glyphastored", "--shard-pairs", "6"};
+    const auto parsed = parse(canonical);
+    GLYPHA_REQUIRE(parsed.has_value());
+    GLYPHA_REQUIRE(parsed->server.worker_count == 6);
+
+    const std::array ambiguous{"glyphastored", "--workers", "2", "--shard-pairs", "2"};
+    const auto rejected = parse(ambiguous);
+    GLYPHA_REQUIRE(!rejected.has_value());
+    GLYPHA_REQUIRE(rejected.error().message.find("same setting") != std::string::npos);
 }
 
 GLYPHA_TEST("daemon config file rejects unknown keys and duplicates") {
@@ -339,7 +351,7 @@ GLYPHA_TEST("daemon dump-config prints resolved effective settings") {
     GLYPHA_REQUIRE(dump.starts_with("GlyphaStore/config\n"));
     GLYPHA_REQUIRE(dump.find("profile=\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("port=3333\n") != std::string::npos);
-    GLYPHA_REQUIRE(dump.find("workers=2\n") != std::string::npos);
+    GLYPHA_REQUIRE(dump.find("shard-pairs=2\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("quiet=true\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("log-format=human\n") != std::string::npos);
     GLYPHA_REQUIRE(dump.find("bind=127.0.0.1\n") != std::string::npos);

@@ -3,7 +3,7 @@
 Status: normative for the current experimental C++ client
 Applies to: `GlyphaStore::client`, wire protocol v2
 Owner: networking maintainers
-Last reviewed: 2026-07-20
+Last reviewed: 2026-07-28
 
 ## Purpose and ownership
 
@@ -12,12 +12,12 @@ from the embedded Store and server runtime: applications link `GlyphaStore::clie
 client links the small `GlyphaStore::wire` codec library and (when TLS is enabled at build time)
 `GlyphaStore::tls_layer`.
 
-`Client::connect()` performs `INIT`, records the server's Worker count and routing epoch, then opens
-and binds exactly one TCP connection for every Worker. The client routes the complete binary key
-with protocol-v2 FNV-1a. A mutex serializes traffic on each connection; calls routed to different
-Workers can execute concurrently. A `Client` may therefore be shared between threads, but a single
-Worker has either one synchronous request or one ordered pipeline in flight through one client
-instance.
+`Client::connect()` performs `INIT`, records the server's Worker count, routing epoch and routing
+identity, then opens and binds exactly one TCP connection for every Worker. Plain `GlyphaStore/2`
+selects protocol-v2 FNV-1a; the extended identity selects keyed SipHash-2-4 as specified by wire v2
+and ADR 0030. A mutex serializes traffic on each connection; calls routed to different Workers can
+execute concurrently. A `Client` may therefore be shared between threads, but a single Worker has
+either one synchronous request or one ordered pipeline in flight through one client instance.
 
 The API is synchronous and supports explicitly bounded pipelines. It deliberately does not promise
 asynchronous completion, connection pooling beyond one connection per Worker, authentication tokens,

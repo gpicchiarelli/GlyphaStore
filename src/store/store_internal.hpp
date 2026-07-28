@@ -23,10 +23,32 @@ namespace glyphastore::detail {
 // never installed and is not part of the supported C++ API.
 class StoreAccess final {
   public:
+    enum class MutationOperation : std::uint8_t { put, erase };
+
+    struct DurableMutationView final {
+        MutationOperation operation{};
+        HashedKey key;
+        std::span<const std::byte> value;
+        std::uint64_t expire_at_ns{};
+    };
+
+    struct DurableWriterBatchResult final {
+        DurableMutationResult mutation;
+        bool conflict_retried{};
+    };
+
+    struct VolatileMutationPublication final {
+        RecordRef record;
+        SegmentPtr segment;
+        Opcode opcode{Opcode::put};
+    };
+
     struct PreparedGet final {
         std::optional<OwnedValue> value;
         std::optional<PreparedColdRead> cold;
     };
+
+    using DurablePublishedRead = DurableRuntimeCatalog::PublishedReadRecord;
 
     [[nodiscard]] static auto get_owned(Store& store, std::size_t worker_index, const HashedKey& key,
                                         std::uint64_t now_ns) -> Result<OwnedValue>;
@@ -38,9 +60,23 @@ class StoreAccess final {
                                                  PreparedColdRead read,
                                                  const std::atomic_bool* cancelled = nullptr)
         -> Result<OwnedValue>;
+    [[nodiscard]] static auto snapshot_durable_reads(Store& store, std::size_t worker_index)
+        -> Result<std::vector<DurablePublishedRead>>;
+    [[nodiscard]] static auto capture_durable_read(Store& store, std::size_t worker_index,
+                                                   const HashedKey& key) -> Result<DurablePublishedRead>;
+    [[nodiscard]] static auto prepare_published_durable_get(Store& store, std::size_t worker_index,
+                                                            DurablePublishedRead read, std::uint64_t now_ns)
+        -> Result<PreparedGet>;
     [[nodiscard]] static auto put(Store& store, std::size_t worker_index, const HashedKey& key,
                                   std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] static auto erase(Store& store, std::size_t worker_index, const HashedKey& key) -> Status;
+    [[nodiscard]] static auto put_volatile_published(Store& store, std::size_t worker_index,
+                                                     const HashedKey& key, std::span<const std::byte> value,
+                                                     std::uint64_t expire_at_ns)
+        -> Result<VolatileMutationPublication>;
+    [[nodiscard]] static auto erase_volatile_published(Store& store, std::size_t worker_index,
+                                                       const HashedKey& key)
+        -> Result<VolatileMutationPublication>;
     // Durable daemon path retaining the kernel's committed/not-committed/
     // indeterminate classification. This is required for a bounded internal
     // retry without inferring safety from a portable ErrorCode alone.
@@ -49,6 +85,11 @@ class StoreAccess final {
         -> DurableMutationResult;
     [[nodiscard]] static auto erase_durable(Store& store, std::size_t worker_index, const HashedKey& key)
         -> DurableMutationResult;
+    [[nodiscard]] static auto durable_writer_batch_config(const Store& store) noexcept
+        -> std::optional<DurableGroupConfig>;
+    [[nodiscard]] static auto mutate_durable_batch(Store& store, std::size_t worker_index,
+                                                   std::span<const DurableMutationView> mutations)
+        -> std::vector<DurableWriterBatchResult>;
     // ErrorCode alone cannot authorize replay: committed and indeterminate
     // results are never retryable even if they carry sequence_conflict.
     [[nodiscard]] static auto should_retry_durable_mutation(const DurableMutationResult& result,
@@ -64,6 +105,7 @@ class StoreAccess final {
     [[nodiscard]] static auto maintenance_mutations_rejected(const Store& store) noexcept -> bool;
     // True while the Store accepts new operations and any durable catalog remains healthy.
     [[nodiscard]] static auto operational(const Store& store) noexcept -> bool;
+    static void mark_fail_closed(Store& store) noexcept;
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;
     [[nodiscard]] static auto segments(const Store& store) -> std::vector<SegmentPtr>;

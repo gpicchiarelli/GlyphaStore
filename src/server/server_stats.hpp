@@ -3,7 +3,7 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/server/abuse_limits.hpp"
-#include "glyphastore/server/durable_mutation_executor.hpp"
+#include "glyphastore/server/pair_writer.hpp"
 #include "glyphastore/server/security_audit.hpp"
 #include "glyphastore/store/maintenance_types.hpp"
 
@@ -28,7 +28,7 @@ struct ServerStatsSnapshot final {
     bool store_operational{};
     std::vector<ExecutorStats> executors;
     MaintenanceSnapshot maintenance;
-    std::vector<DurableMutationWorkerStats> mutations;
+    std::vector<PairWriterStats> mutations;
     std::vector<DurableBatchWorkerStats> batches;
     AbuseStats abuse{};
     SecurityAuditStats security_audit{};

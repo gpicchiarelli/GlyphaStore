@@ -28,6 +28,7 @@ enum OptionId : std::size_t {
     dump_config,
     bind,
     port,
+    shard_pairs,
     maximum_connections,
     workers,
     handoff_capacity,
@@ -36,7 +37,6 @@ enum OptionId : std::size_t {
     maximum_output_bytes,
     durable_mutation_queue_capacity,
     durable_mutation_queue_bytes,
-    durable_group_mutation_concurrency,
     durable_mutation_queue_wait,
     shutdown_drain,
     reuse_port,
@@ -105,8 +105,10 @@ constexpr std::array kOptionSpecs{
                     "cleartext with no authentication — trusted networks only)"},
     cli::OptionSpec{port, "port", 'p', cli::OptionArity::required, "PORT",
                     "Listen on PORT; 0 selects an ephemeral port (default: 7379)"},
+    cli::OptionSpec{shard_pairs, "shard-pairs", '\0', cli::OptionArity::required, "COUNT",
+                    "Run COUNT paired Reader/Writer shards (default: 1)"},
     cli::OptionSpec{workers, "workers", 'w', cli::OptionArity::required, "COUNT",
-                    "Run COUNT Store workers and reactor executors (default: 1)"},
+                    "Deprecated alias for --shard-pairs"},
     cli::OptionSpec{maximum_connections, "max-connections", '\0', cli::OptionArity::required, "COUNT",
                     "Limit concurrent connections (default: 4096)"},
     cli::OptionSpec{handoff_capacity, "handoff-capacity", '\0', cli::OptionArity::required, "COUNT",
@@ -119,16 +121,13 @@ constexpr std::array kOptionSpecs{
                     "Limit buffered output per connection (default: 4MiB)"},
     cli::OptionSpec{durable_mutation_queue_capacity, "durable-mutation-queue-capacity", '\0',
                     cli::OptionArity::required, "COUNT",
-                    "Bound admitted durable mutations per Worker (default: 256)"},
+                    "Bound admitted mutations per ShardPair (default: 256)"},
     cli::OptionSpec{durable_mutation_queue_bytes, "durable-mutation-queue-bytes", '\0',
                     cli::OptionArity::required, "BYTES",
-                    "Bound owned durable mutation bytes per Worker (default: 16MiB)"},
-    cli::OptionSpec{durable_group_mutation_concurrency, "durable-group-concurrency", '\0',
-                    cli::OptionArity::required, "COUNT",
-                    "Run up to COUNT strict-group producers per Worker (default: 4)"},
+                    "Bound owned mutation bytes per ShardPair (default: 16MiB)"},
     cli::OptionSpec{durable_mutation_queue_wait, "durable-mutation-queue-wait-ms", '\0',
                     cli::OptionArity::required, "MILLISECONDS",
-                    "Expire queued mutations after this wait; 0 disables (default: 1000)"},
+                    "Expire queued mutations after this wait; 0 disables (default: 0)"},
     cli::OptionSpec{shutdown_drain, "shutdown-drain-ms", '\0', cli::OptionArity::required, "MILLISECONDS",
                     "Bound connection and durable mutation drain after stop (default: 30000; 0 "
                     "unbounded). Stop accepting, close idle connections, expire queued pre-Store "
@@ -351,7 +350,7 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
         return SettingMap{
             {"storage-mode", "durable-periodic"},
             {"maintenance-mode", "background"},
-            {"workers", "1"},
+            {"shard-pairs", "1"},
             {"max-store-bytes", "1073741824"},
             {"reserved-free-bytes", "67108864"},
             {"max-segments", "32"},
@@ -400,10 +399,11 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
         if (option.id == help || option.id == version || option.id == config || option.id == dump_config) {
             continue;
         }
-        if (spec->arity == cli::OptionArity::none) {
-            settings.emplace(std::string{spec->long_name}, "true");
-        } else {
-            settings.emplace(std::string{spec->long_name}, std::string{option.value});
+        const auto key = option.id == workers ? std::string{"shard-pairs"} : std::string{spec->long_name};
+        const auto value =
+            spec->arity == cli::OptionArity::none ? std::string{"true"} : std::string{option.value};
+        if (!settings.emplace(key, value).second) {
+            return fail(ErrorCode::invalid_argument, "--workers and --shard-pairs name the same setting");
         }
     }
     if (settings.contains("reuse-port") && settings.contains("no-reuse-port")) {
@@ -517,8 +517,8 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     options.server.port = static_cast<std::uint16_t>(parsed_port);
 
     constexpr auto maximum_size = std::numeric_limits<std::size_t>::max();
-    if (auto status =
-            set_size_option(workers, "--workers", 1, kMaximumWorkerCount, options.server.worker_count);
+    if (auto status = set_size_option(shard_pairs, "--shard-pairs", 1, kMaximumWorkerCount,
+                                      options.server.worker_count);
         !status) {
         return unexpected(status.error());
     }
@@ -555,11 +555,6 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
     if (auto status = set_byte_size_option(durable_mutation_queue_bytes, "--durable-mutation-queue-bytes", 1,
                                            maximum_size, options.server.durable_mutation_queue_bytes);
-        !status) {
-        return unexpected(status.error());
-    }
-    if (auto status = set_size_option(durable_group_mutation_concurrency, "--durable-group-concurrency", 1,
-                                      32, options.server.durable_group_mutation_concurrency);
         !status) {
         return unexpected(status.error());
     }
@@ -1038,9 +1033,10 @@ void apply_layer(SettingMap& destination, const SettingMap& layer) {
     if (!normalized) {
         return unexpected(normalized.error());
     }
-    if (!settings.emplace(std::string{key}, std::move(*normalized)).second) {
+    const auto canonical_key = key == "workers" ? std::string{"shard-pairs"} : std::string{key};
+    if (!settings.emplace(canonical_key, std::move(*normalized)).second) {
         return fail(ErrorCode::invalid_argument,
-                    std::string{where} + " duplicates setting '" + std::string{key} + "'");
+                    std::string{where} + " duplicates setting '" + canonical_key + "'");
     }
     return {};
 }
@@ -1107,7 +1103,7 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += options.server.bind_address;
     out += "\nport=";
     out += std::to_string(options.server.port);
-    out += "\nworkers=";
+    out += "\nshard-pairs=";
     out += std::to_string(options.server.worker_count);
     out += "\nmax-connections=";
     out += std::to_string(options.server.maximum_connections);
@@ -1123,8 +1119,6 @@ auto format_daemon_config_dump(const DaemonOptions& options) -> std::string {
     out += std::to_string(options.server.durable_mutation_queue_capacity);
     out += "\ndurable-mutation-queue-bytes=";
     out += std::to_string(options.server.durable_mutation_queue_bytes);
-    out += "\ndurable-group-concurrency=";
-    out += std::to_string(options.server.durable_group_mutation_concurrency);
     out += "\ndurable-mutation-queue-wait-ms=";
     out += std::to_string(options.server.durable_mutation_queue_wait_ms);
     out += "\nshutdown-drain-ms=";

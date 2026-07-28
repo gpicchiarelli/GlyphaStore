@@ -1,8 +1,8 @@
 # ADR 0031: shard a coppie Reader–Writer
 
-- Status: proposed
+- Status: accepted
 - Date: 2026-07-28
-- Deciders: storage, networking, performance e reliability maintainers
+- Deciders: project owner, storage, networking, performance e reliability maintainers
 - Applies to: nuovo runtime paired; persistence v1 e wire protocol v2 restano invariati
 - Amends: ADR 0005, 0012, 0016, 0018, 0023 e 0030
 - Supersedes: il modello Worker-affine corrente solo dopo il completamento dei gate di migrazione
@@ -357,10 +357,78 @@ nessuna perdita in shutdown. Il solo throughput medio non chiude il gate.
 5. **Compaction/reclamation:** QSBR, retirement, merge incrementale e Manifest transition.
 6. **Reader optimization:** `ImmutableReadIndex`, SIMD, scatter/gather, get-into, batch lookup e PGO.
 
-Il runtime corrente resta il default fino a quando la fase corrispondente supera A/B e correctness
-gate. Non esiste una modalità ibrida in cui una stessa chiave sia servita da entrambi i runtime.
-L'attivazione richiede una config/versione runtime esplicita; il rollback riapre gli stessi byte v1
-con il runtime precedente. Cambiare pair count resta migrazione offline (ADR 0024).
+Per GlyphaStore 0.1.0 il runtime paired è il solo modello di destinazione e diventa default non
+appena il primo gate produttivo conserva la suite wire/persistence. Il runtime precedente resta
+temporaneamente nel repository come oracle A/B, recovery compatibility harness e sorgente di
+componenti già verificati; non riceve nuove scelte architetturali e non costituisce un secondo
+modello supportato per la stessa chiave.
+
+La promozione avviene per tranche sempre compilabili: Writer lane SPSC produttiva, publication GET,
+durability parity, quindi rimozione del routing legacy. Durante la transizione una tranche può
+riusare Store/persistence v1 dietro il Writer paired, ma non può eseguire una mutazione direttamente
+nel Reader. Nessuna tranche può cambiare i byte v1 o ridurre recovery, shutdown e outcome
+classification. Cambiare pair count resta migrazione offline (ADR 0024).
+
+Il primo gate TCP del 2026-07-28 aveva mostrato una regressione sulle mutazioni group piccole perché
+il Writer seriale chiudeva batch da un record. Il batching Writer-owned successivo ha ripristinato
+batch multi-record senza reintrodurre mutatori concorrenti; throughput e tail latency restano gate,
+non una ragione per continuare a evolvere il runtime precedente.
+
+### Stato della migrazione 0.1.0
+
+Il primo taglio produttivo instrada ogni `PUT` e `ERASE`, volatile o durevole, dal
+Reader/Reactor all'unico Writer dello shard. Mutation e completion lane sono SPSC bounded,
+preallocate e cache-line separated; il normale percorso di coda non usa mutex, condition variable o
+CAS. Il gate di admission atomico linearizza `submit` con `stop`, quindi il Writer non può uscire fra
+una verifica di coda vuota e una pubblicazione concorrente. `--shard-pairs` è il nome canonico;
+`--workers` resta alias. Il vecchio `--durable-group-concurrency` è stato rimosso: l'unico Writer
+per shard non è configurabile.
+
+In `durable_group` il Writer estrae un micro-batch bounded dalla SPSC, prepara tutti i Record in
+ordine FIFO e chiude un solo commit prima di pubblicare risultati e completamenti. Lo staging delle
+pubblicazioni è posseduto dal Worker, non dai frame stack dei chiamanti; un watermark di sequenza
+durevole risveglia anche i chiamanti Store concorrenti legacy senza conservare puntatori borrowed.
+`min_records` usa la deadline esplicita, mentre il burst oltre il minimo usa una finestra breve e
+bounded. Nessun ACK viene prodotto prima del commit e della publication dell'intero sottobatch.
+
+Il GET produttivo usa ora una `ReadGeneration` immutabile adottata una volta per turn: delta Swiss
+paginato copy-on-write, base read-only e massimo due lookup. Nel volatile ogni entry trattiene il pin
+esatto `RecordRef + SegmentPtr`; nel durevole trattiene `RecordRef + RuntimeSegmentGeneration`, cioè
+il file descriptor read-only della generazione precisa. La base durevole viene costruita direttamente
+dall'Index recuperato senza I/O sotto lock; ogni PUT aggiunge al delta il pin catturato dal Writer e
+ogni ERASE aggiunge un tombstone. Rotation e compaction possono ritirare i nomi di catalogo senza
+invalidare i GET già linearizzati, perché la generation conserva i vecchi descriptor fino alla
+quiescenza.
+
+Il Writer pubblica con release prima della completion; il Reader acquisisce e segnala l'epoch
+quiescente prima di processare l'ACK e gli eventuali frame successivi. Una retire list bounded applica
+backpressure prima della mutazione quando il Reader non avanza. Il lookup non prende il mutex Worker
+né `catalog_mutex`; il cold I/O avviene sul pin estratto dalla generation e non esegue più la
+relinearizzazione post-I/O sullo stato mutabile. Nel volatile non esiste `atomic<shared_ptr>` né
+refcount nel GET. Il durevole conserva transitoriamente un incremento di refcount per cold GET, perché
+il task asincrono deve sopravvivere al turn del Reactor; la rimozione richiede response/disk-read lease
+QSBR ed è ancora un gate prestazionale, non un'ambiguità di ownership.
+
+Restano P0 prima del rilascio:
+
+1. rigenerare incrementalmente la base durevole dopo compaction/rotation, così i pin dei Segment
+   ritirati non restano vivi fino al successivo restart;
+2. rendere il merge delta→base incrementale: la soglia alta evita pause frequenti ma non elimina il
+   lavoro monolitico quando la soglia viene raggiunta;
+3. sostituire gli handle `shared_ptr` per entry e le chiavi duplicate con un layout read-only compatto;
+4. promuovere disk-read/response lease QSBR e scatter/gather per eliminare refcount e copia del valore;
+5. eliminare `string`/`vector` per task con un pool di mutation slot preallocato.
+
+L'A/B macOS arm64 è riassunto in
+`docs/benchmarks/paired-production-get-2026-07-28.md`; i raw result locali sono in
+`benchmark-results/paired-shards/94aae2d-dirty/macos-arm64/`. Il GET scala meglio a quattro pair e
+migliora tutte le code misurate, ma 1-pair e PUT→GET sincrono non chiudono ancora il gate. La memoria
+resta circa 30–37% sopra il baseline nei dataset misurati; nessun risultato viene dichiarato
+production-ready sulla sola base del throughput medio.
+
+Il runtime Writer è ora esposto internamente come `PairWriterPool`; i nomi transitori
+`DurableMutationExecutor` e il relativo parametro di producer concurrency sono stati eliminati
+prima della pubblicazione 0.1.0, quindi non richiedono alias di compatibilità.
 
 ## Alternative considerate
 
@@ -383,7 +451,9 @@ riduce la sincronizzazione a publication e due SPSC. Hardware con pochi core pot
 Nessuna modifica a Manifest, Segment header, Record v1, routing seed o wire v2. `worker_count` diventa
 semanticamente `shard_pair_count` mantenendo gli owner id persistiti. Configurazioni con conteggi
 Reader/Writer differenti sono rifiutate prima del listen. API e statistiche nuove saranno aggiunte
-in modo additive finché il runtime paired non sostituirà quello corrente.
+in modo additive durante la migrazione. `--workers` resta un alias di compatibilità di
+`--shard-pairs` per tutta la serie 0.1.x, ma non rappresenta un conteggio indipendente di Reader o
+Writer.
 
 ## Verifica
 
