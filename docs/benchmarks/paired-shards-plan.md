@@ -11,6 +11,9 @@ Questo run di gate è versionato esplicitamente; gli artifact benchmark locali o
 
 Secondo gate P0: `benchmark-results/paired-shards/573f4f1-dirty/macos-m4/2026-07-28-p0-paged-delta/`.
 
+Gate directory/batching:
+`benchmark-results/paired-shards/55acedd-dirty/macos-m4/2026-07-28-persistent-directory-batching/`.
+
 ## Regole del confronto
 
 Ogni confronto usa due binari dalla stessa base sorgente: runtime corrente e runtime paired. Build,
@@ -120,8 +123,9 @@ Ordine vincolante prima dell'integrazione Reactor:
 1. P0 — storage payload stabile e `RecordView` compatto generation-pinned — completato nel
    prototipo con `StableRecord` condiviso fuori dal GET;
 2. P0 — delta senza copia cumulativa — completato con pagine immutable copy-on-write;
-3. P0 — instrumentation allocator/copy esatta — parziale: copie ingress, directory, pagine e
-   record logici sono misurati; mancano hook sull'allocator reale;
+3. P0 — instrumentation allocator/copy esatta — copie ingress, ownership directory, viste raw,
+   pagine e record logici sono misurati. PMR generalista e slab unico sono stati respinti dai gate;
+   gli hook allocator production vanno disegnati per classi di size e retention bounded;
 4. P1 — Reactor sperimentale con ownership socket e output lease QSBR;
 5. P1 — multi-pair 1/2/4/8, affinity/topologia e isolamento fra pair;
 6. P1 — TCP pipeline 1/8/32/128 e valori 64 B–256 KiB a semantica equivalente;

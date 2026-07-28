@@ -193,6 +193,80 @@ GLYPHA_TEST("paired QSBR retires generations only across Reader turn boundaries"
     GLYPHA_REQUIRE(stats.delta_pages_allocated == 512);
     GLYPHA_REQUIRE(stats.delta_pages_copied == 511);
     GLYPHA_REQUIRE(stats.delta_directory_entries_copied == 4'096);
+    GLYPHA_REQUIRE(stats.delta_page_view_entries_copied == 0);
+}
+
+GLYPHA_TEST("paired large delta copies only touched persistent directory blocks") {
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(128, 4'096);
+    GLYPHA_REQUIRE(pair.has_value());
+    for (std::uint64_t index = 0; index < 64; ++index) {
+        const auto value = std::string{"hierarchical-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index, "same-directory-page", bytes(value)) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+    (*pair)->adopt_publication();
+    const auto found = (*pair)->get("same-directory-page");
+    GLYPHA_REQUIRE(found.has_value());
+    GLYPHA_REQUIRE(text(*found) == "hierarchical-63");
+    const auto stats = (*pair)->stats();
+    GLYPHA_REQUIRE(stats.delta_pages_allocated == 64);
+    GLYPHA_REQUIRE(stats.delta_pages_copied == 63);
+    // Root: 32 handles/publication. The first publication creates an empty
+    // block; the remaining 63 copy only that block's 16 page handles.
+    GLYPHA_REQUIRE(stats.delta_directory_entries_copied == 3'056);
+    GLYPHA_REQUIRE(stats.delta_page_view_entries_copied == 64U * 512U);
+    GLYPHA_REQUIRE(stats.delta_directory_entries_copied < 64U * 512U);
+}
+
+GLYPHA_TEST("paired Writer batch policy validates bounds and supports zero-wait batch one") {
+    using glyphastore::experimental::PrototypeWriterBatchConfig;
+    GLYPHA_REQUIRE(!glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32, PrototypeWriterBatchConfig{.max_records = 0}));
+    GLYPHA_REQUIRE(!glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32,
+        PrototypeWriterBatchConfig{.max_records = 32, .max_wait = std::chrono::microseconds{1'001}}));
+
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32, PrototypeWriterBatchConfig{.max_records = 1, .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+    for (std::uint64_t index = 0; index < 4; ++index) {
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index, "batch-policy", bytes("value")) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    }
+    for (std::uint64_t index = 0; index < 4; ++index) {
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    }
+    const auto stats = (*pair)->stats();
+    GLYPHA_REQUIRE(stats.publications == 4);
+    GLYPHA_REQUIRE(stats.maximum_writer_batch_size == 1);
+    GLYPHA_REQUIRE(stats.writer_batch_deadline_closes == 0);
+}
+
+GLYPHA_TEST("paired slow-output pin delays generation retirement across Reader turns") {
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(128, 32);
+    GLYPHA_REQUIRE(pair.has_value());
+    GLYPHA_REQUIRE((*pair)->try_submit_put(1, "pinned", bytes("old")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    (*pair)->adopt_publication();
+    auto pin = (*pair)->pin_read_generation();
+    GLYPHA_REQUIRE(static_cast<bool>(pin));
+    for (std::uint64_t index = 0; index < 16; ++index) {
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index + 2U, "pinned", bytes("new")) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+    auto stats = (*pair)->stats();
+    GLYPHA_REQUIRE(stats.generation_output_pins == 1);
+    GLYPHA_REQUIRE(stats.generation_output_pin_high_watermark == 1);
+    GLYPHA_REQUIRE(stats.generation_retire_pin_blocks > 0);
+    pin.reset();
+    GLYPHA_REQUIRE((*pair)->stats().generation_output_pins == 0);
 }
 
 GLYPHA_TEST("paired volatile shutdown drains submission and closes admission") {

@@ -274,6 +274,7 @@ glyphastore_xcode_scheme(glyphastore_demo)
 include(CTest)
 if(BUILD_TESTING)
     add_executable(glyphastore_tests
+        src/experimental/paired_reactor.cpp
         src/experimental/paired_shard.cpp
         tests/test_main.cpp
         tests/unit/compaction_intent_tests.cpp
@@ -324,6 +325,7 @@ if(BUILD_TESTING)
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/persistence_recovery_tests.cpp
+        tests/integration/paired_reactor_prototype_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp
         tests/integration/server_reactor_tests.cpp
         tests/integration/store_tests.cpp
@@ -648,6 +650,25 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_paired_benchmark RELEASE ARGUMENTS
         --ops 500000 --keys 4096 --value-bytes 64 --warmup 1 --repeats 7
     )
+    add_executable(glyphastore_paired_reactor_benchmark
+        benchmarks/paired_reactor_benchmark.cpp
+        src/experimental/paired_reactor.cpp
+        src/experimental/paired_shard.cpp
+    )
+    target_link_libraries(
+        glyphastore_paired_reactor_benchmark
+        PRIVATE GlyphaStore::server GlyphaStore::client glyphastore_project_options
+    )
+    target_include_directories(glyphastore_paired_reactor_benchmark
+        PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_paired_reactor_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_paired_reactor_benchmark)
+    glyphastore_enable_hardening(glyphastore_paired_reactor_benchmark)
+    glyphastore_enable_ipo(glyphastore_paired_reactor_benchmark)
+    set_target_properties(glyphastore_paired_reactor_benchmark PROPERTIES FOLDER "Benchmarks")
     add_executable(glyphastore_compaction_benchmark
         benchmarks/compaction_benchmark.cpp
     )

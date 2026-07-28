@@ -23,6 +23,7 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 using glyphastore::experimental::PrototypeSubmitStatus;
+using glyphastore::experimental::PrototypeWriterBatchConfig;
 using glyphastore::experimental::VolatileShardPairPrototype;
 
 struct Options final {
@@ -31,6 +32,8 @@ struct Options final {
     std::size_t value_bytes{64};
     std::size_t repeats{7};
     std::size_t warmup{1};
+    std::size_t batch_records{32};
+    std::size_t batch_wait_us{2};
 };
 
 struct Material final {
@@ -71,7 +74,8 @@ struct Measurement final {
         const std::string_view argument{argv[index]};
         if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_paired_benchmark [--ops N] [--keys N] "
-                         "[--value-bytes N] [--repeats N] [--warmup N]\n";
+                         "[--value-bytes N] [--repeats N] [--warmup N] "
+                         "[--batch-records N] [--batch-wait-us N]\n";
             std::exit(0);
         }
         if (index + 1 >= argc) {
@@ -87,12 +91,18 @@ struct Measurement final {
             options.repeats = parse_size(argv[++index], argument);
         } else if (argument == "--warmup") {
             options.warmup = static_cast<std::size_t>(std::stoull(argv[++index]));
+        } else if (argument == "--batch-records") {
+            options.batch_records = parse_size(argv[++index], argument);
+        } else if (argument == "--batch-wait-us") {
+            options.batch_wait_us = static_cast<std::size_t>(std::stoull(argv[++index]));
         } else {
             throw std::invalid_argument{"unknown argument: " + std::string{argument}};
         }
     }
-    if (options.keys > options.operations || options.value_bytes > 256U * 1024U) {
-        throw std::invalid_argument{"keys must not exceed ops; value-bytes maximum is 256 KiB"};
+    if (options.keys > options.operations || options.value_bytes > 256U * 1024U ||
+        options.batch_records > 32 || options.batch_wait_us > 1'000) {
+        throw std::invalid_argument{
+            "keys must not exceed ops; value-bytes maximum is 256 KiB; invalid batch limits"};
     }
     return options;
 }
@@ -174,8 +184,12 @@ struct Measurement final {
     }
 }
 
-[[nodiscard]] auto open_pair(const Material& material) -> std::unique_ptr<VolatileShardPairPrototype> {
-    auto created = VolatileShardPairPrototype::create(material.value.size(), material.keys.size());
+[[nodiscard]] auto open_pair(const Material& material, const Options& options)
+    -> std::unique_ptr<VolatileShardPairPrototype> {
+    auto created = VolatileShardPairPrototype::create(
+        material.value.size(), material.keys.size(),
+        PrototypeWriterBatchConfig{.max_records = options.batch_records,
+                                   .max_wait = std::chrono::microseconds{options.batch_wait_us}});
     if (!created) {
         throw std::runtime_error{"cannot open paired prototype"};
     }
@@ -395,7 +409,7 @@ int main(int argc, char** argv) {
         const auto options = parse_options(argc, argv);
         const auto material = make_material(options);
         auto current = open_current_store(material);
-        auto pair = open_pair(material);
+        auto pair = open_pair(material, options);
         std::vector<Measurement> measurements;
         measurements.reserve((options.warmup + options.repeats) * 4U);
 
@@ -403,7 +417,8 @@ int main(int argc, char** argv) {
                   << "# git=" << GLYPHASTORE_GIT_SHA << "\n"
                   << "# operations=" << options.operations << " keys=" << options.keys
                   << " value_bytes=" << options.value_bytes << " repeats=" << options.repeats
-                  << " warmup=" << options.warmup << "\n"
+                  << " warmup=" << options.warmup << " batch_records=" << options.batch_records
+                  << " batch_wait_us=" << options.batch_wait_us << "\n"
                   << "# latency sampling=1/64 GET operations; current returns an owning copy; paired returns "
                      "a span\n"
                   << "kind,implementation,workload,repeat,ops_per_second,p50_get_ns,p95_get_ns,p99_get_ns,"
@@ -445,11 +460,14 @@ int main(int argc, char** argv) {
         const auto stats = pair->stats();
         std::cout << "telemetry,publications," << stats.publications << ",publication_records,"
                   << stats.publication_records << ",publication_latency_ns," << stats.publication_latency_ns
+                  << ",writer_batch_wait_ns," << stats.writer_batch_wait_ns
+                  << ",writer_batch_deadline_closes," << stats.writer_batch_deadline_closes
                   << ",publication_storage_bytes," << stats.publication_bytes
                   << ",ingress_value_bytes_copied," << stats.ingress_value_bytes_copied
                   << ",payload_allocations," << stats.payload_allocations << ",payload_bytes_allocated,"
                   << stats.payload_bytes_allocated << ",delta_directory_entries_copied,"
-                  << stats.delta_directory_entries_copied << ",delta_pages_copied,"
+                  << stats.delta_directory_entries_copied << ",delta_page_view_entries_copied,"
+                  << stats.delta_page_view_entries_copied << ",delta_pages_copied,"
                   << stats.delta_pages_copied << ",delta_pages_allocated," << stats.delta_pages_allocated
                   << ",delta_merges," << stats.delta_merges << ",generation_high_watermark,"
                   << stats.generation_high_watermark << ",generation_retired,"

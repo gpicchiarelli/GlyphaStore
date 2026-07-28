@@ -22,8 +22,11 @@ Il prototipo esegue una sola coppia con:
   matching SIMD/scalar già condiviso con l'Index di produzione e nessun tombstone;
 - `StableRecord` allocato una sola volta per mutazione; base, delta e generation condividono soltanto
   handle compatti e il GET non modifica il refcount;
-- delta persistente a pagine immutable da 16 slot: una publication copia la directory piatta e
-  soltanto le pagine toccate dal batch, mai tutti i record o i payload cumulativi;
+- delta persistente a pagine immutable da 16 slot: i delta piccoli restano flat; quelli grandi
+  separano una directory di ownership persistente a due livelli da una vista piatta di puntatori
+  non-owning. La `ReadGeneration` pinna l'ownership e il GET conserva un accesso diretto alla pagina;
+- micro-batch configurabile per record e deadline: il profilo bilanciato usa 32 record/2 us, mentre
+  il benchmark espone entrambe le soglie per non confondere throughput e latenza di visibilità;
 - pool di 258 generation slot e QSBR basato sui turn del Reader, senza refcount sul GET o
   sull'adozione;
 - PUT, ERASE, TTL, read-after-write e drain di shutdown;
@@ -54,8 +57,10 @@ forzati liberano il backlog preesistente, mentre la capacità residua copre tutt
 ## Limiti intenzionali
 
 - L'arena delle richieste e il pool generation sono bounded. Ogni nuova versione alloca ancora uno
-  `StableRecord`, le pagine delta toccate e una directory di 512 handle nel profilo da 4.096 chiavi;
-  serve un allocator/slab dedicato prima dell'integrazione production.
+  `StableRecord`, le pagine delta toccate e le strutture di publication. Un PMR generalista e uno
+  slab `StableRecord` Writer-only sono stati misurati e respinti: hanno peggiorato il 95/5 e lo slab
+  tratteneva capacità payload fino all'high-watermark. Un allocator production richiede classi di
+  size e policy di retention, non un pool unico applicato indiscriminatamente.
 - Il Writer usa yield polling; wakeup, affinity e profili non sono ancora implementati.
 - Non esistono ancora SegmentView, durability, rotation, recovery, compaction o Reactor socket.
 - Il prototipo implementa una sola coppia e non certifica scaling.
@@ -70,6 +75,7 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
 - suite Debug completa: pass;
 - suite ASan+UBSan completa: pass;
 - suite TSAN completa sul primo prototipo: pass;
+- suite Debug, ASan+UBSan e TSAN completa sulla directory persistente/vista pinzata: pass (441 test);
 - test concorrente SPSC con 100.000 elementi e wraparound;
 - saturation di tutti i 256 completion credit senza perdita;
 - riuso slot dopo drain;
@@ -80,10 +86,13 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
   `glyphastore_paired_benchmark`.
 - secondo gate P0: delta paged e record stabili portano il 95/5 a 11,30 Mops/s (64 B) e
   10,90 Mops/s (1 KiB), superando rispettivamente la baseline di 2,15× e 4,57×.
+- directory ownership persistente + vista Reader piatta riducono del 65% circa le copie di handle
+  owning nel profilo 4.096 chiavi; deadline 2 us mantiene il gate bilanciato, mentre 8 us raggiunge
+  11,59/11,55 Mops/s mixed a 64 B/1 KiB con un diverso contratto di visibilità.
 
 ## Prossimo gate
 
-1. introdurre allocator/slab Writer per `StableRecord` e pagine, con contatori reali di allocation;
-2. collegare una coppia a un Reactor sperimentale dietro flag non-default;
-3. aggiungere multi-pair e affinity, poi ripetere la matrice di scalabilità;
+1. collegare una coppia a un Reactor sperimentale dietro flag non-default;
+2. aggiungere multi-pair e affinity, poi ripetere la matrice di scalabilità;
+3. progettare allocator per classi di size con retention bounded, dopo profiling del percorso TCP;
 4. integrare Segment v1 e durability solo dopo i gate precedenti.

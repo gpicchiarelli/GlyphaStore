@@ -77,6 +77,10 @@ template <typename View> struct DecodedFrame {
     -> Result<std::size_t>;
 [[nodiscard]] auto encode_request(const RequestView& request) -> Result<std::vector<std::byte>>;
 [[nodiscard]] auto encoded_response_size(const ResponseView& response) -> Result<std::size_t>;
+// Encodes only the fixed header while declaring the complete frame size. The
+// caller may send response.value separately with scatter/gather I/O.
+[[nodiscard]] auto encode_response_header(std::span<std::byte> output, const ResponseView& response)
+    -> Result<std::size_t>;
 [[nodiscard]] auto encode_response(std::span<std::byte> output, const ResponseView& response)
     -> Result<std::size_t>;
 [[nodiscard]] auto encode_response(const ResponseView& response) -> Result<std::vector<std::byte>>;

@@ -169,6 +169,8 @@ class ImmutableReadIndex final {
 };
 
 inline constexpr std::size_t kDeltaPageSlots = 16;
+inline constexpr std::size_t kDeltaDirectoryBlockPages = 16;
+inline constexpr std::size_t kFlatDeltaMaximumPages = 32;
 inline constexpr std::size_t kWriterMaximumBatchRecords = 32;
 static_assert(kDeltaPageSlots % kSwissGroupSize == 0);
 
@@ -187,10 +189,24 @@ struct DeltaPage final {
     std::array<RecordHandle, kDeltaPageSlots> records{};
 };
 
+struct DeltaDirectoryBlock final {
+    std::array<std::shared_ptr<const DeltaPage>, kDeltaDirectoryBlockPages> pages{};
+};
+
 struct DeltaState final {
     std::size_t capacity{};
     std::size_t size{};
-    std::vector<std::shared_ptr<const DeltaPage>> pages;
+    // Small deltas stay flat to preserve the shortest GET path. Larger deltas
+    // use a persistent two-level ownership directory plus a flat non-owning
+    // page view. ReadGeneration pins the directory, so GET keeps the direct
+    // page lookup without copying hundreds of shared_ptr refcounts.
+    std::vector<std::shared_ptr<const DeltaPage>> flat_pages;
+    std::vector<const DeltaPage*> page_views;
+    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory;
+
+    [[nodiscard]] auto hierarchical() const noexcept -> bool {
+        return !directory.empty();
+    }
 
     [[nodiscard]] auto find(const std::string_view key, const std::uint64_t hash) const noexcept
         -> const StableRecord* {
@@ -199,8 +215,8 @@ struct DeltaState final {
         for (std::size_t probed = 0; probed < capacity; probed += kSwissGroupSize) {
             const auto page_index = group_start / kDeltaPageSlots;
             const auto page_offset = group_start % kDeltaPageSlots;
-            const auto& page = pages[page_index];
-            if (!page) {
+            const auto* const page = page_at(page_index);
+            if (page == nullptr) {
                 return nullptr;
             }
             const auto* const group = &page->control[page_offset];
@@ -225,29 +241,62 @@ struct DeltaState final {
     }
 
     template <typename Callback> void for_each(Callback&& callback) const {
-        for (const auto& page : pages) {
-            if (!page) {
-                continue;
+        if (!hierarchical()) {
+            for (const auto& page : flat_pages) {
+                visit_page(page.get(), callback);
             }
-            for (std::size_t slot = 0; slot < kDeltaPageSlots; ++slot) {
-                if (page->control[slot] != kSwissEmpty) {
-                    callback(page->records[slot]);
-                }
-            }
+            return;
+        }
+        for (const auto* page : page_views) {
+            visit_page(page, callback);
         }
     }
 
     [[nodiscard]] auto storage_bytes() const noexcept -> std::uint64_t {
-        auto result = static_cast<std::uint64_t>(pages.capacity() * sizeof(pages.front()));
-        for (const auto& page : pages) {
-            if (page) {
-                result += sizeof(DeltaPage);
+        auto result = static_cast<std::uint64_t>(flat_pages.capacity() * sizeof(flat_pages.front()) +
+                                                 page_views.capacity() * sizeof(page_views.front()) +
+                                                 directory.capacity() * sizeof(directory.front()));
+        if (!hierarchical()) {
+            for (const auto& page : flat_pages) {
+                if (page) {
+                    result += sizeof(DeltaPage);
+                }
+            }
+            return result;
+        }
+        for (const auto& block : directory) {
+            if (!block) {
+                continue;
+            }
+            result += sizeof(DeltaDirectoryBlock);
+            for (const auto& page : block->pages) {
+                if (page) {
+                    result += sizeof(DeltaPage);
+                }
             }
         }
         return result;
     }
 
   private:
+    [[nodiscard]] auto page_at(const std::size_t page_index) const noexcept -> const DeltaPage* {
+        if (!hierarchical()) {
+            return flat_pages[page_index].get();
+        }
+        return page_views[page_index];
+    }
+
+    template <typename Callback> static void visit_page(const DeltaPage* page, Callback& callback) {
+        if (page == nullptr) {
+            return;
+        }
+        for (std::size_t slot = 0; slot < kDeltaPageSlots; ++slot) {
+            if (page->control[slot] != kSwissEmpty) {
+                callback(page->records[slot]);
+            }
+        }
+    }
+
     [[nodiscard]] auto probe_start(const std::uint64_t hash) const noexcept -> std::size_t {
         return ((hash >> 7U) & ((capacity / kSwissGroupSize) - 1U)) * kSwissGroupSize;
     }
@@ -270,13 +319,21 @@ struct DeltaState final {
         }
         capacity *= 2U;
     }
+    const auto page_count = capacity / kDeltaPageSlots;
+    if (page_count <= kFlatDeltaMaximumPages) {
+        return std::make_shared<const DeltaState>(DeltaState{
+            .capacity = capacity, .flat_pages = std::vector<std::shared_ptr<const DeltaPage>>(page_count)});
+    }
+    const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
     return std::make_shared<const DeltaState>(
         DeltaState{.capacity = capacity,
-                   .pages = std::vector<std::shared_ptr<const DeltaPage>>(capacity / kDeltaPageSlots)});
+                   .page_views = std::vector<const DeltaPage*>(page_count),
+                   .directory = std::vector<std::shared_ptr<const DeltaDirectoryBlock>>(directory_count)});
 }
 
 struct DeltaBuildTelemetry final {
     std::uint64_t directory_entries_copied{};
+    std::uint64_t page_view_entries_copied{};
     std::uint64_t pages_copied{};
     std::uint64_t pages_allocated{};
 };
@@ -284,9 +341,12 @@ struct DeltaBuildTelemetry final {
 class DeltaBuilder final {
   public:
     explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous)
-        : previous_(std::move(previous)), pages_(previous_->pages), mutable_pages_(pages_.size()),
+        : previous_(std::move(previous)), flat_pages_(previous_->flat_pages),
+          page_views_(previous_->page_views), directory_(previous_->directory),
+          mutable_blocks_(directory_.size()), mutable_pages_(previous_->capacity / kDeltaPageSlots),
           size_(previous_->size) {
-        telemetry_.directory_entries_copied = pages_.size();
+        telemetry_.directory_entries_copied = flat_pages_.size() + directory_.size();
+        telemetry_.page_view_entries_copied = page_views_.size();
     }
 
     void insert_or_assign(RecordHandle record) {
@@ -295,8 +355,8 @@ class DeltaBuilder final {
         for (std::size_t probed = 0; probed < previous_->capacity; probed += kSwissGroupSize) {
             const auto page_index = group_start / kDeltaPageSlots;
             const auto page_offset = group_start % kDeltaPageSlots;
-            const auto& page = pages_[page_index];
-            if (!page) {
+            const auto* const page = page_at(page_index);
+            if (page == nullptr) {
                 place(page_index, page_offset, fingerprint, std::move(record), true);
                 return;
             }
@@ -322,8 +382,11 @@ class DeltaBuilder final {
     }
 
     [[nodiscard]] auto freeze() && -> std::shared_ptr<const DeltaState> {
-        return std::make_shared<const DeltaState>(
-            DeltaState{.capacity = previous_->capacity, .size = size_, .pages = std::move(pages_)});
+        return std::make_shared<const DeltaState>(DeltaState{.capacity = previous_->capacity,
+                                                             .size = size_,
+                                                             .flat_pages = std::move(flat_pages_),
+                                                             .page_views = std::move(page_views_),
+                                                             .directory = std::move(directory_)});
     }
 
     [[nodiscard]] auto telemetry() const noexcept -> DeltaBuildTelemetry {
@@ -331,6 +394,13 @@ class DeltaBuilder final {
     }
 
   private:
+    [[nodiscard]] auto page_at(const std::size_t page_index) const noexcept -> const DeltaPage* {
+        if (!previous_->hierarchical()) {
+            return flat_pages_[page_index].get();
+        }
+        return page_views_[page_index];
+    }
+
     [[nodiscard]] auto probe_start(const std::uint64_t hash) const noexcept -> std::size_t {
         return ((hash >> 7U) & ((previous_->capacity / kSwissGroupSize) - 1U)) * kSwissGroupSize;
     }
@@ -342,14 +412,32 @@ class DeltaBuilder final {
 
     [[nodiscard]] auto mutable_page(const std::size_t page_index) -> DeltaPage& {
         if (!mutable_pages_[page_index]) {
-            if (pages_[page_index]) {
-                mutable_pages_[page_index] = std::make_shared<DeltaPage>(*pages_[page_index]);
+            const auto* const existing = page_at(page_index);
+            if (existing != nullptr) {
+                mutable_pages_[page_index] = std::make_shared<DeltaPage>(*existing);
                 ++telemetry_.pages_copied;
             } else {
                 mutable_pages_[page_index] = std::make_shared<DeltaPage>();
             }
             ++telemetry_.pages_allocated;
-            pages_[page_index] = mutable_pages_[page_index];
+            if (!previous_->hierarchical()) {
+                flat_pages_[page_index] = mutable_pages_[page_index];
+            } else {
+                const auto block_index = page_index / kDeltaDirectoryBlockPages;
+                if (!mutable_blocks_[block_index]) {
+                    if (directory_[block_index]) {
+                        mutable_blocks_[block_index] =
+                            std::make_shared<DeltaDirectoryBlock>(*directory_[block_index]);
+                        telemetry_.directory_entries_copied += kDeltaDirectoryBlockPages;
+                    } else {
+                        mutable_blocks_[block_index] = std::make_shared<DeltaDirectoryBlock>();
+                    }
+                    directory_[block_index] = mutable_blocks_[block_index];
+                }
+                mutable_blocks_[block_index]->pages[page_index % kDeltaDirectoryBlockPages] =
+                    mutable_pages_[page_index];
+                page_views_[page_index] = mutable_pages_[page_index].get();
+            }
         }
         return *mutable_pages_[page_index];
     }
@@ -366,7 +454,10 @@ class DeltaBuilder final {
     }
 
     std::shared_ptr<const DeltaState> previous_;
-    std::vector<std::shared_ptr<const DeltaPage>> pages_;
+    std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
+    std::vector<const DeltaPage*> page_views_;
+    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory_;
+    std::vector<std::shared_ptr<DeltaDirectoryBlock>> mutable_blocks_;
     std::vector<std::shared_ptr<DeltaPage>> mutable_pages_;
     std::size_t size_{};
     DeltaBuildTelemetry telemetry_{};
@@ -383,6 +474,7 @@ struct PublicationDescriptor final {
     const ReadGeneration* generation{};
     std::uint64_t epoch{};
     std::uint64_t visible_through{};
+    std::uint32_t slot{};
 };
 
 enum class GenerationSlotState : std::uint8_t { free, published, retired };
@@ -392,6 +484,7 @@ struct GenerationSlot final {
     PublicationDescriptor descriptor;
     Clock::time_point retired_at{};
     std::uint64_t retire_after_turn{};
+    std::atomic_size_t output_pins{};
     GenerationSlotState state{GenerationSlotState::free};
 };
 
@@ -413,11 +506,40 @@ static_assert(std::is_nothrow_move_assignable_v<InternalCompletion>);
 
 } // namespace
 
+PrototypeReadPin::~PrototypeReadPin() {
+    reset();
+}
+
+PrototypeReadPin::PrototypeReadPin(PrototypeReadPin&& other) noexcept
+    : owner_(std::exchange(other.owner_, nullptr)), slot_(other.slot_),
+      release_(std::exchange(other.release_, nullptr)) {}
+
+auto PrototypeReadPin::operator=(PrototypeReadPin&& other) noexcept -> PrototypeReadPin& {
+    if (this != &other) {
+        reset();
+        owner_ = std::exchange(other.owner_, nullptr);
+        slot_ = other.slot_;
+        release_ = std::exchange(other.release_, nullptr);
+    }
+    return *this;
+}
+
+void PrototypeReadPin::reset() noexcept {
+    if (owner_ != nullptr) {
+        auto* owner = std::exchange(owner_, nullptr);
+        const auto release = std::exchange(release_, nullptr);
+        release(owner, slot_);
+    }
+}
+
 struct VolatileShardPairPrototype::Impl final {
     static constexpr std::size_t kGenerationPoolCapacity = kQueueCapacity + 2U;
 
-    explicit Impl(const std::size_t maximum_value, const std::size_t merge_entries)
+    explicit Impl(const std::size_t maximum_value, const std::size_t merge_entries,
+                  const PrototypeWriterBatchConfig writer_batch_config,
+                  const PrototypeCompletionNotifier notifier)
         : maximum_value_bytes(maximum_value), merge_delta_entries(merge_entries),
+          batch_config(writer_batch_config), completion_notifier(notifier),
           value_arena(kQueueCapacity * maximum_value), base(std::make_shared<const ImmutableReadIndex>()),
           mutable_delta(make_empty_delta(merge_entries)) {
         for (std::size_t index = 0; index < kQueueCapacity; ++index) {
@@ -428,7 +550,8 @@ struct VolatileShardPairPrototype::Impl final {
         auto& initial = generations[0];
         initial.generation.emplace(
             ReadGeneration{.base = base, .delta = mutable_delta, .visible_through = 0, .epoch = 0});
-        initial.descriptor = {.generation = &*initial.generation, .epoch = 0, .visible_through = 0};
+        initial.descriptor = {
+            .generation = &*initial.generation, .epoch = 0, .visible_through = 0, .slot = 0};
         initial.state = GenerationSlotState::published;
         current_generation_slot = 0;
         publication.store(&initial.descriptor, std::memory_order_release);
@@ -496,6 +619,18 @@ struct VolatileShardPairPrototype::Impl final {
         update_high_watermark(completion_high_watermark, completions.size());
     }
 
+    void notify_reader() const noexcept {
+        if (completion_notifier.notify != nullptr) {
+            completion_notifier.notify(completion_notifier.context);
+        }
+    }
+
+    static void release_output_pin(void* owner, const std::uint32_t slot) noexcept {
+        auto& self = *static_cast<Impl*>(owner);
+        self.generations[slot].output_pins.fetch_sub(1U, std::memory_order_release);
+        self.generation_output_pins.fetch_sub(1U, std::memory_order_relaxed);
+    }
+
     [[nodiscard]] auto make_record(const std::uint32_t slot, const std::uint64_t sequence) -> RecordHandle {
         const auto& mutation = slots[slot];
         auto record = std::make_shared<StableRecord>();
@@ -520,6 +655,10 @@ struct VolatileShardPairPrototype::Impl final {
         const auto now = Clock::now();
         for (auto& slot : generations) {
             if (slot.state != GenerationSlotState::retired || turn < slot.retire_after_turn) {
+                continue;
+            }
+            if (slot.output_pins.load(std::memory_order_acquire) != 0) {
+                generation_retire_pin_blocks.fetch_add(1U, std::memory_order_relaxed);
                 continue;
             }
             const auto delay = std::chrono::duration_cast<std::chrono::nanoseconds>(now - slot.retired_at);
@@ -554,8 +693,10 @@ struct VolatileShardPairPrototype::Impl final {
                                                .delta = std::move(next_delta),
                                                .visible_through = next_visible,
                                                .epoch = next_epoch});
-        next.descriptor = {
-            .generation = &*next.generation, .epoch = next_epoch, .visible_through = next_visible};
+        next.descriptor = {.generation = &*next.generation,
+                           .epoch = next_epoch,
+                           .visible_through = next_visible,
+                           .slot = static_cast<std::uint32_t>(next_slot)};
         next.state = GenerationSlotState::published;
         generation_live.fetch_add(1U, std::memory_order_relaxed);
         update_high_watermark(generation_high_watermark, generation_live.load(std::memory_order_relaxed));
@@ -610,6 +751,8 @@ struct VolatileShardPairPrototype::Impl final {
             publication_bytes.store(publication_storage, std::memory_order_relaxed);
             delta_directory_entries_copied.fetch_add(delta_telemetry.directory_entries_copied,
                                                      std::memory_order_relaxed);
+            delta_page_view_entries_copied.fetch_add(delta_telemetry.page_view_entries_copied,
+                                                     std::memory_order_relaxed);
             delta_pages_copied.fetch_add(delta_telemetry.pages_copied, std::memory_order_relaxed);
             delta_pages_allocated.fetch_add(delta_telemetry.pages_allocated, std::memory_order_relaxed);
             if (merged) {
@@ -642,20 +785,46 @@ struct VolatileShardPairPrototype::Impl final {
                                                     .epoch = writer_epoch.load(std::memory_order_relaxed)});
             }
         }
+        notify_reader();
     }
 
     void writer_loop() noexcept {
         std::array<std::uint32_t, kWriterMaximumBatchRecords> batch{};
         while (accepting.load(std::memory_order_acquire) || !mutations.empty()) {
             std::size_t count = 0;
-            while (count < batch.size() && mutations.try_pop(batch[count])) {
-                ++count;
-                mutation_pops.fetch_add(1U, std::memory_order_relaxed);
-            }
-            if (count == 0) {
+            if (!mutations.try_pop(batch[count])) {
                 reclaim_generations();
                 std::this_thread::yield();
                 continue;
+            }
+            ++count;
+            mutation_pops.fetch_add(1U, std::memory_order_relaxed);
+
+            const auto wait_started = Clock::now();
+            const auto deadline = wait_started + batch_config.max_wait;
+            bool deadline_closed = false;
+            while (count < batch_config.max_records) {
+                if (mutations.try_pop(batch[count])) {
+                    ++count;
+                    mutation_pops.fetch_add(1U, std::memory_order_relaxed);
+                    continue;
+                }
+                if (batch_config.max_wait.count() == 0 ||
+                    (!accepting.load(std::memory_order_relaxed) && mutations.empty()) ||
+                    Clock::now() >= deadline) {
+                    deadline_closed = batch_config.max_wait.count() != 0 && Clock::now() >= deadline;
+                    break;
+                }
+                // Dedicated Writer: bounded busy wait avoids a scheduler round
+                // trip while the paired Reader is producing the next mutation.
+                std::atomic_signal_fence(std::memory_order_seq_cst);
+            }
+            const auto waited =
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - wait_started);
+            writer_batch_wait_ns.fetch_add(static_cast<std::uint64_t>(waited.count()),
+                                           std::memory_order_relaxed);
+            if (deadline_closed) {
+                writer_batch_deadline_closes.fetch_add(1U, std::memory_order_relaxed);
             }
             process_batch(std::span{batch}.first(count));
         }
@@ -665,6 +834,8 @@ struct VolatileShardPairPrototype::Impl final {
 
     const std::size_t maximum_value_bytes;
     const std::size_t merge_delta_entries;
+    const PrototypeWriterBatchConfig batch_config;
+    const PrototypeCompletionNotifier completion_notifier;
     std::array<MutationSlot, kQueueCapacity> slots{};
     std::vector<std::byte> value_arena;
     std::array<std::uint32_t, kQueueCapacity> free_slots{};
@@ -692,6 +863,8 @@ struct VolatileShardPairPrototype::Impl final {
     std::atomic_size_t completion_high_watermark{};
     std::atomic_size_t last_batch_size{};
     std::atomic_size_t maximum_batch_size{};
+    std::atomic_uint64_t writer_batch_wait_ns{};
+    std::atomic_uint64_t writer_batch_deadline_closes{};
     std::uint64_t reader_gets{}; // Reader-owner thread only
     std::atomic_uint64_t publications{};
     std::atomic_uint64_t publication_records{};
@@ -701,29 +874,38 @@ struct VolatileShardPairPrototype::Impl final {
     std::atomic_uint64_t payload_allocations{};
     std::atomic_uint64_t payload_bytes_allocated{};
     std::atomic_uint64_t delta_directory_entries_copied{};
+    std::atomic_uint64_t delta_page_view_entries_copied{};
     std::atomic_uint64_t delta_pages_copied{};
     std::atomic_uint64_t delta_pages_allocated{};
     std::atomic_uint64_t delta_merges{};
     std::atomic_uint64_t publication_backpressure{};
     std::atomic_uint64_t generation_retire_count{};
     std::atomic_uint64_t generation_retire_delay_ns{};
+    std::atomic_size_t generation_output_pins{};
+    std::atomic_size_t generation_output_pin_high_watermark{};
+    std::atomic_uint64_t generation_retire_pin_blocks{};
     std::atomic_size_t generation_live{};
     std::atomic_size_t generation_high_watermark{1};
     std::atomic_uint64_t writer_epoch{};
 };
 
 auto VolatileShardPairPrototype::create(const std::size_t maximum_value_bytes,
-                                        const std::size_t merge_delta_entries)
+                                        const std::size_t merge_delta_entries,
+                                        const PrototypeWriterBatchConfig batch_config,
+                                        const PrototypeCompletionNotifier completion_notifier)
     -> Result<std::unique_ptr<VolatileShardPairPrototype>> {
-    if (maximum_value_bytes == 0 || merge_delta_entries == 0) {
+    if (maximum_value_bytes == 0 || merge_delta_entries == 0 || batch_config.max_records == 0 ||
+        batch_config.max_records > kWriterMaximumBatchRecords || batch_config.max_wait.count() < 0 ||
+        batch_config.max_wait > std::chrono::milliseconds{1}) {
         return fail(ErrorCode::invalid_argument, "paired prototype limits must be non-zero");
     }
     if (maximum_value_bytes > std::numeric_limits<std::size_t>::max() / kQueueCapacity) {
         return fail(ErrorCode::arithmetic_overflow, "paired prototype value arena overflows");
     }
     try {
-        auto prototype = std::unique_ptr<VolatileShardPairPrototype>{
-            new VolatileShardPairPrototype{std::make_unique<Impl>(maximum_value_bytes, merge_delta_entries)}};
+        auto prototype =
+            std::unique_ptr<VolatileShardPairPrototype>{new VolatileShardPairPrototype{std::make_unique<Impl>(
+                maximum_value_bytes, merge_delta_entries, batch_config, completion_notifier)}};
         prototype->impl_->start();
         return prototype;
     } catch (const std::bad_alloc&) {
@@ -786,6 +968,14 @@ auto VolatileShardPairPrototype::get(const std::string_view key, const std::uint
     return PrototypeRead{.value = std::span<const std::byte>{record->value}, .sequence = record->sequence};
 }
 
+auto VolatileShardPairPrototype::pin_read_generation() noexcept -> PrototypeReadPin {
+    const auto slot = impl_->local_publication->slot;
+    impl_->generations[slot].output_pins.fetch_add(1U, std::memory_order_relaxed);
+    const auto pins = impl_->generation_output_pins.fetch_add(1U, std::memory_order_relaxed) + 1U;
+    update_high_watermark(impl_->generation_output_pin_high_watermark, pins);
+    return PrototypeReadPin{impl_.get(), slot, &Impl::release_output_pin};
+}
+
 void VolatileShardPairPrototype::stop_and_drain() noexcept {
     if (!impl_) {
         return;
@@ -807,40 +997,48 @@ void VolatileShardPairPrototype::stop_and_drain() noexcept {
 }
 
 auto VolatileShardPairPrototype::stats() const noexcept -> PrototypePairStats {
-    return {.mutation_pushes = impl_->mutation_pushes.load(std::memory_order_relaxed),
-            .mutation_pops = impl_->mutation_pops.load(std::memory_order_relaxed),
-            .completion_pushes = impl_->completion_pushes.load(std::memory_order_relaxed),
-            .completion_pops = impl_->completion_pops.load(std::memory_order_relaxed),
-            .queue_full = impl_->queue_full.load(std::memory_order_relaxed),
-            .mutation_queue_depth = impl_->mutations.size(),
-            .mutation_queue_high_watermark = impl_->mutation_high_watermark.load(std::memory_order_relaxed),
-            .completion_queue_depth = impl_->completions.size(),
-            .completion_queue_high_watermark =
-                impl_->completion_high_watermark.load(std::memory_order_relaxed),
-            .last_writer_batch_size = impl_->last_batch_size.load(std::memory_order_relaxed),
-            .maximum_writer_batch_size = impl_->maximum_batch_size.load(std::memory_order_relaxed),
-            .reader_gets = impl_->reader_gets,
-            .publications = impl_->publications.load(std::memory_order_relaxed),
-            .publication_records = impl_->publication_records.load(std::memory_order_relaxed),
-            .publication_latency_ns = impl_->publication_latency_ns.load(std::memory_order_relaxed),
-            .publication_bytes = impl_->publication_bytes.load(std::memory_order_relaxed),
-            .ingress_value_bytes_copied = impl_->ingress_value_bytes_copied.load(std::memory_order_relaxed),
-            .payload_allocations = impl_->payload_allocations.load(std::memory_order_relaxed),
-            .payload_bytes_allocated = impl_->payload_bytes_allocated.load(std::memory_order_relaxed),
-            .delta_directory_entries_copied =
-                impl_->delta_directory_entries_copied.load(std::memory_order_relaxed),
-            .delta_pages_copied = impl_->delta_pages_copied.load(std::memory_order_relaxed),
-            .delta_pages_allocated = impl_->delta_pages_allocated.load(std::memory_order_relaxed),
-            .delta_merges = impl_->delta_merges.load(std::memory_order_relaxed),
-            .publication_backpressure = impl_->publication_backpressure.load(std::memory_order_relaxed),
-            .generation_live = impl_->generation_live.load(std::memory_order_relaxed),
-            .generation_high_watermark = impl_->generation_high_watermark.load(std::memory_order_relaxed),
-            .generation_retire_count = impl_->generation_retire_count.load(std::memory_order_relaxed),
-            .generation_retire_delay_ns = impl_->generation_retire_delay_ns.load(std::memory_order_relaxed),
-            .reader_turns = impl_->reader_turns.load(std::memory_order_relaxed),
-            .reader_epoch = impl_->local_publication->epoch,
-            .writer_epoch = impl_->writer_epoch.load(std::memory_order_relaxed),
-            .visible_through = impl_->local_publication->visible_through};
+    return {
+        .mutation_pushes = impl_->mutation_pushes.load(std::memory_order_relaxed),
+        .mutation_pops = impl_->mutation_pops.load(std::memory_order_relaxed),
+        .completion_pushes = impl_->completion_pushes.load(std::memory_order_relaxed),
+        .completion_pops = impl_->completion_pops.load(std::memory_order_relaxed),
+        .queue_full = impl_->queue_full.load(std::memory_order_relaxed),
+        .mutation_queue_depth = impl_->mutations.size(),
+        .mutation_queue_high_watermark = impl_->mutation_high_watermark.load(std::memory_order_relaxed),
+        .completion_queue_depth = impl_->completions.size(),
+        .completion_queue_high_watermark = impl_->completion_high_watermark.load(std::memory_order_relaxed),
+        .last_writer_batch_size = impl_->last_batch_size.load(std::memory_order_relaxed),
+        .maximum_writer_batch_size = impl_->maximum_batch_size.load(std::memory_order_relaxed),
+        .writer_batch_wait_ns = impl_->writer_batch_wait_ns.load(std::memory_order_relaxed),
+        .writer_batch_deadline_closes = impl_->writer_batch_deadline_closes.load(std::memory_order_relaxed),
+        .reader_gets = impl_->reader_gets,
+        .publications = impl_->publications.load(std::memory_order_relaxed),
+        .publication_records = impl_->publication_records.load(std::memory_order_relaxed),
+        .publication_latency_ns = impl_->publication_latency_ns.load(std::memory_order_relaxed),
+        .publication_bytes = impl_->publication_bytes.load(std::memory_order_relaxed),
+        .ingress_value_bytes_copied = impl_->ingress_value_bytes_copied.load(std::memory_order_relaxed),
+        .payload_allocations = impl_->payload_allocations.load(std::memory_order_relaxed),
+        .payload_bytes_allocated = impl_->payload_bytes_allocated.load(std::memory_order_relaxed),
+        .delta_directory_entries_copied =
+            impl_->delta_directory_entries_copied.load(std::memory_order_relaxed),
+        .delta_page_view_entries_copied =
+            impl_->delta_page_view_entries_copied.load(std::memory_order_relaxed),
+        .delta_pages_copied = impl_->delta_pages_copied.load(std::memory_order_relaxed),
+        .delta_pages_allocated = impl_->delta_pages_allocated.load(std::memory_order_relaxed),
+        .delta_merges = impl_->delta_merges.load(std::memory_order_relaxed),
+        .publication_backpressure = impl_->publication_backpressure.load(std::memory_order_relaxed),
+        .generation_live = impl_->generation_live.load(std::memory_order_relaxed),
+        .generation_high_watermark = impl_->generation_high_watermark.load(std::memory_order_relaxed),
+        .generation_retire_count = impl_->generation_retire_count.load(std::memory_order_relaxed),
+        .generation_retire_delay_ns = impl_->generation_retire_delay_ns.load(std::memory_order_relaxed),
+        .generation_output_pins = impl_->generation_output_pins.load(std::memory_order_relaxed),
+        .generation_output_pin_high_watermark =
+            impl_->generation_output_pin_high_watermark.load(std::memory_order_relaxed),
+        .generation_retire_pin_blocks = impl_->generation_retire_pin_blocks.load(std::memory_order_relaxed),
+        .reader_turns = impl_->reader_turns.load(std::memory_order_relaxed),
+        .reader_epoch = impl_->local_publication->epoch,
+        .writer_epoch = impl_->writer_epoch.load(std::memory_order_relaxed),
+        .visible_through = impl_->local_publication->visible_through};
 }
 
 } // namespace glyphastore::experimental

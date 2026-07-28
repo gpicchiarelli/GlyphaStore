@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -32,6 +33,43 @@ struct PrototypeRead final {
     std::uint64_t sequence{};
 };
 
+struct PrototypeWriterBatchConfig final {
+    std::size_t max_records{32};
+    std::chrono::microseconds max_wait{2};
+};
+
+struct PrototypeCompletionNotifier final {
+    void* context{};
+    void (*notify)(void* context) noexcept {};
+};
+
+class PrototypeReadPin final {
+  public:
+    PrototypeReadPin() = default;
+    ~PrototypeReadPin();
+    PrototypeReadPin(PrototypeReadPin&& other) noexcept;
+    auto operator=(PrototypeReadPin&& other) noexcept -> PrototypeReadPin&;
+    PrototypeReadPin(const PrototypeReadPin&) = delete;
+    auto operator=(const PrototypeReadPin&) -> PrototypeReadPin& = delete;
+
+    [[nodiscard]] explicit operator bool() const noexcept {
+        return owner_ != nullptr;
+    }
+
+    void reset() noexcept;
+
+  private:
+    using Release = void (*)(void*, std::uint32_t) noexcept;
+    PrototypeReadPin(void* owner, const std::uint32_t slot, Release release) noexcept
+        : owner_(owner), slot_(slot), release_(release) {}
+
+    void* owner_{};
+    std::uint32_t slot_{};
+    Release release_{};
+
+    friend class VolatileShardPairPrototype;
+};
+
 struct PrototypePairStats final {
     std::uint64_t mutation_pushes{};
     std::uint64_t mutation_pops{};
@@ -44,6 +82,8 @@ struct PrototypePairStats final {
     std::size_t completion_queue_high_watermark{};
     std::size_t last_writer_batch_size{};
     std::size_t maximum_writer_batch_size{};
+    std::uint64_t writer_batch_wait_ns{};
+    std::uint64_t writer_batch_deadline_closes{};
     std::uint64_t reader_gets{};
     std::uint64_t publications{};
     std::uint64_t publication_records{};
@@ -53,6 +93,7 @@ struct PrototypePairStats final {
     std::uint64_t payload_allocations{};
     std::uint64_t payload_bytes_allocated{};
     std::uint64_t delta_directory_entries_copied{};
+    std::uint64_t delta_page_view_entries_copied{};
     std::uint64_t delta_pages_copied{};
     std::uint64_t delta_pages_allocated{};
     std::uint64_t delta_merges{};
@@ -61,6 +102,9 @@ struct PrototypePairStats final {
     std::size_t generation_high_watermark{};
     std::uint64_t generation_retire_count{};
     std::uint64_t generation_retire_delay_ns{};
+    std::size_t generation_output_pins{};
+    std::size_t generation_output_pin_high_watermark{};
+    std::uint64_t generation_retire_pin_blocks{};
     std::uint64_t reader_turns{};
     std::uint64_t reader_epoch{};
     std::uint64_t writer_epoch{};
@@ -75,8 +119,9 @@ class VolatileShardPairPrototype final {
     static constexpr std::size_t kQueueCapacity = 256;
     static constexpr std::size_t kMaximumKeyBytes = 256;
 
-    [[nodiscard]] static auto create(std::size_t maximum_value_bytes = 256U * 1024U,
-                                     std::size_t merge_delta_entries = 128)
+    [[nodiscard]] static auto
+    create(std::size_t maximum_value_bytes = 256U * 1024U, std::size_t merge_delta_entries = 128,
+           PrototypeWriterBatchConfig batch_config = {}, PrototypeCompletionNotifier completion_notifier = {})
         -> Result<std::unique_ptr<VolatileShardPairPrototype>>;
     ~VolatileShardPairPrototype();
 
@@ -95,6 +140,9 @@ class VolatileShardPairPrototype final {
     void adopt_publication() noexcept;
     [[nodiscard]] auto get(std::string_view key, std::uint64_t now_ns = 0) noexcept
         -> std::optional<PrototypeRead>;
+    // Slow-output path only. The pin keeps the currently adopted generation
+    // alive across later Reader turns until scatter/gather output completes.
+    [[nodiscard]] auto pin_read_generation() noexcept -> PrototypeReadPin;
 
     void stop_and_drain() noexcept;
     [[nodiscard]] auto stats() const noexcept -> PrototypePairStats;

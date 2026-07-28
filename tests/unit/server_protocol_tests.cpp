@@ -3,6 +3,7 @@
 #include "test.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -140,38 +141,59 @@ GLYPHA_TEST("server protocol response round trips") {
     GLYPHA_REQUIRE(text(decoded->frame.value) == "pong");
 }
 
+GLYPHA_TEST("server protocol scatter header matches contiguous response encoding") {
+    const glyphastore::server::ResponseView response{.status = glyphastore::server::ResponseStatus::ok,
+                                                     .request_id = 91,
+                                                     .owner_worker = 0,
+                                                     .worker_count = 1,
+                                                     .routing_epoch = 3,
+                                                     .value = bytes("scatter-value")};
+    std::array<std::byte, glyphastore::server::kResponseHeaderBytes> header{};
+    const auto declared = glyphastore::server::encode_response_header(header, response);
+    GLYPHA_REQUIRE(declared.has_value());
+    GLYPHA_REQUIRE(*declared == header.size() + response.value.size());
+    std::vector<std::byte> gathered;
+    gathered.insert(gathered.end(), header.begin(), header.end());
+    gathered.insert(gathered.end(), response.value.begin(), response.value.end());
+    const auto contiguous = glyphastore::server::encode_response(response);
+    GLYPHA_REQUIRE(contiguous.has_value());
+    GLYPHA_REQUIRE(gathered == *contiguous);
+}
+
 GLYPHA_TEST("server protocol rejects noncanonical opcode-specific fields") {
     GLYPHA_REQUIRE(!glyphastore::server::encode_request({
-                                                             .opcode = glyphastore::server::RequestOpcode::get,
-                                                             .request_id = 1,
-                                                             .key = bytes("k"),
-                                                             .value = bytes("x"),
-                                                         })
-                         .has_value());
+                                                            .opcode = glyphastore::server::RequestOpcode::get,
+                                                            .request_id = 1,
+                                                            .key = bytes("k"),
+                                                            .value = bytes("x"),
+                                                        })
+                        .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::encode_request({
-                                                             .opcode = glyphastore::server::RequestOpcode::put,
-                                                             .request_id = 1,
-                                                             .target_worker = 1,
-                                                             .key = bytes("k"),
-                                                             .value = bytes("v"),
-                                                         })
-                         .has_value());
+                                                            .opcode = glyphastore::server::RequestOpcode::put,
+                                                            .request_id = 1,
+                                                            .target_worker = 1,
+                                                            .key = bytes("k"),
+                                                            .value = bytes("v"),
+                                                        })
+                        .has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::encode_request({
+                                                 .opcode = glyphastore::server::RequestOpcode::health,
+                                                 .request_id = 1,
+                                                 .key = bytes("k"),
+                                             })
+             .has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::encode_request({
+                                                 .opcode = glyphastore::server::RequestOpcode::bind_worker,
+                                                 .request_id = 1,
+                                             })
+             .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::encode_request({
-                                                             .opcode = glyphastore::server::RequestOpcode::health,
-                                                             .request_id = 1,
-                                                             .key = bytes("k"),
-                                                         })
-                         .has_value());
-    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
-                                                             .opcode = glyphastore::server::RequestOpcode::bind_worker,
-                                                             .request_id = 1,
-                                                         })
-                         .has_value());
-    GLYPHA_REQUIRE(!glyphastore::server::encode_request({
-                                                             .opcode = glyphastore::server::RequestOpcode::get,
-                                                             .request_id = 1,
-                                                         })
-                         .has_value());
+                                                            .opcode = glyphastore::server::RequestOpcode::get,
+                                                            .request_id = 1,
+                                                        })
+                        .has_value());
 
     auto ping = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::ping,

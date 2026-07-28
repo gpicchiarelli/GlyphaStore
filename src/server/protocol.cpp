@@ -327,20 +327,21 @@ auto encoded_response_size(const ResponseView& response) -> Result<std::size_t> 
     return *frame_size;
 }
 
-auto encode_response(const std::span<std::byte> output, const ResponseView& response) -> Result<std::size_t> {
+auto encode_response_header(const std::span<std::byte> output, const ResponseView& response)
+    -> Result<std::size_t> {
     const auto frame_size = encoded_response_size(response);
     if (!frame_size) {
         return unexpected(frame_size.error());
     }
-    if (output.size() < *frame_size) {
-        return fail(ErrorCode::invalid_argument, "response destination is smaller than encoded frame");
+    if (output.size() < kResponseHeaderBytes) {
+        return fail(ErrorCode::invalid_argument, "response destination is smaller than header");
     }
     auto encoded_frame_size = checked_u32(*frame_size, "response frame");
     auto encoded_value_size = checked_u32(response.value.size(), "response value");
     if (!encoded_frame_size || !encoded_value_size) {
         return fail(ErrorCode::record_too_large, "response fields exceed protocol limits");
     }
-    const auto bytes = output.first(*frame_size);
+    const auto bytes = output.first(kResponseHeaderBytes);
     store_u32(bytes, 0, *encoded_frame_size);
     store_u16(bytes, 4, kProtocolVersion);
     store_u16(bytes, 6, static_cast<std::uint16_t>(response.status));
@@ -350,7 +351,18 @@ auto encode_response(const std::span<std::byte> output, const ResponseView& resp
     store_u32(bytes, 24, response.worker_count);
     store_u32(bytes, 28, 0);
     store_u64(bytes, 32, response.routing_epoch);
-    std::ranges::copy(response.value, bytes.begin() + static_cast<std::ptrdiff_t>(kResponseHeaderBytes));
+    return *frame_size;
+}
+
+auto encode_response(const std::span<std::byte> output, const ResponseView& response) -> Result<std::size_t> {
+    const auto frame_size = encode_response_header(output, response);
+    if (!frame_size) {
+        return unexpected(frame_size.error());
+    }
+    if (output.size() < *frame_size) {
+        return fail(ErrorCode::invalid_argument, "response destination is smaller than encoded frame");
+    }
+    std::ranges::copy(response.value, output.begin() + static_cast<std::ptrdiff_t>(kResponseHeaderBytes));
     return *frame_size;
 }
 
