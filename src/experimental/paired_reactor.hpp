@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 
 namespace glyphastore::experimental {
 
@@ -63,6 +64,9 @@ class PairedReactorPrototype final {
     struct Impl;
     explicit PairedReactorPrototype(std::unique_ptr<Impl> impl) noexcept;
     std::unique_ptr<Impl> impl_;
+    mutable std::mutex stats_mutex_;
+    PairedReactorPrototypeStats published_stats_;
+    PrototypePairStats published_pair_stats_;
 };
 
 } // namespace glyphastore::experimental

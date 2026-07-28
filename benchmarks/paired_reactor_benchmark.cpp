@@ -245,8 +245,8 @@ struct ThreadMeasurement final {
 };
 
 [[nodiscard]] auto run(std::vector<glyphastore::client::Client>& clients, const Material& material,
-                       const Options& options,
-                       std::string implementation, const std::size_t repeat) -> Measurement {
+                       const Options& options, std::string implementation, const std::size_t repeat)
+    -> Measurement {
     std::vector<ThreadMeasurement> results(clients.size());
     std::barrier start_gate{static_cast<std::ptrdiff_t>(clients.size() + 1U)};
     std::vector<std::jthread> threads;
@@ -267,14 +267,13 @@ struct ThreadMeasurement final {
                     for (std::size_t offset = 0; offset < count; ++offset) {
                         const auto operation = first + offset;
                         const auto& key = material.keys[material.order[operation]];
-                        const auto put = options.put_percent != 0 &&
-                                         (operation * 37U) % 100U < options.put_percent;
-                        requests.push_back(
-                            {.opcode = put ? glyphastore::client::PipelineOpcode::put
-                                           : glyphastore::client::PipelineOpcode::get,
-                             .key = key_bytes(key),
-                             .value = put ? std::span<const std::byte>{material.update}
-                                          : std::span<const std::byte>{}});
+                        const auto put =
+                            options.put_percent != 0 && (operation * 37U) % 100U < options.put_percent;
+                        requests.push_back({.opcode = put ? glyphastore::client::PipelineOpcode::put
+                                                          : glyphastore::client::PipelineOpcode::get,
+                                            .key = key_bytes(key),
+                                            .value = put ? std::span<const std::byte>{material.update}
+                                                         : std::span<const std::byte>{}});
                     }
                     const auto batch_started = Clock::now();
                     auto responses = clients[client_index].execute_pipeline(requests);
@@ -365,8 +364,8 @@ int main(int argc, char** argv) {
         std::cout << "# paired Reactor TCP A/B git=" << GLYPHASTORE_GIT_SHA << " ops=" << options.operations
                   << " keys=" << options.keys << " value_bytes=" << options.value_bytes
                   << " pipeline=" << options.pipeline << " clients=" << options.clients
-                  << " put_percent=" << options.put_percent
-                  << " batch_wait_us=" << options.batch_wait_us << '\n';
+                  << " put_percent=" << options.put_percent << " batch_wait_us=" << options.batch_wait_us
+                  << '\n';
         std::cout << "kind,implementation,repeat,ops_per_second,p50_batch_us,p99_batch_us,"
                      "p999_batch_us,checksum\n";
         for (std::size_t iteration = 0; iteration < options.warmup + options.repeats; ++iteration) {
@@ -390,21 +389,17 @@ int main(int argc, char** argv) {
         const auto reactor = paired_server.reactor().stats();
         const auto pair = paired_server.reactor().pair_stats();
         const auto measured_publications = pair.publications - pair_before.publications;
-        const auto measured_publication_records =
-            pair.publication_records - pair_before.publication_records;
-        const auto average_publication_batch =
-            measured_publications == 0
-                ? 0.0
-                : static_cast<double>(measured_publication_records) /
-                      static_cast<double>(measured_publications);
+        const auto measured_publication_records = pair.publication_records - pair_before.publication_records;
+        const auto average_publication_batch = measured_publications == 0
+                                                   ? 0.0
+                                                   : static_cast<double>(measured_publication_records) /
+                                                         static_cast<double>(measured_publications);
         std::cout << "telemetry,writev_calls," << reactor.writev_calls << ",partial_writes,"
                   << reactor.partial_writes << ",slow_output_pins," << reactor.slow_output_pins
-                  << ",mutation_backpressure," << reactor.mutation_backpressure
-                  << ",measured_publications," << measured_publications
-                  << ",measured_publication_records," << measured_publication_records
-                  << ",average_publication_batch," << average_publication_batch
-                  << ",maximum_writer_batch," << pair.maximum_writer_batch_size
-                  << ",generation_output_pin_high_watermark,"
+                  << ",mutation_backpressure," << reactor.mutation_backpressure << ",measured_publications,"
+                  << measured_publications << ",measured_publication_records," << measured_publication_records
+                  << ",average_publication_batch," << average_publication_batch << ",maximum_writer_batch,"
+                  << pair.maximum_writer_batch_size << ",generation_output_pin_high_watermark,"
                   << pair.generation_output_pin_high_watermark << ",publication_backpressure,"
                   << pair.publication_backpressure << '\n';
         if (paired_server.failed()) {

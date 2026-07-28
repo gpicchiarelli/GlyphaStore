@@ -14,6 +14,9 @@ Secondo gate P0: `benchmark-results/paired-shards/573f4f1-dirty/macos-m4/2026-07
 Gate directory/batching:
 `benchmark-results/paired-shards/55acedd-dirty/macos-m4/2026-07-28-persistent-directory-batching/`.
 
+Gate Reactor TCP, una coppia:
+`benchmark-results/paired-reactor/d2077cf-dirty/macos-m4/2026-07-28-phase2-tcp/`.
+
 ## Regole del confronto
 
 Ogni confronto usa due binari dalla stessa base sorgente: runtime corrente e runtime paired. Build,
@@ -135,3 +138,43 @@ Ordine vincolante prima dell'integrazione Reactor:
 Il secondo gate supera la condizione per il punto 4: 95/5 pari a 2,15× della baseline a 64 B e
 4,57× a 1 KiB, con p99 GET rispettivamente 208 e 208 ns contro 292 e 500 ns. Il risultato resta
 micro/in-process e non autorizza ancora l'attivazione default nel daemon.
+
+## Esito gate Reactor TCP a coppia singola
+
+Il target wire-to-wire usa il client C++ pubblico, una sola coppia, 1–8 connessioni, workload
+deterministico e ordine A/B interlacciato. Debug, ASan+UBSan e TSan passano tutti i 446 test. Il
+percorso di output lento è coperto forzando una write parziale e verificando pin e rilascio della
+generation.
+
+Esito per area:
+
+| Area | Esito | Evidenza principale |
+|---|---|---|
+| GET 64 B, pipeline 32 | pass throughput preliminare | +2,0%/+4,8%/+0,6%/+1,6% con 1/2/4/8 connessioni; p99 non uniforme |
+| GET 64 B, pipeline 1/8 | inconclusive | -1,8%/-2,5%, entro una fascia da confermare su host isolato |
+| GET 64 B, pipeline 128 | pass preliminare | +11,4%, p99 batch inferiore |
+| GET 1 KiB–256 KiB | pass preliminare | +21% fino a +233%; scatter/gather domina sui valori grandi |
+| mixed 64 B 99/1 | fail | -18%, p99 batch +38%, publication batch medio 1,07 |
+| mixed 64 B 95/5 | fail critico | -54%, p99 batch +131%, publication batch medio 1,25 |
+| mixed 64 B 90/10 | fail critico | -73%, p99 batch +262%, publication batch medio 1,43 |
+| bounded output/reclamation | pass | pin soltanto su write parziale, high-water bounded, zero backlog finale |
+
+Le latenze riportate dal target TCP sono p50/p99/p99.9 del completamento dell'intero batch client.
+Non possono essere presentate come p99 del solo GET quando il batch contiene una mutazione. Il
+prossimo benchmark deve separare istogrammi read/write e connessioni read-only/write-only.
+
+Il gate vieta per ora multi-pair e integrazione nel daemon. Il nuovo P0 è il costo della mutazione
+isolata: ogni connessione ammette correttamente una sola mutazione prima della barriera read-after-
+write, quindi con quattro client il Writer forma batch medi troppo piccoli per ripagare handoff,
+publication immutabile e completion wakeup. Aumentare soltanto `max_wait` porta il batch 95/5 fino
+a 2,52 record a 32 us, ma riduce il throughput; non è una soluzione.
+
+Ordine P0:
+
+1. profilare separatamente submit→dequeue, build delta, publication e completion→ACK;
+2. adaptive spin/park del Reader dopo submit e wakeup Reader→Writer, distinti per profilo;
+3. ridurre allocazioni e cache-line traffic della publication isolata con retention bounded;
+4. consentire coalescing di PUT consecutivi della stessa connessione fino alla prima barriera GET,
+   senza ACK o visibilità anticipati;
+5. ripetere 99/1 e 95/5 a 64 B; autorizzare multi-pair solo se 99/1 rientra nel rumore e p99 GET
+   isolato migliora sotto Writer concorrente.

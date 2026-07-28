@@ -16,8 +16,7 @@ namespace {
 
 class RunningPairedReactor final {
   public:
-    explicit RunningPairedReactor(
-        const glyphastore::experimental::PairedReactorPrototypeConfig config = {}) {
+    explicit RunningPairedReactor(const glyphastore::experimental::PairedReactorPrototypeConfig config = {}) {
         auto created = glyphastore::experimental::PairedReactorPrototype::create(config);
         if (!created) {
             throw std::runtime_error{created.error().message};
@@ -120,8 +119,8 @@ GLYPHA_TEST("paired experimental Reactor preserves ordered owner-bound TCP pipel
 
 GLYPHA_TEST("paired experimental Reactor pins a generation only across slow socket output") {
     constexpr std::size_t value_bytes = 256U * 1024U;
-    RunningPairedReactor running{{.accepted_socket_send_buffer_bytes = 4U * 1024U,
-                                  .maximum_value_bytes = value_bytes}};
+    RunningPairedReactor running{
+        {.accepted_socket_send_buffer_bytes = 4U * 1024U, .maximum_value_bytes = value_bytes}};
     auto client = running.connect();
     const std::string key{"slow-output-key"};
     std::vector<std::byte> value(value_bytes, std::byte{0x5A});

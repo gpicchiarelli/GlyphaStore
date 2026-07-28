@@ -1,8 +1,10 @@
 # Prototipo volatile a coppia Reader–Writer
 
-Status: sperimentale, confinato al target `glyphastore_tests`
+Status: sperimentale, confinato a test e benchmark dedicati
+Applies to: prototipo volatile Reader–Writer e Reactor TCP a coppia singola
+Owner: storage, networking e performance maintainers
+Last reviewed: 2026-07-28
 
-Data: 2026-07-28
 ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md)
 
 ## Scopo implementato
@@ -14,7 +16,7 @@ Il prototipo esegue una sola coppia con:
 - indici producer/consumer separati su allineamento 128 byte;
 - pool di 256 mutation slot e value arena contigua allocati allo startup;
 - completion credit implicito nello slot: lo slot torna libero solo dopo il completion pop;
-- micro-batch Writer fino a 32 mutazioni senza attesa artificiale;
+- micro-batch Writer fino a 32 mutazioni, con deadline configurabile e default bilanciato di 2 us;
 - `MutableDeltaIndex` Writer-private e publication `base + frozen delta`;
 - merge del delta alla soglia configurata, senza catene oltre due livelli;
 - publication tramite un solo descriptor immutabile release/acquire;
@@ -32,14 +34,29 @@ Il prototipo esegue una sola coppia con:
 - PUT, ERASE, TTL, read-after-write e drain di shutdown;
 - metriche di queue, batch, publication latency/storage, copia ingress e generation retirement.
 
+Il secondo stadio collega la coppia a un Reactor TCP cleartext sperimentale:
+
+- protocollo v2 compatibile con il client C++ pubblico per `INIT`, `BIND_WORKER`, `PING`, `GET`,
+  `PUT`, `ERASE`, `HEALTH` e `READY` su una sola coppia;
+- parser, input/output watermark e connection slot bounded;
+- pipeline ordinata con al massimo una mutazione in attesa di completion per connessione;
+- risposta GET con `sendmsg` scatter/gather: header e valore non vengono concatenati;
+- generation pin solo quando l'output del socket è parziale, rilasciato dopo l'ultimo byte;
+- snapshot delle metriche pubblicata a fine event-loop turn: la lettura cross-thread non corre sui
+  contatori Reader-locali e non aggiunge atomiche o mutex al normale GET;
+- wakeup nativo Writer→Reader una volta per batch di completion;
+- telemetria per richieste, response byte, `sendmsg`, write parziali, pin e backpressure.
+
 Il GET usa soltanto il descriptor locale adottato dal Reader. I test verificano che 1.000 GET non
 incrementino push/pop di nessuna ring.
 
 ## Confinamento
 
-`paired_shard.cpp` viene compilato direttamente dentro `glyphastore_tests`. Non appartiene a
-`glyphastore_core`, non è raggiungibile dal daemon, non apre Segment e non cambia Store, wire v2 o
-persistence v1. Questa separazione impedisce un'attivazione accidentale del runtime incompleto.
+`paired_shard.cpp` e `paired_reactor.cpp` vengono compilati direttamente in `glyphastore_tests` e
+nei target `glyphastore_paired_benchmark` / `glyphastore_paired_reactor_benchmark`. Non appartengono
+a `glyphastore_core` o `glyphastore_server_core`, non sono installati e non sono raggiungibili da
+`glyphastored`. Il prototipo non apre Segment persistenti e non cambia Store, wire v2 o persistence
+v1. Questa separazione impedisce un'attivazione accidentale del runtime incompleto.
 
 ## Reclamation implementata
 
@@ -61,20 +78,25 @@ forzati liberano il backlog preesistente, mentre la capacità residua copre tutt
   slab `StableRecord` Writer-only sono stati misurati e respinti: hanno peggiorato il 95/5 e lo slab
   tratteneva capacità payload fino all'high-watermark. Un allocator production richiede classi di
   size e policy di retention, non un pool unico applicato indiscriminatamente.
-- Il Writer usa yield polling; wakeup, affinity e profili non sono ancora implementati.
-- Non esistono ancora SegmentView, durability, rotation, recovery, compaction o Reactor socket.
+- Il Writer usa ancora yield polling per l'admission idle; il ritorno completion usa già il wakeup
+  nativo del Poller. Affinity, adaptive spin/park e profili non sono ancora implementati.
+- Il Reactor è cleartext, volatile e a coppia singola: non implementa TLS, handoff, durable cold
+  read, Segment v1, durability, rotation, recovery o compaction.
 - Il prototipo implementa una sola coppia e non certifica scaling.
-- Il benchmark A/B è un microbenchmark del motore: la baseline corrente restituisce `OwnedValue`
-  copiato, il paired restituisce uno span. Non è un confronto wire-to-wire.
+- Il benchmark `glyphastore_paired_benchmark` resta un microbenchmark del motore; il nuovo
+  `glyphastore_paired_reactor_benchmark` è invece wire-to-wire, usa lo stesso client pubblico e
+  interlaccia baseline corrente e prototipo. Le latenze TCP attuali sono di completamento batch,
+  non ancora istogrammi separati per singolo GET e PUT.
 
 Di conseguenza i primi risultati A/B qualificano soltanto il potenziale del data path. Un successo
 architetturale richiede ancora lo stesso protocol path, Segment immutabili, durability e multi-pair.
 
 ## Evidenza attuale
 
-- suite Debug completa: pass;
-- suite ASan+UBSan completa: pass;
-- suite TSAN completa sul primo prototipo: pass;
+- suite Debug completa: 446 test, pass;
+- suite ASan+UBSan completa: 446 test, pass;
+- suite TSAN completa: 446 test, pass. Il primo run TCP ha individuato una race nella lettura delle
+  metriche; la snapshot a confine di turn l'ha rimossa e il rerun completo è pulito;
 - suite Debug, ASan+UBSan e TSAN completa sulla directory persistente/vista pinzata: pass (441 test);
 - test concorrente SPSC con 100.000 elementi e wraparound;
 - saturation di tutti i 256 completion credit senza perdita;
@@ -89,10 +111,28 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
 - directory ownership persistente + vista Reader piatta riducono del 65% circa le copie di handle
   owning nel profilo 4.096 chiavi; deadline 2 us mantiene il gate bilanciato, mentre 8 us raggiunge
   11,59/11,55 Mops/s mixed a 64 B/1 KiB con un diverso contratto di visibilità.
+- test TCP con il client C++ pubblico per CRUD, read-after-write e pipeline ordinata;
+- test deterministico di output lento: write parziale, generation pin osservato e rilascio a drain;
+- benchmark A/B TCP interleaved tra Reactor corrente e paired Reactor, con throughput e
+  p50/p99/p99.9 di batch oltre alla telemetria di publication e output.
+- GET TCP 64 B, pipeline 32: da +0,6% a +4,8% per 1–8 connessioni; il p99 batch non migliora in
+  modo uniforme. A pipeline 128 il vantaggio throughput è +11,4%, mentre pipeline 1/8 resta entro
+  una regressione del 2,5%.
+- GET TCP 1 KiB/64 KiB/256 KiB: +21%, +233% e +221%; per i valori grandi scatter/gather riduce
+  anche il p99 batch del 64–80% e il test osserva i pin soltanto sulle write parziali.
+- mixed TCP 64 B, quattro connessioni, pipeline 32: -18% a 99/1, -54% a 95/5 e -73% a 90/10.
+  Il batch publication medio è soltanto 1,07/1,25/1,43 record: handoff, publication e barriera di
+  ordinamento per connessione dominano il piccolo valore.
 
 ## Prossimo gate
 
-1. collegare una coppia a un Reactor sperimentale dietro flag non-default;
-2. aggiungere multi-pair e affinity, poi ripetere la matrice di scalabilità;
-3. progettare allocator per classi di size con retention bounded, dopo profiling del percorso TCP;
-4. integrare Segment v1 e durability solo dopo i gate precedenti.
+1. P0: ridurre il costo per publication isolata e il doppio scheduling Reader→Writer→Reader;
+   misurare adaptive spin/park, wakeup Reader→Writer e frozen-delta construction senza alterare
+   read-after-write o la memoria bounded;
+2. aggiungere istogrammi distinti GET/PUT e un workload con reader e writer su connessioni separate,
+   così il gate p99 GET sotto scritture non dipende dalla latenza dell'intera pipeline;
+3. aggiungere multi-pair, routing e affinity nel solo target sperimentale soltanto dopo che 99/1 a
+   64 B non regredisce materialmente;
+4. progettare allocator per classi di size con retention bounded dopo il profiling TCP;
+5. integrare Segment v1 e durability solo dopo i gate precedenti;
+6. proporre l'integrazione nel daemon soltanto dopo equivalenza funzionale e gate A/B completi.

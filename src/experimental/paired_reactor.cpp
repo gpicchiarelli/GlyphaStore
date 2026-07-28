@@ -517,8 +517,8 @@ struct PairedReactorPrototype::Impl final {
             current.socket = std::move(**accepted);
             if (config.accepted_socket_send_buffer_bytes != 0) {
                 const auto bytes = static_cast<int>(config.accepted_socket_send_buffer_bytes);
-                if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes,
-                                 sizeof(bytes)) != 0) {
+                if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) !=
+                    0) {
                     current.socket.reset();
                     free_slots.push_back(slot);
                     return server::system_error("paired Reactor SO_SNDBUF");
@@ -690,6 +690,22 @@ struct PairedReactorPrototype::Impl final {
         }
     }
 
+    [[nodiscard]] auto local_stats() const noexcept -> PairedReactorPrototypeStats {
+        return {.accepted_connections = accepted_connections,
+                .closed_connections = closed_connections,
+                .requests = requests,
+                .gets = gets,
+                .mutations_submitted = mutations_submitted,
+                .mutation_completions = mutation_completions,
+                .mutation_backpressure = mutation_backpressure,
+                .responses = responses,
+                .response_bytes = response_bytes,
+                .writev_calls = writev_calls,
+                .partial_writes = partial_writes,
+                .slow_output_pins = slow_output_pins,
+                .active_connections = active_connections};
+    }
+
     PairedReactorPrototypeConfig config;
     server::TcpListener listener;
     server::Poller poller;
@@ -723,7 +739,8 @@ auto PairedReactorPrototype::create(PairedReactorPrototypeConfig config)
         config.maximum_output_bytes < server::kResponseHeaderBytes ||
         config.output_frames_per_connection == 0 ||
         config.output_frames_per_connection > kMaximumOutputFrames || config.maximum_value_bytes == 0 ||
-        config.accepted_socket_send_buffer_bytes > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        config.accepted_socket_send_buffer_bytes >
+            static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
         config.maximum_value_bytes > server::kMaxFrameBytes - server::kResponseHeaderBytes) {
         return fail(ErrorCode::invalid_argument, "invalid paired Reactor prototype limits");
     }
@@ -760,12 +777,21 @@ auto PairedReactorPrototype::create(PairedReactorPrototypeConfig config)
 }
 
 PairedReactorPrototype::PairedReactorPrototype(std::unique_ptr<Impl> impl) noexcept
-    : impl_(std::move(impl)) {}
+    : impl_(std::move(impl)), published_stats_(impl_->local_stats()),
+      published_pair_stats_(impl_->pair->stats()) {}
 
 PairedReactorPrototype::~PairedReactorPrototype() = default;
 
 auto PairedReactorPrototype::run_once(const int timeout_ms) -> Status {
-    return impl_->run_once(timeout_ms);
+    auto status = impl_->run_once(timeout_ms);
+    const auto reactor_stats = impl_->local_stats();
+    const auto pair_stats = impl_->pair->stats();
+    {
+        const std::lock_guard lock{stats_mutex_};
+        published_stats_ = reactor_stats;
+        published_pair_stats_ = pair_stats;
+    }
+    return status;
 }
 
 void PairedReactorPrototype::stop_accepting() noexcept {
@@ -781,27 +807,17 @@ auto PairedReactorPrototype::port() const noexcept -> std::uint16_t {
 }
 
 auto PairedReactorPrototype::idle() const noexcept -> bool {
-    return impl_->active_connections == 0;
+    return stats().active_connections == 0;
 }
 
 auto PairedReactorPrototype::stats() const noexcept -> PairedReactorPrototypeStats {
-    return {.accepted_connections = impl_->accepted_connections,
-            .closed_connections = impl_->closed_connections,
-            .requests = impl_->requests,
-            .gets = impl_->gets,
-            .mutations_submitted = impl_->mutations_submitted,
-            .mutation_completions = impl_->mutation_completions,
-            .mutation_backpressure = impl_->mutation_backpressure,
-            .responses = impl_->responses,
-            .response_bytes = impl_->response_bytes,
-            .writev_calls = impl_->writev_calls,
-            .partial_writes = impl_->partial_writes,
-            .slow_output_pins = impl_->slow_output_pins,
-            .active_connections = impl_->active_connections};
+    const std::lock_guard lock{stats_mutex_};
+    return published_stats_;
 }
 
 auto PairedReactorPrototype::pair_stats() const noexcept -> PrototypePairStats {
-    return impl_->pair->stats();
+    const std::lock_guard lock{stats_mutex_};
+    return published_pair_stats_;
 }
 
 } // namespace glyphastore::experimental
