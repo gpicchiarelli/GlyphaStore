@@ -23,8 +23,6 @@ namespace glyphastore::experimental {
 namespace {
 
 using Clock = std::chrono::steady_clock;
-using MutableReadIndex = std::vector<struct ReadRecord>;
-
 void update_high_watermark(std::atomic_size_t& maximum, const std::size_t candidate) noexcept {
     auto current = maximum.load(std::memory_order_relaxed);
     while (current < candidate &&
@@ -33,7 +31,7 @@ void update_high_watermark(std::atomic_size_t& maximum, const std::size_t candid
     }
 }
 
-struct ReadRecord final {
+struct StableRecord final {
     std::uint64_t hash{};
     std::string key;
     std::vector<std::byte> value;
@@ -42,13 +40,16 @@ struct ReadRecord final {
     bool tombstone{};
 };
 
-[[nodiscard]] auto record_less(const ReadRecord& left, const ReadRecord& right) noexcept -> bool {
-    return left.hash < right.hash || (left.hash == right.hash && left.key < right.key);
+using RecordHandle = std::shared_ptr<const StableRecord>;
+using MutableReadIndex = std::vector<RecordHandle>;
+
+[[nodiscard]] auto record_less(const RecordHandle& left, const RecordHandle& right) noexcept -> bool {
+    return left->hash < right->hash || (left->hash == right->hash && left->key < right->key);
 }
 
-void apply_record(MutableReadIndex& index, ReadRecord record) {
+void apply_record(MutableReadIndex& index, RecordHandle record) {
     const auto position = std::lower_bound(index.begin(), index.end(), record, record_less);
-    if (position != index.end() && position->hash == record.hash && position->key == record.key) {
+    if (position != index.end() && (*position)->hash == record->hash && (*position)->key == record->key) {
         *position = std::move(record);
         return;
     }
@@ -81,7 +82,7 @@ class ImmutableReadIndex final {
     }
 
     [[nodiscard]] auto find(const std::string_view key, const std::uint64_t hash) const noexcept
-        -> const ReadRecord* {
+        -> const StableRecord* {
         const auto fingerprint = h2(hash);
         auto group_start = probe_start(hash);
         for (std::size_t probed = 0; probed < capacity_; probed += kSwissGroupSize) {
@@ -97,8 +98,8 @@ class ImmutableReadIndex final {
                     continue;
                 }
                 const auto slot = group_start + offset;
-                if (hashes_[slot] == hash && records_[slot].key == key) {
-                    return &records_[slot];
+                if (hashes_[slot] == hash && records_[slot]->key == key) {
+                    return records_[slot].get();
                 }
             }
             group_start = next_group(group_start);
@@ -119,16 +120,9 @@ class ImmutableReadIndex final {
     }
 
     [[nodiscard]] auto storage_bytes() const noexcept -> std::uint64_t {
-        auto bytes = static_cast<std::uint64_t>(control_.capacity() * sizeof(std::uint8_t) +
-                                                hashes_.capacity() * sizeof(std::uint64_t) +
-                                                records_.capacity() * sizeof(ReadRecord));
-        for (std::size_t slot = 0; slot < capacity_; ++slot) {
-            if (control_[slot] != kSwissEmpty) {
-                bytes += records_[slot].key.capacity();
-                bytes += records_[slot].value.capacity();
-            }
-        }
-        return bytes;
+        return static_cast<std::uint64_t>(control_.capacity() * sizeof(std::uint8_t) +
+                                          hashes_.capacity() * sizeof(std::uint64_t) +
+                                          records_.capacity() * sizeof(RecordHandle));
     }
 
   private:
@@ -151,14 +145,14 @@ class ImmutableReadIndex final {
         return next == capacity_ ? 0 : next;
     }
 
-    void place(ReadRecord record) noexcept {
-        auto group_start = probe_start(record.hash);
+    void place(RecordHandle record) noexcept {
+        auto group_start = probe_start(record->hash);
         for (;;) {
             for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
                 const auto slot = group_start + offset;
                 if (control_[slot] == kSwissEmpty) {
-                    control_[slot] = h2(record.hash);
-                    hashes_[slot] = record.hash;
+                    control_[slot] = h2(record->hash);
+                    hashes_[slot] = record->hash;
                     records_[slot] = std::move(record);
                     return;
                 }
@@ -169,14 +163,218 @@ class ImmutableReadIndex final {
 
     std::vector<std::uint8_t> control_;
     std::vector<std::uint64_t> hashes_;
-    std::vector<ReadRecord> records_;
+    std::vector<RecordHandle> records_;
     std::size_t capacity_{};
     std::size_t size_{};
 };
 
+inline constexpr std::size_t kDeltaPageSlots = 16;
+inline constexpr std::size_t kWriterMaximumBatchRecords = 32;
+static_assert(kDeltaPageSlots % kSwissGroupSize == 0);
+
+[[nodiscard]] auto delta_fingerprint(const std::uint64_t hash) noexcept -> std::uint8_t {
+    const auto fingerprint = static_cast<std::uint8_t>(hash & 0x7FU);
+    return fingerprint == 0 ? static_cast<std::uint8_t>(1) : fingerprint;
+}
+
+struct DeltaPage final {
+    DeltaPage() {
+        control.fill(kSwissEmpty);
+    }
+
+    std::array<std::uint8_t, kDeltaPageSlots> control{};
+    std::array<std::uint64_t, kDeltaPageSlots> hashes{};
+    std::array<RecordHandle, kDeltaPageSlots> records{};
+};
+
+struct DeltaState final {
+    std::size_t capacity{};
+    std::size_t size{};
+    std::vector<std::shared_ptr<const DeltaPage>> pages;
+
+    [[nodiscard]] auto find(const std::string_view key, const std::uint64_t hash) const noexcept
+        -> const StableRecord* {
+        const auto fingerprint = delta_fingerprint(hash);
+        auto group_start = probe_start(hash);
+        for (std::size_t probed = 0; probed < capacity; probed += kSwissGroupSize) {
+            const auto page_index = group_start / kDeltaPageSlots;
+            const auto page_offset = group_start % kDeltaPageSlots;
+            const auto& page = pages[page_index];
+            if (!page) {
+                return nullptr;
+            }
+            const auto* const group = &page->control[page_offset];
+            const auto control_word = detail::load_control_group64(group);
+            const auto matches = detail::equal_byte_mask(group, fingerprint);
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto control = detail::control_byte_at(control_word, offset);
+                if (control == kSwissEmpty) {
+                    return nullptr;
+                }
+                if ((matches & (1ULL << offset)) == 0) {
+                    continue;
+                }
+                const auto page_slot = page_offset + offset;
+                if (page->hashes[page_slot] == hash && page->records[page_slot]->key == key) {
+                    return page->records[page_slot].get();
+                }
+            }
+            group_start = next_group(group_start);
+        }
+        return nullptr;
+    }
+
+    template <typename Callback> void for_each(Callback&& callback) const {
+        for (const auto& page : pages) {
+            if (!page) {
+                continue;
+            }
+            for (std::size_t slot = 0; slot < kDeltaPageSlots; ++slot) {
+                if (page->control[slot] != kSwissEmpty) {
+                    callback(page->records[slot]);
+                }
+            }
+        }
+    }
+
+    [[nodiscard]] auto storage_bytes() const noexcept -> std::uint64_t {
+        auto result = static_cast<std::uint64_t>(pages.capacity() * sizeof(pages.front()));
+        for (const auto& page : pages) {
+            if (page) {
+                result += sizeof(DeltaPage);
+            }
+        }
+        return result;
+    }
+
+  private:
+    [[nodiscard]] auto probe_start(const std::uint64_t hash) const noexcept -> std::size_t {
+        return ((hash >> 7U) & ((capacity / kSwissGroupSize) - 1U)) * kSwissGroupSize;
+    }
+
+    [[nodiscard]] auto next_group(const std::size_t group_start) const noexcept -> std::size_t {
+        const auto next = group_start + kSwissGroupSize;
+        return next == capacity ? 0 : next;
+    }
+};
+
+[[nodiscard]] auto make_empty_delta(const std::size_t maximum_entries) -> std::shared_ptr<const DeltaState> {
+    if (maximum_entries > std::numeric_limits<std::size_t>::max() - (kWriterMaximumBatchRecords - 1U)) {
+        throw std::bad_alloc{};
+    }
+    const auto required_entries = maximum_entries + (kWriterMaximumBatchRecords - 1U);
+    auto capacity = kDeltaPageSlots;
+    while (capacity - capacity / 4U < required_entries) {
+        if (capacity > std::numeric_limits<std::size_t>::max() / 2U) {
+            throw std::bad_alloc{};
+        }
+        capacity *= 2U;
+    }
+    return std::make_shared<const DeltaState>(
+        DeltaState{.capacity = capacity,
+                   .pages = std::vector<std::shared_ptr<const DeltaPage>>(capacity / kDeltaPageSlots)});
+}
+
+struct DeltaBuildTelemetry final {
+    std::uint64_t directory_entries_copied{};
+    std::uint64_t pages_copied{};
+    std::uint64_t pages_allocated{};
+};
+
+class DeltaBuilder final {
+  public:
+    explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous)
+        : previous_(std::move(previous)), pages_(previous_->pages), mutable_pages_(pages_.size()),
+          size_(previous_->size) {
+        telemetry_.directory_entries_copied = pages_.size();
+    }
+
+    void insert_or_assign(RecordHandle record) {
+        const auto fingerprint = delta_fingerprint(record->hash);
+        auto group_start = probe_start(record->hash);
+        for (std::size_t probed = 0; probed < previous_->capacity; probed += kSwissGroupSize) {
+            const auto page_index = group_start / kDeltaPageSlots;
+            const auto page_offset = group_start % kDeltaPageSlots;
+            const auto& page = pages_[page_index];
+            if (!page) {
+                place(page_index, page_offset, fingerprint, std::move(record), true);
+                return;
+            }
+            const auto* const group = &page->control[page_offset];
+            const auto control_word = detail::load_control_group64(group);
+            const auto matches = detail::equal_byte_mask(group, fingerprint);
+            for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
+                const auto control = detail::control_byte_at(control_word, offset);
+                const auto page_slot = page_offset + offset;
+                if (control == kSwissEmpty) {
+                    place(page_index, page_slot, fingerprint, std::move(record), true);
+                    return;
+                }
+                if ((matches & (1ULL << offset)) != 0 && page->hashes[page_slot] == record->hash &&
+                    page->records[page_slot]->key == record->key) {
+                    place(page_index, page_slot, fingerprint, std::move(record), false);
+                    return;
+                }
+            }
+            group_start = next_group(group_start);
+        }
+        throw std::bad_alloc{};
+    }
+
+    [[nodiscard]] auto freeze() && -> std::shared_ptr<const DeltaState> {
+        return std::make_shared<const DeltaState>(
+            DeltaState{.capacity = previous_->capacity, .size = size_, .pages = std::move(pages_)});
+    }
+
+    [[nodiscard]] auto telemetry() const noexcept -> DeltaBuildTelemetry {
+        return telemetry_;
+    }
+
+  private:
+    [[nodiscard]] auto probe_start(const std::uint64_t hash) const noexcept -> std::size_t {
+        return ((hash >> 7U) & ((previous_->capacity / kSwissGroupSize) - 1U)) * kSwissGroupSize;
+    }
+
+    [[nodiscard]] auto next_group(const std::size_t group_start) const noexcept -> std::size_t {
+        const auto next = group_start + kSwissGroupSize;
+        return next == previous_->capacity ? 0 : next;
+    }
+
+    [[nodiscard]] auto mutable_page(const std::size_t page_index) -> DeltaPage& {
+        if (!mutable_pages_[page_index]) {
+            if (pages_[page_index]) {
+                mutable_pages_[page_index] = std::make_shared<DeltaPage>(*pages_[page_index]);
+                ++telemetry_.pages_copied;
+            } else {
+                mutable_pages_[page_index] = std::make_shared<DeltaPage>();
+            }
+            ++telemetry_.pages_allocated;
+            pages_[page_index] = mutable_pages_[page_index];
+        }
+        return *mutable_pages_[page_index];
+    }
+
+    void place(const std::size_t page_index, const std::size_t page_slot, const std::uint8_t fingerprint,
+               RecordHandle record, const bool inserted) {
+        auto& page = mutable_page(page_index);
+        page.control[page_slot] = fingerprint;
+        page.hashes[page_slot] = record->hash;
+        page.records[page_slot] = std::move(record);
+        if (inserted) {
+            ++size_;
+        }
+    }
+
+    std::shared_ptr<const DeltaState> previous_;
+    std::vector<std::shared_ptr<const DeltaPage>> pages_;
+    std::vector<std::shared_ptr<DeltaPage>> mutable_pages_;
+    std::size_t size_{};
+    DeltaBuildTelemetry telemetry_{};
+};
+
 struct ReadGeneration final {
     std::shared_ptr<const ImmutableReadIndex> base;
-    ImmutableReadIndex delta;
+    std::shared_ptr<const DeltaState> delta;
     std::uint64_t visible_through{};
     std::uint64_t epoch{};
 };
@@ -220,7 +418,8 @@ struct VolatileShardPairPrototype::Impl final {
 
     explicit Impl(const std::size_t maximum_value, const std::size_t merge_entries)
         : maximum_value_bytes(maximum_value), merge_delta_entries(merge_entries),
-          value_arena(kQueueCapacity * maximum_value), base(std::make_shared<const ImmutableReadIndex>()) {
+          value_arena(kQueueCapacity * maximum_value), base(std::make_shared<const ImmutableReadIndex>()),
+          mutable_delta(make_empty_delta(merge_entries)) {
         for (std::size_t index = 0; index < kQueueCapacity; ++index) {
             free_slots[index] = static_cast<std::uint32_t>(kQueueCapacity - 1U - index);
         }
@@ -228,7 +427,7 @@ struct VolatileShardPairPrototype::Impl final {
 
         auto& initial = generations[0];
         initial.generation.emplace(
-            ReadGeneration{.base = base, .delta = ImmutableReadIndex{}, .visible_through = 0, .epoch = 0});
+            ReadGeneration{.base = base, .delta = mutable_delta, .visible_through = 0, .epoch = 0});
         initial.descriptor = {.generation = &*initial.generation, .epoch = 0, .visible_through = 0};
         initial.state = GenerationSlotState::published;
         current_generation_slot = 0;
@@ -297,18 +496,22 @@ struct VolatileShardPairPrototype::Impl final {
         update_high_watermark(completion_high_watermark, completions.size());
     }
 
-    [[nodiscard]] auto make_record(const std::uint32_t slot, const std::uint64_t sequence) -> ReadRecord {
+    [[nodiscard]] auto make_record(const std::uint32_t slot, const std::uint64_t sequence) -> RecordHandle {
         const auto& mutation = slots[slot];
-        ReadRecord record{.hash = hash_key(std::string_view{mutation.key.data(), mutation.key_size}),
-                          .key = std::string{mutation.key.data(), mutation.key_size},
-                          .sequence = sequence,
-                          .expire_at_ns = mutation.expire_at_ns,
-                          .tombstone = mutation.kind == PrototypeMutationKind::erase};
-        if (!record.tombstone) {
+        auto record = std::make_shared<StableRecord>();
+        record->hash = hash_key(std::string_view{mutation.key.data(), mutation.key_size});
+        record->key.assign(mutation.key.data(), mutation.key_size);
+        record->sequence = sequence;
+        record->expire_at_ns = mutation.expire_at_ns;
+        record->tombstone = mutation.kind == PrototypeMutationKind::erase;
+        if (mutation.kind != PrototypeMutationKind::erase) {
             const auto source = value_span(slot).first(mutation.value_size);
-            record.value.assign(source.begin(), source.end());
+            record->value.assign(source.begin(), source.end());
             ingress_value_bytes_copied.fetch_add(source.size(), std::memory_order_relaxed);
         }
+        payload_allocations.fetch_add(1U, std::memory_order_relaxed);
+        payload_bytes_allocated.fetch_add(record->key.size() + record->value.size(),
+                                          std::memory_order_relaxed);
         return record;
     }
 
@@ -344,7 +547,7 @@ struct VolatileShardPairPrototype::Impl final {
     }
 
     void publish(const std::size_t next_slot, std::shared_ptr<const ImmutableReadIndex> next_base,
-                 ImmutableReadIndex next_delta, const std::uint64_t next_visible,
+                 std::shared_ptr<const DeltaState> next_delta, const std::uint64_t next_visible,
                  const std::uint64_t next_epoch) {
         auto& next = generations[next_slot];
         next.generation.emplace(ReadGeneration{.base = std::move(next_base),
@@ -374,39 +577,44 @@ struct VolatileShardPairPrototype::Impl final {
         last_batch_size.store(batch.size(), std::memory_order_relaxed);
         update_high_watermark(maximum_batch_size, batch.size());
         try {
-            auto candidate_delta = mutable_delta;
+            DeltaBuilder delta_builder{mutable_delta};
             auto next_visible = visible_through;
             for (const auto slot : batch) {
-                apply_record(candidate_delta, make_record(slot, ++next_visible));
+                delta_builder.insert_or_assign(make_record(slot, ++next_visible));
             }
+            const auto delta_telemetry = delta_builder.telemetry();
+            auto next_delta = std::move(delta_builder).freeze();
 
             auto next_base = base;
-            MutableReadIndex frozen_records;
             bool merged = false;
-            if (candidate_delta.size() >= merge_delta_entries) {
+            if (next_delta->size >= merge_delta_entries) {
                 auto merged_records = base->records();
-                for (const auto& record : candidate_delta) {
-                    apply_record(merged_records, record);
-                }
-                std::erase_if(merged_records, [](const ReadRecord& record) { return record.tombstone; });
+                next_delta->for_each(
+                    [&merged_records](const RecordHandle& record) { apply_record(merged_records, record); });
+                std::erase_if(merged_records, [](const RecordHandle& record) { return record->tombstone; });
                 next_base = std::make_shared<const ImmutableReadIndex>(std::move(merged_records));
+                next_delta = make_empty_delta(merge_delta_entries);
                 merged = true;
-            } else {
-                frozen_records = candidate_delta;
             }
-            ImmutableReadIndex next_delta{std::move(frozen_records)};
             const auto next_epoch = writer_epoch.load(std::memory_order_relaxed) + 1U;
             const auto generation_slot = acquire_generation_slot();
-            const auto publication_storage = next_base->storage_bytes() + next_delta.storage_bytes();
-            publish(generation_slot, next_base, std::move(next_delta), next_visible, next_epoch);
+            const auto publication_storage = next_base->storage_bytes() + next_delta->storage_bytes();
+            publish(generation_slot, next_base, next_delta, next_visible, next_epoch);
 
             base = std::move(next_base);
-            mutable_delta = merged ? MutableReadIndex{} : std::move(candidate_delta);
+            mutable_delta = std::move(next_delta);
             visible_through = next_visible;
             writer_epoch.store(next_epoch, std::memory_order_relaxed);
             publications.fetch_add(1U, std::memory_order_relaxed);
             publication_records.fetch_add(batch.size(), std::memory_order_relaxed);
             publication_bytes.store(publication_storage, std::memory_order_relaxed);
+            delta_directory_entries_copied.fetch_add(delta_telemetry.directory_entries_copied,
+                                                     std::memory_order_relaxed);
+            delta_pages_copied.fetch_add(delta_telemetry.pages_copied, std::memory_order_relaxed);
+            delta_pages_allocated.fetch_add(delta_telemetry.pages_allocated, std::memory_order_relaxed);
+            if (merged) {
+                delta_merges.fetch_add(1U, std::memory_order_relaxed);
+            }
             const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - started);
             publication_latency_ns.fetch_add(static_cast<std::uint64_t>(elapsed.count()),
                                              std::memory_order_relaxed);
@@ -437,7 +645,7 @@ struct VolatileShardPairPrototype::Impl final {
     }
 
     void writer_loop() noexcept {
-        std::array<std::uint32_t, 32> batch{};
+        std::array<std::uint32_t, kWriterMaximumBatchRecords> batch{};
         while (accepting.load(std::memory_order_acquire) || !mutations.empty()) {
             std::size_t count = 0;
             while (count < batch.size() && mutations.try_pop(batch[count])) {
@@ -468,7 +676,7 @@ struct VolatileShardPairPrototype::Impl final {
     const PublicationDescriptor* local_publication{};
     std::size_t current_generation_slot{}; // Writer-only
     std::shared_ptr<const ImmutableReadIndex> base;
-    MutableReadIndex mutable_delta;
+    std::shared_ptr<const DeltaState> mutable_delta;
     std::uint64_t visible_through{};
     std::jthread writer;
     std::atomic_bool accepting{true};
@@ -490,6 +698,12 @@ struct VolatileShardPairPrototype::Impl final {
     std::atomic_uint64_t publication_latency_ns{};
     std::atomic_uint64_t publication_bytes{};
     std::atomic_uint64_t ingress_value_bytes_copied{};
+    std::atomic_uint64_t payload_allocations{};
+    std::atomic_uint64_t payload_bytes_allocated{};
+    std::atomic_uint64_t delta_directory_entries_copied{};
+    std::atomic_uint64_t delta_pages_copied{};
+    std::atomic_uint64_t delta_pages_allocated{};
+    std::atomic_uint64_t delta_merges{};
     std::atomic_uint64_t publication_backpressure{};
     std::atomic_uint64_t generation_retire_count{};
     std::atomic_uint64_t generation_retire_delay_ns{};
@@ -561,7 +775,7 @@ auto VolatileShardPairPrototype::get(const std::string_view key, const std::uint
     ++impl_->reader_gets;
     const auto& generation = *impl_->local_publication->generation;
     const auto hash = hash_key(key);
-    const auto* record = generation.delta.find(key, hash);
+    const auto* record = generation.delta->find(key, hash);
     if (record == nullptr) {
         record = generation.base->find(key, hash);
     }
@@ -611,6 +825,13 @@ auto VolatileShardPairPrototype::stats() const noexcept -> PrototypePairStats {
             .publication_latency_ns = impl_->publication_latency_ns.load(std::memory_order_relaxed),
             .publication_bytes = impl_->publication_bytes.load(std::memory_order_relaxed),
             .ingress_value_bytes_copied = impl_->ingress_value_bytes_copied.load(std::memory_order_relaxed),
+            .payload_allocations = impl_->payload_allocations.load(std::memory_order_relaxed),
+            .payload_bytes_allocated = impl_->payload_bytes_allocated.load(std::memory_order_relaxed),
+            .delta_directory_entries_copied =
+                impl_->delta_directory_entries_copied.load(std::memory_order_relaxed),
+            .delta_pages_copied = impl_->delta_pages_copied.load(std::memory_order_relaxed),
+            .delta_pages_allocated = impl_->delta_pages_allocated.load(std::memory_order_relaxed),
+            .delta_merges = impl_->delta_merges.load(std::memory_order_relaxed),
             .publication_backpressure = impl_->publication_backpressure.load(std::memory_order_relaxed),
             .generation_live = impl_->generation_live.load(std::memory_order_relaxed),
             .generation_high_watermark = impl_->generation_high_watermark.load(std::memory_order_relaxed),

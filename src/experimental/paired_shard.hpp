@@ -50,6 +50,12 @@ struct PrototypePairStats final {
     std::uint64_t publication_latency_ns{};
     std::uint64_t publication_bytes{};
     std::uint64_t ingress_value_bytes_copied{};
+    std::uint64_t payload_allocations{};
+    std::uint64_t payload_bytes_allocated{};
+    std::uint64_t delta_directory_entries_copied{};
+    std::uint64_t delta_pages_copied{};
+    std::uint64_t delta_pages_allocated{};
+    std::uint64_t delta_merges{};
     std::uint64_t publication_backpressure{};
     std::size_t generation_live{};
     std::size_t generation_high_watermark{};

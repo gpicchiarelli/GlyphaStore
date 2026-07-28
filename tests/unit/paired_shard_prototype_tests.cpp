@@ -145,6 +145,27 @@ GLYPHA_TEST("paired volatile merge keeps two-level visibility and TTL semantics"
     const auto stats = (*pair)->stats();
     GLYPHA_REQUIRE(stats.visible_through == 40);
     GLYPHA_REQUIRE(stats.reader_epoch == stats.writer_epoch);
+    GLYPHA_REQUIRE(stats.delta_merges > 0);
+    GLYPHA_REQUIRE(stats.payload_allocations == 40);
+}
+
+GLYPHA_TEST("paired delta capacity covers one full batch beyond a small merge threshold") {
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(128, 1);
+    GLYPHA_REQUIRE(pair.has_value());
+    for (std::uint64_t index = 0; index < 64; ++index) {
+        const auto key = std::string{"batch-key-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index, key, bytes("batch-value")) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    }
+    for (std::uint64_t index = 0; index < 64; ++index) {
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    }
+    (*pair)->adopt_publication();
+    for (std::uint64_t index = 0; index < 64; ++index) {
+        const auto key = std::string{"batch-key-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->get(key).has_value());
+    }
+    GLYPHA_REQUIRE((*pair)->stats().delta_merges > 0);
 }
 
 GLYPHA_TEST("paired QSBR retires generations only across Reader turn boundaries") {
@@ -168,6 +189,10 @@ GLYPHA_TEST("paired QSBR retires generations only across Reader turn boundaries"
     GLYPHA_REQUIRE(stats.generation_live <= 3);
     GLYPHA_REQUIRE(stats.publication_backpressure == 0);
     GLYPHA_REQUIRE(stats.reader_turns >= 1'025);
+    GLYPHA_REQUIRE(stats.payload_allocations == 512);
+    GLYPHA_REQUIRE(stats.delta_pages_allocated == 512);
+    GLYPHA_REQUIRE(stats.delta_pages_copied == 511);
+    GLYPHA_REQUIRE(stats.delta_directory_entries_copied == 4'096);
 }
 
 GLYPHA_TEST("paired volatile shutdown drains submission and closes admission") {

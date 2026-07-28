@@ -20,6 +20,10 @@ Il prototipo esegue una sola coppia con:
 - publication tramite un solo descriptor immutabile release/acquire;
 - `ImmutableReadIndex` read-only Swiss-style con control group da otto slot, load massimo 0,75,
   matching SIMD/scalar già condiviso con l'Index di produzione e nessun tombstone;
+- `StableRecord` allocato una sola volta per mutazione; base, delta e generation condividono soltanto
+  handle compatti e il GET non modifica il refcount;
+- delta persistente a pagine immutable da 16 slot: una publication copia la directory piatta e
+  soltanto le pagine toccate dal batch, mai tutti i record o i payload cumulativi;
 - pool di 258 generation slot e QSBR basato sui turn del Reader, senza refcount sul GET o
   sull'adozione;
 - PUT, ERASE, TTL, read-after-write e drain di shutdown;
@@ -49,8 +53,9 @@ forzati liberano il backlog preesistente, mentre la capacità residua copre tutt
 
 ## Limiti intenzionali
 
-- L'arena delle richieste e il pool generation sono bounded, ma frozen delta e base usano ancora
-  allocazioni e copie Writer; la telemetria ora rende visibile questa amplificazione.
+- L'arena delle richieste e il pool generation sono bounded. Ogni nuova versione alloca ancora uno
+  `StableRecord`, le pagine delta toccate e una directory di 512 handle nel profilo da 4.096 chiavi;
+  serve un allocator/slab dedicato prima dell'integrazione production.
 - Il Writer usa yield polling; wakeup, affinity e profili non sono ancora implementati.
 - Non esistono ancora SegmentView, durability, rotation, recovery, compaction o Reactor socket.
 - Il prototipo implementa una sola coppia e non certifica scaling.
@@ -73,11 +78,12 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
 - 512 publication consecutive con reclamation QSBR bounded e nessuna backpressure;
 - benchmark A/B interleaved GET 100% e GET/PUT 95/5 nel target dedicato
   `glyphastore_paired_benchmark`.
+- secondo gate P0: delta paged e record stabili portano il 95/5 a 11,30 Mops/s (64 B) e
+  10,90 Mops/s (1 KiB), superando rispettivamente la baseline di 2,15× e 4,57×.
 
 ## Prossimo gate
 
-1. validare il gate A/B e salvare output raw, ambiente e giudizio;
-2. eliminare la copia cumulativa del delta con builder/arena Writer e publication a cut;
-3. collegare una coppia a un Reactor sperimentale dietro flag non-default;
-4. aggiungere multi-pair e affinity, poi ripetere la matrice di scalabilità;
-5. integrare Segment v1 e durability solo dopo i gate precedenti.
+1. introdurre allocator/slab Writer per `StableRecord` e pagine, con contatori reali di allocation;
+2. collegare una coppia a un Reactor sperimentale dietro flag non-default;
+3. aggiungere multi-pair e affinity, poi ripetere la matrice di scalabilità;
+4. integrare Segment v1 e durability solo dopo i gate precedenti.

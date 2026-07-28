@@ -9,6 +9,8 @@ Baseline iniziale: runtime corrente su `main`, stessa persistence v1 e wire v2
 Risultati del 2026-07-28: `benchmark-results/paired-shards/fc9463d-dirty/macos-m4/2026-07-28/`.
 Questo run di gate è versionato esplicitamente; gli artifact benchmark locali ordinari restano ignorati.
 
+Secondo gate P0: `benchmark-results/paired-shards/573f4f1-dirty/macos-m4/2026-07-28-p0-paged-delta/`.
+
 ## Regole del confronto
 
 Ogni confronto usa due binari dalla stessa base sorgente: runtime corrente e runtime paired. Build,
@@ -115,13 +117,17 @@ La causa primaria è la copia cumulativa del delta e dei payload durante ogni pu
 
 Ordine vincolante prima dell'integrazione Reactor:
 
-1. P0 — storage payload stabile e `RecordView` compatto generation-pinned;
-2. P0 — delta cut/double-buffer senza copia cumulativa e merge base incrementale;
-3. P0 — instrumentation allocator/copy esatta e nuovo A/B 100/0 + 95/5;
+1. P0 — storage payload stabile e `RecordView` compatto generation-pinned — completato nel
+   prototipo con `StableRecord` condiviso fuori dal GET;
+2. P0 — delta senza copia cumulativa — completato con pagine immutable copy-on-write;
+3. P0 — instrumentation allocator/copy esatta — parziale: copie ingress, directory, pagine e
+   record logici sono misurati; mancano hook sull'allocator reale;
 4. P1 — Reactor sperimentale con ownership socket e output lease QSBR;
 5. P1 — multi-pair 1/2/4/8, affinity/topologia e isolamento fra pair;
 6. P1 — TCP pipeline 1/8/32/128 e valori 64 B–256 KiB a semantica equivalente;
 7. P2 — Segment v1, durability sync/group/periodic, crash/fault/recovery;
 8. P2 — compaction incrementale e reclamation con socket lento.
 
-Non si procede al punto 4 finché il 95/5 non è almeno non-regressivo oltre lo spread combinato.
+Il secondo gate supera la condizione per il punto 4: 95/5 pari a 2,15× della baseline a 64 B e
+4,57× a 1 KiB, con p99 GET rispettivamente 208 e 208 ns contro 292 e 500 ns. Il risultato resta
+micro/in-process e non autorizza ancora l'attivazione default nel daemon.

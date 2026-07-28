@@ -447,8 +447,13 @@ int main(int argc, char** argv) {
                   << stats.publication_records << ",publication_latency_ns," << stats.publication_latency_ns
                   << ",publication_storage_bytes," << stats.publication_bytes
                   << ",ingress_value_bytes_copied," << stats.ingress_value_bytes_copied
-                  << ",generation_high_watermark," << stats.generation_high_watermark
-                  << ",generation_retired," << stats.generation_retire_count << ",generation_retire_delay_ns,"
+                  << ",payload_allocations," << stats.payload_allocations << ",payload_bytes_allocated,"
+                  << stats.payload_bytes_allocated << ",delta_directory_entries_copied,"
+                  << stats.delta_directory_entries_copied << ",delta_pages_copied,"
+                  << stats.delta_pages_copied << ",delta_pages_allocated," << stats.delta_pages_allocated
+                  << ",delta_merges," << stats.delta_merges << ",generation_high_watermark,"
+                  << stats.generation_high_watermark << ",generation_retired,"
+                  << stats.generation_retire_count << ",generation_retire_delay_ns,"
                   << stats.generation_retire_delay_ns << ",publication_backpressure,"
                   << stats.publication_backpressure << '\n';
         return 0;
