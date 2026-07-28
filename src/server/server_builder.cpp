@@ -3,7 +3,6 @@
 #include "glyphastore/server/tls.hpp"
 #include "server/reactor_factory.hpp"
 
-#include <algorithm>
 #include <chrono>
 #include <limits>
 #include <utility>
@@ -25,6 +24,9 @@ namespace {
     }
     if (config.worker_count > kMaximumWorkerCount) {
         return fail(ErrorCode::invalid_argument, "server worker count exceeds the supported maximum");
+    }
+    if (config.disk_read_thread_count != 0 && config.disk_read_thread_count != config.worker_count) {
+        return fail(ErrorCode::invalid_argument, "paired disk-read thread count must equal shard-pair count");
     }
     if (config.maximum_input_bytes < kRequestHeaderBytes ||
         config.maximum_output_bytes < kResponseHeaderBytes) {
@@ -63,10 +65,8 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
     if (!store) {
         return unexpected(store.error());
     }
-    const auto disk_read_threads = config_.disk_read_thread_count == 0
-                                       ? std::min<std::size_t>(config_.worker_count, 4U)
-                                       : config_.disk_read_thread_count;
-    auto disk_reads = DiskReadExecutor::create(**store, disk_read_threads, config_.disk_read_queue_capacity);
+    auto disk_reads =
+        DiskReadExecutor::create(**store, config_.worker_count, config_.disk_read_queue_capacity);
     if (!disk_reads) {
         return unexpected(disk_reads.error());
     }

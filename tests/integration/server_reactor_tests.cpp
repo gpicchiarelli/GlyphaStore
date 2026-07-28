@@ -619,6 +619,9 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .disk_read_thread_count = glyphastore::kMaximumWorkerCount + 1U})
                         .has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::Server::create({.port = 0, .worker_count = 2, .disk_read_thread_count = 1})
+             .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .worker_count = 2},
                                                         {.worker_config = {.explicit_count = 1}})
                         .has_value());

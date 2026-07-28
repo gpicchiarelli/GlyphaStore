@@ -3,26 +3,41 @@
 #include "store/store_internal.hpp"
 
 #include <exception>
-#include <limits>
+#include <thread>
 #include <utility>
 
 namespace glyphastore::server {
 
-DiskReadExecutor::DiskReadExecutor(Store& store, const std::size_t thread_count, const std::size_t capacity)
-    : store_(store), thread_count_(thread_count), queue_(capacity) {
-    threads_.reserve(thread_count_);
+struct DiskReadExecutor::Lane final {
+    explicit Lane(const std::size_t capacity) : queue(capacity) {}
+
+    BoundedSpscQueue<DiskReadTask> queue;
+    alignas(128) std::atomic_uint64_t signal{};
+    alignas(128) std::atomic_bool stopping{};
+    std::thread thread;
+};
+
+DiskReadExecutor::DiskReadExecutor(Store& store, const std::size_t worker_count,
+                                   const std::size_t capacity_per_worker)
+    : store_(store) {
+    lanes_.reserve(worker_count);
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+        lanes_.push_back(std::make_unique<Lane>(capacity_per_worker));
+    }
 }
 
 DiskReadExecutor::~DiskReadExecutor() {
     stop();
 }
 
-auto DiskReadExecutor::create(Store& store, const std::size_t thread_count, const std::size_t capacity)
+auto DiskReadExecutor::create(Store& store, const std::size_t worker_count,
+                              const std::size_t capacity_per_worker)
     -> Result<std::unique_ptr<DiskReadExecutor>> try {
-    if (thread_count == 0 || capacity == 0) {
-        return fail(ErrorCode::invalid_argument, "disk-read executor requires nonzero capacity and threads");
+    if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0) {
+        return fail(ErrorCode::invalid_argument,
+                    "paired disk-read executor requires one nonempty SPSC lane per Store shard");
     }
-    return std::unique_ptr<DiskReadExecutor>(new DiskReadExecutor(store, thread_count, capacity));
+    return std::unique_ptr<DiskReadExecutor>(new DiskReadExecutor(store, worker_count, capacity_per_worker));
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "disk-read executor allocation failed");
 } catch (...) {
@@ -30,16 +45,14 @@ auto DiskReadExecutor::create(Store& store, const std::size_t thread_count, cons
 }
 
 auto DiskReadExecutor::start() -> Status try {
-    const std::lock_guard lock{mutex_};
-    if (started_) {
+    if (started_.exchange(true, std::memory_order_acq_rel)) {
         return fail(ErrorCode::invalid_argument, "disk-read executor has already been started");
     }
-    if (stopping_) {
+    if (stopping_.load(std::memory_order_acquire)) {
         return fail(ErrorCode::unavailable, "disk-read executor has been stopped");
     }
-    started_ = true;
-    for (std::size_t index = 0; index < thread_count_; ++index) {
-        threads_.emplace_back([this] { run(); });
+    for (std::size_t worker = 0; worker < lanes_.size(); ++worker) {
+        lanes_[worker]->thread = std::thread{[this, worker] { run(worker); }};
     }
     return {};
 } catch (const std::exception& exception) {
@@ -50,59 +63,84 @@ auto DiskReadExecutor::start() -> Status try {
     return fail(ErrorCode::io_error, "failed to start disk-read executor");
 }
 
-auto DiskReadExecutor::try_submit(DiskReadTask task) -> bool {
-    {
-        const std::lock_guard lock{mutex_};
-        if (!started_ || stopping_ || size_ == queue_.size()) {
-            return false;
-        }
-        queue_[tail_].emplace(std::move(task));
-        tail_ = (tail_ + 1U) % queue_.size();
-        ++size_;
+auto DiskReadExecutor::begin_submission() noexcept -> bool {
+    const auto previous = admission_state_.fetch_add(1U, std::memory_order_acq_rel);
+    if ((previous & kAdmissionClosed) == 0) {
+        return true;
     }
-    available_.notify_one();
+    finish_submission();
+    return false;
+}
+
+void DiskReadExecutor::finish_submission() noexcept {
+    const auto previous = admission_state_.fetch_sub(1U, std::memory_order_acq_rel);
+    if ((previous & kAdmissionClosed) != 0 && (previous & kAdmissionCountMask) == 1U) {
+        admission_state_.notify_all();
+    }
+}
+
+auto DiskReadExecutor::try_submit(DiskReadTask task) -> bool {
+    if (task.worker_index >= lanes_.size() || !begin_submission()) {
+        return false;
+    }
+    struct SubmissionGuard final {
+        DiskReadExecutor& executor;
+        ~SubmissionGuard() {
+            executor.finish_submission();
+        }
+    } submission{*this};
+    if (!started_.load(std::memory_order_acquire) || stopping_.load(std::memory_order_acquire)) {
+        return false;
+    }
+    auto& lane = *lanes_[task.worker_index];
+    if (lane.stopping.load(std::memory_order_acquire) || !lane.queue.try_push(std::move(task))) {
+        return false;
+    }
+    lane.signal.fetch_add(1U, std::memory_order_release);
+    lane.signal.notify_one();
     return true;
 }
 
 void DiskReadExecutor::stop() noexcept {
-    {
-        const std::lock_guard lock{mutex_};
-        if (stopping_) {
-            return;
+    if (!stopping_.exchange(true, std::memory_order_acq_rel)) {
+        auto observed = admission_state_.fetch_or(kAdmissionClosed, std::memory_order_acq_rel);
+        while ((observed & kAdmissionCountMask) != 0) {
+            admission_state_.wait(observed, std::memory_order_acquire);
+            observed = admission_state_.load(std::memory_order_acquire);
         }
-        stopping_ = true;
-        // Reactor loops have stopped, so queued requests are cancelled rather
-        // than issuing new I/O. In-flight reads retain their Store operation
-        // guard and generation pin until they complete.
-        for (auto& task : queue_) {
-            task.reset();
-        }
-        size_ = 0;
-        head_ = 0;
-        tail_ = 0;
-    }
-    available_.notify_all();
-    for (auto& thread : threads_) {
-        if (thread.joinable()) {
-            thread.join();
+        for (auto& lane : lanes_) {
+            lane->stopping.store(true, std::memory_order_release);
+            lane->signal.fetch_add(1U, std::memory_order_release);
+            lane->signal.notify_one();
         }
     }
-    threads_.clear();
+    for (auto& lane : lanes_) {
+        if (lane->thread.joinable()) {
+            lane->thread.join();
+        }
+        while (lane->queue.try_pop()) {
+            // Reactor ownership has ended. Destroy every cancelled queued pin
+            // before Store::close releases the durable directory lifetime.
+        }
+    }
 }
 
-void DiskReadExecutor::run() noexcept {
+void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
+    auto& lane = *lanes_[worker_index];
     while (true) {
-        std::optional<DiskReadTask> task;
-        {
-            std::unique_lock lock{mutex_};
-            available_.wait(lock, [this] { return stopping_ || size_ != 0; });
-            if (stopping_) {
+        auto task = lane.queue.try_pop();
+        if (!task) {
+            if (lane.stopping.load(std::memory_order_acquire)) {
                 return;
             }
-            task.emplace(std::move(*queue_[head_]));
-            queue_[head_].reset();
-            head_ = (head_ + 1U) % queue_.size();
-            --size_;
+            const auto observed = lane.signal.load(std::memory_order_acquire);
+            task = lane.queue.try_pop();
+            if (!task && !lane.stopping.load(std::memory_order_acquire)) {
+                lane.signal.wait(observed, std::memory_order_acquire);
+            }
+            if (!task) {
+                continue;
+            }
         }
 
         DiskReadCompletion completion{.connection = task->connection, .request_id = task->request_id};

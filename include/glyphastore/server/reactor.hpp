@@ -240,7 +240,7 @@ class Reactor final {
     std::shared_ptr<TlsContext> tls_;
     std::shared_ptr<AbuseController> abuse_;
     std::shared_ptr<SecurityAudit> security_audit_;
-    BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
+    BoundedSpscQueue<DiskReadCompletion> disk_read_completions_;
     BoundedSpscQueue<MutationCompletion> mutation_completions_;
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
