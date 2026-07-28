@@ -1,0 +1,64 @@
+name: Released artifact compatibility
+
+on:
+  push:
+    branches: [main]
+    tags:
+      - "v*"
+      - "[0-9]*"
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-compat-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  released-artifact-compat:
+    name: Released artifact compatibility
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-debug
+      - name: Build tests
+        run: cmake --build --preset unix-debug --target glyphastore_tests
+      - name: Decode in-tree released labels (self-v1+)
+        run: >-
+          ctest --test-dir build/unix-debug
+          --output-on-failure
+          -R "released artifact harness"
+      - name: Package and decode a CI self artifact
+        run: |
+          set -euo pipefail
+          label="ci-${GITHUB_SHA:0:12}"
+          ./scripts/package-release-compatibility-artifacts.sh "$label"
+          test -f "tests/fixtures/released/${label}/METADATA.txt"
+          ctest --test-dir build/unix-debug --output-on-failure -R "released artifact harness"
+          rm -rf "tests/fixtures/released/${label}"
+      - name: Package tagged release label
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          set -euo pipefail
+          raw="${GITHUB_REF_NAME}"
+          label="${raw#v}"
+          ./scripts/package-release-compatibility-artifacts.sh "$label"
+          ctest --test-dir build/unix-debug --output-on-failure -R "released artifact harness"
+          echo "RELEASE_COMPAT_LABEL=${label}" >>"$GITHUB_ENV"
+      - name: Upload tagged compatibility artifacts
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: released-compat-${{ env.RELEASE_COMPAT_LABEL }}
+          path: tests/fixtures/released/${{ env.RELEASE_COMPAT_LABEL }}/
+          if-no-files-found: error

@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "glyphastore"
+dynamic = ["version"]
+description = "Native Python client for GlyphaStore wire protocol v2"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "Giacomo Picchiarelli" }]
+maintainers = [{ name = "Giacomo Picchiarelli" }]
+keywords = [
+  "glyphastore",
+  "cache",
+  "key-value",
+  "tcp",
+  "client",
+  "asyncio",
+  "wire-protocol",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Database",
+  "Topic :: Database :: Front-Ends",
+  "Topic :: Internet",
+  "Topic :: Software Development :: Libraries :: Python Modules",
+  "Typing :: Typed",
+]
+dependencies = []
+
+[tool.setuptools.dynamic]
+version = { attr = "glyphastore.__version__" }
+
+[project.optional-dependencies]
+dev = [
+  "build>=1.2",
+  "twine>=6.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/gpicchiarelli/GlyphaStore"
+Documentation = "https://github.com/gpicchiarelli/GlyphaStore/blob/main/sdk/python/README.md"
+Repository = "https://github.com/gpicchiarelli/GlyphaStore"
+Issues = "https://github.com/gpicchiarelli/GlyphaStore/issues"
+Changelog = "https://github.com/gpicchiarelli/GlyphaStore/blob/main/sdk/python/CHANGELOG.md"
+"Wire protocol" = "https://github.com/gpicchiarelli/GlyphaStore/blob/main/docs/spec/wire-protocol-v2.md"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["glyphastore*"]
+
+[tool.setuptools.package-data]
+glyphastore = ["py.typed"]

@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+python="${PYTHON:-python3}"
+sdk="$root/sdk/python"
+
+for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
+  if ! cmp -s "$root/tests/fixtures/$fixture" "$sdk/tests/fixtures/$fixture"; then
+    echo "vendored fixture drift: $fixture" >&2
+    echo "copy repository fixtures into sdk/python/tests/fixtures/ before packaging" >&2
+    exit 1
+  fi
+done
+
+expected="$(tr -d '[:space:]' <"$root/VERSION")"
+got="$(PYTHONPATH="$sdk/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c 'import glyphastore; print(glyphastore.__version__)')"
+if [[ "$got" != "$expected" ]]; then
+  echo "glyphastore.__version__='$got' does not match VERSION='$expected'" >&2
+  exit 1
+fi
+
+rm -rf "$sdk/dist" "$sdk/build"
+find "$sdk" -maxdepth 2 -type d -name '*.egg-info' -exec rm -rf {} +
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-python-pack.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+
+"$python" -m pip install --disable-pip-version-check -q build twine
+rm -rf "$sdk/dist"
+mkdir -p "$sdk/dist"
+(
+  cd "$sdk"
+  "$python" -m build --outdir "$sdk/dist"
+  "$python" -m twine check "$sdk/dist"/*
+)
+
+"$python" -m venv "$work/venv"
+# shellcheck disable=SC1091
+source "$work/venv/bin/activate"
+python -m pip install --disable-pip-version-check -q --upgrade pip
+python -m pip install --disable-pip-version-check -q "$sdk/dist"/glyphastore-*.whl
+python - <<'PY'
+import glyphastore
+from importlib.metadata import version
+
+assert glyphastore.__version__ == version("glyphastore")
+print(f"installed glyphastore {glyphastore.__version__}")
+PY
+
+cp -R "$sdk/tests" "$work/tests"
+cd "$work"
+PYTHONPATH= python -m unittest discover -s "$work/tests" -v
+echo "Python packaging verification OK ($sdk/dist)"
