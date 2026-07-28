@@ -1,166 +1,121 @@
 Status: roadmap
 Applies to: native SDKs (C++, Python, Perl, Go, Erlang, Ruby) and shared wire contract
-Owner: maintainer
-Last reviewed: 2026-07-24
+Owner: client maintainers
+Last reviewed: 2026-07-28
 
 # SDK and client roadmap
 
-Official clients share wire protocol v2, Worker routing, ordered pipelines, timeouts, controlled
-reconnect, and `committed` / `rejected` / `indeterminate` mutation outcomes. Remaining work is
-shared-contract completion and production operability (TLS/auth, packaging, benchmarks)—not a
-rewrite of the SDKs.
+The repository contains six native clients. Their common contract is
+[wire protocol v2](../spec/wire-protocol-v2.md) plus
+[client semantics v1](../spec/client-semantics-v1.md): binary-safe keys, owner-bound connections,
+monotonic deadlines, bounded ordered pipelines, controlled reconnect, structured errors and
+`committed` / `rejected` / `indeterminate` mutation outcomes.
 
-Related: [production readiness](../production-readiness.md),
-[v1 production roadmap](../v1-production-roadmap.md),
-[documentation roadmap](../documentation-roadmap.md),
-[C++ client API / cross-language contract](../reference/cpp-client-api.md),
-[where performance matters](where-performance-matters.md),
-[Ruby SDK roadmap](ruby-sdk-roadmap.md),
-[SDK packaging standard](sdk-packaging.md).
+“Implemented” below describes source-tree behavior and tests. It does not mean that every package
+has been published to its language registry or that the server is production-certified.
 
-## Client status (2026-07-24)
+## Current matrix
 
-| Client | Assessment |
-| --- | --- |
-| C++ | Effectively complete for alpha |
-| Python | Effectively complete, including async |
-| Perl | Complete as a synchronous client; performance path is process-scale + optional XS |
-| Go | Complete as a synchronous client (protocol + client + interop + CI + benches) |
-| Erlang | Complete as a synchronous OTP client (protocol + client + TLS + interop + CI + benches) |
-| Ruby | **Phase 1+2 sync/async + Phase 3.1 TLS landed** — C-ext still open; see [Ruby SDK roadmap](ruby-sdk-roadmap.md) |
+| Client | Public surface | Concurrency model | TLS 1.3 | Worker routing |
+| --- | --- | --- | --- | --- |
+| C++ | sync CRUD, pipeline, batch | thread-safe connection per Worker | yes | FNV + keyed SipHash `INIT` extension |
+| Python | sync + `asyncio`, pipeline, batch | mutexed sync / native async | yes | FNV; extended identity rejected |
+| Perl | sync CRUD, pipeline, batch, Worker vectors | one select loop across Workers; one client per process/thread | optional `IO::Socket::SSL` | FNV; extended identity rejected |
+| Go | sync CRUD, pipeline, batch | mutex per Worker; goroutine batch fan-out | yes | FNV; extended identity rejected |
+| Erlang | sync OTP API, pipeline, batch, Worker vectors | shareable coordinator + per-Worker `gen_server` | yes | FNV; extended identity rejected |
+| Ruby | sync + optional `async`, pipeline, batch | MRI-thread-safe sync / Fiber async | yes | FNV; extended identity rejected |
 
-Do not add languages without an isomorphism plan and Phase-1 correctness gates. New SDKs must meet
-[client semantics v1](../spec/client-semantics-v1.md) and the interop matrix before they count as
-official. The server must still be treated as loopback / tightly controlled private network /
-sidecar / development only until authentication and TLS exist.
+All six use golden wire fixtures and participate in the default-routing interoperability harness.
+The C++ client is currently the only client that can connect when the daemon advertises
+`siphash24-v1`. Older/non-C++ clients fail closed rather than route a key to the wrong Worker.
 
-## Immediate client priorities
+## Highest-priority gaps
 
-### 1. Cross-SDK interoperability suite (highest SDK gap) — **done for alpha matrix**
+### 1. Keyed routing across the SDK train
 
-`scripts/test-sdk-interop.sh` starts a volatile `glyphastored` and proves PUT→GET across
-C++ / Python / Perl / Go / Ruby / Erlang (including every pair when OTP is available) for binary
-keys, empty values, per-SDK pipelines, and short TTL expiry on Workers 1 / 2 / 4 / 8. Deterministic
-routing keys exercise every Worker owner. Every SDK must also preserve structured `not_found`
-semantics and reject an oversized 2 MiB request locally with a known-rejected, zero-byte-send
-outcome. Wire golden fixtures are verified and compared to vendored SDK copies in the same script
-and in CI.
+ADR 0030 and wire v2 define the successful `INIT` value:
 
-Still desirable later: released-artifact cross-version compatibility.
+```text
+"GlyphaStore/2" || 0x00 || u32le(algorithm=2) || u64le(worker_hash_seed)
+```
 
-### 2. Normative wire and client semantics — **client errors/retry/timeouts done**
+Python, Perl, Go, Erlang and Ruby still compare the value to plain `GlyphaStore/2`. Each must gain:
 
-Official TCP client behavior is frozen in [client semantics v1](../spec/client-semantics-v1.md)
-([ADR 0019](../adr/0019-client-error-retry-timeout.md)): portable categories, wire→outcome tables,
-automatic retry limits, monotonic deadlines, and late-response/connection-reset rules.
+1. strict parsing of plain and extended identities;
+2. SipHash-2-4 using `(seed, seed ^ 0x6a09e667f3bcc909)`;
+3. bootstrap/reconnect checks for the complete routing state;
+4. golden vectors shared with C++;
+5. default and keyed-routing interop matrices for Workers 1/2/4/8.
 
-Still open on the wire/server side (see [production readiness](../production-readiness.md)): fuller
-normative treatment of daemon cancellation after admission, configuration precedence, and some
-limit/concurrency guarantees beyond the client contract.
+This is a security-profile blocker: `--secure-profile` selects keyed Worker routing, so the complete
+profile currently works only with the C++ client. TLS/mTLS/authz without `--secure-profile` can
+retain FNV and remains usable by the other SDKs.
 
-### 3. Optional mutation idempotency key (post-alpha candidate)
+### 2. Secure-profile interoperability
 
-Outcomes are classified correctly, but applications cannot auto-heal `indeterminate` without their
-own policy. A stable `client_id + operation_id` retained briefly on the server would allow safe
-`PUT`/`ERASE` retries without double-apply. Not required for the first release; it turns
-indeterminate from “application problem” into “protocol-managed.”
+The existing TLS matrix proves encrypted PUT→GET but is not equivalent to a full secure-profile
+matrix. After keyed routing lands, add tests that start the daemon with mTLS, default-deny authz,
+prefix scope, quotas and CRL configuration and exercise every SDK. Documentation must not call the
+SDK security train complete before that matrix passes.
 
-### 4. Multi-Worker batch API — **done**
+### 3. Released-artifact compatibility
 
-`execute_batch` (C++ / Python sync+async / Perl / Go / Erlang) groups requests by Worker, runs one
-pipeline per Worker (overlapping when multiple Workers are involved), and restores caller order. Not
-a transaction: Workers succeed or fail independently after admission. Perl and Erlang also expose
-`execute_worker_pipelines` for explicit per-Worker vectors.
+Source-tree interoperability is implemented. Still required:
 
-### 5. Configurable connections per Worker (measure first)
+- install every built package artifact and rerun conformance from the installed copy;
+- test supported old-client/new-server combinations under the 0.x compatibility policy;
+- publish checksums, provenance and SBOMs with tagged artifacts;
+- record registry publication state rather than saying “install from registry” unconditionally.
 
-Today: one connection per Worker. Concurrent same-Worker traffic serializes. A future
-`connections_per_worker = 1|2|4|…` helps Zipf / hot Worker / slow reads / many threads—but only after
-benchmarks prove the connection is the bottleneck. Suite 0.2 should add p50/p95 so that decision is
-data-driven.
+### 4. Comparable performance evidence
 
-### 5b. Perl performance path (guidance)
+`scripts/benchmark_sdk_clients.sh` is the comparison harness. A valid comparison fixes server
+commit, routing mode, Worker/client counts, pipeline depth, value size, operation mix, validation,
+TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
+where the harness exposes latency; do not infer a language limit from one pipeline depth.
 
-Pure-Perl hot path is saturated for generic tuning. Prefer: deep pipelines + Worker overlap, one
-client per prefork process, later event-loop adapter for web throughput. Optional XS on framing is
-the only large remaining microbench lever; C++ FFI remains out of design. Re-measure with
-`./scripts/benchmark_perl_client.sh` (sequential + concurrent). Details:
-[where performance matters](where-performance-matters.md#perl-sdk-where-further-speed-comes-from).
+For Perl specifically, the next work is profile-led. Measure scalar/hash allocation, frame copies,
+buffer compaction, parser cost, `IO::Select`, syscalls and cross-Worker overlap before choosing an
+implementation technique. Reduce pure-Perl allocation/copy costs first; evaluate a narrow XS
+codec/routing kernel only if profiles show that boundary dominates. XS is not assumed to be the only
+large lever. See the [Perl README](../../sdk/perl/README.md).
 
-### 6. Per-request deadlines — **done**
+Configurable connections per Worker remains measurement-gated for every SDK. It may improve
+same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.
 
-Optional per-call request timeout overrides the configured default (same absolute deadline across
-automatic retries). See [client semantics §6.5](../spec/client-semantics-v1.md). Surfaces:
-`RequestOptions` (C++), `timeout=` (Python), `timeout =>` (Perl), `CallOptions` (Go).
+### 5. Mutation idempotency (protocol candidate)
 
-### 7. Structured errors (uniform across SDKs) — **done**
+Clients classify uncertain mutations correctly, but applications cannot automatically retry an
+`indeterminate` result. A future `client_id + operation_id` mechanism would require a protocol ADR,
+bounded server retention and recovery semantics. It is not part of wire v2 today.
 
-Official clients expose client-semantics §2.1 fields: category, message, wire status, request id,
-Worker, routing epoch, bytes sent, retryability, operation, mutation outcome. Surfaces: enriched
-`glyphastore::Error` (C++), `GlyphaError` attributes (Python), `GlyphaStore::Error` accessors (Perl),
-`client.Error` (Go).
+## Implemented shared foundation
 
-### 8. Perl monotonic clock — **done**
+- Golden request/response fixtures are verified across the official SDKs.
+- `scripts/test-sdk-interop.sh` covers default FNV routing, Workers 1/2/4/8, binary keys, empty
+  values, TTL, pipelines, structured `NOT_FOUND`, oversized local rejection and cross-client
+  PUT→GET; TLS is covered when dependencies are available.
+- Pipeline APIs operate on one Worker and never auto-retry. Batch APIs group by Worker, overlap
+  independent connections where supported and restore caller order; they are not transactions.
+- Per-call deadlines reuse one absolute monotonic deadline across any permitted retry.
+- Uncertain mutations are not mislabeled as rejected.
+- Each SDK documents its actual thread/process/Fiber/OTP ownership model.
+- Packaging verification scripts exist for every source package; registry publication is a separate
+  release action.
 
-Deadlines use `clock_gettime(CLOCK_MONOTONIC)` via `Time::HiRes`, not civil `time`.
+## Admission rule for another language
 
-### 9. Perl thread / fork contract — **documented**
+A new SDK is not official until it has an isomorphism plan and passes:
 
-README and Client POD state: not shareable across ithreads; do not reuse pre-`fork` sockets; one
-client per process. Prefer `execute_worker_pipelines` for multi-Worker overlap.
+1. wire fixtures, including both routing identities;
+2. client-semantics error, timeout, retry and indeterminate-outcome tests;
+3. default and keyed-routing interop;
+4. cleartext, TLS and complete secure-profile interop;
+5. pipeline/batch ordering and concurrency-contract tests;
+6. install-from-artifact packaging verification;
+7. the shared benchmark workload with results labeled by runtime and execution model.
 
-### 10. Go client — **done for alpha**
-
-`sdk/go` provides a production-oriented synchronous client (`protocol` + `client`), golden fixture
-tests, `ExecutePipeline` / `ExecuteBatch`, interop CLI (`cmd/glyphastore-interop`), CI coverage
-via `scripts/test-go-client.sh` and the cross-SDK matrix, and
-`scripts/benchmark_go_client.sh`.
-
-### 10b. Erlang client — **done for alpha**
-
-`sdk/erlang` provides an OTP application (`glyphastore_protocol` + `glyphastore_client`), golden
-fixture CT suites, `execute_pipeline` / `execute_batch` / `execute_worker_pipelines`, TLS 1.3,
-interop escript, CI via `scripts/test-erlang-client.sh`, packaging via
-`scripts/package-erlang-client.sh`, and `scripts/benchmark_erlang_client.sh`.
-
-### 11. Ruby client — **Phase 1 done; Phase 2 largely done**
-
-`sdk/ruby` gem (`glyphastore` / `GlyphaStore`): protocol goldens, structured errors, sync client
-(`get`/`put`/`erase`/`ping`, `execute_pipeline`, `execute_batch`), monotonic deadlines, per-call
-`timeout:`, interop CLI, CI, **`AsyncClient`** (optional `async` gem), and
-`scripts/benchmark_ruby_client.sh`. Still open: published bench analysis folder, optional C framing
-extension (data-gated), TLS/auth with the server security train. No FFI wrap of the C++ client.
-
-## Product blockers (not “more languages”)
-
-These gate “ready for real applications” more than additional SDKs:
-
-| Area | Still open |
-| --- | --- |
-| Security | Authn/authz, TLS, rate limits, audit, credential handling |
-| Observability | Structured logs, metrics, readiness, admin diagnostics, build info, connection/Worker stats |
-| Operations | Backup/restore/verify, drain, corruption, disk-full, upgrade/downgrade runbooks — partial: [operations runbooks](../operations/README.md) |
-| Release compatibility | ABI/API policy, wire compatibility, signed artifacts, checksums, SBOM, reproducible builds, deprecation/support lifetime |
-| Stress / fault | Exhaustive socket/thread fault injection, continuous fuzz, soak, reconnect/shutdown stress, memory stability, power-loss/filesystem matrices |
-
-Minimum useful ops metrics for a web app: `connections_active`, `requests_total`, `errors_total`,
-`overloaded_total`, latency, `queue_depth`, `bytes_in`/`bytes_out`, `worker_utilization`,
-`reconnects`, `indeterminate_mutations`.
-
-## Recommended order
-
-1. Shared wire golden vectors (C++ / Python / Perl). **(CI verify + vendored cmp)**
-2. Cross-SDK interoperability tests. **(`scripts/test-sdk-interop.sh`, Workers 1/2/4/8 + structured error/limit matrix)**
-3. Perl monotonic clock + thread/fork contract docs. **(done)**
-4. Normative errors, retry, and timeout specification. **([client semantics v1](../spec/client-semantics-v1.md), [ADR 0019](../adr/0019-client-error-retry-timeout.md))**
-5. Multi-Worker `batch` API on every official client. **(done)**
-6. Go client. **(`sdk/go`, interop + CI)**
-7. Structured errors + per-call timeouts on every official client. **(done)**
-8. Ruby client Phase 1 (sync, isomorphic). **(`sdk/ruby`, interop + CI)**
-9. Authentication and TLS (all SDKs in the same train).
-10. Metrics, health, and diagnostics.
-11. Backup/restore and operational procedures.
-12. Cross-release compatibility and artifact signing. **(packaging gates: [sdk-packaging](sdk-packaging.md); publish/signing credentials still operator-owned)**
-
-The leap is that **every official client is demonstrably equivalent, compatible across releases,
-and usable safely**—including any new language admitted under an isomorphism roadmap.
+Related documents: [C++ client reference](../reference/cpp-client-api.md),
+[SDK packaging standard](sdk-packaging.md), [where performance matters](where-performance-matters.md),
+[production readiness](../production-readiness.md), and
+[Ruby implementation roadmap](ruby-sdk-roadmap.md).

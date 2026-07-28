@@ -427,7 +427,7 @@ GLYPHA_TEST("durable daemon retries only a proven non-committed first-attempt se
     GLYPHA_REQUIRE(!should_retry(missing_error, 0));
 }
 
-GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency window") {
+GLYPHA_TEST("paired Writer feeds one bounded maintenance latency window") {
     ServerTemporaryDirectory temporary;
     auto opened = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},
@@ -452,11 +452,10 @@ GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency win
     const auto initial_cycles = store.maintenance_snapshot().evaluation_cycles;
     GLYPHA_REQUIRE(initial_cycles > 0);
 
-    auto executor =
-        glyphastore::server::DurableMutationExecutor::create(store, 1, 2, 1, std::chrono::milliseconds{0});
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 2, std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(executor.has_value());
     GLYPHA_REQUIRE((*executor)->start().has_value());
-    glyphastore::server::BoundedMpscQueue<glyphastore::server::DurableMutationCompletion> completions{2};
+    glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{2};
     auto wakeup = glyphastore::server::Wakeup::create();
     GLYPHA_REQUIRE(wakeup.has_value());
     const std::string key{"latency-feedback"};
@@ -464,7 +463,7 @@ GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency win
         .connection = {.slot = 1, .generation = 1},
         .request_id = 601,
         .worker_index = 0,
-        .kind = glyphastore::server::DurableMutationKind::put,
+        .kind = glyphastore::server::MutationKind::put,
         .key = key,
         .key_hash = glyphastore::hash_key(key),
         .value = owned_bytes("value"),
@@ -473,7 +472,7 @@ GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency win
         .wakeup = &*wakeup,
     }));
     const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    std::optional<glyphastore::server::DurableMutationCompletion> completion;
+    std::optional<glyphastore::server::MutationCompletion> completion;
     while (!completion && std::chrono::steady_clock::now() < completion_deadline) {
         completion = completions.try_pop();
         if (!completion) {
@@ -483,13 +482,20 @@ GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency win
     GLYPHA_REQUIRE(completion.has_value());
     GLYPHA_REQUIRE(!completion->error.has_value());
 
-    maintenance->request_evaluate();
+    auto snapshot = store.maintenance_snapshot();
+    const bool feedback_already_consumed =
+        snapshot.evaluation_cycles > initial_cycles && snapshot.foreground_latency_samples == 1;
+    if (!feedback_already_consumed) {
+        maintenance->request_evaluate();
+    }
     const auto feedback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (store.maintenance_snapshot().evaluation_cycles == initial_cycles &&
+    while (!feedback_already_consumed && store.maintenance_snapshot().evaluation_cycles == initial_cycles &&
            std::chrono::steady_clock::now() < feedback_deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
-    const auto snapshot = store.maintenance_snapshot();
+    if (!feedback_already_consumed) {
+        snapshot = store.maintenance_snapshot();
+    }
     GLYPHA_REQUIRE(snapshot.evaluation_cycles > initial_cycles);
     GLYPHA_REQUIRE(snapshot.foreground_latency_samples == 1);
     GLYPHA_REQUIRE(snapshot.last_foreground_p99_ns >= 1'000'000ULL);
@@ -498,7 +504,7 @@ GLYPHA_TEST("durable mutation executor feeds one bounded maintenance latency win
     GLYPHA_REQUIRE(store.close().has_value());
 }
 
-GLYPHA_TEST("durable daemon retries one rotation invalidated while its Worker remains live") {
+GLYPHA_TEST("paired Writer preserves same-shard FIFO while compaction publication is active") {
     ServerTemporaryDirectory temporary;
     BlockingCompactionIntent blocker;
     auto opened = glyphastore::Store::open({
@@ -521,11 +527,10 @@ GLYPHA_TEST("durable daemon retries one rotation invalidated while its Worker re
     std::thread compactor{[&] { compacted = store.compact(); }};
     GLYPHA_REQUIRE(blocker.wait_until_blocked());
 
-    auto executor =
-        glyphastore::server::DurableMutationExecutor::create(store, 1, 8, 2, std::chrono::milliseconds{0});
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 8, std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(executor.has_value());
     GLYPHA_REQUIRE((*executor)->start().has_value());
-    glyphastore::server::BoundedMpscQueue<glyphastore::server::DurableMutationCompletion> completions{8};
+    glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{8};
     auto wakeup = glyphastore::server::Wakeup::create();
     GLYPHA_REQUIRE(wakeup.has_value());
 
@@ -535,7 +540,7 @@ GLYPHA_TEST("durable daemon retries one rotation invalidated while its Worker re
             .connection = {.slot = static_cast<std::uint32_t>(request_id), .generation = 1},
             .request_id = request_id,
             .worker_index = 0,
-            .kind = glyphastore::server::DurableMutationKind::put,
+            .kind = glyphastore::server::MutationKind::put,
             .key = std::move(key),
             .key_hash = hash,
             .value = owned_bytes(value),
@@ -553,21 +558,19 @@ GLYPHA_TEST("durable daemon retries one rotation invalidated while its Worker re
            std::chrono::steady_clock::now() < rotation_deadline) {
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
-    GLYPHA_REQUIRE(store.maintenance_snapshot().rotation.attempts > baseline_rotations);
+    const bool rotation_waiting = store.maintenance_snapshot().rotation.attempts > baseline_rotations;
     GLYPHA_REQUIRE(submit(502, "progress-during-lease", "second"));
 
-    std::vector<glyphastore::server::DurableMutationCompletion> observed;
-    const auto progress_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (observed.empty() && std::chrono::steady_clock::now() < progress_deadline) {
+    std::vector<glyphastore::server::MutationCompletion> observed;
+    const auto fifo_probe_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{50};
+    while (std::chrono::steady_clock::now() < fifo_probe_deadline) {
         if (auto completion = completions.try_pop()) {
             observed.push_back(std::move(*completion));
-        } else {
-            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+            break;
         }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
-    GLYPHA_REQUIRE(observed.size() == 1);
-    GLYPHA_REQUIRE(observed.front().request_id == 502);
-    GLYPHA_REQUIRE(!observed.front().error.has_value());
+    const bool no_completion_before_release = observed.empty();
 
     blocker.release();
     compactor.join();
@@ -579,16 +582,17 @@ GLYPHA_TEST("durable daemon retries one rotation invalidated while its Worker re
             std::this_thread::sleep_for(std::chrono::milliseconds{1});
         }
     }
+    GLYPHA_REQUIRE(rotation_waiting);
+    GLYPHA_REQUIRE(no_completion_before_release);
     GLYPHA_REQUIRE(observed.size() == 2);
-    GLYPHA_REQUIRE(observed.back().request_id == 501);
-    GLYPHA_REQUIRE(!observed.back().error.has_value());
+    GLYPHA_REQUIRE(observed[0].request_id == 501);
+    GLYPHA_REQUIRE(observed[1].request_id == 502);
+    GLYPHA_REQUIRE(!observed[0].error.has_value());
+    GLYPHA_REQUIRE(!observed[1].error.has_value());
     const auto stats = (*executor)->stats();
     GLYPHA_REQUIRE(stats.size() == 1);
-    GLYPHA_REQUIRE(stats[0].conflict_retries == 1);
-    GLYPHA_REQUIRE(stats[0].conflict_retry_commits == 1);
     GLYPHA_REQUIRE(compacted.has_value());
-    GLYPHA_REQUIRE(!compacted->has_value());
-    GLYPHA_REQUIRE(compacted->error().code == glyphastore::ErrorCode::sequence_conflict);
+    GLYPHA_REQUIRE(compacted->has_value());
     GLYPHA_REQUIRE(text(store.get("retry-after-lease")->bytes) == "first");
     GLYPHA_REQUIRE(text(store.get("progress-during-lease")->bytes) == "second");
 
@@ -612,10 +616,6 @@ GLYPHA_TEST("server rejects unsupported worker counts and undersized protocol bu
         !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_capacity = 0}).has_value());
     GLYPHA_REQUIRE(
         !glyphastore::server::Server::create({.port = 0, .durable_mutation_queue_bytes = 0}).has_value());
-    GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .durable_group_mutation_concurrency = 0})
-                        .has_value());
-    GLYPHA_REQUIRE(!glyphastore::server::Server::create({.port = 0, .durable_group_mutation_concurrency = 33})
-                        .has_value());
     GLYPHA_REQUIRE(!glyphastore::server::Server::create(
                         {.port = 0, .disk_read_thread_count = glyphastore::kMaximumWorkerCount + 1U})
                         .has_value());
@@ -785,9 +785,8 @@ GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded
     GLYPHA_REQUIRE(ordered_get_response->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(text(ordered_get_response->frame.value) == "first");
     GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
-    const auto mutation_stats = server.durable_mutation_stats();
+    const auto mutation_stats = server.pair_writer_stats();
     GLYPHA_REQUIRE(mutation_stats.size() == 1);
-    GLYPHA_REQUIRE(mutation_stats[0].producer_threads == 1);
     GLYPHA_REQUIRE(mutation_stats[0].queue_depth == 0);
     GLYPHA_REQUIRE(mutation_stats[0].queued_bytes == 0);
     GLYPHA_REQUIRE(mutation_stats[0].maximum_queue_depth >= 1);
@@ -862,7 +861,7 @@ GLYPHA_TEST("durable mutation queue deadline rejects only before Store execution
     GLYPHA_REQUIRE(expired_response.has_value());
     GLYPHA_REQUIRE(blocked_response->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(expired_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
-    const auto stats = server.durable_mutation_stats();
+    const auto stats = server.pair_writer_stats();
     GLYPHA_REQUIRE(stats.size() == 1);
     GLYPHA_REQUIRE(stats[0].admitted == 2);
     GLYPHA_REQUIRE(stats[0].expired_before_store == 1);
@@ -951,11 +950,7 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     const auto path = temporary.store_path();
     BlockingFileSync blocker;
     auto opened = glyphastore::server::Server::create(
-        {.port = 0,
-         .maximum_connections = 2,
-         .durable_mutation_queue_capacity = 4,
-         .durable_group_mutation_concurrency = 1,
-         .shutdown_drain_ms = 50},
+        {.port = 0, .maximum_connections = 2, .durable_mutation_queue_capacity = 4, .shutdown_drain_ms = 50},
         {.storage_mode = glyphastore::StorageMode::durable_sync,
          .data_directory = path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
@@ -991,14 +986,14 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     GLYPHA_REQUIRE(send_all(second_socket, *second));
     const auto queued_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
     while (std::chrono::steady_clock::now() < queued_deadline) {
-        const auto stats = server.durable_mutation_stats();
+        const auto stats = server.pair_writer_stats();
         if (!stats.empty() && stats[0].queue_depth >= 1) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{1});
     }
     {
-        const auto stats = server.durable_mutation_stats();
+        const auto stats = server.pair_writer_stats();
         GLYPHA_REQUIRE(!stats.empty());
         GLYPHA_REQUIRE(stats[0].queue_depth >= 1);
     }
@@ -1016,7 +1011,7 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     GLYPHA_REQUIRE(joined->error().code == glyphastore::ErrorCode::unavailable);
     GLYPHA_REQUIRE(joined->error().message.find("shutdown drain deadline") != std::string::npos);
     {
-        const auto stats = server.durable_mutation_stats();
+        const auto stats = server.pair_writer_stats();
         GLYPHA_REQUIRE(!stats.empty());
         GLYPHA_REQUIRE(stats[0].expired_before_store >= 1);
     }
@@ -1382,10 +1377,7 @@ GLYPHA_TEST("server shutdown drains in-flight durable response before closing co
     ServerTemporaryDirectory temporary;
     BlockingFileSync blocker;
     auto opened = glyphastore::server::Server::create(
-        {.port = 0,
-         .maximum_connections = 2,
-         .durable_group_mutation_concurrency = 1,
-         .shutdown_drain_ms = 5'000},
+        {.port = 0, .maximum_connections = 2, .shutdown_drain_ms = 5'000},
         {.storage_mode = glyphastore::StorageMode::durable_sync,
          .data_directory = temporary.store_path(),
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
@@ -1442,15 +1434,12 @@ GLYPHA_TEST("server shutdown drains in-flight durable response before closing co
     static_cast<void>(::close(socket));
 }
 
-GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane producers") {
+GLYPHA_TEST("paired Writer closes strict durable groups without concurrent shard mutators") {
     ServerTemporaryDirectory temporary;
     GroupBatchObserver observer;
     BlockingFileSync blocker;
     auto opened = glyphastore::server::Server::create(
-        {.port = 0,
-         .maximum_connections = 2,
-         .durable_mutation_queue_capacity = 4,
-         .durable_group_mutation_concurrency = 2},
+        {.port = 0, .maximum_connections = 2, .durable_mutation_queue_capacity = 4},
         {.storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = temporary.store_path(),
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
@@ -1519,7 +1508,7 @@ GLYPHA_TEST("durable-group daemon forms one batch from concurrent Worker-lane pr
     GLYPHA_REQUIRE(batch_stats[0].maximum_batch_bytes == batch_stats[0].committed_bytes);
     GLYPHA_REQUIRE(batch_stats[0].total_commit_duration_ns > 0);
     GLYPHA_REQUIRE(batch_stats[0].maximum_commit_duration_ns == batch_stats[0].total_commit_duration_ns);
-    GLYPHA_REQUIRE(batch_stats[0].record_limit_closes >= 1);
+    GLYPHA_REQUIRE(batch_stats[0].deadline_closes == 0);
 
     static_cast<void>(::close(first_socket));
     static_cast<void>(::close(second_socket));
@@ -1633,6 +1622,34 @@ GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies 
     GLYPHA_REQUIRE(ordered_put_response.has_value());
     GLYPHA_REQUIRE(ordered_put_response->frame.request_id == 43);
     GLYPHA_REQUIRE(ordered_put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    // Both ACKs must follow immutable durable-generation publication. These
+    // GETs exercise the captured active-file pins directly; neither key was in
+    // the recovery bootstrap generation.
+    const auto visible_after_ack = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 45,
+        .key = bytes("reactor-remains-live"),
+    });
+    const auto ordered_after_ack = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 46,
+        .key = bytes("ordered-after-cold"),
+    });
+    GLYPHA_REQUIRE(visible_after_ack.has_value());
+    GLYPHA_REQUIRE(ordered_after_ack.has_value());
+    GLYPHA_REQUIRE(send_all(responsive_socket, *visible_after_ack));
+    const auto visible_frame = receive_response(responsive_socket);
+    const auto visible = glyphastore::server::decode_response(visible_frame);
+    GLYPHA_REQUIRE(visible.has_value());
+    GLYPHA_REQUIRE(visible->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(visible->frame.value) == "stored");
+    GLYPHA_REQUIRE(send_all(blocked_socket, *ordered_after_ack));
+    const auto ordered_frame = receive_response(blocked_socket);
+    const auto ordered = glyphastore::server::decode_response(ordered_frame);
+    GLYPHA_REQUIRE(ordered.has_value());
+    GLYPHA_REQUIRE(ordered->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(ordered->frame.value) == "ordered-value");
 
     static_cast<void>(::close(blocked_socket));
     static_cast<void>(::close(responsive_socket));

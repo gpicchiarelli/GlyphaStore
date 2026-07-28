@@ -315,6 +315,15 @@ auto Worker::get_locked(const HashedKey& key, const std::uint64_t now_ns) -> Res
 
 auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> value,
                         const std::uint64_t expire_at_ns) -> Status {
+    auto published = put_locked_published(key, value, expire_at_ns);
+    if (!published) {
+        return unexpected(published.error());
+    }
+    return {};
+}
+
+auto Worker::put_locked_published(const HashedKey& key, const std::span<const std::byte> value,
+                                  const std::uint64_t expire_at_ns) -> Result<WorkerMutationPublication> {
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::put,
@@ -327,10 +336,22 @@ auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> v
     if (!ref) {
         return unexpected(ref.error());
     }
-    return publish(key, *ref, *active_);
+    const auto segment = active_;
+    if (auto visible = publish(key, *ref, *segment); !visible) {
+        return unexpected(visible.error());
+    }
+    return WorkerMutationPublication{.record = *ref, .segment = segment, .opcode = Opcode::put};
 }
 
 auto Worker::erase_locked(const HashedKey& key) -> Status {
+    auto published = erase_locked_published(key);
+    if (!published) {
+        return unexpected(published.error());
+    }
+    return {};
+}
+
+auto Worker::erase_locked_published(const HashedKey& key) -> Result<WorkerMutationPublication> {
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
@@ -341,7 +362,7 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
                     "existing record targets a segment not owned by this worker");
     }
     if (auto valid = validate_live_record(*previous_segment, *existing); !valid) {
-        return valid;
+        return unexpected(valid.error());
     }
     const RecordInput input{
         .sequence = next_sequence(),
@@ -354,15 +375,16 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
         return unexpected(ref.error());
     }
     if (auto dead = previous_segment->mark_dead(*existing); !dead) {
-        return dead;
+        return unexpected(dead.error());
     }
     const auto mutation = index_.erase(key);
     if (mutation.previous != existing) {
         static_cast<void>(previous_segment->mark_live(*existing));
         return fail(ErrorCode::corrupted_data, "index changed during record removal");
     }
+    const auto segment = active_;
     maybe_retire(*previous_segment);
-    return {};
+    return WorkerMutationPublication{.record = *ref, .segment = segment, .opcode = Opcode::erase};
 }
 
 } // namespace glyphastore

@@ -1,7 +1,9 @@
 #include "glyphastore/server/bounded_mpsc_queue.hpp"
+#include "glyphastore/server/bounded_spsc_queue.hpp"
 #include "test.hpp"
 
 #include <cstddef>
+#include <optional>
 #include <thread>
 #include <vector>
 
@@ -52,4 +54,27 @@ GLYPHA_TEST("bounded MPSC queue serializes concurrent producers") {
         ++received;
     }
     GLYPHA_REQUIRE(received == value_count);
+}
+
+GLYPHA_TEST("bounded SPSC queue preserves FIFO order across concurrent wraparound") {
+    constexpr std::size_t value_count = 100'000;
+    glyphastore::server::BoundedSpscQueue<std::size_t> queue{17};
+    GLYPHA_REQUIRE(queue.capacity() == 32);
+
+    std::jthread producer{[&] {
+        for (std::size_t value = 0; value < value_count; ++value) {
+            while (!queue.try_push(std::size_t{value})) {
+                std::this_thread::yield();
+            }
+        }
+    }};
+
+    for (std::size_t expected = 0; expected < value_count; ++expected) {
+        std::optional<std::size_t> value;
+        while (!(value = queue.try_pop())) {
+            std::this_thread::yield();
+        }
+        GLYPHA_REQUIRE(*value == expected);
+    }
+    GLYPHA_REQUIRE(queue.empty());
 }

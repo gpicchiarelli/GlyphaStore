@@ -3,6 +3,21 @@
 This directory is the entry point for GlyphaStore's technical documentation. Its purpose is to
 make the project maintainable without relying on oral history or knowledge held by one maintainer.
 
+## Current implementation boundary
+
+The production path in the repository is the Worker-affine embedded Store plus `glyphastored`.
+Each daemon executor owns one Reactor and one Worker; durable cold reads and mutations use bounded
+executors as described by the server model. The accepted Reader–Writer paired target is still
+compiled only into tests and dedicated benchmark executables and cannot be enabled in the daemon.
+Keep the current implementation and migration target distinct when reading measurements or roadmap
+material.
+
+- Current runtime: [architecture specification](spec/architecture.md) and
+  [server model](architecture/server-model.md)
+- Target runtime under gated migration: [paired-shard prototype](architecture/paired-shard-volatile-prototype.md),
+  [accepted ADR 0031](adr/paired-reader-writer-shards.md), and
+  [benchmark gates](benchmarks/paired-shards-plan.md)
+
 ## Authority and document classes
 
 When documents disagree, use this order of authority:
@@ -62,8 +77,24 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - `durable-compaction.md` describes whole-Worker durable compaction;
 - `build-hardening.md` defines compiler, linker, and artifact verification;
 - `server-model.md` explains Reactor and connection ownership;
+- `paired-shard-volatile-prototype.md` records the isolated Reader–Writer engine and TCP Reactor
+  prototype; it is not daemon architecture;
 - `where-performance-matters.md` frames when engine speed helps real apps (and when it does not);
 - `sdk-roadmap.md` prioritizes shared SDK contract work versus more languages.
+
+## Official client implementations
+
+The normative cross-language behavior is [client semantics v1](spec/client-semantics-v1.md). Each
+source package documents its language-specific API and concurrency contract:
+
+| Client | Documentation |
+| --- | --- |
+| C++ | [C++ TCP client API](reference/cpp-client-api.md) |
+| Python | [Python client README](../sdk/python/README.md) |
+| Perl | [Perl client README](../sdk/perl/README.md) |
+| Go | [Go client README](../sdk/go/README.md) |
+| Erlang/OTP | [Erlang client README](../sdk/erlang/README.md) |
+| Ruby | [Ruby client README](../sdk/ruby/README.md) |
 
 ## Decisions, development, and operations
 

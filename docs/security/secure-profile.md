@@ -3,7 +3,7 @@
 Status: normative for the secure daemon profile (ADR 0020–0022)  
 Applies to: `glyphastored` TLS/mTLS/authz; official SDK TLS credential options  
 Owner: security maintainers  
-Last reviewed: 2026-07-25
+Last reviewed: 2026-07-28
 
 This document freezes the **secure profile** operators enable before binding beyond a trusted
 loopback/private perimeter. Protocol v2 framing is unchanged; TLS is an outer transport
@@ -16,11 +16,19 @@ loopback/private perimeter. Protocol v2 framing is unchanged; TLS is an outer tr
 | Confidentiality / integrity | TLS 1.3 only (`--tls-cert` / `--tls-key`) |
 | Authentication | Mutual TLS (`--tls-client-ca`); anonymous peers rejected |
 | Authorization | Static principal capability map (`--authz-map`); default deny |
+| Worker routing | Process-lifetime keyed SipHash-2-4 advertised in the wire-v2 `INIT` identity |
 | Abuse / DoS bounds | Phase 5 accept/connection/principal rate limits + idle/request deadlines |
 | Fail closed | `--secure-profile` refuses dual cleartext+TLS (`--tls-port`), missing mTLS, missing authz map, disabled Phase 5 limits, or `--unix-socket` without `--unix-peercred` |
 
 Trusted cleartext (default loopback) remains valid **without** this profile. The secure profile is
 opt-in.
+
+> [!WARNING]
+> The daemon and C++ client implement the keyed-routing `INIT` extension. Python, Perl, Go, Erlang
+> and Ruby currently accept only the plain FNV identity and therefore fail closed against
+> `--secure-profile`. TLS 1.3, mTLS and authorization remain available to those SDKs when configured
+> explicitly without `--secure-profile`, which retains default FNV routing. Do not describe the
+> complete secure profile as cross-SDK until the keyed-routing interop matrix passes.
 
 ### Optional Unix-domain socket (Phase 8 / ADR 0029)
 
@@ -60,10 +68,11 @@ glyphastored --secure-profile \
   --log-format json
 ```
 
-Non-loopback bind without `--secure-profile` prints a warning. Leaving the trusted perimeter requires
-`--secure-profile` (Phases 2–6 audit + optional CRL). Hostile public Internet still needs an
-explicit CRL (or equivalent revocation) policy, multi-tenant Phase 8 isolation, and physical E3
-honesty ([security roadmap](roadmap.md)).
+Non-loopback bind without `--secure-profile` prints a warning. The daemon profile is the intended
+boundary for leaving a trusted perimeter, but today its SDK compatibility is limited to C++ as
+described above. Hostile public Internet still needs an explicit CRL (or equivalent revocation)
+policy, stronger multi-tenant isolation, and physical E3 honesty
+([security roadmap](roadmap.md)).
 
 ## 1a. Phase 5 abuse controls
 
@@ -126,8 +135,9 @@ Rules:
   `prefix=` is rejected. Prefix values must not contain whitespace.  
 - Prefix-scoped principals cannot scrape daemon-wide `STATS` without `admin` (ADR 0027). Process
   resources and the durable directory remain shared ([ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md)
-  deferred). Index mix seed is randomized under `--secure-profile` ([ADR 0026](../adr/0026-keyed-index-hash-seed.md));
-  Worker FNV routing is still public.
+  deferred). Index mix seed is randomized under `--secure-profile`
+  ([ADR 0026](../adr/0026-keyed-index-hash-seed.md)); Worker ownership uses the keyed SipHash routing
+  state advertised by `INIT` ([ADR 0030](../adr/0030-keyed-worker-routing.md)).
 
 ## 4. Wire status
 
@@ -164,18 +174,22 @@ No key/value payloads or PEM bytes. `--quiet` suppresses `auth` accept only. `ST
 ## 6. SDK checklist
 
 Every official SDK in the same release must expose TLS 1.3 connect options with hostname verify on
-by default (lab `insecure_skip_verify` / equivalent only). mTLS uses the same client cert/key
-paths. Cleartext remains available for trusted deployments.
+by default (lab `insecure_skip_verify` / equivalent only). mTLS uses the same client cert/key paths.
+To claim complete secure-profile compatibility it must also parse the plain/extended `INIT`
+identity, implement keyed SipHash routing, preserve the routing state across reconnect, and pass the
+secure-profile interop matrix. Only C++ currently meets that routing requirement. Cleartext remains
+available for trusted deployments.
 
 ## 7. Residual risks (still block hostile public bind)
 
 - Live AIA OCSP HTTP lookups (intentionally unsupported; use `--tls-crl` + optional
   `--tls-ocsp-fail-closed`).  
-- Hostile multi-tenant isolation beyond key-prefix + Index seed + STATS gate (Phase 8 remainder:
-  keyed **Worker** routing, per-tenant data-dir / process isolation, at-rest crypto). UDS/`SO_PEERCRED`
+- Hostile multi-tenant isolation beyond key-prefix + keyed Index/Worker routing + STATS gate
+  (Phase 8 remainder: per-tenant data-dir / process isolation and at-rest crypto). UDS/`SO_PEERCRED`
   ([ADR 0029](../adr/0029-uds-peercred.md)) is optional local transport/authn only — not multi-tenant
   isolation. Prefix scope + STATS admin gate + keyed Index seed improve posture but do **not**
   certify adversarial multi-tenant deployments.  
+- Non-C++ SDK support for the keyed-routing identity required by `--secure-profile`.
 - Physical E3/E4 power-loss certification (storage, not wire).
 
 Phase 5 abuse controls and Phase 6 audit + local CRL fail-closed are implemented. Configure
@@ -186,6 +200,7 @@ multi-tenant Phase 8 remainder and E3 as open.
 - [ADR 0020](../adr/0020-tls-outer-transport.md) · [ADR 0021](../adr/0021-secure-profile-authentication.md) ·
   [ADR 0022](../adr/0022-authorization-capabilities.md) · [ADR 0025](../adr/0025-key-prefix-tenant-scope.md) ·
   [ADR 0026](../adr/0026-keyed-index-hash-seed.md) · [ADR 0027](../adr/0027-stats-isolation-prefix-principals.md) ·
-  [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) · [ADR 0029](../adr/0029-uds-peercred.md)  
+  [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) · [ADR 0029](../adr/0029-uds-peercred.md) ·
+  [ADR 0030](../adr/0030-keyed-worker-routing.md)
 - [Threat model](threat-model.md) · [Security roadmap](roadmap.md) ·
   [Wire protocol v2](../spec/wire-protocol-v2.md) · [Client semantics v1](../spec/client-semantics-v1.md)

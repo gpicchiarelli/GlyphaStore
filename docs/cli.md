@@ -127,6 +127,12 @@ glyphastored --secure-profile --bind 127.0.0.1 --port 7379 \
 glyphastored --unix-socket /var/run/glyphastore.sock --unix-peercred --authz-map ...
 ```
 
+`--secure-profile` also selects keyed SipHash Worker routing. The daemon and C++ client implement
+the extended wire-v2 `INIT` identity; Python, Perl, Go, Erlang and Ruby currently fail closed on it.
+Those SDKs can use explicitly configured TLS/mTLS/authz without `--secure-profile` while default FNV
+routing remains active. See the [SDK roadmap](architecture/sdk-roadmap.md) before choosing a client
+for the complete profile.
+
 `--tls-cert` and `--tls-key` are both required when any TLS path is set. Without `--tls-port`, TLS
 makes `--port` TLS-only. With `--tls-port`, cleartext and TLS use distinct ports (collision fails
 closed). `--secure-profile` requires TLS + mTLS + `--authz-map`, refuses `--tls-port`, applies

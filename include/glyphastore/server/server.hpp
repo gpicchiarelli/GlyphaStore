@@ -23,8 +23,9 @@ struct ServerRuntime;
 
 class Server final {
   public:
-    // A missing Store Worker count inherits ReactorConfig::worker_count. An
-    // explicit Store count must match because each executor owns one Worker.
+    // A missing Store shard count inherits ReactorConfig::worker_count. An
+    // explicit count must match because each ShardPair owns one Reader/Reactor
+    // and one Writer.
     [[nodiscard]] static auto create(const ReactorConfig& config = {}, StoreConfig store_config = {})
         -> Result<std::unique_ptr<Server>>;
     ~Server();
@@ -49,10 +50,10 @@ class Server final {
     [[nodiscard]] auto adopted_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto active_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
-    [[nodiscard]] auto durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats>;
+    [[nodiscard]] auto pair_writer_stats() const -> std::vector<PairWriterStats>;
     [[nodiscard]] auto durable_batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
-        return !failed_.load(std::memory_order_acquire);
+        return !failed_.load(std::memory_order_acquire) && pair_writers_ && pair_writers_->healthy();
     }
     [[nodiscard]] auto stop_requested() const noexcept -> bool {
         return stop_requested_.load(std::memory_order_acquire);
@@ -79,7 +80,7 @@ class Server final {
     ReactorConfig config_;
     std::unique_ptr<Store> store_;
     std::unique_ptr<DiskReadExecutor> disk_reads_;
-    std::unique_ptr<DurableMutationExecutor> durable_mutations_;
+    std::unique_ptr<PairWriterPool> pair_writers_;
     ConnectionHandoffMesh mesh_;
     std::vector<std::unique_ptr<Reactor>> reactors_;
     std::vector<std::thread> threads_;

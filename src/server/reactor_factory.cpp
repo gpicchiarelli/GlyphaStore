@@ -7,7 +7,7 @@
 namespace glyphastore::server {
 
 auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, ConnectionHandoffMesh& mesh,
-                                DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations,
+                                DiskReadExecutor& disk_reads, PairWriterPool& pair_writers,
                                 const ServerLifecycleProbes lifecycle_probes,
                                 std::shared_ptr<TlsContext> tls_context,
                                 std::shared_ptr<AbuseController> abuse,
@@ -31,8 +31,7 @@ auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, Conne
     }
     if (!security_audit && (config.security_audit_events || config.authz.enabled() ||
                             (tls_context && tls_context->mtls_enabled()) || config.unix_peercred)) {
-        security_audit =
-            std::make_shared<SecurityAudit>(config.security_audit_events, config.quiet);
+        security_audit = std::make_shared<SecurityAudit>(config.security_audit_events, config.quiet);
     }
 
     std::vector<std::unique_ptr<Reactor>> reactors;
@@ -73,10 +72,10 @@ auto ReactorFactory::create_all(const ReactorConfig& config, Store& store, Conne
             }
             unix_listener = std::move(*bound);
         }
-        auto reactor = Reactor::create(config, executor, std::move(cleartext_listener),
-                                       std::move(tls_listener), std::move(unix_listener), store, mesh,
-                                       disk_reads, durable_mutations, lifecycle_probes, tls_context, abuse,
-                                       security_audit);
+        auto reactor =
+            Reactor::create(config, executor, std::move(cleartext_listener), std::move(tls_listener),
+                            std::move(unix_listener), store, mesh, disk_reads, pair_writers, lifecycle_probes,
+                            tls_context, abuse, security_audit);
         if (!reactor) {
             return unexpected(reactor.error());
         }

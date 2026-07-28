@@ -65,7 +65,7 @@ is_deeply(\@reencoded_requests, \@expected_requests, 'request codec round-trips 
 
 my @expected_responses = frames(fixture('wire_responses_v2.hex'));
 my @responses = map { decode_response($_) } @expected_responses;
-is_deeply([map { $_->{status} } @responses], [0 .. 7], 'response decoder covers every status');
+is_deeply([map { $_->{status} } @responses], [0 .. 8], 'response decoder covers every status');
 is($responses[0]->{value}, 'GlyphaStore/2', 'identity value is binary exact');
 is($responses[6]->{owner_worker}, 2, 'wrong-owner fixture preserves owner');
 my @reencoded_responses = map {

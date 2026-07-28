@@ -1,19 +1,19 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
-#include "glyphastore/server/bounded_mpsc_queue.hpp"
+#include "glyphastore/server/bounded_spsc_queue.hpp"
 #include "glyphastore/server/connection_token.hpp"
 #include "glyphastore/server/latency_histogram.hpp"
+#include "glyphastore/server/pair_read_generation.hpp"
 #include "glyphastore/server/wakeup.hpp"
 #include "glyphastore/store/store.hpp"
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
-#include <mutex>
 #include <optional>
 #include <string>
 #include <thread>
@@ -21,18 +21,17 @@
 
 namespace glyphastore::server {
 
-enum class DurableMutationKind : std::uint8_t { put, erase };
+enum class MutationKind : std::uint8_t { put, erase };
 
-struct DurableMutationCompletion final {
+struct MutationCompletion final {
     ConnectionToken connection;
     std::uint64_t request_id{};
     std::size_t admission_bytes{};
     std::optional<Error> error;
 };
 
-struct DurableMutationWorkerStats final {
+struct PairWriterStats final {
     std::size_t worker_index{};
-    std::size_t producer_threads{};
     std::size_t queue_depth{};
     std::size_t queued_bytes{};
     std::size_t maximum_queue_depth{};
@@ -51,42 +50,50 @@ struct DurableMutationWorkerStats final {
     LatencyHistogram service_histogram{};
 };
 
-struct DurableMutationTask final {
+struct MutationTask final {
     ConnectionToken connection;
     std::uint64_t request_id{};
     std::size_t worker_index{};
-    DurableMutationKind kind{};
+    MutationKind kind{};
     std::string key;
     std::uint64_t key_hash{};
     std::vector<std::byte> value;
     std::uint64_t expire_at_ns{};
     std::size_t admission_bytes{};
     std::chrono::steady_clock::time_point admitted_at{};
-    BoundedMpscQueue<DurableMutationCompletion>* completions{};
+    BoundedSpscQueue<MutationCompletion>* completions{};
     Wakeup* wakeup{};
 };
 
-// One bounded FIFO lane per Store Worker. A lane mutex protects only queue
-// admission/removal; durable Store work always runs after that mutex is
-// released. Separate lanes prevent a slow Worker from serializing admission or
-// execution for unrelated Workers.
-class DurableMutationExecutor final {
+// Paired Writer runtime. Every Store shard owns exactly one persistent Writer
+// thread and one bounded SPSC mutation lane.
+// The paired Reader is the sole producer, so the normal mutation path contains
+// no mutex, condition variable, allocation for queue cells, or competing
+// mutator. The same lane serves volatile and durable Stores.
+class PairWriterPool final {
   public:
     [[nodiscard]] static auto create(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
-                                     std::size_t threads_per_worker,
                                      std::chrono::milliseconds maximum_queue_wait)
-        -> Result<std::unique_ptr<DurableMutationExecutor>>;
-    ~DurableMutationExecutor();
+        -> Result<std::unique_ptr<PairWriterPool>>;
+    ~PairWriterPool();
 
-    DurableMutationExecutor(const DurableMutationExecutor&) = delete;
-    auto operator=(const DurableMutationExecutor&) -> DurableMutationExecutor& = delete;
-    DurableMutationExecutor(DurableMutationExecutor&&) = delete;
-    auto operator=(DurableMutationExecutor&&) -> DurableMutationExecutor& = delete;
+    PairWriterPool(const PairWriterPool&) = delete;
+    auto operator=(const PairWriterPool&) -> PairWriterPool& = delete;
+    PairWriterPool(PairWriterPool&&) = delete;
+    auto operator=(PairWriterPool&&) -> PairWriterPool& = delete;
 
     [[nodiscard]] auto start() -> Status;
-    [[nodiscard]] auto try_submit(DurableMutationTask task) -> bool;
+    [[nodiscard]] auto try_submit(MutationTask task) -> bool;
     void note_rejected(std::size_t worker_index) noexcept;
-    [[nodiscard]] auto stats() const -> std::vector<DurableMutationWorkerStats>;
+    [[nodiscard]] auto stats() const -> std::vector<PairWriterStats>;
+    // Acquire one immutable view per Reader event-loop turn and report the
+    // adopted epoch. The paired Writer retains that epoch until a later turn
+    // reports quiescence; GET performs no refcount or lock operation.
+    [[nodiscard]] auto adopt_read_generation(std::size_t worker_index) const noexcept
+        -> const PairReadGeneration*;
+    [[nodiscard]] auto healthy() const noexcept -> bool {
+        return healthy_.load(std::memory_order_acquire);
+    }
     // Stops admission and drains every admitted mutation before returning.
     // nullopt waits unbounded. A set deadline expires remaining queued (pre-Store)
     // work as unavailable once it elapses (including a zero deadline, which arms
@@ -98,21 +105,27 @@ class DurableMutationExecutor final {
   private:
     struct Lane;
 
-    DurableMutationExecutor(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
-                            std::size_t threads_per_worker, std::chrono::milliseconds maximum_queue_wait);
+    PairWriterPool(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
+                   std::chrono::milliseconds maximum_queue_wait,
+                   std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations);
     void run(std::size_t worker_index) noexcept;
     void note_worker_exit() noexcept;
+    [[nodiscard]] auto begin_submission() noexcept -> bool;
+    void finish_submission() noexcept;
+
+    static constexpr auto kAdmissionClosed = std::size_t{1}
+                                             << (std::numeric_limits<std::size_t>::digits - 1U);
+    static constexpr auto kAdmissionCountMask = kAdmissionClosed - 1U;
 
     Store& store_;
-    const std::size_t threads_per_worker_;
     const std::chrono::milliseconds maximum_queue_wait_;
     std::vector<std::unique_ptr<Lane>> lanes_;
-    std::mutex lifecycle_mutex_;
-    std::condition_variable drained_;
     std::atomic_size_t active_workers_{};
+    std::atomic_size_t admission_state_{};
     std::atomic_bool started_{};
     std::atomic_bool stopping_{};
     std::atomic_bool expire_remaining_{};
+    std::atomic_bool healthy_{true};
 };
 
 } // namespace glyphastore::server

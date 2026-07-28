@@ -6,6 +6,10 @@ transient `unavailable` reconnects while routing metadata is stable), and preser
 mutation outcomes. Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
+Current routing limit: the Perl client accepts the plain FNV `GlyphaStore/2` identity only. It
+fails closed when the daemon advertises the keyed SipHash `INIT` extension used by
+`--secure-profile`; see the [SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+
 **Security posture:** cleartext TCP by default (no authentication). Opt-in TLS 1.3 via
 `tls => 1` with `tls_ca` / `ca_file`, `cert_file` / `key_file` (mTLS), `server_name`, and
 `insecure_skip_verify` (lab only). Requires `IO::Socket::SSL`; if missing, TLS requests fail closed.
@@ -69,38 +73,51 @@ cd sdk/perl && perl Makefile.PL && make && make test && make install
 `GlyphaStore::Protocol` exposes the full bidirectional codec and FNV-1a Worker routing. See
 [PACKAGING.md](PACKAGING.md) for PAUSE/MetaCPAN upload steps.
 
-## Performance
+## Performance model
 
-### Production (what actually scales)
+The client is pure Perl, but its design is deliberately pipeline-first rather than a sequence of
+object-heavy synchronous calls:
 
-- Prefer deep ordered pipelines and `execute_worker_pipelines` / `execute_batch` so Workers overlap
-  inside one process.
-- Run **one client per process** (Hypnotoad / prefork). Do not share a client across ithreads; that
-  is the documented contract. Process count is the parallel scale-out knob.
-- An event-loop adapter (Mojolicious / `IO::Async` / AnyEvent) is a later roadmap item: it raises
-  web-app concurrency by not blocking the reactor, not the sync microbench ops/s number.
+- one TCP connection is created and bound per Worker;
+- a Worker pipeline is encoded into one contiguous scalar and drained under one absolute deadline;
+- response bytes accumulate in a reusable connection buffer and multiple complete frames are parsed
+  from each `sysread`;
+- `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
+- `execute_batch` hashes once to group requests, overlaps the Worker pipelines, then restores caller
+  order.
 
-### Microbench vs Python
+Those choices reduce syscalls and expose server parallelism. They do **not** make the current Perl
+path allocation-free: public requests and results are hash references, encoded frames are assembled
+for each call, and successful GET values become owned Perl scalars. These are measurable costs and
+must not be described as negligible without a profile.
 
-The pure-Perl hot path is already tight (`pack 'Q<'`, zero-copy octets, integer FNV, in-place
-`sysread`, reused `IO::Select`, `encode_request_hot`). The remaining gap versus Python sequential at
-deep pipelines (~2–2.5× in the 0.1.0 sequential baseline) is not closed by further generic
-micro-tuning. Compare Perl concurrent (`workers>1`, default harness) to a fair peer; the published
-0.1.0 Perl rows were largely sequential.
+For a throughput-sensitive application:
 
-The only large remaining SDK-side leap is optional **XS on encode/decode/FNV** (heavier packaging).
-FFI wrapping the C++ client is out of design. Secondary wins (fewer hashrefs, less copying) are
-typically single-digit percent.
+- send ordered pipelines instead of alternating synchronous `put`/`get` calls;
+- use `execute_batch` for mixed owners or `execute_worker_pipelines` when work is already sharded;
+- create the client after `fork` and use one client per prefork process; do not share it across
+  ithreads;
+- choose pipeline depth from a throughput **and** tail-latency sweep on the deployment workload.
 
-`connections_per_worker` waits on measurement, same as the other SDKs. Suite 0.2 should add p50/p95
-latency so bottlenecks are visible.
+Optimization work follows measured cost, in this order: Perl-level allocation/copy reduction,
+buffer reuse and parser shape; syscall and scheduling behavior; then an optional narrow XS codec or
+routing kernel if profiles still place CPU there. XS is a possible tool, not a pre-decided answer.
+Wrapping the C++ client through FFI is outside the current native-SDK design.
+
+`connections_per_worker` and an event-loop adapter remain measurement-gated. More connections may
+help hot-Worker concurrency while increasing ordering, memory and reconnect complexity; an async
+adapter may improve application concurrency without improving single-pipeline CPU throughput.
 
 ```bash
-# published sequential + concurrent matrix:
+# Sequential and concurrent matrix from the repository root:
 ./scripts/benchmark_perl_client.sh
 
-# one config (default overlaps Workers when workers>1):
-perl benchmarks/client_benchmark.pl --port 7379 --workers 4 \
+# One configuration (default overlaps Workers when workers > 1):
+perl sdk/perl/benchmarks/client_benchmark.pl --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 # --no-concurrent forces sequential drain across Workers
 ```
+
+Compare SDKs only through `./scripts/benchmark_sdk_clients.sh`, which fixes the validated workload
+and result semantics. Do not promote a single local run or an old cross-runtime ratio into a client
+limit.

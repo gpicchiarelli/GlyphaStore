@@ -130,7 +130,12 @@ GLYPHA_TEST("paired experimental Reactor pins a generation only across slow sock
     GLYPHA_REQUIRE(*found == value);
     GLYPHA_REQUIRE(!running.failed());
     const auto reactor = running.reactor().stats();
-    const auto pair = running.reactor().pair_stats();
+    auto pair = running.reactor().pair_stats();
+    const auto unpin_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (pair.generation_output_pins != 0 && std::chrono::steady_clock::now() < unpin_deadline) {
+        std::this_thread::yield();
+        pair = running.reactor().pair_stats();
+    }
     GLYPHA_REQUIRE(reactor.partial_writes > 0);
     GLYPHA_REQUIRE(reactor.slow_output_pins > 0);
     GLYPHA_REQUIRE(pair.generation_output_pin_high_watermark > 0);

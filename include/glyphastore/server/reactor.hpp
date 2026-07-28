@@ -3,10 +3,11 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/server/abuse_limits.hpp"
 #include "glyphastore/server/authz.hpp"
+#include "glyphastore/server/bounded_spsc_queue.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
 #include "glyphastore/server/disk_read_executor.hpp"
-#include "glyphastore/server/durable_mutation_executor.hpp"
+#include "glyphastore/server/pair_writer.hpp"
 #include "glyphastore/server/poller.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/security_audit.hpp"
@@ -53,16 +54,13 @@ struct ReactorConfig {
     // rings are fixed-capacity and reject excess cold reads as overloaded.
     std::size_t disk_read_thread_count{};
     std::size_t disk_read_queue_capacity{256};
-    // Per-Worker durable mutation lane and completion-ring capacity. Volatile
-    // stores do not create mutation lanes and pay no asynchronous hop.
+    // Per-pair mutation and completion-ring capacity. Every PUT/ERASE crosses
+    // the Reader -> Writer SPSC lane, for volatile and durable Stores alike.
     std::size_t durable_mutation_queue_capacity{256};
     std::size_t durable_mutation_queue_bytes{16U * 1024U * 1024U};
-    // Used only by durable-group. Multiple producers are required for a batch
-    // to accumulate while earlier producers await strict acknowledgement.
-    std::size_t durable_group_mutation_concurrency{4};
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
-    std::uint32_t durable_mutation_queue_wait_ms{1000};
+    std::uint32_t durable_mutation_queue_wait_ms{};
     // Bound how long join() waits after stop for connection drain and durable
     // mutation lanes. Zero means wait unbounded. The same deadline starts when
     // request_stop() is first observed: listeners stop accepting, idle
@@ -99,7 +97,7 @@ class Reactor final {
     [[nodiscard]] static auto
     create(const ReactorConfig& config, std::size_t executor_id, TcpListener cleartext_listener,
            TcpListener tls_listener, UnixListener unix_listener, Store& store, ConnectionHandoffMesh& mesh,
-           DiskReadExecutor& disk_reads, DurableMutationExecutor* durable_mutations,
+           DiskReadExecutor& disk_reads, PairWriterPool& pair_writers,
            ServerLifecycleProbes lifecycle_probes = {}, std::shared_ptr<TlsContext> tls = {},
            std::shared_ptr<AbuseController> abuse = {}, std::shared_ptr<SecurityAudit> security_audit = {})
         -> Result<std::unique_ptr<Reactor>>;
@@ -121,7 +119,7 @@ class Reactor final {
     void close_all_connections() noexcept;
     [[nodiscard]] auto idle_for_shutdown() const noexcept -> bool {
         return active_connections_.load(std::memory_order_relaxed) == 0 && disk_reads_outstanding_ == 0 &&
-               durable_mutations_outstanding_ == 0;
+               mutations_outstanding_ == 0;
     }
     // Cleartext listen port, or 0 when this reactor has no cleartext listener.
     [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t {
@@ -187,10 +185,9 @@ class Reactor final {
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener cleartext_listener,
             TcpListener tls_listener, UnixListener unix_listener, Poller poller, Wakeup wakeup, Store& store,
-            ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
-            DurableMutationExecutor* durable_mutations, ServerLifecycleProbes lifecycle_probes,
-            std::shared_ptr<TlsContext> tls, std::shared_ptr<AbuseController> abuse,
-            std::shared_ptr<SecurityAudit> security_audit);
+            ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads, PairWriterPool& pair_writers,
+            ServerLifecycleProbes lifecycle_probes, std::shared_ptr<TlsContext> tls,
+            std::shared_ptr<AbuseController> abuse, std::shared_ptr<SecurityAudit> security_audit);
 
     [[nodiscard]] auto accept_ready(bool tls_endpoint) -> Status;
     [[nodiscard]] auto accept_unix_ready() -> Status;
@@ -207,7 +204,7 @@ class Reactor final {
     [[nodiscard]] auto process_messages() -> Status;
     [[nodiscard]] auto process_handoffs() -> Status;
     [[nodiscard]] auto process_disk_read_completions() -> Status;
-    [[nodiscard]] auto process_durable_mutation_completions() -> Status;
+    [[nodiscard]] auto process_mutation_completions() -> Status;
     [[nodiscard]] auto update_connection_interest(ConnectionToken token) -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;
@@ -233,21 +230,26 @@ class Reactor final {
     WorkerRoutingState worker_routing_{};
     ConnectionHandoffMesh& mesh_;
     DiskReadExecutor& disk_reads_;
-    DurableMutationExecutor* durable_mutations_{};
+    PairWriterPool& pair_writers_;
+    // One generation pin per event-loop turn, not one shared_ptr operation per
+    // GET. Durable entries additionally retain their exact immutable file
+    // generation while asynchronous materialization is in flight.
+    const PairReadGeneration* local_read_generation_{};
+    bool durable_store_{};
     ServerLifecycleProbes lifecycle_probes_{};
     std::shared_ptr<TlsContext> tls_;
     std::shared_ptr<AbuseController> abuse_;
     std::shared_ptr<SecurityAudit> security_audit_;
     BoundedMpscQueue<DiskReadCompletion> disk_read_completions_;
-    BoundedMpscQueue<DurableMutationCompletion> durable_mutation_completions_;
+    BoundedSpscQueue<MutationCompletion> mutation_completions_;
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
     std::vector<IoEvent> events_;
     std::atomic<std::size_t> active_connections_{};
     std::size_t adopted_connections_{};
     std::size_t disk_reads_outstanding_{};
-    std::size_t durable_mutations_outstanding_{};
-    std::size_t durable_mutation_bytes_outstanding_{};
+    std::size_t mutations_outstanding_{};
+    std::size_t mutation_bytes_outstanding_{};
     bool shutting_down_{};
 };
 

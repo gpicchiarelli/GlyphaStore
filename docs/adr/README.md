@@ -37,13 +37,13 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0009](0009-public-read-ownership.md) | Owning public reads; pinned reads reserved | accepted | pinned API remains unimplemented |
 | [0010](0010-durable-periodic-policy.md) | Periodic durability policy | amended | amended by 0011 batching |
 | [0011](0011-durable-group-commit.md) | Strict and periodic group batching | accepted | amends 0008 and 0010 |
-| [0012](0012-worker-affine-reactors.md) | One Reactor/executor per Worker; one-time connection handoff | accepted | depends on 0006; exposed by 0013 |
+| [0012](0012-worker-affine-reactors.md) | One Reactor/executor per Worker; one-time connection handoff | amended | amended by 0031: Reactor is the Reader half of a mandatory pair |
 | [0013](0013-native-wire-protocol-v2.md) | Explicit native binary protocol v2 | accepted | exposes 0006 and 0012 |
 | [0014](0014-crc32c.md) | CRC32C Castagnoli parameters and role | accepted | persistent-format dependency |
 | [0015](0015-whole-worker-compaction.md) | Whole-Worker sealed-history durable compaction | accepted | preserves 0003/0004/0008 |
 | [0016](0016-bounded-cold-read-executor.md) | Bounded async durable cold reads outside Reactors | accepted | amends 0012; preserves 0013 ordering |
 | [0017](0017-bounded-durable-hot-cache.md) | Bounded durable hot cache with pinned active fallback | accepted | preserves 0008; builds on 0016 |
-| [0018](0018-bounded-durable-mutation-lanes.md) | Bounded Worker-affine durable mutation lanes | accepted | preserves 0008, 0011, 0012 |
+| [0018](0018-bounded-durable-mutation-lanes.md) | Bounded Worker-affine durable mutation lanes | amended | replaced incrementally by the one-Writer SPSC lane in 0031 |
 | [0019](0019-client-error-retry-timeout.md) | Official client error/retry/timeout contract | accepted | detailed by client semantics v1; depends on 0013 |
 | [0020](0020-tls-outer-transport.md) | TLS 1.3 outer transport for secure profile | accepted | LibreSSL first-class on OpenBSD; enables 0021 |
 | [0021](0021-secure-profile-authentication.md) | mTLS authentication for secure profile | accepted | depends on 0020; enables 0022 |
@@ -56,7 +56,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0028](0028-per-tenant-data-dir-deferred.md) | Per-tenant data-dir isolation | proposed | deferred; do not half-break single Store |
 | [0029](0029-uds-peercred.md) | UDS transport + optional peercred principals | accepted | amends 0021; Phase 8 local authn |
 | [0030](0030-keyed-worker-routing.md) | Keyed Worker routing (SipHash + Manifest seed) | accepted | amends 0006, 0024, 0026 |
-| [0031](paired-reader-writer-shards.md) | Shard obbligatori a coppie Reader–Writer | proposed | migrazione pianificata di 0005, 0012, 0016, 0018, 0023, 0030 |
+| [0031](paired-reader-writer-shards.md) | Shard obbligatori a coppie Reader–Writer | accepted | modello obbligatorio per 0.1.0; amends 0005, 0012, 0016, 0018, 0023, 0030 |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).

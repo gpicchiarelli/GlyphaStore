@@ -15,11 +15,9 @@ auto Server::start() -> Status {
     if (auto started = disk_reads_->start(); !started) {
         return started;
     }
-    if (durable_mutations_) {
-        if (auto started = durable_mutations_->start(); !started) {
-            disk_reads_->stop();
-            return started;
-        }
+    if (auto started = pair_writers_->start(); !started) {
+        disk_reads_->stop();
+        return started;
     }
     try {
         for (std::size_t executor = 0; executor < reactors_.size(); ++executor) {
@@ -33,9 +31,7 @@ auto Server::start() -> Status {
             }
         }
         threads_.clear();
-        if (durable_mutations_) {
-            static_cast<void>(durable_mutations_->stop_and_drain());
-        }
+        static_cast<void>(pair_writers_->stop_and_drain());
         disk_reads_->stop();
         return fail(ErrorCode::io_error, std::string{"failed to start server executor: "} + exception.what());
     }
@@ -68,21 +64,19 @@ auto Server::join() -> Status {
     }
     threads_.clear();
     Status drained{};
-    if (durable_mutations_) {
-        std::optional<std::chrono::milliseconds> remaining;
-        if (config_.shutdown_drain_ms > 0) {
-            const std::lock_guard lock{shutdown_mutex_};
-            if (shutdown_deadline_.has_value()) {
-                const auto left = *shutdown_deadline_ - std::chrono::steady_clock::now();
-                remaining = left <= std::chrono::steady_clock::duration::zero()
-                                ? std::chrono::milliseconds{0}
-                                : std::chrono::duration_cast<std::chrono::milliseconds>(left);
-            } else {
-                remaining = std::chrono::milliseconds{config_.shutdown_drain_ms};
-            }
+    std::optional<std::chrono::milliseconds> remaining;
+    if (config_.shutdown_drain_ms > 0) {
+        const std::lock_guard lock{shutdown_mutex_};
+        if (shutdown_deadline_.has_value()) {
+            const auto left = *shutdown_deadline_ - std::chrono::steady_clock::now();
+            remaining = left <= std::chrono::steady_clock::duration::zero()
+                            ? std::chrono::milliseconds{0}
+                            : std::chrono::duration_cast<std::chrono::milliseconds>(left);
+        } else {
+            remaining = std::chrono::milliseconds{config_.shutdown_drain_ms};
         }
-        drained = durable_mutations_->stop_and_drain(remaining);
     }
+    drained = pair_writers_->stop_and_drain(remaining);
     if (disk_reads_) {
         disk_reads_->stop();
     }

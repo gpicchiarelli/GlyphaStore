@@ -47,7 +47,7 @@ The public runtime modules are:
 =item L<GlyphaStore::Client>
 
 Synchronous TCP client API (C<get>, C<put>, C<erase>, C<ping>,
-C<execute_pipeline>).
+C<execute_pipeline>, C<execute_batch>, and C<execute_worker_pipelines>).
 
 =item L<GlyphaStore::Protocol>
 

@@ -3,7 +3,7 @@
 Status: roadmap  
 Applies to: daemon TCP surface, official SDKs, durable namespace ops  
 Owner: security maintainers  
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-28
 
 This roadmap turns [threat-model.md](threat-model.md) and the security rows in
 [production-readiness.md](../production-readiness.md) / [v1-production-roadmap.md](../v1-production-roadmap.md)
@@ -48,10 +48,11 @@ changes require ADRs and compatibility evidence first.
 | Audit | Phase 6: auth/authz/tls JSON audit events + `STATS` counters; lifecycle JSON logs |
 | At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
 | Revocation | Optional `--tls-crl` fail-closed (+ `--tls-ocsp-fail-closed` requires CRL; no live OCSP HTTP) |
-| Safe deployment | Embedded trusted caller, or daemon on trusted loopback/private network only |
+| Safe deployment | Trusted loopback/private deployment; complete secure-profile SDK interop is currently C++ only because keyed routing has not landed in the other SDKs |
 
-**Beyond trusted boundary:** Phases 0–5 complete with published specs, ADR(s), interop tests, and an
-ops runbook. Internet / hostile multi-tenant exposure is unsupported until then.
+**Beyond trusted boundary:** the daemon controls through Phase 6 are implemented, but the complete
+secure-profile client matrix is not: only C++ decodes the keyed-routing `INIT` extension. Internet /
+hostile multi-tenant exposure remains unsupported.
 
 ## Dependency graph (high level)
 
@@ -247,7 +248,7 @@ Do **not** schedule these as blockers for “leave loopback”:
 | Per-tenant data-dir / Store isolation | **Deferred** — [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) (proposed); use one process per trust domain |
 | Unix-domain socket transport | **Done (2026-07-25)** — [ADR 0029](../adr/0029-uds-peercred.md); `--unix-socket` + optional `--unix-peercred` (`unix:uid=N`); not a TLS replacement |
 | At-rest encryption / MAC for segments | Key management, rotation, compaction, backup — large design |
-| Keyed Worker routing (SipHash + wire seed) | **done (2026-07-25)** — [ADR 0030](../adr/0030-keyed-worker-routing.md); default FNV unchanged |
+| Keyed Worker routing (SipHash + wire seed) | **daemon + C++ client done (2026-07-25); SDK train open** — [ADR 0030](../adr/0030-keyed-worker-routing.md); Python/Perl/Go/Erlang/Ruby currently fail closed on the extended identity |
 | Protocol-level compression / multiplexing | Unrelated; separate ADRs |
 
 ---

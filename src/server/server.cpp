@@ -36,9 +36,8 @@ namespace {
 
 Server::Server(ReactorConfig config, ServerRuntime&& runtime)
     : config_(std::move(config)), store_(std::move(runtime.store)),
-      disk_reads_(std::move(runtime.disk_reads)),
-      durable_mutations_(std::move(runtime.durable_mutations)), mesh_(std::move(runtime.mesh)),
-      reactors_(std::move(runtime.reactors)) {
+      disk_reads_(std::move(runtime.disk_reads)), pair_writers_(std::move(runtime.pair_writers)),
+      mesh_(std::move(runtime.mesh)), reactors_(std::move(runtime.reactors)) {
     threads_.reserve(store_->worker_count());
     affinity_results_.resize(store_->worker_count());
 }
@@ -63,7 +62,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         .context = server.get(),
     };
     auto reactors = builder.create_reactors(*server->store_, server->mesh_, *server->disk_reads_,
-                                            server->durable_mutations_.get(), lifecycle_probes);
+                                            *server->pair_writers_, lifecycle_probes);
     if (!reactors) {
         return unexpected(reactors.error());
     }
@@ -108,7 +107,7 @@ auto Server::stats_report() const -> Result<std::string> {
         .ready = ready(),
         .store_operational = store_operational(),
         .maintenance = store_->maintenance_snapshot(),
-        .mutations = durable_mutation_stats(),
+        .mutations = pair_writer_stats(),
         .batches = durable_batch_stats(),
     };
     snapshot.executors.reserve(reactors_.size());
@@ -154,8 +153,8 @@ auto Server::executor_affinity_results() const -> std::vector<ExecutorAffinityRe
     return affinity_results_;
 }
 
-auto Server::durable_mutation_stats() const -> std::vector<DurableMutationWorkerStats> {
-    return durable_mutations_ ? durable_mutations_->stats() : std::vector<DurableMutationWorkerStats>{};
+auto Server::pair_writer_stats() const -> std::vector<PairWriterStats> {
+    return pair_writers_->stats();
 }
 
 auto Server::durable_batch_stats() const -> std::vector<DurableBatchWorkerStats> {

@@ -972,6 +972,69 @@ auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t wor
     return store.impl_->durable_runtime->complete_get(std::move(read.state_->prepared), cancelled);
 }
 
+auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index)
+    -> Result<std::vector<DurablePublishedRead>> {
+    if (worker_index >= store.worker_count()) {
+        return fail(ErrorCode::invalid_argument,
+                    "durable read-generation snapshot targets an invalid Worker");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (!store.impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "durable read-generation snapshot requires a durable Store");
+    }
+    return store.impl_->durable_runtime->snapshot_published_reads(worker_index);
+}
+
+auto detail::StoreAccess::capture_durable_read(Store& store, const std::size_t worker_index,
+                                               const HashedKey& key) -> Result<DurablePublishedRead> {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "durable read publication targets the wrong Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (!store.impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "durable read publication requires a durable Store");
+    }
+    return store.impl_->durable_runtime->capture_published_read(worker_index, key);
+}
+
+auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std::size_t worker_index,
+                                                        DurablePublishedRead read, const std::uint64_t now_ns)
+    -> Result<PreparedGet> try {
+    if (worker_index >= store.worker_count() || read.worker_index() != worker_index) {
+        return fail(ErrorCode::invalid_argument, "immutable durable GET targets the wrong Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (!store.impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "immutable durable GET requires a durable Store");
+    }
+    auto prepared = store.impl_->durable_runtime->prepare_published_get(std::move(read), now_ns);
+    if (!prepared) {
+        return unexpected(prepared.error());
+    }
+    if (prepared->value) {
+        return PreparedGet{.value = std::move(prepared->value)};
+    }
+    if (!prepared->cold) {
+        return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
+    }
+    auto state = std::make_unique<PreparedColdRead::State>(std::move(*prepared->cold));
+    return PreparedGet{.cold = PreparedColdRead{std::move(state)}};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    return internal_failure();
+}
+
 auto detail::StoreAccess::put(Store& store, const std::size_t worker_index, const HashedKey& key,
                               const std::span<const std::byte> value, const std::uint64_t expire_at_ns)
     -> Status {
@@ -1009,6 +1072,58 @@ auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, co
         return durable_status(store.impl_->durable_runtime->erase(key));
     }
     return store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked(key);
+}
+
+auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t worker_index,
+                                                 const HashedKey& key, const std::span<const std::byte> value,
+                                                 const std::uint64_t expire_at_ns)
+    -> Result<VolatileMutationPublication> {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "published put targets the wrong Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
+        return unexpected(rejected.error());
+    }
+    if (!store.impl_->volatile_runtime) {
+        return fail(ErrorCode::invalid_argument, "published volatile put requires a volatile Store");
+    }
+    auto published = store.impl_->volatile_runtime->workers.worker(worker_index)
+                         .put_locked_published(key, value, expire_at_ns);
+    if (!published) {
+        return unexpected(published.error());
+    }
+    return VolatileMutationPublication{
+        .record = published->record, .segment = std::move(published->segment), .opcode = published->opcode};
+}
+
+auto detail::StoreAccess::erase_volatile_published(Store& store, const std::size_t worker_index,
+                                                   const HashedKey& key)
+    -> Result<VolatileMutationPublication> {
+    if (worker_index >= store.worker_count() ||
+        route_worker(key.hash, store.worker_count()) != worker_index) {
+        return fail(ErrorCode::invalid_argument, "published erase targets the wrong Worker owner");
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        return closed_store();
+    }
+    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
+        return unexpected(rejected.error());
+    }
+    if (!store.impl_->volatile_runtime) {
+        return fail(ErrorCode::invalid_argument, "published volatile erase requires a volatile Store");
+    }
+    auto published = store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked_published(key);
+    if (!published) {
+        return unexpected(published.error());
+    }
+    return VolatileMutationPublication{
+        .record = published->record, .segment = std::move(published->segment), .opcode = published->opcode};
 }
 
 auto detail::StoreAccess::put_durable(Store& store, const std::size_t worker_index, const HashedKey& key,
@@ -1060,6 +1175,86 @@ auto detail::StoreAccess::erase_durable(Store& store, const std::size_t worker_i
     return store.impl_->durable_runtime->erase(key);
 }
 
+auto detail::StoreAccess::durable_writer_batch_config(const Store& store) noexcept
+    -> std::optional<DurableGroupConfig> {
+    if (!store.impl_->durable_runtime) {
+        return std::nullopt;
+    }
+    return store.impl_->durable_runtime->writer_batch_config();
+}
+
+auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t worker_index,
+                                               const std::span<const DurableMutationView> mutations)
+    -> std::vector<DurableWriterBatchResult> {
+    std::vector<DurableWriterBatchResult> results;
+    results.reserve(mutations.size());
+    const auto reject_remaining = [&](const Error& error) {
+        while (results.size() < mutations.size()) {
+            results.push_back({.mutation = {.outcome = DurableMutationOutcome::not_committed,
+                                            .sequence = std::nullopt,
+                                            .error = error}});
+        }
+    };
+    if (mutations.empty()) {
+        return results;
+    }
+    if (worker_index >= store.worker_count()) {
+        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batch targets an invalid Worker"});
+        return results;
+    }
+    for (const auto& mutation : mutations) {
+        if (route_worker(mutation.key.hash, store.worker_count()) != worker_index) {
+            reject_remaining(
+                Error{ErrorCode::invalid_argument, "Writer batch contains a key owned by another Worker"});
+            return results;
+        }
+    }
+    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+    if (!operation) {
+        reject_remaining(Error{ErrorCode::unavailable, "Store is closed"});
+        return results;
+    }
+    if (auto allowed = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !allowed) {
+        reject_remaining(allowed.error());
+        return results;
+    }
+    if (!store.impl_->durable_runtime || !store.impl_->durable_runtime->writer_batch_config().has_value()) {
+        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batching requires durable-group mode"});
+        return results;
+    }
+
+    for (const auto& mutation : mutations) {
+        const auto key_bytes = std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
+        DurableWriterBatchResult result;
+        for (unsigned attempt = 0; attempt < 2; ++attempt) {
+            result.mutation = store.impl_->durable_runtime->mutate(
+                key_bytes, mutation.value,
+                mutation.operation == MutationOperation::put ? Opcode::put : Opcode::erase, mutation.key.hash,
+                mutation.expire_at_ns, ValueType::bytes, 0, true);
+            if (!should_retry_durable_mutation(result.mutation, attempt)) {
+                break;
+            }
+            result.conflict_retried = true;
+        }
+        results.push_back(std::move(result));
+        if (!store.impl_->durable_runtime->healthy()) {
+            reject_remaining(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+            break;
+        }
+    }
+
+    const auto committed = store.impl_->durable_runtime->commit_writer_batch(worker_index);
+    if (!committed) {
+        for (auto& result : results) {
+            if (result.mutation.committed() && !result.mutation.error) {
+                result.mutation.outcome = DurableMutationOutcome::indeterminate;
+                result.mutation.error = committed.error();
+            }
+        }
+    }
+    return results;
+}
+
 auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
     return store.impl_->durable_runtime != nullptr;
 }
@@ -1089,6 +1284,12 @@ auto detail::StoreAccess::maintenance_mutations_rejected(const Store& store) noe
 
 auto detail::StoreAccess::operational(const Store& store) noexcept -> bool {
     return store.impl_ != nullptr && store.impl_->operational();
+}
+
+void detail::StoreAccess::mark_fail_closed(Store& store) noexcept {
+    if (store.impl_ != nullptr) {
+        store.impl_->mark_durable_fail_closed();
+    }
 }
 
 auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {

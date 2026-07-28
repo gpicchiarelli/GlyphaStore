@@ -13,6 +13,10 @@ Also: canonical FNV-1a routing, monotonic request deadlines, routing-epoch
 fail-closed checks, and `committed` / `rejected` / `indeterminate` mutation
 outcomes per [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
+Current routing limit: the Erlang client accepts the plain FNV `GlyphaStore/2` identity only. It
+fails closed on the keyed SipHash `INIT` extension used by `--secure-profile`; see the
+[SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+
 Version: `glyphastore_version:version/0` (must match repository `VERSION`)  
 License: BSD-3-Clause  
 Requires: Erlang/OTP ≥ 25 and rebar3 (on macOS: MacPorts `erlang` + `rebar3`).

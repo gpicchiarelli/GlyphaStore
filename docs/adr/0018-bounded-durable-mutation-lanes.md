@@ -1,8 +1,11 @@
 # ADR 0018: bounded Worker-affine durable mutation lanes
 
-- Status: accepted
+- Status: amended by ADR 0031
 - Date: 2026-07-19
 - Preserves: ADR 0008, ADR 0011, ADR 0012, persistence v1, wire protocol v2
+
+> Historical decision. ADR 0031 replaces the mutex/MPSC/multi-producer lane with one bounded SPSC
+> lane and exactly one Writer per shard. The text below documents the predecessor runtime.
 
 ## Context
 

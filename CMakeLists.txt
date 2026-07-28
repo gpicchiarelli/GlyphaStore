@@ -214,7 +214,8 @@ add_library(glyphastore_server_core
     src/server/daemon_config.cpp
     src/server/daemon_log.cpp
     src/server/disk_read_executor.cpp
-    src/server/durable_mutation_executor.cpp
+    src/server/pair_read_generation.cpp
+    src/server/pair_writer.cpp
     src/server/openbsd_sandbox.cpp
     src/server/peercred.cpp
     src/server/reactor.cpp
@@ -285,6 +286,7 @@ if(BUILD_TESTING)
         tests/unit/worker_routing_tests.cpp
         tests/unit/hot_record_table_tests.cpp
         tests/unit/paired_shard_prototype_tests.cpp
+        tests/unit/pair_read_generation_tests.cpp
         tests/unit/manifest_tests.cpp
         tests/unit/maintenance_controller_tests.cpp
         tests/unit/namespace_audit_tests.cpp
@@ -813,7 +815,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                 --repeats 1
         )
         set_tests_properties(glyphastore_benchmark_server_tcp_durable_group PROPERTIES
-            PASS_REGULAR_EXPRESSION "median_durable_batch_records=4"
+            PASS_REGULAR_EXPRESSION "maximum_durable_batch_records=4"
         )
     endif()
 endif()

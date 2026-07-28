@@ -39,6 +39,7 @@ using glyphastore::bench::Result;
 using glyphastore::bench::RunSettings;
 
 enum class StorageProfile : std::uint8_t { volatile_memory, durable_sync, durable_group, durable_periodic };
+enum class Workload : std::uint8_t { read_after_write, get_only, read_99_write_1 };
 
 struct Options {
     Config config{.workers = 1, .threads = 1, .distribution = ParallelDistribution::owner_bound};
@@ -48,11 +49,11 @@ struct Options {
     bool executor_affinity{};
     bool latency{};
     bool client_api{};
+    Workload workload{Workload::read_after_write};
     StorageProfile storage{StorageProfile::volatile_memory};
     std::uint32_t group_max_records{32};
     std::uint32_t group_max_bytes{65'536};
     std::uint32_t group_max_wait_ms{10};
-    std::size_t durable_group_concurrency{4};
     std::uint32_t periodic_sync_ms{1'000};
     std::uint32_t maintenance_suspend_on_p99_latency_ms{};
     std::uint32_t maintenance_suspend_on_p99_min_samples{32};
@@ -164,6 +165,18 @@ struct ClientResult {
         return "durable-group";
     case StorageProfile::durable_periodic:
         return "durable-periodic";
+    }
+    return "unknown";
+}
+
+[[nodiscard]] auto workload_name(const Workload workload) noexcept -> std::string_view {
+    switch (workload) {
+    case Workload::read_after_write:
+        return "read_after_write";
+    case Workload::get_only:
+        return "get_only";
+    case Workload::read_99_write_1:
+        return "read_99_write_1";
     }
     return "unknown";
 }
@@ -320,7 +333,6 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             .maximum_connections = std::max(std::size_t{16}, options.config.threads * 2U),
             .worker_count = options.config.workers,
             .executor_affinity = options.executor_affinity,
-            .durable_group_mutation_concurrency = options.durable_group_concurrency,
             .durable_mutation_queue_wait_ms = 0};
 }
 
@@ -328,7 +340,7 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
     DurableProfileSample result;
     std::uint64_t queue_wait_ns{};
     std::uint64_t service_ns{};
-    for (const auto& worker : server.durable_mutation_stats()) {
+    for (const auto& worker : server.pair_writer_stats()) {
         result.completed += worker.completed;
         result.rejected += worker.rejected;
         result.expired += worker.expired_before_store;
@@ -429,6 +441,22 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
                 std::exit(2);
             }
             result.storage = parse_storage(argv[++index]);
+        } else if (argument == "--workload") {
+            if (index + 1 >= argc) {
+                std::cerr << "missing value for --workload\n";
+                std::exit(2);
+            }
+            const std::string_view workload{argv[++index]};
+            if (workload == "read-after-write") {
+                result.workload = Workload::read_after_write;
+            } else if (workload == "get-only") {
+                result.workload = Workload::get_only;
+            } else if (workload == "read-99-write-1") {
+                result.workload = Workload::read_99_write_1;
+            } else {
+                std::cerr << "invalid value for --workload: " << workload << '\n';
+                std::exit(2);
+            }
         } else if (argument == "--group-max-records") {
             if (index + 1 >= argc) {
                 std::cerr << "missing value for --group-max-records\n";
@@ -447,8 +475,6 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
                 std::exit(2);
             }
             result.group_max_wait_ms = parse_u32(argv[++index], "--group-max-wait-ms");
-        } else if (argument == "--durable-group-concurrency") {
-            result.durable_group_concurrency = next_size("--durable-group-concurrency");
         } else if (argument == "--periodic-sync-ms") {
             if (index + 1 >= argc) {
                 std::cerr << "missing value for --periodic-sync-ms\n";
@@ -499,9 +525,9 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
                          " [--executor-affinity] [--latency] [--client-api] [--client-pipeline N]"
+                         " [--workload read-after-write|get-only|read-99-write-1]"
                          " [--storage-mode volatile|durable-sync|durable-group|durable-periodic]"
                          " [--group-max-records N] [--group-max-bytes N] [--group-max-wait-ms N]"
-                         " [--durable-group-concurrency N]"
                          " [--periodic-sync-ms N]"
                          " [--maintenance-suspend-on-p99-latency-ms N]"
                          " [--maintenance-suspend-on-p99-min-samples N]"
@@ -645,30 +671,50 @@ class BufferedResponseReader final {
 }
 
 [[nodiscard]] auto prepare_work(const Config& config, const std::size_t pipeline,
-                                const glyphastore::bench::KeyMaterial& material) -> std::vector<ClientWork> {
+                                const glyphastore::bench::KeyMaterial& material, const Workload workload)
+    -> std::vector<ClientWork> {
     std::vector<ClientWork> work(config.threads);
     for (std::size_t client = 0; client < config.threads; ++client) {
         std::vector<std::byte> batch;
         std::size_t keys_in_batch{};
         for (std::size_t operation = client; operation < config.operations; operation += config.threads) {
-            const auto put = glyphastore::server::encode_request({
-                .opcode = glyphastore::server::RequestOpcode::put,
-                .request_id = operation * 2U,
-                .key = bytes(material.keys[operation]),
-                .value = material.values[operation],
-            });
-            const auto get = glyphastore::server::encode_request({
-                .opcode = glyphastore::server::RequestOpcode::get,
-                .request_id = operation * 2U + 1U,
-                .key = bytes(material.keys[operation]),
-            });
-            if (!put || !get) {
-                return {};
+            if (workload == Workload::read_after_write) {
+                const auto put = glyphastore::server::encode_request({
+                    .opcode = glyphastore::server::RequestOpcode::put,
+                    .request_id = operation * 2U,
+                    .key = bytes(material.keys[operation]),
+                    .value = material.values[operation],
+                });
+                if (!put) {
+                    return {};
+                }
+                batch.insert(batch.end(), put->begin(), put->end());
+                ++work[client].response_count;
             }
-            batch.insert(batch.end(), put->begin(), put->end());
-            batch.insert(batch.end(), get->begin(), get->end());
+            if (workload == Workload::read_99_write_1 && operation % 100U == 0) {
+                const auto put = glyphastore::server::encode_request({
+                    .opcode = glyphastore::server::RequestOpcode::put,
+                    .request_id = operation * 2U,
+                    .key = bytes(material.keys[operation]),
+                    .value = material.values[operation],
+                });
+                if (!put) {
+                    return {};
+                }
+                batch.insert(batch.end(), put->begin(), put->end());
+            } else {
+                const auto get = glyphastore::server::encode_request({
+                    .opcode = glyphastore::server::RequestOpcode::get,
+                    .request_id = operation * 2U + 1U,
+                    .key = bytes(material.keys[operation]),
+                });
+                if (!get) {
+                    return {};
+                }
+                batch.insert(batch.end(), get->begin(), get->end());
+            }
             ++keys_in_batch;
-            work[client].response_count += 2U;
+            ++work[client].response_count;
             if (keys_in_batch == pipeline) {
                 work[client].batches.push_back(std::move(batch));
                 batch.clear();
@@ -684,7 +730,7 @@ class BufferedResponseReader final {
 
 [[nodiscard]] auto run_client(const int descriptor, const ClientWork& work,
                               const glyphastore::bench::KeyMaterial& material, const std::size_t pipeline,
-                              const bool measure_latency) -> ClientResult {
+                              const bool measure_latency, const Workload workload) -> ClientResult {
     const auto bytes_per_pair =
         2U * (glyphastore::server::kResponseHeaderBytes + material.values.front().size());
     const auto response_capacity = pipeline > glyphastore::server::kMaxFrameBytes / bytes_per_pair
@@ -703,7 +749,8 @@ class BufferedResponseReader final {
             return {};
         }
         result.ingress_bytes += batch.size();
-        const auto batch_responses = std::min(pipeline * 2U, responses_remaining);
+        const auto frames_per_operation = workload == Workload::read_after_write ? 2U : 1U;
+        const auto batch_responses = std::min(pipeline * frames_per_operation, responses_remaining);
         for (std::size_t index = 0; index < batch_responses; ++index) {
             auto decoded = responses.receive(descriptor);
             if (!decoded || !decoded->complete ||
@@ -711,11 +758,11 @@ class BufferedResponseReader final {
                 return {};
             }
             result.egress_bytes += decoded->consumed;
-            if (measure_latency) {
+            const auto request_id = decoded->frame.request_id;
+            if (measure_latency && (workload == Workload::read_after_write || (request_id & 1U) != 0U)) {
                 const auto elapsed = std::chrono::steady_clock::now() - batch_started;
                 result.latency_ns.push_back(std::chrono::duration<double, std::nano>(elapsed).count());
             }
-            const auto request_id = decoded->frame.request_id;
             const auto operation = request_id / 2U;
             if (operation >= material.values.size()) {
                 return {};
@@ -729,6 +776,51 @@ class BufferedResponseReader final {
         responses_remaining -= batch_responses;
     }
     return result;
+}
+
+[[nodiscard]] auto seed_get_workload(const Options& options, const std::vector<int>& descriptors,
+                                     const glyphastore::bench::KeyMaterial& material) -> bool {
+    if (options.workload == Workload::read_after_write) {
+        return true;
+    }
+    constexpr std::size_t seed_pipeline = 64;
+    for (std::size_t client = 0; client < descriptors.size(); ++client) {
+        BufferedResponseReader responses{seed_pipeline * glyphastore::server::kResponseHeaderBytes};
+        std::vector<std::byte> batch;
+        std::size_t pending{};
+        const auto flush = [&]() {
+            if (!send_all(descriptors[client], batch)) {
+                return false;
+            }
+            for (std::size_t response = 0; response < pending; ++response) {
+                auto decoded = responses.receive(descriptors[client]);
+                if (!decoded || decoded->frame.status != glyphastore::server::ResponseStatus::ok) {
+                    return false;
+                }
+            }
+            batch.clear();
+            pending = 0;
+            return true;
+        };
+        for (std::size_t operation = client; operation < options.config.operations;
+             operation += options.config.threads) {
+            auto put = glyphastore::server::encode_request({.opcode = glyphastore::server::RequestOpcode::put,
+                                                            .request_id = operation * 2U,
+                                                            .key = bytes(material.keys[operation]),
+                                                            .value = material.values[operation]});
+            if (!put) {
+                return false;
+            }
+            batch.insert(batch.end(), put->begin(), put->end());
+            if (++pending == seed_pipeline && !flush()) {
+                return false;
+            }
+        }
+        if (pending != 0 && !flush()) {
+            return false;
+        }
+    }
+    return true;
 }
 
 [[nodiscard]] auto run_sample(const Options& options, const glyphastore::bench::KeyMaterial& material,
@@ -798,6 +890,10 @@ class BufferedResponseReader final {
             return {};
         }
     }
+    if (!seed_get_workload(options, descriptors, material)) {
+        cleanup();
+        return {};
+    }
 
     auto resources = glyphastore::bench::process_memory_snapshot();
     std::latch ready{static_cast<std::ptrdiff_t>(options.config.threads)};
@@ -809,8 +905,8 @@ class BufferedResponseReader final {
         clients.emplace_back([&, client] {
             ready.count_down();
             start.wait();
-            client_results[client] =
-                run_client(descriptors[client], work[client], material, options.pipeline, options.latency);
+            client_results[client] = run_client(descriptors[client], work[client], material, options.pipeline,
+                                                options.latency, options.workload);
         });
     }
     ready.wait();
@@ -840,7 +936,8 @@ class BufferedResponseReader final {
         resources.ingress_bytes += client_result.ingress_bytes;
         resources.egress_bytes += client_result.egress_bytes;
     }
-    const auto expected = options.config.operations * 2U;
+    const auto expected =
+        options.config.operations * (options.workload == Workload::read_after_write ? 2U : 1U);
     std::vector<double> latency_ns;
     if (options.latency) {
         latency_ns.reserve(expected);
@@ -1055,8 +1152,9 @@ class BufferedResponseReader final {
 
 [[nodiscard]] auto run_benchmark(const Options& options) -> Result {
     const auto material = make_material(options.config);
-    const auto work = options.client_api ? std::vector<ClientWork>{}
-                                         : prepare_work(options.config, options.pipeline, material);
+    const auto work = options.client_api
+                          ? std::vector<ClientWork>{}
+                          : prepare_work(options.config, options.pipeline, material, options.workload);
     if (!options.client_api && work.size() != options.config.threads) {
         return {};
     }
@@ -1089,13 +1187,16 @@ class BufferedResponseReader final {
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
                           std::make_move_iterator(measured.latency_ns.end()));
     }
-    const auto client_name = options.client_pipeline != 0 ? "cpp_client_pipeline_read_after_write"
-                             : options.client_api         ? "cpp_client_read_after_write"
-                                                          : "server_tcp_read_after_write";
+    const auto client_name = options.client_pipeline != 0             ? "cpp_client_pipeline_read_after_write"
+                             : options.client_api                     ? "cpp_client_read_after_write"
+                             : options.workload == Workload::get_only ? "server_tcp_get_only"
+                             : options.workload == Workload::read_99_write_1 ? "server_tcp_read_99_write_1"
+                                                                             : "server_tcp_read_after_write";
     const auto benchmark_name = std::string{client_name} + '_' + std::string{storage_name(options.storage)};
-    auto result = glyphastore::bench::finalize_result(benchmark_name, options.config, options.settings,
-                                                      options.config.operations * 2U, hits,
-                                                      std::move(seconds), std::move(resources));
+    auto result = glyphastore::bench::finalize_result(
+        benchmark_name, options.config, options.settings,
+        options.config.operations * (options.workload == Workload::read_after_write ? 2U : 1U), hits,
+        std::move(seconds), std::move(resources));
     if (!latency_ns.empty()) {
         std::ranges::sort(latency_ns);
         result.latency_samples = latency_ns.size();
@@ -1181,11 +1282,11 @@ class BufferedResponseReader final {
 int main(int argc, char** argv) {
     const auto parsed = options(argc, argv);
     if (!glyphastore::bench::validate_run_settings(parsed.settings, parsed.config) || parsed.pipeline == 0 ||
+        (parsed.client_api && parsed.workload != Workload::read_after_write) ||
         (parsed.client_api && parsed.client_pipeline > parsed.config.operations) ||
         parsed.client_pipeline > glyphastore::client::ClientConfig{}.maximum_pipeline_requests / 2U ||
         parsed.group_max_records == 0 || parsed.group_max_bytes == 0 || parsed.group_max_wait_ms == 0 ||
-        parsed.periodic_sync_ms == 0 || parsed.durable_group_concurrency == 0 ||
-        parsed.durable_group_concurrency > 32 || parsed.maintenance_suspend_on_p99_min_samples == 0 ||
+        parsed.periodic_sync_ms == 0 || parsed.maintenance_suspend_on_p99_min_samples == 0 ||
         (parsed.maintenance_overlap_seed_operations != 0 &&
          (parsed.storage == StorageProfile::volatile_memory || parsed.config.workers < 2 ||
           parsed.config.threads != 1 || parsed.maintenance_overlap_seed_keys == 0 ||
@@ -1209,12 +1310,12 @@ int main(int argc, char** argv) {
     std::cout << "# traffic_scope=timed-protocol-frames-excluding-init-bind\n";
     std::cout << "# memory_scope=whole-benchmark-process-rss\n";
     std::cout << "# storage_mode=" << storage_name(parsed.storage) << '\n';
+    std::cout << "# workload=" << workload_name(parsed.workload) << '\n';
     std::cout << "# durable_profile_scope=median-per-sample-averages-and-cross-sample-maxima\n";
     std::cout << "# durable_commit_metric=batch-commit-boundary;unbatched-sync-reports-zero\n";
     std::cout << "# group_max_records=" << parsed.group_max_records << '\n';
     std::cout << "# group_max_bytes=" << parsed.group_max_bytes << '\n';
     std::cout << "# group_max_wait_ms=" << parsed.group_max_wait_ms << '\n';
-    std::cout << "# durable_group_concurrency=" << parsed.durable_group_concurrency << '\n';
     std::cout << "# periodic_sync_ms=" << parsed.periodic_sync_ms << '\n';
     std::cout << "# maintenance_suspend_on_p99_latency_ms=" << parsed.maintenance_suspend_on_p99_latency_ms
               << '\n';

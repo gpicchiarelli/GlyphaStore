@@ -23,6 +23,12 @@ namespace detail {
 class StoreAccess;
 }
 
+struct WorkerMutationPublication final {
+    RecordRef record;
+    SegmentPtr segment;
+    Opcode opcode{Opcode::put};
+};
+
 class Worker final {
   public:
     Worker(WorkerId id, GlobalSegmentManager& manager, WorkerRoutingState routing = get_worker_routing());
@@ -54,6 +60,9 @@ class Worker final {
     [[nodiscard]] auto put_locked(const HashedKey& key, std::span<const std::byte> value,
                                   std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] auto erase_locked(const HashedKey& key) -> Status;
+    [[nodiscard]] auto put_locked_published(const HashedKey& key, std::span<const std::byte> value,
+                                            std::uint64_t expire_at_ns) -> Result<WorkerMutationPublication>;
+    [[nodiscard]] auto erase_locked_published(const HashedKey& key) -> Result<WorkerMutationPublication>;
     [[nodiscard]] auto next_sequence() -> SequenceNumber;
     void register_owned_segment(SegmentPtr segment);
     void unregister_owned_segment(SegmentId id) noexcept;

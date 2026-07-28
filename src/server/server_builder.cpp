@@ -1,8 +1,7 @@
 #include "server/server_builder.hpp"
 
-#include "server/reactor_factory.hpp"
-
 #include "glyphastore/server/tls.hpp"
+#include "server/reactor_factory.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -17,11 +16,9 @@ namespace {
     if (config.maximum_connections == 0 || config.worker_count == 0 || config.event_batch_size == 0 ||
         config.connection_handoff_capacity == 0 || config.disk_read_queue_capacity == 0 ||
         config.durable_mutation_queue_capacity == 0 || config.durable_mutation_queue_bytes == 0 ||
-        config.durable_group_mutation_concurrency == 0 ||
         config.connection_handoff_capacity > maximum_queue_capacity ||
         config.disk_read_queue_capacity > maximum_queue_capacity ||
         config.durable_mutation_queue_capacity > maximum_queue_capacity ||
-        config.durable_group_mutation_concurrency > 32 ||
         config.disk_read_thread_count > kMaximumWorkerCount ||
         config.maximum_connections > std::numeric_limits<std::uint32_t>::max()) {
         return fail(ErrorCode::invalid_argument, "server capacity configuration is outside supported limits");
@@ -62,17 +59,6 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
         return fail(ErrorCode::invalid_argument, "Store worker count must match the server executor count");
     }
     store_config_.worker_config.explicit_count = config_.worker_count;
-    const bool durable = store_config_.storage_mode != StorageMode::volatile_memory;
-    const auto mutation_threads_per_worker =
-        store_config_.storage_mode == StorageMode::durable_group
-            ? std::max<std::size_t>(1U, std::min<std::size_t>(config_.durable_group_mutation_concurrency,
-                                                              store_config_.durable_group.max_records))
-            : 1U;
-    constexpr std::size_t maximum_durable_mutation_threads = 1024;
-    if (durable && config_.worker_count > maximum_durable_mutation_threads / mutation_threads_per_worker) {
-        return fail(ErrorCode::invalid_argument,
-                    "durable mutation thread configuration exceeds the process limit");
-    }
     auto store = Store::open(std::move(store_config_));
     if (!store) {
         return unexpected(store.error());
@@ -80,20 +66,15 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
     const auto disk_read_threads = config_.disk_read_thread_count == 0
                                        ? std::min<std::size_t>(config_.worker_count, 4U)
                                        : config_.disk_read_thread_count;
-    auto disk_reads =
-        DiskReadExecutor::create(**store, disk_read_threads, config_.disk_read_queue_capacity);
+    auto disk_reads = DiskReadExecutor::create(**store, disk_read_threads, config_.disk_read_queue_capacity);
     if (!disk_reads) {
         return unexpected(disk_reads.error());
     }
-    std::unique_ptr<DurableMutationExecutor> durable_mutations;
-    if (durable) {
-        auto created = DurableMutationExecutor::create(
-            **store, config_.worker_count, config_.durable_mutation_queue_capacity,
-            mutation_threads_per_worker, std::chrono::milliseconds{config_.durable_mutation_queue_wait_ms});
-        if (!created) {
-            return unexpected(created.error());
-        }
-        durable_mutations = std::move(*created);
+    auto pair_writers =
+        PairWriterPool::create(**store, config_.worker_count, config_.durable_mutation_queue_capacity,
+                               std::chrono::milliseconds{config_.durable_mutation_queue_wait_ms});
+    if (!pair_writers) {
+        return unexpected(pair_writers.error());
     }
     if (config_.tls.requested()) {
         auto created = TlsContext::create(config_.tls);
@@ -107,27 +88,24 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
     }
     if (config_.security_audit_events || config_.authz.enabled() ||
         (tls_context_ && tls_context_->mtls_enabled())) {
-        security_audit_ =
-            std::make_shared<SecurityAudit>(config_.security_audit_events, config_.quiet);
+        security_audit_ = std::make_shared<SecurityAudit>(config_.security_audit_events, config_.quiet);
     }
     const auto worker_count = (*store)->worker_count();
     ServerRuntime runtime{
         .store = std::move(*store),
         .disk_reads = std::move(*disk_reads),
-        .durable_mutations = std::move(durable_mutations),
+        .pair_writers = std::move(*pair_writers),
         .mesh = ConnectionHandoffMesh{worker_count, config_.connection_handoff_capacity},
         .reactors = {},
     };
     return runtime;
 }
 
-auto ServerBuilder::create_reactors(Store& store, ConnectionHandoffMesh& mesh,
-                                    DiskReadExecutor& disk_reads,
-                                    DurableMutationExecutor* durable_mutations,
-                                    const ServerLifecycleProbes probes)
+auto ServerBuilder::create_reactors(Store& store, ConnectionHandoffMesh& mesh, DiskReadExecutor& disk_reads,
+                                    PairWriterPool& pair_writers, const ServerLifecycleProbes probes)
     -> Result<std::vector<std::unique_ptr<Reactor>>> {
-    return ReactorFactory::create_all(config_, store, mesh, disk_reads, durable_mutations, probes,
-                                      tls_context_, abuse_, security_audit_);
+    return ReactorFactory::create_all(config_, store, mesh, disk_reads, pair_writers, probes, tls_context_,
+                                      abuse_, security_audit_);
 }
 
 } // namespace glyphastore::server

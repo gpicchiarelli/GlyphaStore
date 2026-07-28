@@ -54,7 +54,6 @@ for configuration in $configurations; do
                 --group-max-records 32
                 --group-max-bytes 65536
                 --group-max-wait-ms 10
-                --durable-group-concurrency 4
                 --periodic-sync-ms 1000
                 --warmup "$warmup"
                 --repeats "$repeats"
