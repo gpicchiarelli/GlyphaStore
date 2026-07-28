@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="artwork/apple/raster/glyphastore-app-icon-128.png" width="72" height="72" alt="GlyphaStore logo">
+</p>
+
 <h1 align="center">GlyphaStore</h1>
 
 <p align="center">
