@@ -184,7 +184,9 @@ void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
         }
         auto& task = *lane.slots[*slot];
 
-        DiskReadCompletion completion{.connection = task.connection, .request_id = task.request_id};
+        DiskReadCompletion completion{.connection = task.connection,
+                                      .request_id = task.request_id,
+                                      .generation_epoch = task.generation_epoch};
         try {
             auto result =
                 task.cancellation.cancelled()

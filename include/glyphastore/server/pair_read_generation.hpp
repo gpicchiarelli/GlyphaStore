@@ -78,7 +78,7 @@ class PairReadGeneration final {
 
     [[nodiscard]] auto get(const HashedKey& key, std::uint64_t now_ns) const -> Result<OwnedValue>;
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
-        -> Result<DurableRuntimeCatalog::PublishedReadRecord>;
+        -> Result<DurableRuntimeCatalog::PublishedReadView>;
 
     [[nodiscard]] auto epoch() const noexcept -> std::uint64_t {
         return epoch_;
@@ -87,6 +87,10 @@ class PairReadGeneration final {
         return visible_through_;
     }
     [[nodiscard]] auto delta_entries() const noexcept -> std::size_t;
+    [[nodiscard]] auto delta_record_versions() const noexcept -> std::size_t;
+    [[nodiscard]] auto delta_arena_record_bytes() const noexcept -> std::size_t;
+    [[nodiscard]] auto delta_arena_key_bytes() const noexcept -> std::size_t;
+    [[nodiscard]] auto delta_arena_key_storage_bytes() const noexcept -> std::size_t;
     [[nodiscard]] auto base_entries() const noexcept -> std::size_t;
 
   private:

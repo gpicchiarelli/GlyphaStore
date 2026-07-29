@@ -1812,9 +1812,80 @@ auto DurableRuntimeCatalog::prepare_published_get(PublishedReadRecord read, cons
                                            read.reference_, std::move(read.pin_.generation_), true}};
 }
 
+auto DurableRuntimeCatalog::prepare_published_get(const PublishedReadView read, const std::uint64_t now_ns)
+    -> Result<PreparedRead> {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    if (read.pin_ == nullptr || !read.pin_->generation_) {
+        return fail_closed(Error{ErrorCode::corrupted_data, "borrowed durable read has no generation pin"});
+    }
+    const auto worker_index = read.pin_->worker_index_;
+    if (worker_index >= workers_.size() || route_worker(read.key_hash_, workers_.size()) != worker_index ||
+        !read.pin_->matches(read.reference_) ||
+        read.pin_->generation_->identity.owner_worker != workers_[worker_index]->worker_id) {
+        return fail_closed(
+            Error{ErrorCode::corrupted_data, "borrowed durable read publication is inconsistent"});
+    }
+    return PreparedRead{.borrowed_cold = BorrowedPinnedRead{read.key_, read.key_hash_, now_ns, worker_index,
+                                                            read.reference_, read.pin_->generation_.get()}};
+}
+
+auto DurableRuntimeCatalog::complete_generation_get(
+    const std::string_view key, const std::uint64_t key_hash, const std::uint64_t now_ns,
+    const std::size_t worker_index, const RecordRef& reference, const RuntimeSegmentGeneration& generation,
+    const detail::ColdReadCancellation* cancellation, std::vector<std::byte>* scratch) -> Result<OwnedValue> {
+    if (cancellation != nullptr && cancellation->cancelled()) {
+        return fail(ErrorCode::unavailable, "durable cold read was cancelled");
+    }
+    auto& metrics = workers_[worker_index]->get_path_metrics;
+    metrics.complete_calls.fetch_add(1U, std::memory_order_relaxed);
+    std::vector<std::byte> local_scratch;
+    auto& read_scratch = scratch == nullptr ? local_scratch : *scratch;
+    const auto key_bytes =
+        std::span<const std::byte>{reinterpret_cast<const std::byte*>(key.data()), key.size()};
+    ReadContext context{.expected_key = key_bytes, .expected_hash = key_hash, .now_ns = now_ns};
+    const auto cold_started = timing_now();
+    auto visited =
+        generation.file.visit_runtime_record(reference, read_scratch, &context, &copy_verified_value);
+    if constexpr (kGetPathTimingEnabled) {
+        atomic_saturating_add(metrics.cold_read_ns, timing_elapsed_ns(cold_started));
+        atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
+    }
+    if (!visited) {
+        if (visited.error().code == ErrorCode::not_found) {
+            return unexpected(visited.error());
+        }
+        return fail_closed(visited.error());
+    }
+    return std::move(context.value);
+}
+
+auto DurableRuntimeCatalog::complete_get(BorrowedPinnedRead read,
+                                         const detail::ColdReadCancellation* cancellation,
+                                         std::vector<std::byte>* scratch) -> Result<OwnedValue> {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    if (read.worker_index_ >= workers_.size() || read.generation_ == nullptr ||
+        route_worker(read.key_hash_, workers_.size()) != read.worker_index_ ||
+        read.generation_->identity.owner_worker != workers_[read.worker_index_]->worker_id ||
+        read.generation_->identity.segment_id != read.reference_.segment_id ||
+        read.generation_->identity.generation != read.reference_.generation) {
+        return fail_closed(
+            Error{ErrorCode::corrupted_data, "borrowed cold read lost its generation identity"});
+    }
+    return complete_generation_get(read.key_, read.key_hash_, read.now_ns_, read.worker_index_,
+                                   read.reference_, *read.generation_, cancellation, scratch);
+}
+
 auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdReadCancellation* cancellation,
                                          std::vector<std::byte>* scratch) -> Result<OwnedValue> {
     constexpr std::size_t kMaximumRelinearizationAttempts = 8;
+    if (read.generation_linearized_) {
+        return complete_generation_get(read.key_, read.key_hash_, read.now_ns_, read.worker_index_,
+                                       read.reference_, *read.generation_, cancellation, scratch);
+    }
     std::vector<std::byte> local_scratch;
     auto& read_scratch = scratch == nullptr ? local_scratch : *scratch;
     for (std::size_t attempt = 0; attempt < kMaximumRelinearizationAttempts; ++attempt) {
@@ -1834,21 +1905,6 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdRead
         if constexpr (kGetPathTimingEnabled) {
             atomic_saturating_add(metrics.cold_read_ns, timing_elapsed_ns(cold_started));
             atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
-        }
-
-        // The immutable Reader generation is itself the linearization point.
-        // Its entry owns the exact file generation for the complete async read,
-        // so neither the mutable Worker Index nor the catalog participates in
-        // completion. Expired snapshot rows remain harmless logical misses and
-        // are reclaimed later by mutation/maintenance publication.
-        if (read.generation_linearized_) {
-            if (!visited) {
-                if (visited.error().code == ErrorCode::not_found) {
-                    return unexpected(visited.error());
-                }
-                return fail_closed(visited.error());
-            }
-            return std::move(context.value);
         }
 
         // Linearization point for a cold GET: the Worker index must still

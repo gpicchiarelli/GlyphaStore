@@ -99,6 +99,59 @@ GLYPHA_TEST("paired read generation owns the exact Segment generation pin") {
     GLYPHA_REQUIRE(lifetime.expired());
 }
 
+GLYPHA_TEST("paired Delta arena retains immutable overwrite versions in fixed record blocks") {
+    const glyphastore::WorkerRoutingState routing{};
+    auto segment = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{15});
+    auto generation = glyphastore::server::PairReadGeneration::empty(routing);
+    GLYPHA_REQUIRE(generation.has_value());
+    const std::string key{"arena-key"};
+    const glyphastore::HashedKey hashed{key, glyphastore::hash_key_routing(key, routing)};
+    std::shared_ptr<const glyphastore::server::PairReadGeneration> first_generation;
+
+    for (std::uint64_t sequence = 1; sequence <= 65; ++sequence) {
+        const auto value = std::to_string(sequence);
+        const glyphastore::server::ReadMutation mutation{
+            .key = hashed,
+            .record = append(*segment, routing, key, value, sequence, glyphastore::Opcode::put),
+            .segment = segment,
+            .opcode = glyphastore::Opcode::put,
+        };
+        generation = glyphastore::server::PairReadGeneration::publish_incremental(std::move(*generation),
+                                                                                  std::span{&mutation, 1});
+        GLYPHA_REQUIRE(generation.has_value());
+        if (sequence == 1) {
+            first_generation = *generation;
+        }
+    }
+
+    const std::string external_key(17, 'x');
+    const glyphastore::HashedKey external_hashed{external_key,
+                                                 glyphastore::hash_key_routing(external_key, routing)};
+    const glyphastore::server::ReadMutation external_mutation{
+        .key = external_hashed,
+        .record = append(*segment, routing, external_key, "external", 66, glyphastore::Opcode::put),
+        .segment = segment,
+        .opcode = glyphastore::Opcode::put,
+    };
+    generation = glyphastore::server::PairReadGeneration::publish_incremental(
+        std::move(*generation), std::span{&external_mutation, 1});
+    GLYPHA_REQUIRE(generation.has_value());
+
+    GLYPHA_REQUIRE((*generation)->delta_entries() == 2);
+    GLYPHA_REQUIRE((*generation)->delta_record_versions() == 66);
+    GLYPHA_REQUIRE((*generation)->delta_arena_record_bytes() == 128U * 64U);
+    GLYPHA_REQUIRE((*generation)->delta_arena_key_bytes() == external_key.size());
+    GLYPHA_REQUIRE((*generation)->delta_arena_key_storage_bytes() == 4U * 1024U);
+    const auto latest = (*generation)->get(hashed, 0);
+    const auto external = (*generation)->get(external_hashed, 0);
+    GLYPHA_REQUIRE(latest.has_value());
+    GLYPHA_REQUIRE(external.has_value());
+    GLYPHA_REQUIRE(text(*latest) == "65");
+    GLYPHA_REQUIRE(text(*external) == "external");
+    GLYPHA_REQUIRE(first_generation != nullptr);
+    GLYPHA_REQUIRE(text(*first_generation->get(hashed, 0)) == "1");
+}
+
 GLYPHA_TEST("paired compact base preserves inline boundary and multi-block keys") {
     const glyphastore::WorkerRoutingState routing{};
     auto segment = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{10});

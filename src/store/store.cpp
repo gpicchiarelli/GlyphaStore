@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace glyphastore {
@@ -418,7 +419,8 @@ struct Store::Impl {
 
 struct detail::PreparedColdRead::State final {
     explicit State(DurableRuntimeCatalog::PinnedRead prepared) : prepared(std::move(prepared)) {}
-    DurableRuntimeCatalog::PinnedRead prepared;
+    explicit State(DurableRuntimeCatalog::BorrowedPinnedRead prepared) : prepared(std::move(prepared)) {}
+    std::variant<DurableRuntimeCatalog::PinnedRead, DurableRuntimeCatalog::BorrowedPinnedRead> prepared;
 };
 
 detail::PreparedColdRead::PreparedColdRead(State&& value) noexcept {
@@ -1001,12 +1003,17 @@ auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t wor
     if (!operation) {
         return closed_store();
     }
-    if (!store.impl_->durable_runtime || !read.engaged_ ||
-        read.state()->prepared.worker_index_ != worker_index) {
+    if (!store.impl_->durable_runtime || !read.engaged_) {
         return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
     }
-    return store.impl_->durable_runtime->complete_get(std::move(read.state()->prepared), cancellation,
-                                                      scratch);
+    return std::visit(
+        [&](auto& prepared) -> Result<OwnedValue> {
+            if (prepared.worker_index_ != worker_index) {
+                return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
+            }
+            return store.impl_->durable_runtime->complete_get(std::move(prepared), cancellation, scratch);
+        },
+        read.state()->prepared);
 }
 
 auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index)
@@ -1050,7 +1057,8 @@ auto detail::StoreAccess::capture_durable_read(Store& store, const std::size_t w
 }
 
 auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std::size_t worker_index,
-                                                        DurablePublishedRead read, const std::uint64_t now_ns)
+                                                        DurablePublishedReadView read,
+                                                        const std::uint64_t now_ns)
     -> Result<PreparedGet> try {
     if (worker_index >= store.worker_count() || read.worker_index() != worker_index) {
         return fail(ErrorCode::invalid_argument, "immutable durable GET targets the wrong Worker owner");
@@ -1062,17 +1070,18 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     if (!store.impl_->durable_runtime) {
         return fail(ErrorCode::invalid_argument, "immutable durable GET requires a durable Store");
     }
-    auto prepared = store.impl_->durable_runtime->prepare_published_get(std::move(read), now_ns);
+    auto prepared = store.impl_->durable_runtime->prepare_published_get(read, now_ns);
     if (!prepared) {
         return unexpected(prepared.error());
     }
     if (prepared->value) {
         return PreparedGet{.value = std::move(prepared->value)};
     }
-    if (!prepared->cold) {
+    if (!prepared->borrowed_cold) {
         return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
     }
-    return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
+    return PreparedGet{.cold =
+                           PreparedColdRead{PreparedColdRead::State{std::move(*prepared->borrowed_cold)}}};
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {

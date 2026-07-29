@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -37,6 +38,10 @@ class DurableFlushCoordinator;
 namespace detail {
 class StoreAccess;
 }
+namespace server {
+class ImmutableReadIndex;
+class PairReadGeneration;
+} // namespace server
 
 enum class DurableMutationOutcome { committed, not_committed, indeterminate };
 enum class DurableCompactionOutcome { compacted, not_compacted, not_beneficial, recovery_required };
@@ -223,6 +228,51 @@ class DurableRuntimeCatalog final {
         friend class DurableRuntimeCatalog;
     };
 
+    // Non-owning view into one immutable paired ReadGeneration. Its key and
+    // pin remain valid only while the Reader holds the corresponding epoch
+    // lease. This type never escapes the paired cold-read task protocol.
+    class PublishedReadView final {
+      public:
+        [[nodiscard]] auto key() const noexcept -> std::string_view {
+            return key_;
+        }
+        [[nodiscard]] auto key_hash() const noexcept -> std::uint64_t {
+            return key_hash_;
+        }
+        [[nodiscard]] auto worker_index() const noexcept -> std::size_t {
+            return pin_->worker_index();
+        }
+        [[nodiscard]] auto reference() const noexcept -> const RecordRef& {
+            return reference_;
+        }
+        [[nodiscard]] auto pin() const noexcept -> const PublishedReadPin& {
+            return *pin_;
+        }
+
+      private:
+        // Only immutable paired-generation builders may create a borrowed
+        // view. Callers can transport it but cannot manufacture a lifetime
+        // claim from an arbitrary pin reference.
+        [[nodiscard]] static auto borrow(std::string_view key, std::uint64_t key_hash, RecordRef reference,
+                                         const PublishedReadPin& pin) noexcept -> PublishedReadView {
+            return PublishedReadView{key, key_hash, reference, &pin};
+        }
+        PublishedReadView(std::string_view key, std::uint64_t key_hash, RecordRef reference,
+                          const PublishedReadPin* pin) noexcept
+            : key_(key), key_hash_(key_hash), reference_(reference), pin_(pin) {}
+
+        std::string_view key_;
+        std::uint64_t key_hash_{};
+        RecordRef reference_;
+        const PublishedReadPin* pin_{};
+
+        friend class DurableRuntimeCatalog;
+        friend class server::ImmutableReadIndex;
+        friend class server::PairReadGeneration;
+    };
+    static_assert(std::is_trivially_copyable_v<PublishedReadView>);
+    static_assert(sizeof(PublishedReadView) <= 72);
+
     struct PublishedReadSnapshot final {
         std::vector<PublishedReadRecord> records;
         std::uint64_t catalog_revision{};
@@ -258,9 +308,35 @@ class DurableRuntimeCatalog final {
         friend class detail::StoreAccess;
     };
 
+    class BorrowedPinnedRead final {
+      public:
+        BorrowedPinnedRead(BorrowedPinnedRead&&) noexcept = default;
+        auto operator=(BorrowedPinnedRead&&) noexcept -> BorrowedPinnedRead& = default;
+        BorrowedPinnedRead(const BorrowedPinnedRead&) = delete;
+        auto operator=(const BorrowedPinnedRead&) -> BorrowedPinnedRead& = delete;
+
+      private:
+        BorrowedPinnedRead(std::string_view key, std::uint64_t key_hash, std::uint64_t now_ns,
+                           std::size_t worker_index, RecordRef reference,
+                           const RuntimeSegmentGeneration* generation) noexcept
+            : key_(key), key_hash_(key_hash), now_ns_(now_ns), worker_index_(worker_index),
+              reference_(reference), generation_(generation) {}
+
+        std::string_view key_;
+        std::uint64_t key_hash_{};
+        std::uint64_t now_ns_{};
+        std::size_t worker_index_{};
+        RecordRef reference_;
+        const RuntimeSegmentGeneration* generation_{};
+
+        friend class DurableRuntimeCatalog;
+        friend class detail::StoreAccess;
+    };
+
     struct PreparedRead final {
         std::optional<OwnedValue> value;
         std::optional<PinnedRead> cold;
+        std::optional<BorrowedPinnedRead> borrowed_cold;
     };
 
     [[nodiscard]] static auto open_existing(const std::filesystem::path& path,
@@ -355,9 +431,20 @@ class DurableRuntimeCatalog final {
         -> Result<PublishedReadRecord>;
     [[nodiscard]] auto prepare_published_get(PublishedReadRecord read, std::uint64_t now_ns)
         -> Result<PreparedRead>;
+    [[nodiscard]] auto prepare_published_get(PublishedReadView read, std::uint64_t now_ns)
+        -> Result<PreparedRead>;
     [[nodiscard]] auto complete_get(PinnedRead read,
                                     const detail::ColdReadCancellation* cancellation = nullptr,
                                     std::vector<std::byte>* scratch = nullptr) -> Result<OwnedValue>;
+    [[nodiscard]] auto complete_get(BorrowedPinnedRead read,
+                                    const detail::ColdReadCancellation* cancellation = nullptr,
+                                    std::vector<std::byte>* scratch = nullptr) -> Result<OwnedValue>;
+    [[nodiscard]] auto complete_generation_get(std::string_view key, std::uint64_t key_hash,
+                                               std::uint64_t now_ns, std::size_t worker_index,
+                                               const RecordRef& reference,
+                                               const RuntimeSegmentGeneration& generation,
+                                               const detail::ColdReadCancellation* cancellation,
+                                               std::vector<std::byte>* scratch) -> Result<OwnedValue>;
     // Build SegmentId → catalog/pin slot mapping before a persistent publication.
     // The prepared vector is installed with a non-allocating move after commit.
     [[nodiscard]] static auto prepare_pin_slot_index(const Manifest& manifest)

@@ -49,6 +49,7 @@ class StoreAccess final {
     };
 
     using DurablePublishedRead = DurableRuntimeCatalog::PublishedReadRecord;
+    using DurablePublishedReadView = DurableRuntimeCatalog::PublishedReadView;
     using DurableReadSnapshot = DurableRuntimeCatalog::PublishedReadSnapshot;
 
     [[nodiscard]] static auto get_owned(Store& store, std::size_t worker_index, const HashedKey& key,
@@ -70,8 +71,8 @@ class StoreAccess final {
     [[nodiscard]] static auto capture_durable_read(Store& store, std::size_t worker_index,
                                                    const HashedKey& key) -> Result<DurablePublishedRead>;
     [[nodiscard]] static auto prepare_published_durable_get(Store& store, std::size_t worker_index,
-                                                            DurablePublishedRead read, std::uint64_t now_ns)
-        -> Result<PreparedGet>;
+                                                            DurablePublishedReadView read,
+                                                            std::uint64_t now_ns) -> Result<PreparedGet>;
     [[nodiscard]] static auto put(Store& store, std::size_t worker_index, const HashedKey& key,
                                   std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] static auto erase(Store& store, std::size_t worker_index, const HashedKey& key) -> Status;

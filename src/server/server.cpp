@@ -115,6 +115,10 @@ auto Server::stats_report() const -> Result<std::string> {
         snapshot.executors.push_back(ExecutorStats{
             .active_connections = reactor->active_connections(),
             .adopted_connections = reactor->adopted_connections(),
+            .output_scatter_responses = reactor->output_scatter_responses(),
+            .output_scatter_bytes = reactor->output_scatter_bytes(),
+            .output_scatter_partial_writes = reactor->output_scatter_partial_writes(),
+            .output_scatter_completions = reactor->output_scatter_completions(),
         });
     }
     if (!reactors_.empty()) {

@@ -70,3 +70,7 @@ materializzazioni, copie e syscall, poi misurare batching/io_uring su Linux mant
 
 Il P0 refresh è chiuso dal protocollo per-shard documentato nell'ADR e dal relativo audit A/B in
 `paired-generation-refresh-2026-07-29.md`.
+
+Aggiornamento 2026-07-29: i punti 1 e 2 sono stati chiusi rispettivamente dai gate
+`paired-borrowed-cold-read-2026-07-29.md` e `paired-scatter-output-2026-07-29.md`; scatter è adattivo,
+mentre TLS e connessioni pipelined restano contigui per contratto e benchmark.

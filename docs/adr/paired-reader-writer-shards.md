@@ -201,8 +201,9 @@ Memory ordering minimo:
 usa record compatti da massimo 64 B, chiavi inline fino a 16 B, arena per chiavi lunghe e pin di
 Segment generation deduplicati; i control byte restano contigui per ogni gruppo SIMD. Il delta
 frozen paginato contiene l'override più recente o un tombstone ed è modificato solo mediante builder
-Writer-owned copy-on-write. Gli handle `shared_ptr` per entry rimangono confinati al Delta e sono
-debito P0 esplicito.
+Writer-owned copy-on-write. Le pagine conservano puntatori a celle immutabili da 64 B allocate in
+blocchi append-only Writer-owned; chiavi lunghe e pin di Segment/file generation hanno indirizzo
+stabile nell'arena. Non esiste più un control block `shared_ptr` per versione.
 
 Non viene creata una catena di delta. Durante un merge incrementale:
 
@@ -212,7 +213,8 @@ Non viene creata una catena di delta. Durante un merge incrementale:
 4. finché `B'` non è pronto, una publication usa un nuovo delta cumulativo bounded rispetto a `B`;
 5. verificato `B'`, il Writer pubblica `B' + Frozen Dpost` in un solo descriptor.
 
-Soglie hard su entry e byte impediscono crescita non limitata. Se il merge non mantiene il passo,
+Soglie hard su entry, versioni e byte impediscono crescita non limitata. Il merge parte anche quando
+overwrite ripetuti raggiungono la soglia delle versioni pur lasciando una sola chiave logica. Se il merge non mantiene il passo,
 la coppia applica backpressure alle scritture; non aggiunge un terzo livello.
 
 La configurazione production iniziale avvia il merge a 8.192 entry, limita il post-cut a 32.736
@@ -248,20 +250,26 @@ sono immutabili dopo lo store.
 
 ## Protocollo di reclamation
 
-Il prototipo confinato implementa già QSBR a due thread con un pool bounded di descriptor stabili;
-la versione production estende lo stesso principio alle response lease:
+Il runtime production usa una frontiera QSBR di epoch unica e conservativa:
 
 1. Writer pubblica epoch `N` e accoda il vecchio descriptor nella retire list bounded;
-2. Reader termina il turn e ogni zero-copy lease dell'epoch precedente;
-3. Reader incrementa il turn quiescente prima dell'acquire del nuovo descriptor;
-4. Writer conserva la generation ritirata per almeno due confini successivi e la libera soltanto
-   quando il contatore osservato raggiunge `retire_after_turn`;
-5. shutdown forza drain delle response lease prima dell'ultima quiescenza.
+2. Reader adotta `N` una volta per turn e registra ogni cold I/O asincrono con il proprio epoch;
+3. Reader pubblica `min(epoch adottato, epoch minimo delle lease)` come `reader_safe_epoch`;
+4. Writer libera soltanto descriptor con `retired_epoch < reader_safe_epoch`;
+5. la completion cold contiene già un valore owning, quindi il Reader può rilasciare la lease I/O
+   prima di accodare la risposta;
+6. shutdown forza il drain delle lease prima dell'arresto di Writer e Store.
 
-Il Reader non pubblica quiescenza mentre un iovec, `RecordRef`, Index slot o SegmentView della
-generation è ancora usato. Il prototipo dichiara pertanto gli span validi fino al turn successivo;
-il Reactor production dovrà includere le output lease nel minimo epoch. Retire-list full applica
-publication/write backpressure; non forza free.
+Il tracker Reader-private ha 65 celle preallocate: la retire list è limitata a 64 generation più la
+corrente. Un task cold prende in prestito key storage, `RecordRef` e file-generation pointer dalla
+generation soltanto dopo aver stabilito questa frontiera; non esegue refcount atomici per richiesta.
+Una connessione chiusa cancella l'I/O ma non rilascia anticipatamente la lease. Retire-list o tracker
+full applicano backpressure e non forzano mai il free.
+
+La risposta scatter corrente possiede un `OwnedValue` e non conserva `Index` slot, `RecordRef` o
+Segment pin: può quindi rilasciare la lease QSBR del task prima del drain socket. Un futuro `get-into`
+che esponesse iovec borrowed dalla generation dovrebbe invece estendere la stessa frontiera fino
+alla short write finale; non potrà pubblicare quiescenza mentre quei riferimenti sono vivi.
 
 ## Segment e compaction
 
@@ -436,9 +444,14 @@ quiescente prima di processare l'ACK e gli eventuali frame successivi. Una retir
 backpressure prima della mutazione quando il Reader non avanza. Il lookup non prende il mutex Worker
 né `catalog_mutex`; il cold I/O avviene sul pin estratto dalla generation e non esegue più la
 relinearizzazione post-I/O sullo stato mutabile. Nel volatile non esiste `atomic<shared_ptr>` né
-refcount nel GET. Il durevole conserva transitoriamente un incremento di refcount per cold GET, perché
-il task asincrono deve sopravvivere al turn del Reactor; la rimozione richiede response/disk-read lease
-QSBR ed è ancora un gate prestazionale, non un'ambiguità di ownership.
+refcount nel GET. Il durevole non incrementa più il refcount del pin per cold GET nel daemon paired.
+Un tracker Reader-private conserva l'epoch minimo di tutti i task asincroni; key, `RecordRef` e file
+generation sono borrowed esclusivamente entro quella lease. Il percorso pubblico `Store::get`
+mantiene invece un pin owning. Il helper materializza ancora un `OwnedValue`, ma il cleartext diretto
+da almeno 4 KiB lo trasferisce in una output lease Reader-owned e invia header/valore con `sendmsg`,
+senza copiarlo nel buffer della connessione. TLS, payload piccoli e connessioni che hanno dimostrato
+pipelining mantengono il frame contiguo: il candidato scatter indiscriminato è stato respinto dai
+benchmark. `get-into` resta un'ottimizzazione distinta, non una precondizione di lifetime.
 
 Il cold I/O usa una SPSC distinta per coppia e un helper persistente consumer-only. Non esiste più il
 catalogo di task process-wide né il relativo mutex/condition variable. Ogni lane conserva inoltre un
@@ -448,25 +461,39 @@ quando lo slot viene riutilizzato, mentre `ConnectionToken` impedisce a completi
 la nuova connessione. Buffer, cancellation epoch e pin vivono fino al drain della lane prima di
 `Store::close`.
 
-Restano P0 prima del rilascio:
+Il P0 Delta è chiuso: arena Writer bounded, celle da 64 B, pin deduplicati, chiavi lunghe in blocchi
+stabili e capacità applicata alle versioni oltre che alle entry. Durante il merge lo stato possiede
+al massimo arena cut e post-cut; una mutazione post-cut viene materializzata una volta e referenziata
+da entrambi i Delta necessari. Il Reader non accede ai metadati mutabili dell'arena.
 
-1. sostituire nel Delta gli handle `shared_ptr<ReadRecord>` per entry con un'arena Writer bounded; il
-   Base è già compatto, con record da massimo 64 B, pin deduplicati e control array inizializzato a
-   quanta;
-2. promuovere disk-read/response lease QSBR e scatter/gather per eliminare refcount e copia del valore;
-3. eliminare `string`/`vector` per task con un pool di mutation slot preallocato.
+Il pool mutation è ora chiuso: il Reader copia key/value in una singola extent di arena bounded,
+pubblica soltanto uno slot id e lo riusa in FIFO esclusivamente dopo l'acquire della completion. Slot,
+payload bytes e admission bytes hanno limiti e metriche distinti; il wrap resta fisicamente contiguo
+grazie a una guardia massima di un frame. Non esistono più `string`/`vector` owning per mutation task
+nel normale percorso paired.
 
-Il tentativo di rimuovere gli handle Delta è documentato in
+L'output lease cleartext è chiusa in forma adattiva. Una futura coda scatter multi-extent o un
+`get-into` diretto non verranno promossi senza dimostrare memoria bounded e vantaggio anche con
+pipeline: la singola lease intenzionalmente non sostituisce il percorso contiguo di quel profilo.
+
+I primi tentativi di rimuovere gli handle Delta sono documentati in
 `docs/benchmarks/paired-compact-delta-2026-07-29.md`. Sia record inline nelle pagine COW sia blocchi
 immutabili per publication sono stati respinti: il primo amplifica le copie, il secondo perde
-throughput o memoria sui batch reali da una mutazione. Il P0 resta aperto, ma non giustifica
-l'adozione di un layout misurato peggiore.
+throughput o memoria sui batch reali da una mutazione. Il terzo layout generazionale accettato è
+documentato in `docs/benchmarks/paired-generational-delta-arena-2026-07-29.md`: riduce RSS, migliora
+il GET volatile e conserva boundedness; il circa 1,8% mixed residuo resta un follow-up P1 misurato.
 
 Il primo sottoblocco cold-read è documentato in
 `docs/benchmarks/paired-inline-cold-read-2026-07-29.md`: il pImpl per richiesta è stato eliminato e
 la SPSC trasporta indici verso task slot preallocati, mantenendo il pin owning. Throughput e code
-restano neutrali nel gate comparabile. Il P0 n. 2 resta aperto per refcount del pin, lease QSBR di
-I/O/output e copia del valore; nessun lifetime borrowed viene introdotto prima di quel protocollo.
+restano neutrali nel gate comparabile. Il seguito
+`docs/benchmarks/paired-borrowed-cold-read-2026-07-29.md` introduce la lease QSBR esplicita per I/O,
+elimina refcount e copia della chiave nel task paired e prova il lifetime attraverso compaction e
+retirement. Il seguito `docs/benchmarks/paired-scatter-output-2026-07-29.md` elimina la copia di
+output per il cleartext grande non pipelined, prova short write/backpressure e documenta i candidati
+respinti per payload piccoli e pipeline. Il gate
+`docs/benchmarks/paired-mutation-arena-2026-07-29.md` elimina le allocazioni owning delle mutazioni,
+documenta la linearizzazione completa Reader→Writer→Reader e chiude i limiti slot/byte/completion.
 
 L'A/B macOS arm64 è riassunto in
 `docs/benchmarks/paired-production-get-2026-07-28.md`; i raw result locali sono in
@@ -492,8 +519,8 @@ Il Base Index compatto è documentato in
 `docs/benchmarks/paired-compact-read-index-2026-07-29.md`. Elimina chiavi e pin owning duplicati per
 entry, mantiene il lavoro di costruzione bounded e migliora durable e PUT→GET; il GET volatile puro
 resta circa il 3% sotto la baseline macOS non pinned, quindi il gate definitivo richiede un A/B
-Linux hard-pinned con contatori CPU. Il debito dell'Index Base è chiuso; il Delta COW resta un P0
-separato con due candidati già respinti dai gate macOS.
+Linux hard-pinned con contatori CPU. Il debito dell'Index Base e quello dell'arena Delta sono chiusi;
+resta da profilare il piccolo costo Writer/publication del layout generazionale.
 
 Il runtime Writer è ora esposto internamente come `PairWriterPool`; i nomi transitori
 `DurableMutationExecutor` e il relativo parametro di producer concurrency sono stati eliminati

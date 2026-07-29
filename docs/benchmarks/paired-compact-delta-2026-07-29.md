@@ -2,7 +2,8 @@
 
 ## Esito
 
-**Respinto.** Il Delta copy-on-write conserva gli handle `shared_ptr<const ReadRecord>` per entry.
+**Respinto (gate storico).** Il Delta copy-on-write conservava gli handle
+`shared_ptr<const ReadRecord>` per entry.
 Due layout compatti hanno mantenuto la correttezza, ma nessuno ha migliorato simultaneamente
 throughput, tail latency e memoria rispetto al layout corrente. Il codice sperimentale non è rimasto
 nel motore.
@@ -48,7 +49,6 @@ Il workload reale pubblica spesso batch piccoli. Un'arena per batch introduce li
 ritenzione dei blocchi e un'indirezione senza garantire densità; il record inline nella pagina rende
 troppo costosa la granularità COW. L'handle per entry resta, per ora, il compromesso misurato migliore.
 
-Una futura rimozione richiede un layout differente, per esempio record compatti separati dai pin e
-un allocator generazionale con densità dimostrata su publication da 1, non una semplice sostituzione
-meccanica di `shared_ptr`. Il prossimo P0 procede sulle lease cold-read/response, dove refcount e copia
-sono già visibili direttamente nel percorso I/O.
+La rimozione è stata poi chiusa con un terzo layout sostanzialmente differente: arena append-only per
+generation, celle compatte separate dai pin e capacità bounded sulle versioni. Decisione e A/B sono
+in [`paired-generational-delta-arena-2026-07-29.md`](paired-generational-delta-arena-2026-07-29.md).

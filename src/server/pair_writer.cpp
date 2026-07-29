@@ -1,6 +1,8 @@
 #include "glyphastore/server/pair_writer.hpp"
 
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/server/protocol.hpp"
+#include "server/mutation_slot_pool.hpp"
 #include "store/store_internal.hpp"
 
 #include <algorithm>
@@ -9,12 +11,11 @@
 #include <exception>
 #include <limits>
 #include <stdexcept>
+#include <type_traits>
 #include <utility>
 
 namespace glyphastore::server {
 namespace {
-
-inline constexpr std::size_t kMaximumRetiredReadGenerations = 64;
 
 [[nodiscard]] auto elapsed_ns(const std::chrono::steady_clock::time_point start,
                               const std::chrono::steady_clock::time_point end) noexcept -> std::uint64_t {
@@ -76,28 +77,62 @@ struct AtomicLatencyHistogram final {
     }
 };
 
+struct MutationTask final {
+    ConnectionToken connection;
+    std::uint64_t request_id{};
+    std::size_t worker_index{};
+    MutationKind kind{};
+    std::uint32_t payload_slot{};
+    std::uint64_t key_hash{};
+    std::uint64_t expire_at_ns{};
+    std::size_t admission_bytes{};
+    std::chrono::steady_clock::time_point admitted_at{};
+    BoundedSpscQueue<MutationCompletion>* completions{};
+    Wakeup* wakeup{};
+};
+
+static_assert(std::is_nothrow_move_constructible_v<MutationTask>);
+
 } // namespace
 
 struct PairWriterPool::Lane final {
     Lane(const std::size_t capacity, std::shared_ptr<const PairReadGeneration> initial,
-         const std::uint64_t catalog_revision)
-        : capacity_limit(capacity), queue(capacity), writer_generation(std::move(initial)),
-          published_catalog_revision(catalog_revision) {
+         const std::uint64_t catalog_revision, const std::size_t payload_bytes)
+        : queue(capacity), payloads(queue.capacity(), payload_bytes,
+                                    std::min(payload_bytes, kMaxFrameBytes - kRequestHeaderBytes)),
+          writer_generation(std::move(initial)), published_catalog_revision(catalog_revision) {
         if (!writer_generation) {
             throw std::runtime_error{"paired Writer has no initial read generation"};
         }
-        retired_generations.reserve(kMaximumRetiredReadGenerations);
+        retired_generations.reserve(PairWriterPool::kMaximumRetiredReadGenerations);
+        writer_epoch.store(writer_generation->epoch(), std::memory_order_relaxed);
+        delta_entries.store(writer_generation->delta_entries(), std::memory_order_relaxed);
+        delta_record_versions.store(writer_generation->delta_record_versions(), std::memory_order_relaxed);
+        delta_arena_record_bytes.store(writer_generation->delta_arena_record_bytes(),
+                                       std::memory_order_relaxed);
+        delta_arena_key_bytes.store(writer_generation->delta_arena_key_bytes(), std::memory_order_relaxed);
+        delta_arena_key_storage_bytes.store(writer_generation->delta_arena_key_storage_bytes(),
+                                            std::memory_order_relaxed);
         published_generation.store(writer_generation.get(), std::memory_order_release);
     }
 
-    const std::size_t capacity_limit;
     BoundedSpscQueue<MutationTask> queue;
+    internal::MutationSlotPool payloads;
     alignas(128) std::atomic<std::uint64_t> signal{};
     alignas(128) std::atomic_bool stopping{};
     std::thread thread;
     std::atomic<std::size_t> queued_bytes{};
     std::atomic<std::size_t> maximum_queue_depth{};
     std::atomic<std::size_t> maximum_queued_bytes{};
+    std::atomic<std::size_t> payload_slots_in_use{};
+    std::atomic<std::size_t> maximum_payload_slots_in_use{};
+    std::atomic<std::size_t> payload_arena_bytes_in_use{};
+    std::atomic<std::size_t> maximum_payload_arena_bytes_in_use{};
+    std::atomic<std::size_t> payload_admission_bytes_in_use{};
+    std::atomic<std::size_t> maximum_payload_admission_bytes_in_use{};
+    std::atomic<std::uint64_t> payload_slot_full_total{};
+    std::atomic<std::uint64_t> payload_arena_full_total{};
+    std::atomic<std::uint64_t> payload_too_large_total{};
     std::atomic<std::uint64_t> admitted{};
     std::atomic<std::uint64_t> rejected{};
     std::atomic<std::uint64_t> expired_before_store{};
@@ -114,6 +149,11 @@ struct PairWriterPool::Lane final {
     std::atomic<std::uint64_t> read_refresh_deferrals{};
     std::atomic<std::uint64_t> generations_retired{};
     std::atomic<std::size_t> retired_generation_count{};
+    std::atomic<std::size_t> delta_entries{};
+    std::atomic<std::size_t> delta_record_versions{};
+    std::atomic<std::size_t> delta_arena_record_bytes{};
+    std::atomic<std::size_t> delta_arena_key_bytes{};
+    std::atomic<std::size_t> delta_arena_key_storage_bytes{};
     std::atomic_bool read_merge_active{};
     std::atomic<std::size_t> read_merge_post_entries{};
     std::atomic<std::uint64_t> read_merge_starts{};
@@ -127,7 +167,8 @@ struct PairWriterPool::Lane final {
     std::unique_ptr<PairReadMerge> read_merge;
     std::vector<std::shared_ptr<const PairReadGeneration>> retired_generations;
     alignas(128) std::atomic<const PairReadGeneration*> published_generation{};
-    alignas(128) std::atomic<std::uint64_t> reader_epoch{};
+    alignas(128) std::atomic<std::uint64_t> writer_epoch{};
+    alignas(128) std::atomic<std::uint64_t> reader_safe_epoch{};
     alignas(128) std::atomic<std::uint64_t> published_catalog_revision{};
     alignas(128) std::atomic_bool refresh_requested{};
     alignas(128) std::atomic_bool reclaim_requested{};
@@ -135,6 +176,7 @@ struct PairWriterPool::Lane final {
 
 PairWriterPool::PairWriterPool(Store& store, const std::size_t worker_count,
                                const std::size_t capacity_per_worker,
+                               const std::size_t payload_bytes_per_worker,
                                const std::chrono::milliseconds maximum_queue_wait,
                                std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations,
                                std::vector<std::uint64_t> initial_catalog_revisions,
@@ -146,7 +188,7 @@ PairWriterPool::PairWriterPool(Store& store, const std::size_t worker_count,
     lanes_.reserve(worker_count);
     for (std::size_t worker = 0; worker < worker_count; ++worker) {
         lanes_.push_back(std::make_unique<Lane>(capacity_per_worker, std::move(initial_generations[worker]),
-                                                initial_catalog_revisions[worker]));
+                                                initial_catalog_revisions[worker], payload_bytes_per_worker));
     }
 }
 
@@ -155,13 +197,13 @@ PairWriterPool::~PairWriterPool() {
 }
 
 auto PairWriterPool::create(Store& store, const std::size_t worker_count,
-                            const std::size_t capacity_per_worker,
+                            const std::size_t capacity_per_worker, const std::size_t payload_bytes_per_worker,
                             const std::chrono::milliseconds maximum_queue_wait,
                             const PairReadMergeConfig read_merge)
     -> Result<std::unique_ptr<PairWriterPool>> try {
     if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0 ||
-        read_merge.delta_entries == 0 || read_merge.maximum_post_entries == 0 ||
-        read_merge.quantum_slots == 0 ||
+        payload_bytes_per_worker == 0 || read_merge.delta_entries == 0 ||
+        read_merge.maximum_post_entries == 0 || read_merge.quantum_slots == 0 ||
         read_merge.delta_entries > PairReadGeneration::kMaximumIncrementalDeltaEntries ||
         read_merge.maximum_post_entries >
             PairReadGeneration::kMaximumIncrementalDeltaEntries - read_merge.delta_entries) {
@@ -190,9 +232,9 @@ auto PairWriterPool::create(Store& store, const std::size_t worker_count,
         }
         initial_generations.push_back(std::move(*initial));
     }
-    return std::unique_ptr<PairWriterPool>(
-        new PairWriterPool(store, worker_count, capacity_per_worker, maximum_queue_wait,
-                           std::move(initial_generations), std::move(initial_catalog_revisions), read_merge));
+    return std::unique_ptr<PairWriterPool>(new PairWriterPool(
+        store, worker_count, capacity_per_worker, payload_bytes_per_worker, maximum_queue_wait,
+        std::move(initial_generations), std::move(initial_catalog_revisions), read_merge));
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "paired mutation executor allocation failed");
 } catch (...) {
@@ -241,14 +283,31 @@ void PairWriterPool::finish_submission() noexcept {
     }
 }
 
-auto PairWriterPool::try_submit(MutationTask task) -> bool {
-    if (task.worker_index >= lanes_.size()) {
-        return false;
+auto PairWriterPool::mutation_admission_bytes(const std::size_t key_bytes,
+                                              const std::size_t value_bytes) noexcept
+    -> std::optional<std::size_t> {
+    if (key_bytes > std::numeric_limits<std::size_t>::max() - value_bytes) {
+        return std::nullopt;
     }
-    auto& lane = *lanes_[task.worker_index];
+    const auto payload_bytes = key_bytes + value_bytes;
+    if (payload_bytes > std::numeric_limits<std::size_t>::max() - kMutationAdmissionOverheadBytes) {
+        return std::nullopt;
+    }
+    return kMutationAdmissionOverheadBytes + payload_bytes;
+}
+
+auto PairWriterPool::try_submit(const MutationRequest& request) noexcept -> std::optional<std::size_t> {
+    if (request.worker_index >= lanes_.size()) {
+        return std::nullopt;
+    }
+    auto& lane = *lanes_[request.worker_index];
+    if (request.completions == nullptr || request.wakeup == nullptr) {
+        lane.rejected.fetch_add(1U, std::memory_order_relaxed);
+        return std::nullopt;
+    }
     if (!begin_submission()) {
         lane.rejected.fetch_add(1U, std::memory_order_relaxed);
-        return false;
+        return std::nullopt;
     }
     struct SubmissionGuard final {
         PairWriterPool& executor;
@@ -257,34 +316,95 @@ auto PairWriterPool::try_submit(MutationTask task) -> bool {
         }
     } submission{*this};
     if (!healthy_.load(std::memory_order_acquire) || !started_.load(std::memory_order_acquire) ||
-        stopping_.load(std::memory_order_acquire) || lane.stopping.load(std::memory_order_acquire) ||
-        lane.queue.size() >= lane.capacity_limit) {
+        stopping_.load(std::memory_order_acquire) || lane.stopping.load(std::memory_order_acquire)) {
         lane.rejected.fetch_add(1U, std::memory_order_relaxed);
-        return false;
+        return std::nullopt;
+    }
+    const auto admission_bytes = mutation_admission_bytes(request.key.size(), request.value.size());
+    if (!admission_bytes) {
+        lane.payload_too_large_total.fetch_add(1U, std::memory_order_relaxed);
+        lane.rejected.fetch_add(1U, std::memory_order_relaxed);
+        return std::nullopt;
     }
     const auto queued_bytes = lane.queued_bytes.load(std::memory_order_relaxed);
-    if (task.admission_bytes > std::numeric_limits<std::size_t>::max() - queued_bytes) {
+    if (*admission_bytes > std::numeric_limits<std::size_t>::max() - queued_bytes) {
         lane.rejected.fetch_add(1U, std::memory_order_relaxed);
-        return false;
+        return std::nullopt;
     }
-    task.admitted_at = std::chrono::steady_clock::now();
-    const auto admission_bytes = task.admission_bytes;
+    auto acquired = lane.payloads.try_acquire(request.key, request.value, *admission_bytes);
+    if (!acquired.lease) {
+        switch (acquired.failure) {
+        case internal::MutationSlotPool::AcquireFailure::slot_exhausted:
+            lane.payload_slot_full_total.fetch_add(1U, std::memory_order_relaxed);
+            break;
+        case internal::MutationSlotPool::AcquireFailure::byte_exhausted:
+            lane.payload_arena_full_total.fetch_add(1U, std::memory_order_relaxed);
+            break;
+        case internal::MutationSlotPool::AcquireFailure::payload_too_large:
+            lane.payload_too_large_total.fetch_add(1U, std::memory_order_relaxed);
+            break;
+        case internal::MutationSlotPool::AcquireFailure::none:
+            break;
+        }
+        lane.rejected.fetch_add(1U, std::memory_order_relaxed);
+        return std::nullopt;
+    }
+    MutationTask task{.connection = request.connection,
+                      .request_id = request.request_id,
+                      .worker_index = request.worker_index,
+                      .kind = request.kind,
+                      .payload_slot = acquired.lease->slot,
+                      .key_hash = request.key_hash,
+                      .expire_at_ns = request.expire_at_ns,
+                      .admission_bytes = acquired.lease->admission_bytes,
+                      .admitted_at = std::chrono::steady_clock::now(),
+                      .completions = request.completions,
+                      .wakeup = request.wakeup};
     const auto next_bytes =
-        lane.queued_bytes.fetch_add(admission_bytes, std::memory_order_relaxed) + admission_bytes;
+        lane.queued_bytes.fetch_add(*admission_bytes, std::memory_order_relaxed) + *admission_bytes;
     if (!lane.queue.try_push(std::move(task))) {
-        lane.queued_bytes.fetch_sub(admission_bytes, std::memory_order_relaxed);
+        lane.queued_bytes.fetch_sub(*admission_bytes, std::memory_order_relaxed);
+        if (!lane.payloads.rollback(*acquired.lease)) {
+            std::terminate();
+        }
         lane.rejected.fetch_add(1U, std::memory_order_relaxed);
-        return false;
+        return std::nullopt;
     }
+    const auto slots_in_use = lane.payloads.slots_in_use();
+    const auto arena_bytes_in_use = lane.payloads.payload_bytes_in_use();
+    const auto admission_bytes_in_use = lane.payloads.admission_bytes_in_use();
+    lane.payload_slots_in_use.store(slots_in_use, std::memory_order_relaxed);
+    lane.payload_arena_bytes_in_use.store(arena_bytes_in_use, std::memory_order_relaxed);
+    lane.payload_admission_bytes_in_use.store(admission_bytes_in_use, std::memory_order_relaxed);
+    atomic_max(lane.maximum_payload_slots_in_use, slots_in_use);
+    atomic_max(lane.maximum_payload_arena_bytes_in_use, arena_bytes_in_use);
+    atomic_max(lane.maximum_payload_admission_bytes_in_use, admission_bytes_in_use);
     lane.admitted.fetch_add(1U, std::memory_order_relaxed);
     atomic_max(lane.maximum_queue_depth, lane.queue.size());
     atomic_max(lane.maximum_queued_bytes, next_bytes);
     lane.signal.fetch_add(1U, std::memory_order_release);
     lane.signal.notify_one();
+    return admission_bytes;
+}
+
+auto PairWriterPool::release_payload(const std::size_t worker_index,
+                                     const std::uint32_t payload_slot) noexcept -> bool {
+    if (worker_index >= lanes_.size()) {
+        return false;
+    }
+    auto& lane = *lanes_[worker_index];
+    if (!lane.payloads.release(payload_slot)) {
+        return false;
+    }
+    lane.payload_slots_in_use.store(lane.payloads.slots_in_use(), std::memory_order_relaxed);
+    lane.payload_arena_bytes_in_use.store(lane.payloads.payload_bytes_in_use(), std::memory_order_relaxed);
+    lane.payload_admission_bytes_in_use.store(lane.payloads.admission_bytes_in_use(),
+                                              std::memory_order_relaxed);
     return true;
 }
 
-auto PairWriterPool::adopt_read_generation(const std::size_t worker_index) const noexcept
+auto PairWriterPool::adopt_read_generation(const std::size_t worker_index,
+                                           const std::uint64_t minimum_leased_epoch) const noexcept
     -> const PairReadGeneration* {
     if (worker_index >= lanes_.size()) {
         return nullptr;
@@ -292,11 +412,12 @@ auto PairWriterPool::adopt_read_generation(const std::size_t worker_index) const
     auto& lane = *lanes_[worker_index];
     const auto* generation = lane.published_generation.load(std::memory_order_acquire);
     if (generation != nullptr) {
-        // This call is made only between Reader event-loop turns (or after a
-        // synchronous response copy), therefore all older epochs are quiescent.
-        const auto previous = lane.reader_epoch.exchange(generation->epoch(), std::memory_order_acq_rel);
-        if (previous != generation->epoch() &&
-            !lane.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
+        // The current turn protects generation->epoch(); asynchronous I/O can
+        // additionally keep an older epoch borrowed. The minimum is the sole
+        // reclamation boundary published by Reader to Writer.
+        const auto safe_epoch = std::min(generation->epoch(), minimum_leased_epoch);
+        const auto previous = lane.reader_safe_epoch.exchange(safe_epoch, std::memory_order_acq_rel);
+        if (previous != safe_epoch && !lane.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
             lane.signal.fetch_add(1U, std::memory_order_release);
             lane.signal.notify_one();
         }
@@ -332,10 +453,28 @@ auto PairWriterPool::stats() const -> std::vector<PairWriterStats> {
         const auto& lane = *lanes_[worker];
         result.push_back(
             {.worker_index = worker,
+             .reader_safe_epoch = lane.reader_safe_epoch.load(std::memory_order_relaxed),
+             .writer_epoch = lane.writer_epoch.load(std::memory_order_relaxed),
              .queue_depth = lane.queue.size(),
              .queued_bytes = lane.queued_bytes.load(std::memory_order_relaxed),
              .maximum_queue_depth = lane.maximum_queue_depth.load(std::memory_order_relaxed),
              .maximum_queued_bytes = lane.maximum_queued_bytes.load(std::memory_order_relaxed),
+             .payload_slot_capacity = lane.payloads.slot_capacity(),
+             .payload_slots_in_use = lane.payload_slots_in_use.load(std::memory_order_relaxed),
+             .maximum_payload_slots_in_use =
+                 lane.maximum_payload_slots_in_use.load(std::memory_order_relaxed),
+             .payload_arena_capacity_bytes = lane.payloads.byte_capacity(),
+             .payload_arena_storage_bytes = lane.payloads.storage_bytes(),
+             .payload_arena_bytes_in_use = lane.payload_arena_bytes_in_use.load(std::memory_order_relaxed),
+             .maximum_payload_arena_bytes_in_use =
+                 lane.maximum_payload_arena_bytes_in_use.load(std::memory_order_relaxed),
+             .payload_admission_bytes_in_use =
+                 lane.payload_admission_bytes_in_use.load(std::memory_order_relaxed),
+             .maximum_payload_admission_bytes_in_use =
+                 lane.maximum_payload_admission_bytes_in_use.load(std::memory_order_relaxed),
+             .payload_slot_full_total = lane.payload_slot_full_total.load(std::memory_order_relaxed),
+             .payload_arena_full_total = lane.payload_arena_full_total.load(std::memory_order_relaxed),
+             .payload_too_large_total = lane.payload_too_large_total.load(std::memory_order_relaxed),
              .admitted = lane.admitted.load(std::memory_order_relaxed),
              .rejected = lane.rejected.load(std::memory_order_relaxed),
              .expired_before_store = lane.expired_before_store.load(std::memory_order_relaxed),
@@ -353,6 +492,12 @@ auto PairWriterPool::stats() const -> std::vector<PairWriterStats> {
              .read_refresh_deferrals = lane.read_refresh_deferrals.load(std::memory_order_relaxed),
              .generations_retired = lane.generations_retired.load(std::memory_order_relaxed),
              .retired_generation_count = lane.retired_generation_count.load(std::memory_order_relaxed),
+             .delta_entries = lane.delta_entries.load(std::memory_order_relaxed),
+             .delta_record_versions = lane.delta_record_versions.load(std::memory_order_relaxed),
+             .delta_arena_record_bytes = lane.delta_arena_record_bytes.load(std::memory_order_relaxed),
+             .delta_arena_key_bytes = lane.delta_arena_key_bytes.load(std::memory_order_relaxed),
+             .delta_arena_key_storage_bytes =
+                 lane.delta_arena_key_storage_bytes.load(std::memory_order_relaxed),
              .read_merge_active = lane.read_merge_active.load(std::memory_order_relaxed),
              .read_merge_post_entries = lane.read_merge_post_entries.load(std::memory_order_relaxed),
              .read_merge_starts = lane.read_merge_starts.load(std::memory_order_relaxed),
@@ -416,6 +561,13 @@ auto PairWriterPool::stop_and_drain(const std::optional<std::chrono::millisecond
 
 void PairWriterPool::run(const std::size_t worker_index) noexcept {
     auto& lane = *lanes_[worker_index];
+    const auto payload_for = [&](const MutationTask& task) noexcept {
+        auto payload = lane.payloads.view(task.payload_slot);
+        if (!payload) {
+            std::terminate();
+        }
+        return *payload;
+    };
     struct ExitGuard final {
         PairWriterPool& executor;
         ~ExitGuard() {
@@ -456,9 +608,20 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             affected_lane->signal.notify_one();
         }
     };
+    const auto update_delta_stats = [&]() noexcept {
+        lane.delta_entries.store(lane.writer_generation->delta_entries(), std::memory_order_relaxed);
+        lane.delta_record_versions.store(lane.writer_generation->delta_record_versions(),
+                                         std::memory_order_relaxed);
+        lane.delta_arena_record_bytes.store(lane.writer_generation->delta_arena_record_bytes(),
+                                            std::memory_order_relaxed);
+        lane.delta_arena_key_bytes.store(lane.writer_generation->delta_arena_key_bytes(),
+                                         std::memory_order_relaxed);
+        lane.delta_arena_key_storage_bytes.store(lane.writer_generation->delta_arena_key_storage_bytes(),
+                                                 std::memory_order_relaxed);
+    };
     const auto reclaim_quiescent = [&]() noexcept {
         const auto before = lane.retired_generations.size();
-        const auto quiescent_epoch = lane.reader_epoch.load(std::memory_order_acquire);
+        const auto quiescent_epoch = lane.reader_safe_epoch.load(std::memory_order_acquire);
         std::erase_if(lane.retired_generations,
                       [&](const auto& retired) { return retired->epoch() < quiescent_epoch; });
         const auto retired = before - lane.retired_generations.size();
@@ -477,7 +640,7 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             return;
         }
         reclaim_quiescent();
-        if (lane.retired_generations.size() >= kMaximumRetiredReadGenerations) {
+        if (lane.retired_generations.size() >= PairWriterPool::kMaximumRetiredReadGenerations) {
             lane.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
             return;
         }
@@ -506,6 +669,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
         lane.retired_generations.push_back(lane.writer_generation);
         lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
         lane.writer_generation = std::move(*next);
+        update_delta_stats();
+        lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
         lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
         lane.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
         lane.read_merge.reset();
@@ -516,7 +681,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
     };
     const auto process_merge = [&]() noexcept {
         if (!lane.read_merge && !merge_retry_blocked &&
-            lane.writer_generation->delta_entries() >= read_merge_config_.delta_entries) {
+            (lane.writer_generation->delta_entries() >= read_merge_config_.delta_entries ||
+             lane.writer_generation->delta_record_versions() >= read_merge_config_.delta_entries)) {
             auto started = PairReadGeneration::start_incremental_merge(
                 lane.writer_generation, read_merge_config_.maximum_post_entries);
             if (!started) {
@@ -557,7 +723,7 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             return;
         }
         reclaim_quiescent();
-        if (lane.retired_generations.size() >= kMaximumRetiredReadGenerations) {
+        if (lane.retired_generations.size() >= PairWriterPool::kMaximumRetiredReadGenerations) {
             return;
         }
         auto next = PairReadGeneration::finish_incremental_merge(lane.writer_generation, *lane.read_merge);
@@ -576,6 +742,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
         lane.retired_generations.push_back(lane.writer_generation);
         lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
         lane.writer_generation = std::move(*next);
+        update_delta_stats();
+        lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
         lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
         lane.read_merge.reset();
         lane.read_merge_active.store(false, std::memory_order_relaxed);
@@ -667,7 +835,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                 post_commit_publication_failure = true;
                 return;
             }
-            const HashedKey key{.key = queued.key, .hash = queued.key_hash};
+            const auto payload = payload_for(queued);
+            const HashedKey key{.key = payload.key, .hash = queued.key_hash};
             ReadMutation publication{
                 .key = key,
                 .record = RecordRef{.sequence = *result.sequence},
@@ -688,7 +857,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             read_mutation_indices.push_back(batch_index);
         };
         reclaim_quiescent();
-        const bool retire_pressure = lane.retired_generations.size() >= kMaximumRetiredReadGenerations;
+        const bool retire_pressure =
+            lane.retired_generations.size() >= PairWriterPool::kMaximumRetiredReadGenerations;
         const bool merge_pressure = !PairReadGeneration::can_publish_incremental(
             *lane.writer_generation, lane.read_merge.get(), batch.size());
         const bool generation_pressure = retire_pressure || merge_pressure;
@@ -711,7 +881,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             service_started.push_back(std::chrono::steady_clock::now());
             completions.push_back({.connection = queued.connection,
                                    .request_id = queued.request_id,
-                                   .admission_bytes = queued.admission_bytes});
+                                   .admission_bytes = queued.admission_bytes,
+                                   .payload_slot = queued.payload_slot});
             if (task_expired) {
                 if (merge_pressure && !retire_pressure && !force_expire) {
                     lane.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
@@ -725,11 +896,12 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                                : (merge_pressure ? "mutation rejected until incremental read merge advances"
                                                  : "mutation expired before Store execution")));
             } else if (batch_config) {
+                const auto payload = payload_for(queued);
                 durable_views.push_back({.operation = queued.kind == MutationKind::put
                                                           ? detail::StoreAccess::MutationOperation::put
                                                           : detail::StoreAccess::MutationOperation::erase,
-                                         .key = {.key = queued.key, .hash = queued.key_hash},
-                                         .value = queued.value,
+                                         .key = {.key = payload.key, .hash = queued.key_hash},
+                                         .value = payload.value,
                                          .expire_at_ns = queued.expire_at_ns});
                 durable_indices.push_back(index);
             }
@@ -781,14 +953,15 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                 auto& queued = batch[index];
                 auto& completion = completions[index];
                 try {
-                    const HashedKey key{.key = queued.key, .hash = queued.key_hash};
+                    const auto payload = payload_for(queued);
+                    const HashedKey key{.key = payload.key, .hash = queued.key_hash};
                     if (detail::StoreAccess::is_durable(store_)) {
                         DurableMutationResult result;
                         bool conflict_retried{};
                         for (unsigned attempt = 0; attempt < 2; ++attempt) {
                             result = queued.kind == MutationKind::put
-                                         ? detail::StoreAccess::put_durable(store_, worker_index, key,
-                                                                            queued.value, queued.expire_at_ns)
+                                         ? detail::StoreAccess::put_durable(
+                                               store_, worker_index, key, payload.value, queued.expire_at_ns)
                                          : detail::StoreAccess::erase_durable(store_, worker_index, key);
                             if (!detail::StoreAccess::should_retry_durable_mutation(result, attempt)) {
                                 break;
@@ -816,7 +989,7 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                         auto published =
                             queued.kind == MutationKind::put
                                 ? detail::StoreAccess::put_volatile_published(
-                                      store_, worker_index, key, queued.value, queued.expire_at_ns)
+                                      store_, worker_index, key, payload.value, queued.expire_at_ns)
                                 : detail::StoreAccess::erase_volatile_published(store_, worker_index, key);
                         if (!published) {
                             completion.error.emplace(std::move(published.error()));
@@ -866,6 +1039,8 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                 lane.retired_generation_count.store(lane.retired_generations.size(),
                                                     std::memory_order_relaxed);
                 lane.writer_generation = std::move(*next);
+                update_delta_stats();
+                lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
                 lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
                 if (lane.read_merge) {
                     lane.read_merge_post_entries.store(

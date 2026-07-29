@@ -9,7 +9,9 @@
 #include <memory>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -20,6 +22,7 @@ inline constexpr std::size_t kDeltaPageSlots = 16;
 inline constexpr std::size_t kDeltaDirectoryBlockPages = 16;
 inline constexpr std::size_t kFlatDeltaMaximumPages = 32;
 inline constexpr std::size_t kMaximumPublicationBatch = 32;
+inline constexpr std::size_t kDeltaArenaBlockRecords = 64;
 static_assert(kDeltaPageSlots % kSwissGroupSize == 0);
 
 struct ReadRecord final {
@@ -55,6 +58,15 @@ struct ReadRecordView final {
             .segment = record.segment ? &record.segment : nullptr,
             .durable = record.durable ? &record.durable->pin() : nullptr,
             .opcode = record.opcode};
+}
+
+[[nodiscard]] auto view_of(const ReadMutation& mutation) noexcept -> ReadRecordView {
+    return {.hash = mutation.key.hash,
+            .key = mutation.key.key,
+            .record = mutation.record,
+            .segment = mutation.segment ? &mutation.segment : nullptr,
+            .durable = mutation.durable ? &mutation.durable->pin() : nullptr,
+            .opcode = mutation.opcode};
 }
 
 [[nodiscard]] auto materialize(const ReadRecordView& view) -> ReadRecordHandle {
@@ -123,6 +135,184 @@ void apply_record(MutableReadIndex& index, ReadRecordHandle record) {
     return std::move(*decoded);
 }
 
+// One immutable Delta cell. Ownership of keys and pins is lifted to the
+// generation arena; Swiss pages copy only this stable pointer. The Writer is
+// the sole appender and Readers can only observe fully constructed cells that
+// were published through a generation release/acquire edge.
+struct alignas(64) DeltaRecord final {
+    union KeyStorage {
+        std::array<char, 16> inline_key{};
+        const char* external_key;
+    };
+    RecordRef record;
+    KeyStorage key;
+    const void* pin{};
+    std::uint32_t key_size{};
+    Opcode opcode{Opcode::put};
+    bool durable{};
+};
+static_assert(sizeof(DeltaRecord) == 64, "a Delta record must occupy exactly one cache line");
+static_assert(std::is_trivially_copyable_v<DeltaRecord>);
+
+[[nodiscard]] auto delta_record_key(const DeltaRecord& record) noexcept -> std::string_view {
+    return record.key_size <= record.key.inline_key.size()
+               ? std::string_view{record.key.inline_key.data(), record.key_size}
+               : std::string_view{record.key.external_key, record.key_size};
+}
+
+[[nodiscard]] auto delta_record_view(const DeltaRecord& record, const std::uint64_t hash) noexcept
+    -> ReadRecordView {
+    return {.hash = hash,
+            .key = delta_record_key(record),
+            .record = record.record,
+            .segment = !record.durable && record.pin != nullptr ? static_cast<const SegmentPtr*>(record.pin)
+                                                                : nullptr,
+            .durable = record.durable && record.pin != nullptr
+                           ? static_cast<const DurableReadPin*>(record.pin)
+                           : nullptr,
+            .opcode = record.opcode};
+}
+
+struct DeltaKeyBlock final {
+    std::unique_ptr<char[]> bytes;
+    std::size_t capacity{};
+    std::size_t used{};
+};
+
+struct DeltaRecordBlock final {
+    std::unique_ptr<DeltaRecord[]> records;
+    std::size_t used{};
+};
+
+class DeltaArena final {
+  public:
+    explicit DeltaArena(const std::size_t maximum_records) : maximum_records_(maximum_records) {
+        record_blocks_.reserve((maximum_records + kDeltaArenaBlockRecords - 1U) / kDeltaArenaBlockRecords);
+    }
+
+    [[nodiscard]] auto store(const ReadRecordView& source) -> const DeltaRecord* {
+        if (record_count_ == maximum_records_ ||
+            source.key.size() > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::bad_alloc{};
+        }
+        ensure_record_capacity();
+        auto* external_key = source.key.size() > DeltaRecord::KeyStorage{}.inline_key.size()
+                                 ? reserve_key(source.key.size())
+                                 : nullptr;
+        const void* pin = nullptr;
+        bool durable{};
+        if (source.opcode == Opcode::put && source.durable != nullptr) {
+            durable = true;
+            pin = retain_durable_pin(*source.durable);
+        } else if (source.opcode == Opcode::put && source.segment != nullptr) {
+            pin = retain_segment_pin(*source.segment, source.record);
+        }
+
+        auto compact = DeltaRecord{.record = source.record,
+                                   .pin = pin,
+                                   .key_size = static_cast<std::uint32_t>(source.key.size()),
+                                   .opcode = source.opcode,
+                                   .durable = durable};
+        if (external_key == nullptr) {
+            std::ranges::copy(source.key, compact.key.inline_key.begin());
+        } else {
+            std::ranges::copy(source.key, external_key);
+            compact.key.external_key = external_key;
+            key_blocks_.back().used += source.key.size();
+        }
+        auto& block = record_blocks_.back();
+        auto* destination = &block.records[block.used++];
+        *destination = compact;
+        ++record_count_;
+        return destination;
+    }
+
+    [[nodiscard]] auto record_count() const noexcept -> std::size_t {
+        return record_count_;
+    }
+
+    [[nodiscard]] auto available_records() const noexcept -> std::size_t {
+        return maximum_records_ - record_count_;
+    }
+
+    [[nodiscard]] auto allocated_record_bytes() const noexcept -> std::size_t {
+        return record_blocks_.size() * kDeltaArenaBlockRecords * sizeof(DeltaRecord);
+    }
+
+    [[nodiscard]] auto key_bytes() const noexcept -> std::size_t {
+        std::size_t result{};
+        for (const auto& block : key_blocks_) {
+            result += block.used;
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto allocated_key_bytes() const noexcept -> std::size_t {
+        std::size_t result{};
+        for (const auto& block : key_blocks_) {
+            result += block.capacity;
+        }
+        return result;
+    }
+
+  private:
+    void ensure_record_capacity() {
+        if (!record_blocks_.empty() && record_blocks_.back().used != kDeltaArenaBlockRecords) {
+            return;
+        }
+        record_blocks_.push_back({
+            .records = std::make_unique_for_overwrite<DeltaRecord[]>(kDeltaArenaBlockRecords),
+        });
+    }
+
+    [[nodiscard]] auto reserve_key(const std::size_t size) -> char* {
+        constexpr std::size_t kKeyBlockBytes = 4U * 1024U;
+        if (key_blocks_.empty() || size > key_blocks_.back().capacity - key_blocks_.back().used) {
+            const auto capacity = std::max(kKeyBlockBytes, size);
+            key_blocks_.push_back({.bytes = std::make_unique<char[]>(capacity), .capacity = capacity});
+        }
+        return key_blocks_.back().bytes.get() + key_blocks_.back().used;
+    }
+
+    [[nodiscard]] auto retain_segment_pin(const SegmentPtr& source, const RecordRef& record)
+        -> const SegmentPtr* {
+        if (!segment_pins_.empty() && same_segment(*segment_pins_.back(), record)) {
+            return segment_pins_.back().get();
+        }
+        const auto found = std::find_if(segment_pins_.begin(), segment_pins_.end(),
+                                        [&](const auto& pin) { return same_segment(*pin, record); });
+        if (found != segment_pins_.end()) {
+            return found->get();
+        }
+        auto pin = std::make_unique<SegmentPtr>(source);
+        const auto* result = pin.get();
+        segment_pins_.push_back(std::move(pin));
+        return result;
+    }
+
+    [[nodiscard]] auto retain_durable_pin(const DurableReadPin& source) -> const DurableReadPin* {
+        if (!durable_pins_.empty() && durable_pins_.back()->same_generation(source)) {
+            return durable_pins_.back().get();
+        }
+        const auto found = std::find_if(durable_pins_.begin(), durable_pins_.end(),
+                                        [&](const auto& pin) { return pin->same_generation(source); });
+        if (found != durable_pins_.end()) {
+            return found->get();
+        }
+        auto pin = std::make_unique<DurableReadPin>(source);
+        const auto* result = pin.get();
+        durable_pins_.push_back(std::move(pin));
+        return result;
+    }
+
+    const std::size_t maximum_records_;
+    std::size_t record_count_{};
+    std::vector<DeltaRecordBlock> record_blocks_;
+    std::vector<DeltaKeyBlock> key_blocks_;
+    std::vector<std::unique_ptr<SegmentPtr>> segment_pins_;
+    std::vector<std::unique_ptr<DurableReadPin>> durable_pins_;
+};
+
 struct DeltaPage final {
     DeltaPage() {
         control.fill(kSwissEmpty);
@@ -130,7 +320,7 @@ struct DeltaPage final {
 
     std::array<std::uint8_t, kDeltaPageSlots> control{};
     std::array<std::uint64_t, kDeltaPageSlots> hashes{};
-    std::array<ReadRecordHandle, kDeltaPageSlots> records{};
+    std::array<const DeltaRecord*, kDeltaPageSlots> records{};
 };
 
 struct DeltaDirectoryBlock final {
@@ -251,7 +441,7 @@ class ImmutableReadIndex final {
     }
 
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
-        -> Result<DurableRuntimeCatalog::PublishedReadRecord> {
+        -> Result<DurableRuntimeCatalog::PublishedReadView> {
         const auto* record = find(key);
         if (record == nullptr || record->opcode == Opcode::erase) {
             return fail(ErrorCode::not_found, "key not found");
@@ -261,8 +451,8 @@ class ImmutableReadIndex final {
             return fail(ErrorCode::invalid_reference,
                         "durable read generation has no exact file-generation pin");
         }
-        return DurableRuntimeCatalog::PublishedReadRecord::bind(
-            std::string{key_at(*record)}, key.hash, record->record, durable_pins_[record->pin_index]);
+        return DurableRuntimeCatalog::PublishedReadView::borrow(key_at(*record), key.hash, record->record,
+                                                                durable_pins_[record->pin_index]);
     }
 
     [[nodiscard]] auto records() const -> MutableReadIndex {
@@ -498,15 +688,21 @@ class DeltaState final {
   public:
     DeltaState(const std::size_t capacity, const std::size_t maximum_entries, const std::size_t size,
                std::vector<std::shared_ptr<const DeltaPage>> flat_pages,
-               std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory)
+               std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory,
+               std::shared_ptr<DeltaArena> primary_arena, std::shared_ptr<DeltaArena> secondary_arena = {})
         : capacity_(capacity), maximum_entries_(maximum_entries), size_(size),
-          flat_pages_(std::move(flat_pages)), directory_(std::move(directory)) {}
+          flat_pages_(std::move(flat_pages)), directory_(std::move(directory)),
+          primary_arena_(std::move(primary_arena)), secondary_arena_(std::move(secondary_arena)) {
+        if (!primary_arena_) {
+            throw std::invalid_argument{"Delta state has no primary record arena"};
+        }
+    }
 
-    [[nodiscard]] auto find_handle(const HashedKey& key) const noexcept -> const ReadRecord* {
+    [[nodiscard]] auto find_handle(const HashedKey& key) const noexcept -> const DeltaRecord* {
         return find(key);
     }
 
-    [[nodiscard]] auto find(const HashedKey& key) const noexcept -> const ReadRecord* {
+    [[nodiscard]] auto find(const HashedKey& key) const noexcept -> const DeltaRecord* {
         const auto wanted = fingerprint(key.hash);
         auto group_start = probe_start(key.hash);
         for (std::size_t probed = 0; probed < capacity_; probed += kSwissGroupSize) {
@@ -528,8 +724,9 @@ class DeltaState final {
                     continue;
                 }
                 const auto slot = page_offset + offset;
-                if (page->hashes[slot] == key.hash && record_key(*page->records[slot]) == key.key) {
-                    return page->records[slot].get();
+                const auto* record = page->records[slot];
+                if (page->hashes[slot] == key.hash && delta_record_key(*record) == key.key) {
+                    return record;
                 }
             }
             group_start = next_group(group_start);
@@ -546,7 +743,7 @@ class DeltaState final {
             }
             for (std::size_t slot = 0; slot < kDeltaPageSlots; ++slot) {
                 if (page->control[slot] != kSwissEmpty) {
-                    callback(*page->records[slot]);
+                    callback(delta_record_view(*page->records[slot], page->hashes[slot]));
                 }
             }
         }
@@ -564,17 +761,55 @@ class DeltaState final {
         return maximum_entries_;
     }
 
-    [[nodiscard]] auto record_at(const std::size_t slot) const noexcept -> const ReadRecord* {
+    [[nodiscard]] auto record_versions() const noexcept -> std::size_t {
+        return allocation_arena()->record_count();
+    }
+
+    [[nodiscard]] auto available_record_versions() const noexcept -> std::size_t {
+        return allocation_arena()->available_records();
+    }
+
+    [[nodiscard]] auto arena_record_bytes() const noexcept -> std::size_t {
+        auto result = primary_arena_->allocated_record_bytes();
+        if (secondary_arena_) {
+            result += secondary_arena_->allocated_record_bytes();
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto arena_key_bytes() const noexcept -> std::size_t {
+        auto result = primary_arena_->key_bytes();
+        if (secondary_arena_) {
+            result += secondary_arena_->key_bytes();
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto arena_key_storage_bytes() const noexcept -> std::size_t {
+        auto result = primary_arena_->allocated_key_bytes();
+        if (secondary_arena_) {
+            result += secondary_arena_->allocated_key_bytes();
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto record_at(const std::size_t slot) const noexcept -> std::optional<ReadRecordView> {
         if (slot >= capacity_) {
-            return nullptr;
+            return std::nullopt;
         }
         const auto* page = page_at(slot / kDeltaPageSlots);
         const auto offset = slot % kDeltaPageSlots;
-        return page != nullptr && page->control[offset] != kSwissEmpty ? page->records[offset].get()
-                                                                       : nullptr;
+        return page != nullptr && page->control[offset] != kSwissEmpty
+                   ? std::optional<ReadRecordView>{delta_record_view(*page->records[offset],
+                                                                     page->hashes[offset])}
+                   : std::nullopt;
     }
 
   private:
+    [[nodiscard]] auto allocation_arena() const noexcept -> const std::shared_ptr<DeltaArena>& {
+        return secondary_arena_ ? secondary_arena_ : primary_arena_;
+    }
+
     [[nodiscard]] auto page_at(const std::size_t page_index) const noexcept -> const DeltaPage* {
         if (directory_.empty()) {
             return flat_pages_[page_index].get();
@@ -597,6 +832,8 @@ class DeltaState final {
     std::size_t size_{};
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
     std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory_;
+    std::shared_ptr<DeltaArena> primary_arena_;
+    std::shared_ptr<DeltaArena> secondary_arena_;
 
     friend class DeltaBuilder;
 };
@@ -614,36 +851,62 @@ class DeltaState final {
         capacity *= 2U;
     }
     const auto page_count = capacity / kDeltaPageSlots;
+    auto arena = std::make_shared<DeltaArena>(maximum_entries);
     if (page_count <= kFlatDeltaMaximumPages) {
-        return std::make_shared<const DeltaState>(capacity, maximum_entries, 0,
-                                                  std::vector<std::shared_ptr<const DeltaPage>>(page_count),
-                                                  std::vector<std::shared_ptr<const DeltaDirectoryBlock>>{});
+        return std::make_shared<const DeltaState>(
+            capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>(page_count),
+            std::vector<std::shared_ptr<const DeltaDirectoryBlock>>{}, std::move(arena));
     }
     const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
     return std::make_shared<const DeltaState>(
         capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
-        std::vector<std::shared_ptr<const DeltaDirectoryBlock>>(directory_count));
+        std::vector<std::shared_ptr<const DeltaDirectoryBlock>>(directory_count), std::move(arena));
 }
 
 class DeltaBuilder final {
   public:
-    explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous)
+    explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous,
+                          std::shared_ptr<DeltaArena> allocation_arena = {})
         : previous_(std::move(previous)), flat_pages_(previous_->flat_pages_),
-          directory_(previous_->directory_), size_(previous_->size_) {
+          directory_(previous_->directory_), primary_arena_(previous_->primary_arena_),
+          secondary_arena_(previous_->secondary_arena_), size_(previous_->size_) {
+        if (allocation_arena) {
+            if (allocation_arena != primary_arena_ && allocation_arena != secondary_arena_) {
+                if (secondary_arena_) {
+                    throw std::invalid_argument{"Delta state cannot own more than cut and post arenas"};
+                }
+                secondary_arena_ = std::move(allocation_arena);
+            }
+        }
+        allocation_arena_ = secondary_arena_ ? secondary_arena_ : primary_arena_;
         mutable_blocks_.reserve(kMaximumPublicationBatch);
         mutable_pages_.reserve(kMaximumPublicationBatch);
     }
 
-    void insert_or_assign(ReadRecord record) {
-        const auto wanted = fingerprint(record.hash);
-        auto group_start = probe_start(record.hash);
+    struct PreparedSlot final {
+        DeltaPage* page{};
+        std::size_t slot{};
+        std::uint64_t hash{};
+        std::uint8_t control{};
+        bool inserted{};
+    };
+
+    [[nodiscard]] auto prepare(const std::uint64_t hash, const std::string_view key) -> PreparedSlot {
+        const auto wanted = fingerprint(hash);
+        auto group_start = probe_start(hash);
         for (std::size_t probed = 0; probed < previous_->capacity_; probed += kSwissGroupSize) {
             const auto page_index = group_start / kDeltaPageSlots;
             const auto page_offset = group_start % kDeltaPageSlots;
             const auto* page = page_at(page_index);
             if (page == nullptr) {
-                place(page_index, page_offset, wanted, std::move(record), true);
-                return;
+                if (size_ == previous_->maximum_entries_) {
+                    throw std::bad_alloc{};
+                }
+                return {.page = &mutable_page(page_index),
+                        .slot = page_offset,
+                        .hash = hash,
+                        .control = wanted,
+                        .inserted = true};
             }
             const auto* group = &page->control[page_offset];
             const auto control_word = detail::load_control_group64(group);
@@ -652,13 +915,18 @@ class DeltaBuilder final {
                 const auto control = detail::control_byte_at(control_word, offset);
                 const auto slot = page_offset + offset;
                 if (control == kSwissEmpty) {
-                    place(page_index, slot, wanted, std::move(record), true);
-                    return;
+                    if (size_ == previous_->maximum_entries_) {
+                        throw std::bad_alloc{};
+                    }
+                    return {.page = &mutable_page(page_index),
+                            .slot = slot,
+                            .hash = hash,
+                            .control = wanted,
+                            .inserted = true};
                 }
-                if ((matches & (1ULL << offset)) != 0 && page->hashes[slot] == record.hash &&
-                    record_key(*page->records[slot]) == record_key(record)) {
-                    place(page_index, slot, wanted, std::move(record), false);
-                    return;
+                if ((matches & (1ULL << offset)) != 0 && page->hashes[slot] == hash &&
+                    delta_record_key(*page->records[slot]) == key) {
+                    return {.page = &mutable_page(page_index), .slot = slot, .hash = hash, .control = wanted};
                 }
             }
             group_start = next_group(group_start);
@@ -666,9 +934,27 @@ class DeltaBuilder final {
         throw std::bad_alloc{};
     }
 
+    [[nodiscard]] auto store(const ReadRecordView& record) -> const DeltaRecord* {
+        return allocation_arena_->store(record);
+    }
+
+    void commit(const PreparedSlot prepared, const DeltaRecord* record) noexcept {
+        prepared.page->control[prepared.slot] = prepared.control;
+        prepared.page->hashes[prepared.slot] = prepared.hash;
+        prepared.page->records[prepared.slot] = record;
+        if (prepared.inserted) {
+            ++size_;
+        }
+    }
+
     [[nodiscard]] auto freeze() && -> std::shared_ptr<const DeltaState> {
         return std::make_shared<const DeltaState>(previous_->capacity_, previous_->maximum_entries_, size_,
-                                                  std::move(flat_pages_), std::move(directory_));
+                                                  std::move(flat_pages_), std::move(directory_),
+                                                  std::move(primary_arena_), std::move(secondary_arena_));
+    }
+
+    [[nodiscard]] auto allocation_arena() const noexcept -> const std::shared_ptr<DeltaArena>& {
+        return allocation_arena_;
     }
 
   private:
@@ -717,26 +1003,14 @@ class DeltaBuilder final {
         return *page;
     }
 
-    void place(const std::size_t page_index, const std::size_t slot, const std::uint8_t wanted,
-               ReadRecord record, const bool inserted) {
-        if (inserted && size_ >= previous_->maximum_entries_) {
-            throw std::bad_alloc{};
-        }
-        auto& page = mutable_page(page_index);
-        auto stored = std::make_shared<const ReadRecord>(std::move(record));
-        page.control[slot] = wanted;
-        page.hashes[slot] = stored->hash;
-        page.records[slot] = std::move(stored);
-        if (inserted) {
-            ++size_;
-        }
-    }
-
     std::shared_ptr<const DeltaState> previous_;
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
     std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory_;
     std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryBlock>>> mutable_blocks_;
     std::vector<std::pair<std::size_t, std::shared_ptr<DeltaPage>>> mutable_pages_;
+    std::shared_ptr<DeltaArena> primary_arena_;
+    std::shared_ptr<DeltaArena> secondary_arena_;
+    std::shared_ptr<DeltaArena> allocation_arena_;
     std::size_t size_{};
 };
 
@@ -849,13 +1123,9 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
             return fail(ErrorCode::invalid_reference,
                         "durable publication record disagrees with its exact generation pin");
         }
-        builder.insert_or_assign(
-            ReadRecord{.hash = mutation.key.hash,
-                       .key = durable_put ? std::string{} : std::string{mutation.key.key},
-                       .record = mutation.record,
-                       .segment = mutation.segment,
-                       .durable = mutation.durable,
-                       .opcode = mutation.opcode});
+        const auto prepared = builder.prepare(mutation.key.hash, mutation.key.key);
+        const auto* stored = builder.store(view_of(mutation));
+        builder.commit(prepared, stored);
         visible_through = std::max(visible_through, mutation.record.sequence.value);
     }
 
@@ -863,8 +1133,7 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
     auto next_base = previous->base_;
     if (next_delta->size() >= merge_delta_entries) {
         auto merged = next_base->records();
-        next_delta->for_each(
-            [&](const ReadRecord& record) { apply_record(merged, materialize(view_of(record))); });
+        next_delta->for_each([&](const ReadRecordView record) { apply_record(merged, materialize(record)); });
         next_base = std::make_shared<const ImmutableReadIndex>(std::move(merged));
         next_delta = make_empty_delta(std::max(merge_delta_entries, previous->delta_->maximum_entries()));
     }
@@ -895,11 +1164,12 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
         return fail(ErrorCode::resource_exhausted, "incremental read delta capacity exhausted");
     }
 
-    DeltaBuilder current_builder{previous->delta_};
     std::optional<DeltaBuilder> post_builder;
     if (merge != nullptr) {
         post_builder.emplace(merge->state_->post_delta);
     }
+    DeltaBuilder current_builder{previous->delta_, post_builder ? post_builder->allocation_arena()
+                                                                : std::shared_ptr<DeltaArena>{}};
     auto visible_through = previous->visible_through_;
     for (const auto& mutation : mutations) {
         const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
@@ -914,17 +1184,15 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
             return fail(ErrorCode::invalid_reference,
                         "durable publication record disagrees with its exact generation pin");
         }
-        auto record = ReadRecord{.hash = mutation.key.hash,
-                                 .key = durable_put ? std::string{} : std::string{mutation.key.key},
-                                 .record = mutation.record,
-                                 .segment = mutation.segment,
-                                 .durable = mutation.durable,
-                                 .opcode = mutation.opcode};
+        const auto current_slot = current_builder.prepare(mutation.key.hash, mutation.key.key);
+        std::optional<DeltaBuilder::PreparedSlot> post_slot;
         if (post_builder) {
-            current_builder.insert_or_assign(record);
-            post_builder->insert_or_assign(std::move(record));
-        } else {
-            current_builder.insert_or_assign(std::move(record));
+            post_slot.emplace(post_builder->prepare(mutation.key.hash, mutation.key.key));
+        }
+        const auto* stored = current_builder.store(view_of(mutation));
+        current_builder.commit(current_slot, stored);
+        if (post_slot) {
+            post_builder->commit(*post_slot, stored);
         }
         visible_through = std::max(visible_through, mutation.record.sequence.value);
     }
@@ -996,11 +1264,11 @@ auto PairReadGeneration::advance_incremental_merge(PairReadMerge& merge, const s
                 continue;
             }
             const HashedKey key{.key = record->key, .hash = record->hash};
-            auto override = state.cut->delta_->find_handle(key);
-            if (!override) {
+            const auto* override = state.cut->delta_->find_handle(key);
+            if (override == nullptr) {
                 state.builder->insert(*record);
             } else if (override->opcode == Opcode::put) {
-                state.builder->insert(view_of(*override));
+                state.builder->insert(delta_record_view(*override, key.hash));
             }
             continue;
         }
@@ -1014,9 +1282,9 @@ auto PairReadGeneration::advance_incremental_merge(PairReadMerge& merge, const s
         if (!record || record->opcode == Opcode::erase) {
             continue;
         }
-        const HashedKey key{.key = record_key(*record), .hash = record->hash};
+        const HashedKey key{.key = record->key, .hash = record->hash};
         if (!state.builder->contains(key)) {
-            state.builder->insert(view_of(*record));
+            state.builder->insert(*record);
         }
     }
     return processed;
@@ -1060,7 +1328,8 @@ auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& curre
                                                  const std::size_t maximum_new_entries) noexcept -> bool {
     const auto delta_size = current.delta_->size();
     if (delta_size > current.delta_->maximum_entries() ||
-        maximum_new_entries > current.delta_->maximum_entries() - delta_size) {
+        maximum_new_entries > current.delta_->maximum_entries() - delta_size ||
+        maximum_new_entries > current.delta_->available_record_versions()) {
         return false;
     }
     if (merge == nullptr) {
@@ -1071,7 +1340,8 @@ auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& curre
     }
     const auto post_size = merge->state_->post_delta->size();
     return post_size <= merge->state_->maximum_post_entries &&
-           maximum_new_entries <= merge->state_->maximum_post_entries - post_size;
+           maximum_new_entries <= merge->state_->maximum_post_entries - post_size &&
+           maximum_new_entries <= merge->state_->post_delta->available_record_versions();
 }
 
 auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) const -> Result<OwnedValue> {
@@ -1079,7 +1349,7 @@ auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) c
     if (delta_record == nullptr) {
         return base_->get(key, now_ns);
     }
-    const auto record = view_of(*delta_record);
+    const auto record = delta_record_view(*delta_record, key.hash);
     if (record.opcode == Opcode::erase) {
         return fail(ErrorCode::not_found, "key not found");
     }
@@ -1104,12 +1374,12 @@ auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) c
 }
 
 auto PairReadGeneration::prepare_durable(const HashedKey& key) const
-    -> Result<DurableRuntimeCatalog::PublishedReadRecord> {
+    -> Result<DurableRuntimeCatalog::PublishedReadView> {
     const auto* delta_record = delta_->find(key);
     if (delta_record == nullptr) {
         return base_->prepare_durable(key);
     }
-    const auto record = view_of(*delta_record);
+    const auto record = delta_record_view(*delta_record, key.hash);
     if (record.opcode == Opcode::erase) {
         return fail(ErrorCode::not_found, "key not found");
     }
@@ -1117,12 +1387,28 @@ auto PairReadGeneration::prepare_durable(const HashedKey& key) const
         !record.durable->matches(record.record)) {
         return fail(ErrorCode::invalid_reference, "durable read generation has no exact file-generation pin");
     }
-    return DurableRuntimeCatalog::PublishedReadRecord::bind(std::string{record.key}, record.hash,
-                                                            record.record, *record.durable);
+    return DurableRuntimeCatalog::PublishedReadView::borrow(record.key, record.hash, record.record,
+                                                            *record.durable);
 }
 
 auto PairReadGeneration::delta_entries() const noexcept -> std::size_t {
     return delta_->size();
+}
+
+auto PairReadGeneration::delta_record_versions() const noexcept -> std::size_t {
+    return delta_->record_versions();
+}
+
+auto PairReadGeneration::delta_arena_record_bytes() const noexcept -> std::size_t {
+    return delta_->arena_record_bytes();
+}
+
+auto PairReadGeneration::delta_arena_key_bytes() const noexcept -> std::size_t {
+    return delta_->arena_key_bytes();
+}
+
+auto PairReadGeneration::delta_arena_key_storage_bytes() const noexcept -> std::size_t {
+    return delta_->arena_key_storage_bytes();
 }
 
 auto PairReadGeneration::base_entries() const noexcept -> std::size_t {

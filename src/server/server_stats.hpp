@@ -18,6 +18,10 @@ namespace glyphastore::server {
 struct ExecutorStats final {
     std::size_t active_connections{};
     std::size_t adopted_connections{};
+    std::uint64_t output_scatter_responses{};
+    std::uint64_t output_scatter_bytes{};
+    std::uint64_t output_scatter_partial_writes{};
+    std::uint64_t output_scatter_completions{};
 };
 
 // Consistent point-in-time view used by ServerStatsReporter. Collection of

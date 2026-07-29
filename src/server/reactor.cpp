@@ -13,11 +13,18 @@
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <utility>
 #include <vector>
 
 namespace glyphastore::server {
 namespace {
+
+// sendmsg avoids a value copy, but its fixed syscall/iovec setup cost is larger
+// than copying a cache-resident small value into the existing output buffer.
+// Keep the common small-response path contiguous and reserve the owning lease
+// for payloads large enough to amortize scatter/gather.
+inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
 
 [[nodiscard]] auto bytes(const std::string_view value) noexcept -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
@@ -79,7 +86,7 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
       read_cancellation_epochs_(std::make_unique<std::atomic_uint64_t[]>(config_.maximum_connections)),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     durable_store_ = detail::StoreAccess::is_durable(store_);
-    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
+    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
     free_slots_.reserve(config_.maximum_connections);
     for (std::size_t slot = config_.maximum_connections; slot > 0; --slot) {
         free_slots_.push_back(static_cast<std::uint32_t>(slot - 1U));
@@ -157,6 +164,65 @@ auto Reactor::connection(const ConnectionToken token) noexcept -> Connection* {
     return &candidate;
 }
 
+auto Reactor::has_pending_output(const Connection& connection) noexcept -> bool {
+    return connection.output_offset < connection.output.size() || connection.output_lease.has_value();
+}
+
+auto Reactor::pending_output_bytes(const Connection& connection) noexcept -> std::size_t {
+    auto pending = connection.output.size() - connection.output_offset;
+    if (connection.output_lease) {
+        pending += connection.output_lease->header.size() - connection.output_lease->header_offset;
+        pending += connection.output_lease->value.bytes.size() - connection.output_lease->value_offset;
+    }
+    return pending;
+}
+
+auto Reactor::acquire_cold_read_lease(const std::uint64_t epoch) noexcept -> bool {
+    ReadLeaseEpoch* free{};
+    for (auto& lease : cold_read_leases_) {
+        if (lease.uses != 0 && lease.epoch == epoch) {
+            if (lease.uses == std::numeric_limits<std::size_t>::max()) {
+                return false;
+            }
+            ++lease.uses;
+            return true;
+        }
+        if (lease.uses == 0 && free == nullptr) {
+            free = &lease;
+        }
+    }
+    if (free == nullptr) {
+        return false;
+    }
+    free->epoch = epoch;
+    free->uses = 1;
+    return true;
+}
+
+auto Reactor::release_cold_read_lease(const std::uint64_t epoch) noexcept -> bool {
+    for (auto& lease : cold_read_leases_) {
+        if (lease.uses == 0 || lease.epoch != epoch) {
+            continue;
+        }
+        --lease.uses;
+        if (lease.uses == 0) {
+            lease.epoch = std::numeric_limits<std::uint64_t>::max();
+        }
+        return true;
+    }
+    return false;
+}
+
+auto Reactor::minimum_cold_read_epoch() const noexcept -> std::uint64_t {
+    auto minimum = std::numeric_limits<std::uint64_t>::max();
+    for (const auto& lease : cold_read_leases_) {
+        if (lease.uses != 0) {
+            minimum = std::min(minimum, lease.epoch);
+        }
+    }
+    return minimum;
+}
+
 void Reactor::close_connection(const ConnectionToken token) noexcept {
     auto* current = connection(token);
     if (current == nullptr) {
@@ -175,10 +241,12 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->input_offset = 0;
     current->output.clear();
     current->output_offset = 0;
+    current->output_lease.reset();
     current->bound_worker.reset();
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
+    current->pipelined_store_input_observed = false;
     current->request_in_flight = false;
     current->cold_read_in_flight = false;
     current->last_activity = {};
@@ -216,7 +284,7 @@ void Reactor::close_idle_connections() noexcept {
         if (!candidate.socket.valid()) {
             continue;
         }
-        if (candidate.request_in_flight || candidate.output_offset < candidate.output.size() ||
+        if (candidate.request_in_flight || has_pending_output(candidate) ||
             candidate.input_offset < candidate.input.size()) {
             continue;
         }
@@ -349,6 +417,14 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     free_slots_.pop_back();
     auto& current = connections_[slot];
     current.socket = std::move(handoff.socket);
+    if (config_.accepted_socket_send_buffer_bytes != 0) {
+        const auto bytes = static_cast<int>(config_.accepted_socket_send_buffer_bytes);
+        if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) != 0) {
+            current.socket.reset();
+            free_slots_.push_back(slot);
+            return system_error("Reactor SO_SNDBUF");
+        }
+    }
     current.tls = std::move(handoff.tls);
     current.principal = std::move(handoff.principal);
     current.capabilities = handoff.capabilities;
@@ -357,10 +433,12 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.input_offset = 0;
     current.output = std::move(handoff.output);
     current.output_offset = 0;
+    current.output_lease.reset();
     current.bound_worker = handoff.bound_worker;
     current.initialized = handoff.initialized;
     current.peer_read_closed = handoff.peer_read_closed;
-    current.write_armed = !current.output.empty();
+    current.write_armed = has_pending_output(current);
+    current.pipelined_store_input_observed = false;
     current.request_in_flight = false;
     current.cold_read_in_flight = false;
     current.last_activity = handoff.last_activity.time_since_epoch().count() == 0
@@ -375,7 +453,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     if (!current.peer_read_closed) {
         interest = interest | IoInterest::read;
     }
-    if (!current.output.empty()) {
+    if (has_pending_output(current)) {
         interest = interest | IoInterest::write;
     }
     if (auto added = poller_.add(current.socket.descriptor(), token.encode(), interest); !added) {
@@ -391,8 +469,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
             return {};
         }
     }
-    if (auto* adopted = connection(token);
-        adopted != nullptr && adopted->output_offset < adopted->output.size()) {
+    if (auto* adopted = connection(token); adopted != nullptr && has_pending_output(*adopted)) {
         if (auto flushed = write_ready(token); !flushed) {
             close_connection(token);
         }
@@ -409,7 +486,11 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
     if (!encoded_size) {
         return unexpected(encoded_size.error());
     }
-    const auto pending = current->output.size() - current->output_offset;
+    if (current->output_lease) {
+        return fail(ErrorCode::corrupted_data,
+                    "contiguous response cannot overtake an active scatter output lease");
+    }
+    const auto pending = pending_output_bytes(*current);
     if (*encoded_size > config_.maximum_output_bytes ||
         pending > config_.maximum_output_bytes - *encoded_size) {
         return fail(ErrorCode::record_too_large, "connection output high watermark exceeded");
@@ -433,6 +514,55 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
     return {};
 }
 
+auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView response, OwnedValue value)
+    -> Status {
+    auto* current = connection(token);
+    if (current == nullptr) {
+        return fail(ErrorCode::not_found, "owned response targets a stale connection");
+    }
+    response.value = value.bytes;
+    // One lease deliberately provides one bounded slow-output pin. If another
+    // request is already buffered, keep the contiguous path so a pipelined
+    // connection can overlap its next cold read instead of being serialized by
+    // the lease. A future bounded multi-extent queue may remove this trade-off.
+    const auto has_buffered_follow_up = current->input_offset < current->input.size();
+    if (current->tls || value.bytes.size() < kMinimumScatterValueBytes || has_buffered_follow_up ||
+        current->pipelined_store_input_observed) {
+        return queue_response(token, response);
+    }
+    if (current->output_lease) {
+        return fail(ErrorCode::corrupted_data, "connection already owns a scatter output lease");
+    }
+    auto encoded_size = encoded_response_size(response);
+    if (!encoded_size) {
+        return unexpected(encoded_size.error());
+    }
+    const auto pending = pending_output_bytes(*current);
+    if (*encoded_size > config_.maximum_output_bytes ||
+        pending > config_.maximum_output_bytes - *encoded_size) {
+        return fail(ErrorCode::record_too_large, "connection output high watermark exceeded");
+    }
+    if (current->output_offset > 0) {
+        current->output.erase(current->output.begin(),
+                              current->output.begin() + static_cast<std::ptrdiff_t>(current->output_offset));
+        current->output_offset = 0;
+    }
+    LeasedOutput leased;
+    if (auto encoded = encode_response_header(leased.header, response); !encoded) {
+        return unexpected(encoded.error());
+    }
+    const auto value_bytes = value.bytes.size();
+    leased.value = std::move(value);
+    current->output_lease.emplace(std::move(leased));
+    output_scatter_responses_.fetch_add(1U, std::memory_order_relaxed);
+    output_scatter_bytes_.fetch_add(value_bytes, std::memory_order_relaxed);
+    if (abuse_ && !current->principal.empty()) {
+        abuse_->record_principal_response_bytes(current->principal, value_bytes,
+                                                std::chrono::steady_clock::now());
+    }
+    return {};
+}
+
 auto Reactor::process_frames(const ConnectionToken token) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
@@ -440,7 +570,8 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
     }
     std::uint64_t cached_now_ns{};
     const auto now = std::chrono::steady_clock::now();
-    while (!current->request_in_flight && current->input_offset < current->input.size()) {
+    while (!current->request_in_flight && !current->output_lease &&
+           current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         auto decoded = decode_request(available);
@@ -589,6 +720,9 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         case RequestOpcode::get:
         case RequestOpcode::put:
         case RequestOpcode::erase:
+            if (available.size() > decoded->consumed) {
+                current->pipelined_store_input_observed = true;
+            }
             immediate_response = false;
             if (auto dispatched = dispatch_request(token, decoded->frame, cached_now_ns); !dispatched) {
                 return dispatched;
@@ -652,6 +786,9 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
+    }
+    if (current->output_lease) {
+        return fail(ErrorCode::corrupted_data, "connection handoff cannot transfer a scatter output lease");
     }
     static_cast<void>(poller_.remove(current->socket.descriptor()));
     if (current->input_offset > 0) {
@@ -786,9 +923,15 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 response.status = ResponseStatus::internal_error;
                 break;
             }
+            const auto generation_epoch = local_read_generation_->epoch();
+            if (!acquire_cold_read_lease(generation_epoch)) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
             const auto& cancellation_epoch = read_cancellation_epochs_[token.slot];
             DiskReadTask task{.connection = token,
                               .request_id = request.request_id,
+                              .generation_epoch = generation_epoch,
                               .worker_index = executor_id_,
                               .read = std::move(*record->cold),
                               .cancellation =
@@ -802,6 +945,9 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             ++disk_reads_outstanding_;
             if (!disk_reads_.try_submit(std::move(task))) {
                 --disk_reads_outstanding_;
+                if (!release_cold_read_lease(generation_epoch)) {
+                    return fail(ErrorCode::corrupted_data, "cold-read lease accounting underflow");
+                }
                 response.status = ResponseStatus::overloaded;
                 break;
             }
@@ -821,51 +967,31 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             response.status = ResponseStatus::overloaded;
             break;
         }
-        if (mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+        const auto admission_bytes =
+            PairWriterPool::mutation_admission_bytes(request.key.size(), request.value.size());
+        if (!admission_bytes || *admission_bytes > config_.durable_mutation_queue_bytes) {
             pair_writers_.note_rejected(executor_id_);
             response.status = ResponseStatus::overloaded;
             break;
         }
-        if (request.key.size() > config_.durable_mutation_queue_bytes ||
-            request.value.size() > config_.durable_mutation_queue_bytes - request.key.size()) {
-            pair_writers_.note_rejected(executor_id_);
+        const auto admitted = pair_writers_.try_submit({
+            .connection = token,
+            .request_id = request.request_id,
+            .worker_index = executor_id_,
+            .kind = MutationKind::put,
+            .key = request.key,
+            .key_hash = key_hash,
+            .value = request.value,
+            .expire_at_ns = request.expire_at_ns,
+            .completions = &mutation_completions_,
+            .wakeup = &wakeup_,
+        });
+        if (!admitted) {
             response.status = ResponseStatus::overloaded;
             break;
         }
-        try {
-            MutationTask task{
-                .connection = token,
-                .request_id = request.request_id,
-                .worker_index = executor_id_,
-                .kind = MutationKind::put,
-                .key = std::string{key_string},
-                .key_hash = key_hash,
-                .value = std::vector<std::byte>{request.value.begin(), request.value.end()},
-                .expire_at_ns = request.expire_at_ns,
-                .completions = &mutation_completions_,
-                .wakeup = &wakeup_,
-            };
-            task.admission_bytes = sizeof(MutationTask) + task.key.capacity() + task.value.capacity();
-            if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
-                mutation_bytes_outstanding_ > config_.durable_mutation_queue_bytes - task.admission_bytes) {
-                pair_writers_.note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            const auto admission_bytes = task.admission_bytes;
-            ++mutations_outstanding_;
-            mutation_bytes_outstanding_ += admission_bytes;
-            if (!pair_writers_.try_submit(std::move(task))) {
-                --mutations_outstanding_;
-                mutation_bytes_outstanding_ -= admission_bytes;
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-        } catch (const std::bad_alloc&) {
-            pair_writers_.note_rejected(executor_id_);
-            response.status = ResponseStatus::overloaded;
-            break;
-        }
+        ++mutations_outstanding_;
+        mutation_bytes_outstanding_ += *admitted;
         current->request_in_flight = true;
         return update_connection_interest(token);
     } break;
@@ -879,48 +1005,28 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             response.status = ResponseStatus::overloaded;
             break;
         }
-        if (mutations_outstanding_ >= config_.durable_mutation_queue_capacity) {
+        const auto admission_bytes = PairWriterPool::mutation_admission_bytes(request.key.size(), 0U);
+        if (!admission_bytes || *admission_bytes > config_.durable_mutation_queue_bytes) {
             pair_writers_.note_rejected(executor_id_);
             response.status = ResponseStatus::overloaded;
             break;
         }
-        if (request.key.size() > config_.durable_mutation_queue_bytes) {
-            pair_writers_.note_rejected(executor_id_);
+        const auto admitted = pair_writers_.try_submit({
+            .connection = token,
+            .request_id = request.request_id,
+            .worker_index = executor_id_,
+            .kind = MutationKind::erase,
+            .key = request.key,
+            .key_hash = key_hash,
+            .completions = &mutation_completions_,
+            .wakeup = &wakeup_,
+        });
+        if (!admitted) {
             response.status = ResponseStatus::overloaded;
             break;
         }
-        try {
-            MutationTask task{
-                .connection = token,
-                .request_id = request.request_id,
-                .worker_index = executor_id_,
-                .kind = MutationKind::erase,
-                .key = std::string{key_string},
-                .key_hash = key_hash,
-                .completions = &mutation_completions_,
-                .wakeup = &wakeup_,
-            };
-            task.admission_bytes = sizeof(MutationTask) + task.key.capacity();
-            if (task.admission_bytes > config_.durable_mutation_queue_bytes ||
-                mutation_bytes_outstanding_ > config_.durable_mutation_queue_bytes - task.admission_bytes) {
-                pair_writers_.note_rejected(executor_id_);
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            const auto admission_bytes = task.admission_bytes;
-            ++mutations_outstanding_;
-            mutation_bytes_outstanding_ += admission_bytes;
-            if (!pair_writers_.try_submit(std::move(task))) {
-                --mutations_outstanding_;
-                mutation_bytes_outstanding_ -= admission_bytes;
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-        } catch (const std::bad_alloc&) {
-            pair_writers_.note_rejected(executor_id_);
-            response.status = ResponseStatus::overloaded;
-            break;
-        }
+        ++mutations_outstanding_;
+        mutation_bytes_outstanding_ += *admitted;
         current->request_in_flight = true;
         return update_connection_interest(token);
     } break;
@@ -955,6 +1061,13 @@ auto Reactor::process_disk_read_completions() -> Status {
             return fail(ErrorCode::corrupted_data, "disk-read completion accounting underflow");
         }
         --disk_reads_outstanding_;
+        if (!release_cold_read_lease(completion->generation_epoch)) {
+            return fail(ErrorCode::corrupted_data, "cold-read completion released an unknown epoch");
+        }
+        local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
+        if (!local_read_generation_) {
+            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+        }
         auto* current = connection(completion->connection);
         if (current == nullptr) {
             continue;
@@ -966,21 +1079,22 @@ auto Reactor::process_disk_read_completions() -> Status {
         current->in_flight_since = {};
         current->cold_read_in_flight = false;
         touch_activity(*current, std::chrono::steady_clock::now());
-        OwnedValue owned;
         ResponseView response{.status = ResponseStatus::ok,
                               .request_id = completion->request_id,
                               .owner_worker = static_cast<std::uint32_t>(executor_id_),
                               .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                               .routing_epoch = kRoutingEpoch};
+        Status queued;
         if (completion->error) {
             response.status = response_status(*completion->error);
+            queued = queue_response(completion->connection, response);
         } else if (completion->value) {
-            owned = std::move(*completion->value);
-            response.value = owned.bytes;
+            queued = queue_owned_response(completion->connection, response, std::move(*completion->value));
         } else {
             response.status = ResponseStatus::internal_error;
+            queued = queue_response(completion->connection, response);
         }
-        if (auto queued = queue_response(completion->connection, response); !queued) {
+        if (!queued) {
             close_connection(completion->connection);
             continue;
         }
@@ -1002,7 +1116,7 @@ auto Reactor::process_mutation_completions() -> Status {
         // Writer publishes with release before enqueueing the completion. Load
         // with acquire before allowing the same connection to parse a following
         // GET, establishing acknowledged PUT -> visible GET.
-        local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
+        local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
         if (!local_read_generation_) {
             return fail(ErrorCode::unavailable, "paired read generation is unavailable");
         }
@@ -1014,6 +1128,9 @@ auto Reactor::process_mutation_completions() -> Status {
             return fail(ErrorCode::corrupted_data, "mutation byte accounting underflow");
         }
         mutation_bytes_outstanding_ -= completion->admission_bytes;
+        if (!pair_writers_.release_payload(executor_id_, completion->payload_slot)) {
+            return fail(ErrorCode::corrupted_data, "mutation payload completion violated FIFO ownership");
+        }
         auto* current = connection(completion->connection);
         if (current == nullptr) {
             continue;
@@ -1055,10 +1172,10 @@ auto Reactor::update_connection_interest(const ConnectionToken token) -> Status 
         return {};
     }
     auto interest = IoInterest::none;
-    if (!current->peer_read_closed) {
+    if (!current->peer_read_closed && !current->output_lease) {
         interest = interest | IoInterest::read;
     }
-    if (current->output_offset < current->output.size()) {
+    if (has_pending_output(*current)) {
         interest = interest | IoInterest::write;
     }
     if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest); !modified) {
@@ -1095,7 +1212,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
             if (received->kind == TlsIoKind::closed) {
                 current->peer_read_closed = true;
-                if (current->output_offset == current->output.size() && !current->request_in_flight) {
+                if (!has_pending_output(*current) && !current->request_in_flight) {
                     close_connection(token);
                     return {};
                 }
@@ -1108,7 +1225,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                 received_size = static_cast<std::size_t>(received);
             } else if (received == 0) {
                 current->peer_read_closed = true;
-                if (current->output_offset == current->output.size() && !current->request_in_flight) {
+                if (!has_pending_output(*current) && !current->request_in_flight) {
                     close_connection(token);
                     return {};
                 }
@@ -1136,7 +1253,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
         if (current == nullptr) {
             return {};
         }
-        if (current->output_offset < current->output.size()) {
+        if (has_pending_output(*current)) {
             if (auto flushed = write_ready(token); !flushed) {
                 return flushed;
             }
@@ -1153,74 +1270,160 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
     if (current == nullptr) {
         return {};
     }
-    while (current->output_offset < current->output.size()) {
-        const auto* data = current->output.data() + current->output_offset;
-        const auto remaining = current->output.size() - current->output_offset;
-        std::size_t written_size = 0;
-        bool would_block = false;
-        if (current->tls) {
-            auto written = current->tls->write(data, remaining);
-            if (!written) {
-                return unexpected(written.error());
-            }
-            if (written->kind == TlsIoKind::would_block) {
-                would_block = true;
-            } else if (written->kind == TlsIoKind::closed) {
-                return fail(ErrorCode::io_error, "TLS write closed by peer");
+    for (;;) {
+        while (has_pending_output(*current)) {
+            std::size_t written_size{};
+            std::size_t requested_size{};
+            bool would_block{};
+            const bool scatter = current->output_lease.has_value();
+            if (current->tls) {
+                if (scatter) {
+                    return fail(ErrorCode::corrupted_data, "TLS connection owns an invalid scatter lease");
+                }
+                const auto* data = current->output.data() + current->output_offset;
+                requested_size = current->output.size() - current->output_offset;
+                auto written = current->tls->write(data, requested_size);
+                if (!written) {
+                    return unexpected(written.error());
+                }
+                if (written->kind == TlsIoKind::would_block) {
+                    would_block = true;
+                } else if (written->kind == TlsIoKind::closed) {
+                    return fail(ErrorCode::io_error, "TLS write closed by peer");
+                } else {
+                    written_size = written->bytes;
+                }
+            } else if (!scatter) {
+                const auto* data = current->output.data() + current->output_offset;
+                requested_size = current->output.size() - current->output_offset;
+                const auto written = ::send(current->socket.descriptor(), data, requested_size, send_flags());
+                if (written > 0) {
+                    written_size = static_cast<std::size_t>(written);
+                } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    would_block = true;
+                } else if (written < 0 && errno == EINTR) {
+                    continue;
+                } else if (written == 0) {
+                    return fail(ErrorCode::io_error, "socket send made no progress");
+                } else {
+                    return system_error("send");
+                }
             } else {
-                written_size = written->bytes;
+                std::array<iovec, 3> vectors{};
+                std::size_t count{};
+                const auto append = [&](const std::byte* data, const std::size_t size) {
+                    if (size == 0) {
+                        return;
+                    }
+                    vectors[count++] = {.iov_base = const_cast<std::byte*>(data), .iov_len = size};
+                    requested_size += size;
+                };
+                if (current->output_offset < current->output.size()) {
+                    append(current->output.data() + current->output_offset,
+                           current->output.size() - current->output_offset);
+                }
+                auto& lease = *current->output_lease;
+                append(lease.header.data() + lease.header_offset, lease.header.size() - lease.header_offset);
+                append(lease.value.bytes.data() + lease.value_offset,
+                       lease.value.bytes.size() - lease.value_offset);
+                msghdr message{};
+                message.msg_iov = vectors.data();
+                message.msg_iovlen = static_cast<decltype(message.msg_iovlen)>(count);
+                const auto written = ::sendmsg(current->socket.descriptor(), &message, send_flags());
+                if (written > 0) {
+                    written_size = static_cast<std::size_t>(written);
+                } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    would_block = true;
+                } else if (written < 0 && errno == EINTR) {
+                    continue;
+                } else if (written == 0) {
+                    return fail(ErrorCode::io_error, "socket sendmsg made no progress");
+                } else {
+                    return system_error("sendmsg");
+                }
             }
-        } else {
-            const auto written = ::send(current->socket.descriptor(), data, remaining, send_flags());
-            if (written > 0) {
-                written_size = static_cast<std::size_t>(written);
-            } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-                would_block = true;
-            } else if (written < 0 && errno == EINTR) {
-                continue;
-            } else {
-                return system_error("send");
-            }
-        }
-        if (would_block) {
-            if (current->write_armed) {
+            if (would_block) {
+                if (scatter) {
+                    output_scatter_partial_writes_.fetch_add(1U, std::memory_order_relaxed);
+                }
+                if (current->write_armed) {
+                    return {};
+                }
+                const auto interest = current->peer_read_closed || scatter
+                                          ? IoInterest::write
+                                          : IoInterest::read | IoInterest::write;
+                if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                    !modified) {
+                    return modified;
+                }
+                current->write_armed = true;
                 return {};
             }
-            const auto interest =
-                current->peer_read_closed ? IoInterest::write : IoInterest::read | IoInterest::write;
-            if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest);
-                !modified) {
-                return modified;
+            if (scatter && written_size < requested_size) {
+                output_scatter_partial_writes_.fetch_add(1U, std::memory_order_relaxed);
             }
-            current->write_armed = true;
+
+            auto remaining = written_size;
+            const auto consume = [&](std::size_t& offset, const std::size_t size) {
+                const auto available = size - offset;
+                const auto consumed = std::min(available, remaining);
+                offset += consumed;
+                remaining -= consumed;
+            };
+            consume(current->output_offset, current->output.size());
+            if (current->output_offset == current->output.size()) {
+                current->output.clear();
+                current->output_offset = 0;
+            }
+            if (current->output_lease) {
+                consume(current->output_lease->header_offset, current->output_lease->header.size());
+                consume(current->output_lease->value_offset, current->output_lease->value.bytes.size());
+                if (current->output_lease->header_offset == current->output_lease->header.size() &&
+                    current->output_lease->value_offset == current->output_lease->value.bytes.size()) {
+                    current->output_lease.reset();
+                    output_scatter_completions_.fetch_add(1U, std::memory_order_relaxed);
+                }
+            }
+            if (remaining != 0) {
+                return fail(ErrorCode::corrupted_data, "socket write exceeded queued output extents");
+            }
+        }
+
+        touch_activity(*current, std::chrono::steady_clock::now());
+        if (current->peer_read_closed && !current->request_in_flight) {
+            close_connection(token);
             return {};
         }
-        current->output_offset += written_size;
-    }
-    current->output.clear();
-    current->output_offset = 0;
-    touch_activity(*current, std::chrono::steady_clock::now());
-    if (current->peer_read_closed && !current->request_in_flight) {
-        close_connection(token);
+        if (!current->request_in_flight && current->input_offset < current->input.size()) {
+            if (auto processed = process_frames(token); !processed) {
+                return processed;
+            }
+            current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
+            if (has_pending_output(*current)) {
+                continue;
+            }
+        }
+        if (current->request_in_flight) {
+            return update_connection_interest(token);
+        }
+        if (!current->write_armed) {
+            return {};
+        }
+        if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
+            !modified) {
+            return modified;
+        }
+        current->write_armed = false;
         return {};
     }
-    if (current->request_in_flight) {
-        return update_connection_interest(token);
-    }
-    if (!current->write_armed) {
-        return {};
-    }
-    if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
-        !modified) {
-        return modified;
-    }
-    current->write_armed = false;
-    return {};
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
     pair_writers_.request_read_refresh(executor_id_);
-    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
+    local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
     if (!local_read_generation_) {
         return fail(ErrorCode::unavailable, "paired read generation is unavailable");
     }
@@ -1281,7 +1484,7 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         }
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (current->output_offset == current->output.size() && !current->request_in_flight) {
+            if (!has_pending_output(*current) && !current->request_in_flight) {
                 close_connection(token);
             } else if (auto modified = update_connection_interest(token); !modified) {
                 close_connection(token);
@@ -1325,8 +1528,7 @@ void Reactor::enforce_timeouts(const std::chrono::steady_clock::time_point now) 
                 request_timeout = true;
             }
         }
-        if (!timed_out && idle_ms != 0 && !candidate.request_in_flight &&
-            candidate.output_offset >= candidate.output.size() &&
+        if (!timed_out && idle_ms != 0 && !candidate.request_in_flight && !has_pending_output(candidate) &&
             candidate.input_offset >= candidate.input.size() &&
             candidate.last_activity.time_since_epoch().count() != 0 &&
             now - candidate.last_activity >= std::chrono::milliseconds{idle_ms}) {
@@ -1373,7 +1575,7 @@ auto Reactor::next_timeout_ms(const std::chrono::steady_clock::time_point now) c
         if (candidate.request_in_flight) {
             consider(candidate.in_flight_since, request_ms);
         }
-        if (!candidate.request_in_flight && candidate.output_offset >= candidate.output.size() &&
+        if (!candidate.request_in_flight && !has_pending_output(candidate) &&
             candidate.input_offset >= candidate.input.size()) {
             consider(candidate.last_activity, idle_ms);
         }

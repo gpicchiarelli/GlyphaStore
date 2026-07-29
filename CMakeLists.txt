@@ -214,6 +214,7 @@ add_library(glyphastore_server_core
     src/server/daemon_config.cpp
     src/server/daemon_log.cpp
     src/server/disk_read_executor.cpp
+    src/server/mutation_slot_pool.cpp
     src/server/pair_read_generation.cpp
     src/server/pair_writer.cpp
     src/server/openbsd_sandbox.cpp
@@ -288,6 +289,7 @@ if(BUILD_TESTING)
         tests/unit/paired_shard_prototype_tests.cpp
         tests/unit/pair_read_generation_tests.cpp
         tests/unit/manifest_tests.cpp
+        tests/unit/mutation_slot_pool_tests.cpp
         tests/unit/maintenance_controller_tests.cpp
         tests/unit/namespace_audit_tests.cpp
         tests/unit/persistence_filesystem_tests.cpp

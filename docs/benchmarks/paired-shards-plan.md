@@ -1,6 +1,6 @@
 # Piano benchmark: shard a coppie Reader–Writer
 
-Status: primo gate micro A/B eseguito; integrazione daemon non ancora autorizzata
+Status: runtime paired unico per 0.1.0; output lease, mutation arena e Delta arena chiuse
 
 ADR: [paired Reader–Writer shards](../adr/paired-reader-writer-shards.md)
 
@@ -16,6 +16,39 @@ Gate directory/batching:
 
 Gate Reactor TCP, una coppia:
 `benchmark-results/paired-reactor/d2077cf-dirty/macos-m4/2026-07-28-phase2-tcp/`.
+
+## Stato corrente — 2026-07-29
+
+Le sezioni storiche sotto documentano i gate che hanno preceduto la migrazione. Il daemon non offre
+più due modelli concorrenti: Reader/Reactor e Writer seriale per shard sono il solo runtime di
+destinazione 0.1.0. Sono chiusi e coperti da test il routing multi-pair, mutation/completion SPSC,
+publication immutabile, refresh per rotation/compaction, Base Index compatto, merge incrementale,
+cold-read lane per pair, task slot preallocati, lease QSBR del cold I/O, output lease cleartext
+adattiva con short-write backpressure, mutation slot/key/value arena bounded e Delta generazionale
+Writer-owned bounded sulle versioni.
+
+Ordine operativo residuo:
+
+1. P1 — profilare e recuperare il circa 1,8% mixed del Delta arena senza indebolirne lifetime e
+   capacità per versioni;
+2. P1 — `get-into` o scatter multi-extent solo se supera il percorso adattivo su pipeline e memoria;
+3. P1 — A/B 1/2/4/8 pair Linux hard-pinned con `perf`, NUMA e working set oltre LLC;
+4. P1 — backend I/O Linux opzionale soltanto se riduce coda e syscall senza cambiare ordering.
+
+Il gate cold-read più recente è
+[`paired-scatter-output-2026-07-29.md`](paired-scatter-output-2026-07-29.md). I risultati macOS non
+pinned restano evidenza orientativa, non claim production.
+
+Il gate mutation task storage è
+[`paired-mutation-arena-2026-07-29.md`](paired-mutation-arena-2026-07-29.md): elimina ownership e
+allocazioni per task, rende reale il byte budget e passa Debug, sanitizer, fault/crash e A/B
+mutation-bound. Il controllo 99/1 resta neutro/inconcludente su macOS non pinned.
+
+Il gate Delta finale è
+[`paired-generational-delta-arena-2026-07-29.md`](paired-generational-delta-arena-2026-07-29.md):
+elimina gli handle per versione con celle da 64 B e lifetime QSBR, rende bounded anche lo churn sulla
+stessa chiave, riduce RSS del 2–4% e migliora il GET volatile. Il costo mixed di circa 1,8% resta P1
+esplicito e richiede profilo Linux hard-pinned.
 
 ## Regole del confronto
 

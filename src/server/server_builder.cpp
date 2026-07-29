@@ -32,6 +32,10 @@ namespace {
         config.maximum_output_bytes < kResponseHeaderBytes) {
         return fail(ErrorCode::invalid_argument, "server buffers are smaller than protocol headers");
     }
+    if (config.accepted_socket_send_buffer_bytes >
+        static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return fail(ErrorCode::invalid_argument, "accepted socket send buffer exceeds the platform limit");
+    }
     if (config.tls_port.has_value() && !config.tls.requested()) {
         return fail(ErrorCode::invalid_argument,
                     "tls_port requires TLS certificate configuration (--tls-cert/--tls-key)");
@@ -72,6 +76,7 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
     }
     auto pair_writers =
         PairWriterPool::create(**store, config_.worker_count, config_.durable_mutation_queue_capacity,
+                               config_.durable_mutation_queue_bytes,
                                std::chrono::milliseconds{config_.durable_mutation_queue_wait_ms});
     if (!pair_writers) {
         return unexpected(pair_writers.error());

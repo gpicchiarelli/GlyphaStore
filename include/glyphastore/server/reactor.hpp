@@ -16,6 +16,7 @@
 #include "glyphastore/server/wakeup.hpp"
 #include "glyphastore/store/store.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -47,6 +48,9 @@ struct ReactorConfig {
     std::size_t event_batch_size{256};
     std::size_t maximum_input_bytes{4U * 1024U * 1024U};
     std::size_t maximum_output_bytes{4U * 1024U * 1024U};
+    // Zero leaves the platform default. A non-zero bound is primarily useful
+    // for deterministic short-write tests and controlled deployment tuning.
+    std::size_t accepted_socket_send_buffer_bytes{};
     std::size_t connection_handoff_capacity{4096};
     bool reuse_port{true};
     bool executor_affinity{};
@@ -147,6 +151,18 @@ class Reactor final {
     [[nodiscard]] auto adopted_connections() const noexcept -> std::size_t {
         return adopted_connections_;
     }
+    [[nodiscard]] auto output_scatter_responses() const noexcept -> std::uint64_t {
+        return output_scatter_responses_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] auto output_scatter_bytes() const noexcept -> std::uint64_t {
+        return output_scatter_bytes_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] auto output_scatter_partial_writes() const noexcept -> std::uint64_t {
+        return output_scatter_partial_writes_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] auto output_scatter_completions() const noexcept -> std::uint64_t {
+        return output_scatter_completions_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] auto abuse_stats() const noexcept -> AbuseStats {
         return abuse_ ? abuse_->stats() : AbuseStats{};
     }
@@ -155,6 +171,22 @@ class Reactor final {
     }
 
   private:
+    struct ReadLeaseEpoch final {
+        std::uint64_t epoch{std::numeric_limits<std::uint64_t>::max()};
+        std::size_t uses{};
+    };
+
+    // Cleartext-only owning output lease. Header and materialized value remain
+    // in separate stable extents until sendmsg drains both. TLS deliberately
+    // stays on the contiguous output buffer because its write API does not
+    // retain caller iovecs across calls.
+    struct LeasedOutput final {
+        std::array<std::byte, kResponseHeaderBytes> header{};
+        std::size_t header_offset{};
+        OwnedValue value;
+        std::size_t value_offset{};
+    };
+
     struct Connection {
         SocketHandle socket;
         std::unique_ptr<TlsSession> tls;
@@ -166,10 +198,15 @@ class Reactor final {
         std::size_t input_offset{};
         std::vector<std::byte> output;
         std::size_t output_offset{};
+        std::optional<LeasedOutput> output_lease;
         std::optional<std::uint32_t> bound_worker;
         bool initialized{};
         bool peer_read_closed{};
         bool write_armed{};
+        // Sticky workload classification: once this owner-bound connection
+        // pipelines Store requests, preserve overlap with the next cold read
+        // instead of serializing it behind a single scatter lease.
+        bool pipelined_store_input_observed{};
         // At most one asynchronous Store request per connection preserves wire
         // response order and prevents one pipelined client monopolizing a lane.
         bool request_in_flight{};
@@ -205,8 +242,15 @@ class Reactor final {
     [[nodiscard]] auto process_handoffs() -> Status;
     [[nodiscard]] auto process_disk_read_completions() -> Status;
     [[nodiscard]] auto process_mutation_completions() -> Status;
+    [[nodiscard]] auto acquire_cold_read_lease(std::uint64_t epoch) noexcept -> bool;
+    [[nodiscard]] auto release_cold_read_lease(std::uint64_t epoch) noexcept -> bool;
+    [[nodiscard]] auto minimum_cold_read_epoch() const noexcept -> std::uint64_t;
     [[nodiscard]] auto update_connection_interest(ConnectionToken token) -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
+    [[nodiscard]] auto queue_owned_response(ConnectionToken token, ResponseView response, OwnedValue value)
+        -> Status;
+    [[nodiscard]] static auto has_pending_output(const Connection& connection) noexcept -> bool;
+    [[nodiscard]] static auto pending_output_bytes(const Connection& connection) noexcept -> std::size_t;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;
     void close_connection(ConnectionToken token) noexcept;
     void touch_activity(Connection& current, std::chrono::steady_clock::time_point now) noexcept;
@@ -245,11 +289,18 @@ class Reactor final {
     // Stable for the Reactor lifetime. Epochs make cancellation safe across
     // connection-slot reuse without allocating a shared control block per GET.
     std::unique_ptr<std::atomic_uint64_t[]> read_cancellation_epochs_;
+    // Reader-private and allocation-free. Retire pressure bounds the number
+    // of simultaneously reachable epochs to current + retired generations.
+    std::array<ReadLeaseEpoch, PairWriterPool::kMaximumReaderLeaseEpochs> cold_read_leases_{};
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
     std::vector<IoEvent> events_;
     std::atomic<std::size_t> active_connections_{};
     std::size_t adopted_connections_{};
+    std::atomic_uint64_t output_scatter_responses_{};
+    std::atomic_uint64_t output_scatter_bytes_{};
+    std::atomic_uint64_t output_scatter_partial_writes_{};
+    std::atomic_uint64_t output_scatter_completions_{};
     std::size_t disk_reads_outstanding_{};
     std::size_t mutations_outstanding_{};
     std::size_t mutation_bytes_outstanding_{};
