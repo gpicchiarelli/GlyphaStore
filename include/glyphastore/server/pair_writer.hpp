@@ -46,6 +46,20 @@ struct PairWriterStats final {
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
     std::uint64_t maximum_service_ns{};
+    std::uint64_t read_catalog_revision{};
+    std::uint64_t read_refresh_attempts{};
+    std::uint64_t read_refresh_successes{};
+    std::uint64_t read_refresh_failures{};
+    std::uint64_t read_refresh_deferrals{};
+    std::uint64_t generations_retired{};
+    std::size_t retired_generation_count{};
+    bool read_merge_active{};
+    std::size_t read_merge_post_entries{};
+    std::uint64_t read_merge_starts{};
+    std::uint64_t read_merge_completions{};
+    std::uint64_t read_merge_failures{};
+    std::uint64_t read_merge_backpressure{};
+    std::uint64_t read_merge_slots_processed{};
     LatencyHistogram queue_wait_histogram{};
     LatencyHistogram service_histogram{};
 };
@@ -65,6 +79,12 @@ struct MutationTask final {
     Wakeup* wakeup{};
 };
 
+struct PairReadMergeConfig final {
+    std::size_t delta_entries{8'192};
+    std::size_t maximum_post_entries{32'736};
+    std::size_t quantum_slots{4'096};
+};
+
 // Paired Writer runtime. Every Store shard owns exactly one persistent Writer
 // thread and one bounded SPSC mutation lane.
 // The paired Reader is the sole producer, so the normal mutation path contains
@@ -73,7 +93,8 @@ struct MutationTask final {
 class PairWriterPool final {
   public:
     [[nodiscard]] static auto create(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
-                                     std::chrono::milliseconds maximum_queue_wait)
+                                     std::chrono::milliseconds maximum_queue_wait,
+                                     PairReadMergeConfig read_merge = {})
         -> Result<std::unique_ptr<PairWriterPool>>;
     ~PairWriterPool();
 
@@ -91,6 +112,9 @@ class PairWriterPool final {
     // reports quiescence; GET performs no refcount or lock operation.
     [[nodiscard]] auto adopt_read_generation(std::size_t worker_index) const noexcept
         -> const PairReadGeneration*;
+    // Reader-side atomic poll. A stale durable catalog wakes only the paired
+    // Writer; snapshot construction and publication never execute on Reader.
+    void request_read_refresh(std::size_t worker_index) noexcept;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return healthy_.load(std::memory_order_acquire);
     }
@@ -107,7 +131,8 @@ class PairWriterPool final {
 
     PairWriterPool(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
                    std::chrono::milliseconds maximum_queue_wait,
-                   std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations);
+                   std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations,
+                   std::vector<std::uint64_t> initial_catalog_revisions, PairReadMergeConfig read_merge);
     void run(std::size_t worker_index) noexcept;
     void note_worker_exit() noexcept;
     [[nodiscard]] auto begin_submission() noexcept -> bool;
@@ -119,6 +144,7 @@ class PairWriterPool final {
 
     Store& store_;
     const std::chrono::milliseconds maximum_queue_wait_;
+    const PairReadMergeConfig read_merge_config_;
     std::vector<std::unique_ptr<Lane>> lanes_;
     std::atomic_size_t active_workers_{};
     std::atomic_size_t admission_state_{};

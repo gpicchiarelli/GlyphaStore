@@ -90,6 +90,11 @@ class DurableSegmentFile final {
     // boundary; the caller must revalidate Index and pin identity after I/O.
     [[nodiscard]] auto visit_runtime_record(const RecordRef& reference, void* context,
                                             RecordVisitor visitor) const -> Status;
+    // Reuses lane-owned storage on the asynchronous durable GET path. Exactly
+    // one I/O consumer may use a scratch buffer at a time; the RecordView never
+    // escapes the synchronous visitor invocation.
+    [[nodiscard]] auto visit_runtime_record(const RecordRef& reference, std::vector<std::byte>& scratch,
+                                            void* context, RecordVisitor visitor) const -> Status;
 
     [[nodiscard]] auto identity() const noexcept -> const SegmentHeaderIdentity& {
         return identity_;

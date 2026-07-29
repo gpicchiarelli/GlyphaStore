@@ -173,7 +173,7 @@ class Reactor final {
         // At most one asynchronous Store request per connection preserves wire
         // response order and prevents one pipelined client monopolizing a lane.
         bool request_in_flight{};
-        std::shared_ptr<std::atomic_bool> read_cancellation;
+        bool cold_read_in_flight{};
         std::chrono::steady_clock::time_point last_activity{};
         // Set while a partial request frame is buffered; cleared on complete frame.
         std::chrono::steady_clock::time_point partial_request_since{};
@@ -242,6 +242,9 @@ class Reactor final {
     std::shared_ptr<SecurityAudit> security_audit_;
     BoundedSpscQueue<DiskReadCompletion> disk_read_completions_;
     BoundedSpscQueue<MutationCompletion> mutation_completions_;
+    // Stable for the Reactor lifetime. Epochs make cancellation safe across
+    // connection-slot reuse without allocating a shared control block per GET.
+    std::unique_ptr<std::atomic_uint64_t[]> read_cancellation_epochs_;
     std::vector<Connection> connections_;
     std::vector<std::uint32_t> free_slots_;
     std::vector<IoEvent> events_;

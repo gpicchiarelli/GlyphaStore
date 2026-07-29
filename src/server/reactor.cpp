@@ -76,6 +76,7 @@ Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListene
       abuse_(std::move(abuse)), security_audit_(std::move(security_audit)),
       disk_read_completions_(config_.disk_read_queue_capacity),
       mutation_completions_(config_.durable_mutation_queue_capacity),
+      read_cancellation_epochs_(std::make_unique<std::atomic_uint64_t[]>(config_.maximum_connections)),
       connections_(config_.maximum_connections), events_(config_.event_batch_size) {
     durable_store_ = detail::StoreAccess::is_durable(store_);
     local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
@@ -162,8 +163,8 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
         return;
     }
     static_cast<void>(poller_.remove(current->socket.descriptor()));
-    if (current->read_cancellation) {
-        current->read_cancellation->store(true, std::memory_order_release);
+    if (current->cold_read_in_flight) {
+        read_cancellation_epochs_[token.slot].fetch_add(1U, std::memory_order_release);
     }
     current->tls.reset();
     current->socket.reset();
@@ -179,7 +180,7 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->peer_read_closed = false;
     current->write_armed = false;
     current->request_in_flight = false;
-    current->read_cancellation.reset();
+    current->cold_read_in_flight = false;
     current->last_activity = {};
     current->partial_request_since = {};
     current->in_flight_since = {};
@@ -361,7 +362,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.peer_read_closed = handoff.peer_read_closed;
     current.write_armed = !current.output.empty();
     current.request_in_flight = false;
-    current.read_cancellation.reset();
+    current.cold_read_in_flight = false;
     current.last_activity = handoff.last_activity.time_since_epoch().count() == 0
                                 ? std::chrono::steady_clock::now()
                                 : handoff.last_activity;
@@ -685,7 +686,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->peer_read_closed = false;
     current->write_armed = false;
     current->request_in_flight = false;
-    current->read_cancellation.reset();
+    current->cold_read_in_flight = false;
     current->last_activity = {};
     current->partial_request_since = {};
     current->in_flight_since = {};
@@ -785,18 +786,16 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 response.status = ResponseStatus::internal_error;
                 break;
             }
-            std::shared_ptr<std::atomic_bool> cancellation;
-            try {
-                cancellation = std::make_shared<std::atomic_bool>(false);
-            } catch (const std::bad_alloc&) {
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
+            const auto& cancellation_epoch = read_cancellation_epochs_[token.slot];
             DiskReadTask task{.connection = token,
                               .request_id = request.request_id,
                               .worker_index = executor_id_,
                               .read = std::move(*record->cold),
-                              .cancelled = cancellation,
+                              .cancellation =
+                                  {
+                                      .epoch = &cancellation_epoch,
+                                      .expected = cancellation_epoch.load(std::memory_order_relaxed),
+                                  },
                               .maximum_value_bytes = value_budget,
                               .completions = &disk_read_completions_,
                               .wakeup = &wakeup_};
@@ -807,7 +806,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 break;
             }
             current->request_in_flight = true;
-            current->read_cancellation = std::move(cancellation);
+            current->cold_read_in_flight = true;
             return update_connection_interest(token);
         }
         break;
@@ -965,7 +964,7 @@ auto Reactor::process_disk_read_completions() -> Status {
         }
         current->request_in_flight = false;
         current->in_flight_since = {};
-        current->read_cancellation.reset();
+        current->cold_read_in_flight = false;
         touch_activity(*current, std::chrono::steady_clock::now());
         OwnedValue owned;
         ResponseView response{.status = ResponseStatus::ok,
@@ -1019,7 +1018,7 @@ auto Reactor::process_mutation_completions() -> Status {
         if (current == nullptr) {
             continue;
         }
-        if (!current->request_in_flight || current->read_cancellation) {
+        if (!current->request_in_flight || current->cold_read_in_flight) {
             return fail(ErrorCode::corrupted_data, "unexpected mutation completion");
         }
         current->request_in_flight = false;
@@ -1220,6 +1219,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
 }
 
 auto Reactor::run_once(const int timeout_ms) -> Status {
+    pair_writers_.request_read_refresh(executor_id_);
     local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_);
     if (!local_read_generation_) {
         return fail(ErrorCode::unavailable, "paired read generation is unavailable");

@@ -579,6 +579,11 @@ struct DurableRuntimeCatalog::RuntimeSegmentGeneration {
     DurableSegmentFile file;
 };
 
+auto DurableRuntimeCatalog::PublishedReadPin::matches(const RecordRef& reference) const noexcept -> bool {
+    return generation_ && generation_->identity.segment_id == reference.segment_id &&
+           generation_->identity.generation == reference.generation;
+}
+
 struct DeferredTtlReclaim {
     std::string key;
     std::uint64_t key_hash{};
@@ -669,6 +674,9 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     SegmentId active_segment;
     std::atomic_uint64_t active_live_record_bytes{};
     std::atomic_uint64_t sealed_live_record_bytes{};
+    // Per-shard generation-pin authority. An unrelated shard publication must
+    // not force this shard to rebuild its immutable Reader index.
+    std::atomic_uint64_t read_catalog_revision{1};
     std::mutex mutex;
     std::optional<DurableSegmentFile> cached_file;
     bool cached_writable{};
@@ -1678,7 +1686,7 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
 }
 
 auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_index)
-    -> Result<std::vector<PublishedReadRecord>> try {
+    -> Result<PublishedReadSnapshot> try {
     if (worker_index >= workers_.size()) {
         return fail(ErrorCode::invalid_argument,
                     "durable read-generation snapshot targets an invalid Worker");
@@ -1695,8 +1703,8 @@ auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_in
     }
 
     auto entries = worker.index.entries();
-    std::vector<PublishedReadRecord> result;
-    result.reserve(entries.size());
+    PublishedReadSnapshot result;
+    result.records.reserve(entries.size());
     for (auto& entry : entries) {
         const auto catalog_index = catalog_index_for_segment(entry.record.segment_id);
         if (!catalog_index) {
@@ -1718,14 +1726,33 @@ auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_in
             return fail_closed(
                 Error{ErrorCode::corrupted_data, "durable read-generation snapshot contains a foreign key"});
         }
-        result.push_back(
-            PublishedReadRecord{std::move(entry.key), key_hash, worker_index, entry.record, pin});
+        result.records.push_back(PublishedReadRecord::bind(std::move(entry.key), key_hash, entry.record,
+                                                           PublishedReadPin{worker_index, pin}));
     }
+    result.catalog_revision = worker.read_catalog_revision.load(std::memory_order_relaxed);
     return result;
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "durable read-generation snapshot allocation failed");
 } catch (...) {
     return fail(ErrorCode::internal_error, "durable read-generation snapshot failed");
+}
+
+auto DurableRuntimeCatalog::read_catalog_revision(const std::size_t worker_index) const noexcept
+    -> std::uint64_t {
+    return worker_index < workers_.size()
+               ? workers_[worker_index]->read_catalog_revision.load(std::memory_order_acquire)
+               : 0U;
+}
+
+auto DurableRuntimeCatalog::advance_read_catalog_revision(RuntimeWorker& worker) noexcept -> bool {
+    auto revision = worker.read_catalog_revision.load(std::memory_order_relaxed);
+    while (revision != std::numeric_limits<std::uint64_t>::max()) {
+        if (worker.read_catalog_revision.compare_exchange_weak(
+                revision, revision + 1U, std::memory_order_release, std::memory_order_relaxed)) {
+            return true;
+        }
+    }
+    return false;
 }
 
 auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_index, const HashedKey& key)
@@ -1761,7 +1788,8 @@ auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_inde
         return fail_closed(
             Error{ErrorCode::corrupted_data, "durable read publication has no exact generation pin"});
     }
-    return PublishedReadRecord{std::string{key.key}, key.hash, worker_index, *reference, pin};
+    return PublishedReadRecord::bind(std::string{key.key}, key.hash, *reference,
+                                     PublishedReadPin{worker_index, pin});
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "durable read publication allocation failed");
 } catch (...) {
@@ -1773,23 +1801,24 @@ auto DurableRuntimeCatalog::prepare_published_get(PublishedReadRecord read, cons
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
-    if (read.worker_index_ >= workers_.size() ||
-        route_worker(read.key_hash_, workers_.size()) != read.worker_index_ || !read.generation_ ||
-        read.generation_->identity.segment_id != read.reference_.segment_id ||
-        read.generation_->identity.generation != read.reference_.generation ||
-        read.generation_->identity.owner_worker != workers_[read.worker_index_]->worker_id) {
+    const auto worker_index = read.pin_.worker_index_;
+    if (worker_index >= workers_.size() || route_worker(read.key_hash_, workers_.size()) != worker_index ||
+        !read.pin_.matches(read.reference_) ||
+        read.pin_.generation_->identity.owner_worker != workers_[worker_index]->worker_id) {
         return fail_closed(Error{ErrorCode::corrupted_data,
                                  "immutable durable read publication is internally inconsistent"});
     }
-    return PreparedRead{.cold = PinnedRead{std::move(read.key_), read.key_hash_, now_ns, read.worker_index_,
-                                           read.reference_, std::move(read.generation_), true}};
+    return PreparedRead{.cold = PinnedRead{std::move(read.key_), read.key_hash_, now_ns, worker_index,
+                                           read.reference_, std::move(read.pin_.generation_), true}};
 }
 
-auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool* cancelled)
-    -> Result<OwnedValue> {
+auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdReadCancellation* cancellation,
+                                         std::vector<std::byte>* scratch) -> Result<OwnedValue> {
     constexpr std::size_t kMaximumRelinearizationAttempts = 8;
+    std::vector<std::byte> local_scratch;
+    auto& read_scratch = scratch == nullptr ? local_scratch : *scratch;
     for (std::size_t attempt = 0; attempt < kMaximumRelinearizationAttempts; ++attempt) {
-        if (cancelled != nullptr && cancelled->load(std::memory_order_acquire)) {
+        if (cancellation != nullptr && cancellation->cancelled()) {
             return fail(ErrorCode::unavailable, "durable cold read was cancelled");
         }
         auto& worker = *workers_[read.worker_index_];
@@ -1800,8 +1829,8 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const std::atomic_bool
         ReadContext context{
             .expected_key = key_bytes, .expected_hash = read.key_hash_, .now_ns = read.now_ns_};
         const auto cold_started = timing_now();
-        auto visited =
-            read.generation_->file.visit_runtime_record(read.reference_, &context, &copy_verified_value);
+        auto visited = read.generation_->file.visit_runtime_record(read.reference_, read_scratch, &context,
+                                                                   &copy_verified_value);
         if constexpr (kGetPathTimingEnabled) {
             atomic_saturating_add(metrics.cold_read_ns, timing_elapsed_ns(cold_started));
             atomic_saturating_add(metrics.crc_value_copy_ns, context.crc_value_copy_ns);
@@ -2298,6 +2327,13 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
         worker.get_path_metrics.hot_evictions.fetch_add(1U, std::memory_order_relaxed);
         return true;
     });
+    if (!advance_read_catalog_revision(worker)) {
+        healthy_.store(false, std::memory_order_release);
+        clear_reservation();
+        return mutation_failure(
+            DurableMutationOutcome::indeterminate,
+            Error{ErrorCode::arithmetic_overflow, "durable read catalog revision exhausted"});
+    }
     clear_reservation();
     rotation_committed = true;
     return {.outcome = DurableMutationOutcome::committed, .sequence = std::nullopt, .error = std::nullopt};
@@ -3519,6 +3555,9 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             worker.active_live_record_bytes.store(prepared.active_live_record_bytes,
                                                   std::memory_order_release);
             worker.sealed_live_record_bytes.store(stats.bytes_copied, std::memory_order_release);
+            if (!advance_read_catalog_revision(worker)) {
+                throw std::overflow_error{"durable read catalog revision exhausted"};
+            }
             commit_gate.clear_locked();
         } catch (...) {
             if (worker_lock.owns_lock()) {

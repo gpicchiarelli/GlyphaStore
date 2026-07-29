@@ -218,6 +218,15 @@ GLYPHA_TEST("generation-pinned runtime read accepts a Record committed after han
     GLYPHA_REQUIRE(!reader->visit_record(reference, &value, visitor).has_value());
     GLYPHA_REQUIRE(reader->visit_runtime_record(reference, &value, visitor).has_value());
     GLYPHA_REQUIRE(value == "active-value");
+
+    std::vector<std::byte> scratch;
+    scratch.reserve(record->size() * 2U);
+    const auto reserved_capacity = scratch.capacity();
+    value.clear();
+    GLYPHA_REQUIRE(reader->visit_runtime_record(reference, scratch, &value, visitor).has_value());
+    GLYPHA_REQUIRE(value == "active-value");
+    GLYPHA_REQUIRE(scratch.size() == record->size());
+    GLYPHA_REQUIRE(scratch.capacity() == reserved_capacity);
 }
 
 GLYPHA_TEST("preallocation failure publishes no Segment and keeps directory healthy") {

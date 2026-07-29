@@ -427,6 +427,112 @@ GLYPHA_TEST("durable daemon retries only a proven non-committed first-attempt se
     GLYPHA_REQUIRE(!should_retry(missing_error, 0));
 }
 
+GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    const glyphastore::server::PairReadMergeConfig merge_config{
+        .delta_entries = 4,
+        .maximum_post_entries = 8,
+        .quantum_slots = 4'096,
+    };
+    glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{8};
+    auto wakeup = glyphastore::server::Wakeup::create();
+    GLYPHA_REQUIRE(wakeup.has_value());
+    auto executor =
+        glyphastore::server::PairWriterPool::create(store, 1, 8, std::chrono::milliseconds{0}, merge_config);
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
+
+    std::array<std::string, 4> keys{"merge-a", "merge-b", "merge-c", "merge-d"};
+    for (std::size_t index = 0; index < keys.size(); ++index) {
+        GLYPHA_REQUIRE((*executor)->try_submit({
+            .connection = {.slot = static_cast<std::uint32_t>(index + 1U), .generation = 1},
+            .request_id = 800U + index,
+            .worker_index = 0,
+            .kind = glyphastore::server::MutationKind::put,
+            .key = keys[index],
+            .key_hash = glyphastore::hash_key(keys[index]),
+            .value = owned_bytes("value"),
+            .admission_bytes = 1,
+            .completions = &completions,
+            .wakeup = &*wakeup,
+        }));
+    }
+
+    std::size_t completed{};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (completed != keys.size() && std::chrono::steady_clock::now() < deadline) {
+        if (auto completion = completions.try_pop()) {
+            GLYPHA_REQUIRE(!completion->error.has_value());
+            ++completed;
+        } else {
+            static_cast<void>((*executor)->adopt_read_generation(0));
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+    }
+    GLYPHA_REQUIRE(completed == keys.size());
+
+    glyphastore::server::PairWriterStats stats;
+    const auto merge_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < merge_deadline) {
+        static_cast<void>((*executor)->adopt_read_generation(0));
+        stats = (*executor)->stats()[0];
+        if (stats.read_merge_completions != 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    GLYPHA_REQUIRE(stats.read_merge_starts == 1);
+    GLYPHA_REQUIRE(stats.read_merge_completions == 1);
+    GLYPHA_REQUIRE(stats.read_merge_failures == 0);
+    GLYPHA_REQUIRE(stats.read_merge_backpressure == 0);
+    GLYPHA_REQUIRE(stats.read_merge_slots_processed > 0);
+    GLYPHA_REQUIRE(!stats.read_merge_active);
+    GLYPHA_REQUIRE(stats.read_merge_post_entries == 0);
+
+    const auto* generation = (*executor)->adopt_read_generation(0);
+    GLYPHA_REQUIRE(generation != nullptr);
+    GLYPHA_REQUIRE(generation->base_entries() == keys.size());
+    GLYPHA_REQUIRE(generation->delta_entries() == 0);
+    for (const auto& key : keys) {
+        auto value = generation->get({.key = key, .hash = glyphastore::hash_key(key)}, 0);
+        GLYPHA_REQUIRE(value.has_value());
+        GLYPHA_REQUIRE(text(value->bytes) == "value");
+    }
+
+    GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired Writer rejects invalid incremental read merge bounds") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    GLYPHA_REQUIRE(!glyphastore::server::PairWriterPool::create(
+                        store, 1, 8, std::chrono::milliseconds{0},
+                        {.delta_entries = 0, .maximum_post_entries = 1, .quantum_slots = 1})
+                        .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::PairWriterPool::create(
+                        store, 1, 8, std::chrono::milliseconds{0},
+                        {.delta_entries = 1, .maximum_post_entries = 1, .quantum_slots = 0})
+                        .has_value());
+    GLYPHA_REQUIRE(!glyphastore::server::PairWriterPool::create(
+                        store, 1, 8, std::chrono::milliseconds{0},
+                        {.delta_entries = 1, .maximum_post_entries = 0, .quantum_slots = 1})
+                        .has_value());
+    GLYPHA_REQUIRE(
+        !glyphastore::server::PairWriterPool::create(
+             store, 1, 8, std::chrono::milliseconds{0},
+             {.delta_entries = glyphastore::server::PairReadGeneration::kMaximumIncrementalDeltaEntries,
+              .maximum_post_entries = 1,
+              .quantum_slots = 1})
+             .has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
 GLYPHA_TEST("paired Writer feeds one bounded maintenance latency window") {
     ServerTemporaryDirectory temporary;
     auto opened = glyphastore::Store::open({
@@ -452,12 +558,12 @@ GLYPHA_TEST("paired Writer feeds one bounded maintenance latency window") {
     const auto initial_cycles = store.maintenance_snapshot().evaluation_cycles;
     GLYPHA_REQUIRE(initial_cycles > 0);
 
-    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 2, std::chrono::milliseconds{0});
-    GLYPHA_REQUIRE(executor.has_value());
-    GLYPHA_REQUIRE((*executor)->start().has_value());
     glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{2};
     auto wakeup = glyphastore::server::Wakeup::create();
     GLYPHA_REQUIRE(wakeup.has_value());
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 2, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
     const std::string key{"latency-feedback"};
     GLYPHA_REQUIRE((*executor)->try_submit({
         .connection = {.slot = 1, .generation = 1},
@@ -486,14 +592,13 @@ GLYPHA_TEST("paired Writer feeds one bounded maintenance latency window") {
     const bool feedback_already_consumed =
         snapshot.evaluation_cycles > initial_cycles && snapshot.foreground_latency_samples == 1;
     if (!feedback_already_consumed) {
+        const auto cycle_before_request = snapshot.evaluation_cycles;
         maintenance->request_evaluate();
-    }
-    const auto feedback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while (!feedback_already_consumed && store.maintenance_snapshot().evaluation_cycles == initial_cycles &&
-           std::chrono::steady_clock::now() < feedback_deadline) {
-        std::this_thread::sleep_for(std::chrono::milliseconds{1});
-    }
-    if (!feedback_already_consumed) {
+        const auto feedback_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (store.maintenance_snapshot().evaluation_cycles == cycle_before_request &&
+               std::chrono::steady_clock::now() < feedback_deadline) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
         snapshot = store.maintenance_snapshot();
     }
     GLYPHA_REQUIRE(snapshot.evaluation_cycles > initial_cycles);
@@ -527,12 +632,12 @@ GLYPHA_TEST("paired Writer preserves same-shard FIFO while compaction publicatio
     std::thread compactor{[&] { compacted = store.compact(); }};
     GLYPHA_REQUIRE(blocker.wait_until_blocked());
 
-    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 8, std::chrono::milliseconds{0});
-    GLYPHA_REQUIRE(executor.has_value());
-    GLYPHA_REQUIRE((*executor)->start().has_value());
     glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{8};
     auto wakeup = glyphastore::server::Wakeup::create();
     GLYPHA_REQUIRE(wakeup.has_value());
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 8, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
 
     const auto submit = [&](const std::uint64_t request_id, std::string key, std::string_view value) {
         const auto hash = glyphastore::hash_key(key);
@@ -595,6 +700,240 @@ GLYPHA_TEST("paired Writer preserves same-shard FIFO while compaction publicatio
     GLYPHA_REQUIRE(compacted->has_value());
     GLYPHA_REQUIRE(text(store.get("retry-after-lease")->bytes) == "first");
     GLYPHA_REQUIRE(text(store.get("progress-during-lease")->bytes) == "second");
+
+    GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired Reader refreshes compacted durable pins and retires the old generation") {
+    ServerTemporaryDirectory temporary;
+    BlockingCompactionIntent blocker;
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    GLYPHA_REQUIRE(store.put("refresh-key", bytes("old")).has_value());
+    blocker.force_next_record_write_full();
+    GLYPHA_REQUIRE(store.put("refresh-key", bytes("current")).has_value());
+    blocker.force_next_record_write_full();
+    GLYPHA_REQUIRE(store.put("active-key", bytes("active")).has_value());
+
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 8, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
+    const auto* initial_generation = (*executor)->adopt_read_generation(0);
+    GLYPHA_REQUIRE(initial_generation != nullptr);
+    const std::string key{"refresh-key"};
+    const glyphastore::HashedKey hashed{key, glyphastore::hash_key(key)};
+    glyphastore::RecordRef initial_reference;
+    {
+        auto initial_record = initial_generation->prepare_durable(hashed);
+        GLYPHA_REQUIRE(initial_record.has_value());
+        initial_reference = initial_record->reference();
+    }
+    const auto initial_epoch = initial_generation->epoch();
+    const auto initial_revision = glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0);
+
+    std::optional<glyphastore::Result<glyphastore::CompactionResult>> compacted;
+    std::thread compactor{[&] { compacted = store.compact(); }};
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    blocker.release();
+    compactor.join();
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(compacted->has_value());
+    GLYPHA_REQUIRE((*compacted)->compacted);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0) >
+                   initial_revision);
+
+    const auto refresh_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while ((*executor)->stats()[0].read_refresh_successes == 0 &&
+           std::chrono::steady_clock::now() < refresh_deadline) {
+        (*executor)->request_read_refresh(0);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    auto stats = (*executor)->stats()[0];
+    GLYPHA_REQUIRE(stats.read_refresh_attempts >= 1);
+    GLYPHA_REQUIRE(stats.read_refresh_successes == 1);
+    GLYPHA_REQUIRE(stats.read_refresh_failures == 0);
+    GLYPHA_REQUIRE(stats.read_catalog_revision > initial_revision);
+
+    const auto* refreshed_generation = (*executor)->adopt_read_generation(0);
+    GLYPHA_REQUIRE(refreshed_generation != nullptr);
+    GLYPHA_REQUIRE(refreshed_generation->epoch() > initial_epoch);
+    auto refreshed_record = refreshed_generation->prepare_durable(hashed);
+    GLYPHA_REQUIRE(refreshed_record.has_value());
+    GLYPHA_REQUIRE(refreshed_record->reference().sequence == initial_reference.sequence);
+    GLYPHA_REQUIRE(refreshed_record->reference().segment_id != initial_reference.segment_id);
+
+    const auto reclaim_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    do {
+        stats = (*executor)->stats()[0];
+        if (stats.retired_generation_count == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    } while (std::chrono::steady_clock::now() < reclaim_deadline);
+    GLYPHA_REQUIRE(stats.generations_retired >= 1);
+    GLYPHA_REQUIRE(stats.retired_generation_count == 0);
+
+    GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired Reader refreshes durable pins after a Writer-owned rotation") {
+    ServerTemporaryDirectory temporary;
+    BlockingCompactionIntent blocker;
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("rotation-base", bytes("base")).has_value());
+
+    glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{4};
+    auto wakeup = glyphastore::server::Wakeup::create();
+    GLYPHA_REQUIRE(wakeup.has_value());
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 4, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
+    const auto* initial_generation = (*executor)->adopt_read_generation(0);
+    GLYPHA_REQUIRE(initial_generation != nullptr);
+    const auto initial_epoch = initial_generation->epoch();
+    const auto initial_revision = glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0);
+
+    blocker.force_next_record_write_full();
+    const std::string key{"rotation-published"};
+    GLYPHA_REQUIRE((*executor)->try_submit({
+        .connection = {.slot = 1, .generation = 1},
+        .request_id = 701,
+        .worker_index = 0,
+        .kind = glyphastore::server::MutationKind::put,
+        .key = key,
+        .key_hash = glyphastore::hash_key(key),
+        .value = owned_bytes("rotated"),
+        .admission_bytes = 1,
+        .completions = &completions,
+        .wakeup = &*wakeup,
+    }));
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    std::optional<glyphastore::server::MutationCompletion> completion;
+    while (!completion && std::chrono::steady_clock::now() < completion_deadline) {
+        completion = completions.try_pop();
+        if (!completion) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{1});
+        }
+    }
+    GLYPHA_REQUIRE(completion.has_value());
+    GLYPHA_REQUIRE(!completion->error.has_value());
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0) >
+                   initial_revision);
+
+    const auto refresh_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while ((*executor)->stats()[0].read_refresh_successes == 0 &&
+           std::chrono::steady_clock::now() < refresh_deadline) {
+        (*executor)->request_read_refresh(0);
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    const auto* refreshed_generation = (*executor)->adopt_read_generation(0);
+    GLYPHA_REQUIRE(refreshed_generation != nullptr);
+    GLYPHA_REQUIRE(refreshed_generation->epoch() >= initial_epoch + 2U);
+    auto published = refreshed_generation->prepare_durable({.key = key, .hash = glyphastore::hash_key(key)});
+    GLYPHA_REQUIRE(published.has_value());
+    auto sealed = refreshed_generation->prepare_durable(
+        {.key = "rotation-base", .hash = glyphastore::hash_key("rotation-base")});
+    GLYPHA_REQUIRE(sealed.has_value());
+    GLYPHA_REQUIRE(refreshed_generation->delta_entries() == 0);
+    GLYPHA_REQUIRE(refreshed_generation->base_entries() == 2);
+    const auto stats = (*executor)->stats()[0];
+    GLYPHA_REQUIRE(stats.read_refresh_successes == 1);
+    GLYPHA_REQUIRE(stats.read_refresh_failures == 0);
+
+    GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("durable read catalog refresh is isolated to the compacted shard pair") {
+    ServerTemporaryDirectory temporary;
+    BlockingCompactionIntent blocker;
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 2},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.store_path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const auto key_for = [](const std::string_view prefix, const std::size_t worker) {
+        for (std::size_t suffix = 0; suffix < 10'000; ++suffix) {
+            auto key = std::string{prefix} + std::to_string(suffix);
+            if (glyphastore::route_worker(key, 2) == worker) {
+                return key;
+            }
+        }
+        return std::string{};
+    };
+    const auto compacted_key = key_for("isolated-compact-", 0);
+    const auto active_key = key_for("isolated-active-", 0);
+    const auto other_key = key_for("isolated-other-", 1);
+    GLYPHA_REQUIRE(!compacted_key.empty());
+    GLYPHA_REQUIRE(!active_key.empty());
+    GLYPHA_REQUIRE(!other_key.empty());
+
+    GLYPHA_REQUIRE(store.put(compacted_key, bytes("v1")).has_value());
+    blocker.force_next_record_write_full();
+    GLYPHA_REQUIRE(store.put(compacted_key, bytes("v2")).has_value());
+    blocker.force_next_record_write_full();
+    GLYPHA_REQUIRE(store.put(active_key, bytes("active")).has_value());
+    GLYPHA_REQUIRE(store.put(other_key, bytes("other")).has_value());
+
+    auto executor = glyphastore::server::PairWriterPool::create(store, 2, 8, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
+    const auto worker_zero_revision =
+        glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0);
+    const auto worker_one_revision =
+        glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 1);
+
+    std::optional<glyphastore::Result<glyphastore::CompactionResult>> compacted;
+    std::thread compactor{[&] { compacted = store.compact(); }};
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    blocker.release();
+    compactor.join();
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(compacted->has_value());
+    GLYPHA_REQUIRE((*compacted)->compacted);
+    GLYPHA_REQUIRE((*compacted)->worker_index == 0);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 0) >
+                   worker_zero_revision);
+    GLYPHA_REQUIRE(glyphastore::detail::StoreAccess::durable_read_catalog_revision(store, 1) ==
+                   worker_one_revision);
+
+    const auto refresh_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    std::vector<glyphastore::server::PairWriterStats> stats;
+    do {
+        (*executor)->request_read_refresh(0);
+        (*executor)->request_read_refresh(1);
+        stats = (*executor)->stats();
+        if (stats[0].read_refresh_successes != 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    } while (std::chrono::steady_clock::now() < refresh_deadline);
+    GLYPHA_REQUIRE(stats.size() == 2);
+    GLYPHA_REQUIRE(stats[0].read_refresh_successes == 1);
+    GLYPHA_REQUIRE(stats[1].read_refresh_attempts == 0);
+    GLYPHA_REQUIRE(stats[1].read_refresh_successes == 0);
 
     GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
     GLYPHA_REQUIRE(store.close().has_value());

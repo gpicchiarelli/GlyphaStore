@@ -421,14 +421,51 @@ struct detail::PreparedColdRead::State final {
     DurableRuntimeCatalog::PinnedRead prepared;
 };
 
-detail::PreparedColdRead::PreparedColdRead(std::unique_ptr<State> state) noexcept
-    : state_(std::move(state)) {}
+detail::PreparedColdRead::PreparedColdRead(State&& value) noexcept {
+    static_assert(sizeof(State) <= kStateBytes);
+    static_assert(alignof(State) <= alignof(std::max_align_t));
+    std::construct_at(state(), std::move(value));
+    engaged_ = true;
+}
 
-detail::PreparedColdRead::PreparedColdRead(PreparedColdRead&&) noexcept = default;
+auto detail::PreparedColdRead::state() noexcept -> State* {
+    return std::launder(reinterpret_cast<State*>(storage_.data()));
+}
 
-auto detail::PreparedColdRead::operator=(PreparedColdRead&&) noexcept -> PreparedColdRead& = default;
+auto detail::PreparedColdRead::state() const noexcept -> const State* {
+    return std::launder(reinterpret_cast<const State*>(storage_.data()));
+}
 
-detail::PreparedColdRead::~PreparedColdRead() = default;
+void detail::PreparedColdRead::reset() noexcept {
+    if (engaged_) {
+        std::destroy_at(state());
+        engaged_ = false;
+    }
+}
+
+detail::PreparedColdRead::PreparedColdRead(PreparedColdRead&& other) noexcept {
+    if (other.engaged_) {
+        std::construct_at(state(), std::move(*other.state()));
+        engaged_ = true;
+        other.reset();
+    }
+}
+
+auto detail::PreparedColdRead::operator=(PreparedColdRead&& other) noexcept -> PreparedColdRead& {
+    if (this != &other) {
+        reset();
+        if (other.engaged_) {
+            std::construct_at(state(), std::move(*other.state()));
+            engaged_ = true;
+            other.reset();
+        }
+    }
+    return *this;
+}
+
+detail::PreparedColdRead::~PreparedColdRead() {
+    reset();
+}
 
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() {
@@ -941,8 +978,7 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
         if (!prepared->cold) {
             return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
         }
-        auto state = std::make_unique<PreparedColdRead::State>(std::move(*prepared->cold));
-        return PreparedGet{.cold = PreparedColdRead{std::move(state)}};
+        return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
     }
     auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
     if (!record) {
@@ -956,8 +992,8 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
 }
 
 auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t worker_index,
-                                             PreparedColdRead read, const std::atomic_bool* cancelled)
-    -> Result<OwnedValue> {
+                                             PreparedColdRead read, const ColdReadCancellation* cancellation,
+                                             std::vector<std::byte>* scratch) -> Result<OwnedValue> {
     if (worker_index >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument, "cold get targets an invalid Worker owner");
     }
@@ -965,15 +1001,16 @@ auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t wor
     if (!operation) {
         return closed_store();
     }
-    if (!store.impl_->durable_runtime || !read.state_ ||
-        read.state_->prepared.worker_index_ != worker_index) {
+    if (!store.impl_->durable_runtime || !read.engaged_ ||
+        read.state()->prepared.worker_index_ != worker_index) {
         return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
     }
-    return store.impl_->durable_runtime->complete_get(std::move(read.state_->prepared), cancelled);
+    return store.impl_->durable_runtime->complete_get(std::move(read.state()->prepared), cancellation,
+                                                      scratch);
 }
 
 auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index)
-    -> Result<std::vector<DurablePublishedRead>> {
+    -> Result<DurableReadSnapshot> {
     if (worker_index >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument,
                     "durable read-generation snapshot targets an invalid Worker");
@@ -986,6 +1023,14 @@ auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t
         return fail(ErrorCode::invalid_argument, "durable read-generation snapshot requires a durable Store");
     }
     return store.impl_->durable_runtime->snapshot_published_reads(worker_index);
+}
+
+auto detail::StoreAccess::durable_read_catalog_revision(const Store& store,
+                                                        const std::size_t worker_index) noexcept
+    -> std::uint64_t {
+    return store.impl_ && store.impl_->durable_runtime
+               ? store.impl_->durable_runtime->read_catalog_revision(worker_index)
+               : 0U;
 }
 
 auto detail::StoreAccess::capture_durable_read(Store& store, const std::size_t worker_index,
@@ -1027,8 +1072,7 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     if (!prepared->cold) {
         return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
     }
-    auto state = std::make_unique<PreparedColdRead::State>(std::move(*prepared->cold));
-    return PreparedGet{.cold = PreparedColdRead{std::move(state)}};
+    return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {

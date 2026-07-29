@@ -721,10 +721,15 @@ auto DurableSegmentFile::visit_record(const RecordRef& reference, std::vector<st
 
 auto DurableSegmentFile::visit_runtime_record(const RecordRef& reference, void* context,
                                               const RecordVisitor visitor) const -> Status {
+    std::vector<std::byte> scratch;
+    return visit_runtime_record(reference, scratch, context, visitor);
+}
+
+auto DurableSegmentFile::visit_runtime_record(const RecordRef& reference, std::vector<std::byte>& scratch,
+                                              void* context, const RecordVisitor visitor) const -> Status {
     if (!visitor) {
         return fail(ErrorCode::invalid_argument, "Record visitor cannot be null");
     }
-    std::vector<std::byte> scratch;
     RecordView record{};
     if (auto read = read_record_into_extent(reference, kSegmentSizeBytes, scratch, record); !read) {
         return unexpected(read.error());

@@ -28,11 +28,14 @@ struct ReadMutation final {
 
 class ImmutableReadIndex;
 class DeltaState;
+class PairReadMerge;
 
 // Immutable two-level read view published by one paired Writer and adopted by
 // its Reader. GET performs at most one delta lookup and one base lookup.
 class PairReadGeneration final {
   public:
+    static constexpr std::size_t kMaximumIncrementalDeltaEntries = 40'960;
+
     [[nodiscard]] static auto empty(WorkerRoutingState routing)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
 
@@ -41,10 +44,37 @@ class PairReadGeneration final {
                           std::span<const DurableRuntimeCatalog::PublishedReadRecord> records)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
 
+    // Rebuilds the durable base from one catalog-consistent snapshot while
+    // preserving the logical visibility watermark of erased records.
+    [[nodiscard]] static auto
+    replace_durable_snapshot(std::shared_ptr<const PairReadGeneration> previous,
+                             std::span<const DurableRuntimeCatalog::PublishedReadRecord> records)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
+
     [[nodiscard]] static auto publish(std::shared_ptr<const PairReadGeneration> previous,
                                       std::span<const ReadMutation> mutations,
                                       std::size_t merge_delta_entries)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
+
+    // Production publication path. While merge is non-null the same immutable
+    // mutation handles are also appended to its bounded post-cut delta.
+    [[nodiscard]] static auto publish_incremental(std::shared_ptr<const PairReadGeneration> previous,
+                                                  std::span<const ReadMutation> mutations,
+                                                  PairReadMerge* merge = nullptr)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto start_incremental_merge(std::shared_ptr<const PairReadGeneration> cut,
+                                                      std::size_t maximum_post_entries)
+        -> Result<std::unique_ptr<PairReadMerge>>;
+    [[nodiscard]] static auto advance_incremental_merge(PairReadMerge& merge, std::size_t maximum_slots)
+        -> Result<std::size_t>;
+    [[nodiscard]] static auto finish_incremental_merge(std::shared_ptr<const PairReadGeneration> current,
+                                                       PairReadMerge& merge)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto merge_ready(const PairReadMerge& merge) noexcept -> bool;
+    [[nodiscard]] static auto merge_post_entries(const PairReadMerge& merge) noexcept -> std::size_t;
+    [[nodiscard]] static auto can_publish_incremental(const PairReadGeneration& current,
+                                                      const PairReadMerge* merge,
+                                                      std::size_t maximum_new_entries) noexcept -> bool;
 
     [[nodiscard]] auto get(const HashedKey& key, std::uint64_t now_ns) const -> Result<OwnedValue>;
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
@@ -60,6 +90,11 @@ class PairReadGeneration final {
     [[nodiscard]] auto base_entries() const noexcept -> std::size_t;
 
   private:
+    [[nodiscard]] static auto
+    build_durable_snapshot(WorkerRoutingState routing,
+                           std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+                           std::uint64_t epoch, std::uint64_t visible_floor)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
     PairReadGeneration(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
                        std::shared_ptr<const DeltaState> delta, std::uint64_t epoch,
                        std::uint64_t visible_through) noexcept;
@@ -69,6 +104,23 @@ class PairReadGeneration final {
     std::shared_ptr<const DeltaState> delta_;
     std::uint64_t epoch_{};
     std::uint64_t visible_through_{};
+};
+
+// Opaque Writer-owned state. It is never published to or touched by Reader.
+class PairReadMerge final {
+  public:
+    ~PairReadMerge();
+    PairReadMerge(const PairReadMerge&) = delete;
+    auto operator=(const PairReadMerge&) -> PairReadMerge& = delete;
+    PairReadMerge(PairReadMerge&&) noexcept;
+    auto operator=(PairReadMerge&&) noexcept -> PairReadMerge&;
+
+  private:
+    struct State;
+    explicit PairReadMerge(std::unique_ptr<State> state) noexcept;
+    std::unique_ptr<State> state_;
+
+    friend class PairReadGeneration;
 };
 
 } // namespace glyphastore::server

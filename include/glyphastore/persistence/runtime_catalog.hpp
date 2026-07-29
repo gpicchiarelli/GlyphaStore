@@ -12,6 +12,7 @@
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/maintenance_types.hpp"
+#include "glyphastore/store/prepared_read.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <atomic>
@@ -150,6 +151,35 @@ class DurableRuntimeCatalog final {
     struct RuntimeSegmentGeneration;
 
   public:
+    // Copyable ownership token for one immutable on-disk Segment generation.
+    // Read indexes retain one token per distinct generation instead of one
+    // shared_ptr and duplicate key per record.
+    class PublishedReadPin final {
+      public:
+        PublishedReadPin(const PublishedReadPin&) = default;
+        auto operator=(const PublishedReadPin&) -> PublishedReadPin& = default;
+        PublishedReadPin(PublishedReadPin&&) noexcept = default;
+        auto operator=(PublishedReadPin&&) noexcept -> PublishedReadPin& = default;
+
+        [[nodiscard]] auto worker_index() const noexcept -> std::size_t {
+            return worker_index_;
+        }
+        [[nodiscard]] auto matches(const RecordRef& reference) const noexcept -> bool;
+        [[nodiscard]] auto same_generation(const PublishedReadPin& other) const noexcept -> bool {
+            return generation_ == other.generation_;
+        }
+
+      private:
+        PublishedReadPin(std::size_t worker_index,
+                         std::shared_ptr<const RuntimeSegmentGeneration> generation) noexcept
+            : worker_index_(worker_index), generation_(std::move(generation)) {}
+
+        std::size_t worker_index_{};
+        std::shared_ptr<const RuntimeSegmentGeneration> generation_;
+
+        friend class DurableRuntimeCatalog;
+    };
+
     // Immutable logical record captured together with the exact on-disk
     // Segment generation that owns its RecordRef. Copies retain the file pin;
     // the reference is therefore never observable without lifetime ownership.
@@ -167,25 +197,35 @@ class DurableRuntimeCatalog final {
             return key_hash_;
         }
         [[nodiscard]] auto worker_index() const noexcept -> std::size_t {
-            return worker_index_;
+            return pin_.worker_index();
         }
         [[nodiscard]] auto reference() const noexcept -> const RecordRef& {
             return reference_;
         }
+        [[nodiscard]] auto pin() const noexcept -> const PublishedReadPin& {
+            return pin_;
+        }
+        [[nodiscard]] static auto bind(std::string key, std::uint64_t key_hash, RecordRef reference,
+                                       PublishedReadPin pin) -> PublishedReadRecord {
+            return PublishedReadRecord{std::move(key), key_hash, reference, std::move(pin)};
+        }
 
       private:
-        PublishedReadRecord(std::string key, std::uint64_t key_hash, std::size_t worker_index,
-                            RecordRef reference, std::shared_ptr<const RuntimeSegmentGeneration> generation)
-            : key_(std::move(key)), key_hash_(key_hash), worker_index_(worker_index), reference_(reference),
-              generation_(std::move(generation)) {}
+        PublishedReadRecord(std::string key, std::uint64_t key_hash, RecordRef reference,
+                            PublishedReadPin pin)
+            : key_(std::move(key)), key_hash_(key_hash), reference_(reference), pin_(std::move(pin)) {}
 
         std::string key_;
         std::uint64_t key_hash_{};
-        std::size_t worker_index_{};
         RecordRef reference_;
-        std::shared_ptr<const RuntimeSegmentGeneration> generation_;
+        PublishedReadPin pin_;
 
         friend class DurableRuntimeCatalog;
+    };
+
+    struct PublishedReadSnapshot final {
+        std::vector<PublishedReadRecord> records;
+        std::uint64_t catalog_revision{};
     };
 
     class PinnedRead final {
@@ -308,14 +348,16 @@ class DurableRuntimeCatalog final {
     // Writer-side publication helpers. Both capture methods may take runtime
     // locks but never perform file I/O. The returned records are immutable and
     // retain exact Segment-generation pins for lock-free Reader lookup.
-    [[nodiscard]] auto snapshot_published_reads(std::size_t worker_index)
-        -> Result<std::vector<PublishedReadRecord>>;
+    [[nodiscard]] auto snapshot_published_reads(std::size_t worker_index) -> Result<PublishedReadSnapshot>;
+    [[nodiscard]] auto read_catalog_revision(std::size_t worker_index) const noexcept -> std::uint64_t;
+    [[nodiscard]] static auto advance_read_catalog_revision(RuntimeWorker& worker) noexcept -> bool;
     [[nodiscard]] auto capture_published_read(std::size_t worker_index, const HashedKey& key)
         -> Result<PublishedReadRecord>;
     [[nodiscard]] auto prepare_published_get(PublishedReadRecord read, std::uint64_t now_ns)
         -> Result<PreparedRead>;
-    [[nodiscard]] auto complete_get(PinnedRead read, const std::atomic_bool* cancelled = nullptr)
-        -> Result<OwnedValue>;
+    [[nodiscard]] auto complete_get(PinnedRead read,
+                                    const detail::ColdReadCancellation* cancellation = nullptr,
+                                    std::vector<std::byte>* scratch = nullptr) -> Result<OwnedValue>;
     // Build SegmentId → catalog/pin slot mapping before a persistent publication.
     // The prepared vector is installed with a non-allocating move after commit.
     [[nodiscard]] static auto prepare_pin_slot_index(const Manifest& manifest)

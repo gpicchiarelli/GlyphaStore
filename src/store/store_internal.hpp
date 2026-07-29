@@ -49,6 +49,7 @@ class StoreAccess final {
     };
 
     using DurablePublishedRead = DurableRuntimeCatalog::PublishedReadRecord;
+    using DurableReadSnapshot = DurableRuntimeCatalog::PublishedReadSnapshot;
 
     [[nodiscard]] static auto get_owned(Store& store, std::size_t worker_index, const HashedKey& key,
                                         std::uint64_t now_ns) -> Result<OwnedValue>;
@@ -58,10 +59,14 @@ class StoreAccess final {
                                                 std::uint64_t now_ns) -> Result<PreparedGet>;
     [[nodiscard]] static auto complete_get_owned(Store& store, std::size_t worker_index,
                                                  PreparedColdRead read,
-                                                 const std::atomic_bool* cancelled = nullptr)
+                                                 const ColdReadCancellation* cancellation = nullptr,
+                                                 std::vector<std::byte>* scratch = nullptr)
         -> Result<OwnedValue>;
     [[nodiscard]] static auto snapshot_durable_reads(Store& store, std::size_t worker_index)
-        -> Result<std::vector<DurablePublishedRead>>;
+        -> Result<DurableReadSnapshot>;
+    [[nodiscard]] static auto durable_read_catalog_revision(const Store& store,
+                                                            std::size_t worker_index) noexcept
+        -> std::uint64_t;
     [[nodiscard]] static auto capture_durable_read(Store& store, std::size_t worker_index,
                                                    const HashedKey& key) -> Result<DurablePublishedRead>;
     [[nodiscard]] static auto prepare_published_durable_get(Store& store, std::size_t worker_index,

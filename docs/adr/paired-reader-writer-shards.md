@@ -197,9 +197,12 @@ Memory ordering minimo:
 
 ## Index a due livelli
 
-`ImmutableReadIndex` è compatto, senza tombstone di costruzione, resize o metadati di scrittura.
-`FrozenDeltaIndex` contiene l'override più recente o un tombstone. Il Writer mantiene un
-`MutableDeltaIndex` privato.
+`ImmutableReadIndex` non contiene tombstone di costruzione, resize o metadati di scrittura. Il Base
+usa record compatti da massimo 64 B, chiavi inline fino a 16 B, arena per chiavi lunghe e pin di
+Segment generation deduplicati; i control byte restano contigui per ogni gruppo SIMD. Il delta
+frozen paginato contiene l'override più recente o un tombstone ed è modificato solo mediante builder
+Writer-owned copy-on-write. Gli handle `shared_ptr` per entry rimangono confinati al Delta e sono
+debito P0 esplicito.
 
 Non viene creata una catena di delta. Durante un merge incrementale:
 
@@ -212,26 +215,36 @@ Non viene creata una catena di delta. Durante un merge incrementale:
 Soglie hard su entry e byte impediscono crescita non limitata. Se il merge non mantiene il passo,
 la coppia applica backpressure alle scritture; non aggiunge un terzo livello.
 
+La configurazione production iniziale avvia il merge a 8.192 entry, limita il post-cut a 32.736
+entry, limita il delta complessivo a 40.960 entry e processa 4.096 slot per turn del Writer. Il
+quantum conta anche gli slot vuoti, quindi il lavoro di ogni invocazione è bounded. La base nuova
+alloca le pagine soltanto mentre vengono visitati record vivi; la directory iniziale è proporzionale
+a una voce ogni 65.536 slot. Ogni mutazione post-cut viene inserita sia nel delta cumulativo ancora
+visibile rispetto a `B`, sia in `Dpost`. La verifica di capacità avviene prima della mutazione Store:
+esaurimento del delta o retire pressure producono backpressure, mai una mutazione non pubblicabile.
+Un refresh durevole da rotation/compaction sostituisce atomicamente lo snapshot e annulla il merge
+in corso; il cut resta pinning-safe fino alla distruzione dello stato Writer-private.
+
 ## Protocollo di publication
 
-Non si usano due atomiche indipendenti `epoch` e `generation`. Il Writer costruisce un descriptor
-immutabile:
+Non si usano due atomiche indipendenti `epoch` e `generation`. `epoch` e `visible_through` sono campi
+della stessa generation immutabile pubblicata dal Writer:
 
 ```cpp
-struct PublicationDescriptor final {
-    const ReadGeneration* generation;
+struct ReadGeneration final {
     std::uint64_t epoch;
     std::uint64_t visible_through;
+    // Base, delta e pin immutabili.
 };
 
-std::atomic<const PublicationDescriptor*> current;
+std::atomic<const ReadGeneration*> current;
 ```
 
 Il Writer inizializza generation, index, segment view e descriptor, poi esegue un unico
 `current.store(next, std::memory_order_release)`. Il Reader esegue una volta per turn
 `current.load(std::memory_order_acquire)` e adotta pointer ed epoch dallo stesso oggetto. Non è
-possibile osservare epoch nuovo e generation vecchia. `PublicationDescriptor` e tutto il grafo
-raggiungibile sono immutabili dopo lo store.
+possibile osservare epoch nuovo e generation vecchia. La generation e tutto il grafo raggiungibile
+sono immutabili dopo lo store.
 
 ## Protocollo di reclamation
 
@@ -310,7 +323,9 @@ trasferiti al Writer; dopo dequeue l'operazione deve completare con `committed`,
 | commit EIO/ENOSPC | non ACK success; fail-close se autorità incerta | classificazione v1 invariata |
 | crash append→publication | recovery usa solo Manifest/commit v1 | generation RAM ignorata |
 | crash publication→periodic durability | visibilità persa al restart ammessa dalla policy | ACK secondo periodic |
-| publication build failure | generation corrente resta autorevole | batch non ACK; retry solo pre-commit |
+| publication build failure prima della mutazione | generation corrente resta autorevole | batch non accettato |
+| publication build failure dopo commit/mutazione | fail-close sticky | nessun ACK di successo; esito client indeterminato |
+| merge quantum allocation failure | annulla il builder, conserva `B + D` | retry bounded dopo progresso o backpressure |
 | Writer termina inatteso | pair unavailable, stop admission | nessun silent loss |
 | Reader termina inatteso | Writer drena/classifica slot accettati | socket outcome indeterminate se già accettato |
 | shutdown durante batch | chiusura anticipata del batch | normale classificazione |
@@ -324,6 +339,10 @@ reader/writer epoch, accepted/visible/durable through, base/delta entry, publica
 byte/latency, profondità/high-water/full delle due ring, batch size/wait, stall Reader/Writer,
 generation retire count/delay e response-lease epoch minimo. Le metriche non pubblicano correttezza e
 usano relaxed o snapshot owner-local.
+
+Il runtime espone inoltre `read_merge_active`, `read_merge_post_entries`, `read_merge_starts`,
+`read_merge_completions`, `read_merge_failures`, `read_merge_backpressure` e
+`read_merge_slots_processed`, sia per coppia sia nell'aggregato STATS.
 
 ## Benchmark plan e criteri di accettazione
 
@@ -400,6 +419,18 @@ ogni ERASE aggiunge un tombstone. Rotation e compaction possono ritirare i nomi 
 invalidare i GET già linearizzati, perché la generation conserva i vecchi descriptor fino alla
 quiescenza.
 
+Ogni Worker durevole pubblica inoltre una revisione atomica del proprio catalogo di pin. Rotation e
+compaction incrementano solo la revisione dello shard coinvolto, dopo l'installazione della nuova
+autorità runtime. Il Reader confronta la revisione una volta per event-loop turn e, se è stale,
+risveglia il proprio Writer. Il Writer cattura `Index + pin + revision` sotto i lock Worker/catalogo
+senza I/O, costruisce offline una nuova base immutabile, pubblica il singolo puntatore di generation
+con release e conserva la precedente nella retire list bounded. Un secondo cambio di catalogo
+durante la costruzione non invalida lo snapshot: i pin lo rendono completo e la revisione ancora
+stale forza un refresh successivo. `resource_exhausted` conserva la generation corrente e ritenta;
+corruzione o incoerenza rendono il runtime fail-closed. L'adozione acquire del Reader segnala la
+quiescenza e risveglia il Writer anche in assenza di nuove mutazioni, così descriptor e spazio
+ritirati non dipendono più da traffico futuro o restart.
+
 Il Writer pubblica con release prima della completion; il Reader acquisisce e segnala l'epoch
 quiescente prima di processare l'ACK e gli eventuali frame successivi. Una retire list bounded applica
 backpressure prima della mutazione quando il Reader non avanza. Il lookup non prende il mutex Worker
@@ -409,15 +440,33 @@ refcount nel GET. Il durevole conserva transitoriamente un incremento di refcoun
 il task asincrono deve sopravvivere al turn del Reactor; la rimozione richiede response/disk-read lease
 QSBR ed è ancora un gate prestazionale, non un'ambiguità di ownership.
 
+Il cold I/O usa una SPSC distinta per coppia e un helper persistente consumer-only. Non esiste più il
+catalogo di task process-wide né il relativo mutex/condition variable. Ogni lane conserva inoltre un
+buffer scratch privato per leggere e verificare Record successivi senza riallocare. La cancellazione
+non alloca: un epoch atomico preallocato per connection slot rende irrevocabile la chiusura anche
+quando lo slot viene riutilizzato, mentre `ConnectionToken` impedisce a completion tardive di colpire
+la nuova connessione. Buffer, cancellation epoch e pin vivono fino al drain della lane prima di
+`Store::close`.
+
 Restano P0 prima del rilascio:
 
-1. rigenerare incrementalmente la base durevole dopo compaction/rotation, così i pin dei Segment
-   ritirati non restano vivi fino al successivo restart;
-2. rendere il merge delta→base incrementale: la soglia alta evita pause frequenti ma non elimina il
-   lavoro monolitico quando la soglia viene raggiunta;
-3. sostituire gli handle `shared_ptr` per entry e le chiavi duplicate con un layout read-only compatto;
-4. promuovere disk-read/response lease QSBR e scatter/gather per eliminare refcount e copia del valore;
-5. eliminare `string`/`vector` per task con un pool di mutation slot preallocato.
+1. sostituire nel Delta gli handle `shared_ptr<ReadRecord>` per entry con un'arena Writer bounded; il
+   Base è già compatto, con record da massimo 64 B, pin deduplicati e control array inizializzato a
+   quanta;
+2. promuovere disk-read/response lease QSBR e scatter/gather per eliminare refcount e copia del valore;
+3. eliminare `string`/`vector` per task con un pool di mutation slot preallocato.
+
+Il tentativo di rimuovere gli handle Delta è documentato in
+`docs/benchmarks/paired-compact-delta-2026-07-29.md`. Sia record inline nelle pagine COW sia blocchi
+immutabili per publication sono stati respinti: il primo amplifica le copie, il secondo perde
+throughput o memoria sui batch reali da una mutazione. Il P0 resta aperto, ma non giustifica
+l'adozione di un layout misurato peggiore.
+
+Il primo sottoblocco cold-read è documentato in
+`docs/benchmarks/paired-inline-cold-read-2026-07-29.md`: il pImpl per richiesta è stato eliminato e
+la SPSC trasporta indici verso task slot preallocati, mantenendo il pin owning. Throughput e code
+restano neutrali nel gate comparabile. Il P0 n. 2 resta aperto per refcount del pin, lease QSBR di
+I/O/output e copia del valore; nessun lifetime borrowed viene introdotto prima di quel protocollo.
 
 L'A/B macOS arm64 è riassunto in
 `docs/benchmarks/paired-production-get-2026-07-28.md`; i raw result locali sono in
@@ -425,6 +474,26 @@ L'A/B macOS arm64 è riassunto in
 migliora tutte le code misurate, ma 1-pair e PUT→GET sincrono non chiudono ancora il gate. La memoria
 resta circa 30–37% sopra il baseline nei dataset misurati; nessun risultato viene dichiarato
 production-ready sulla sola base del throughput medio.
+
+Il successivo audit durable è in
+`docs/benchmarks/paired-durable-cold-read-2026-07-29.md`. Sul cold GET single-pair il throughput è
+salito di circa 10,9% rispetto al percorso precedente alla lane SPSC e il 99/1 di circa 16,6%, ma il
+durable non scala ancora da una a quattro pair. Questo sostituisce ogni inferenza generale dal solo
+A/B volatile: il prossimo gate è rimuovere pImpl/refcount/copie del cold materialization path e
+misurare con affinity reale, non aumentare arbitrariamente i consumer dello stesso shard.
+
+Il gate del merge incrementale è documentato in
+`docs/benchmarks/paired-incremental-merge-2026-07-29.md`: nel PUT→GET volatile che attraversa sei
+soglie, il p99 passa da 89,5 ms a 2,77 ms e il massimo servizio Writer da 187,8 ms a 1,98 ms. Il GET
+steady-state non regredisce nel campione volatile; il durable-periodic resta sostanzialmente neutro
+in throughput ma richiede ulteriori run controllati per il p99.9 e per l'aumento RSS osservato.
+
+Il Base Index compatto è documentato in
+`docs/benchmarks/paired-compact-read-index-2026-07-29.md`. Elimina chiavi e pin owning duplicati per
+entry, mantiene il lavoro di costruzione bounded e migliora durable e PUT→GET; il GET volatile puro
+resta circa il 3% sotto la baseline macOS non pinned, quindi il gate definitivo richiede un A/B
+Linux hard-pinned con contatori CPU. Il debito dell'Index Base è chiuso; il Delta COW resta un P0
+separato con due candidati già respinti dai gate macOS.
 
 Il runtime Writer è ora esposto internamente come `PairWriterPool`; i nomi transitori
 `DurableMutationExecutor` e il relativo parametro di producer concurrency sono stati eliminati

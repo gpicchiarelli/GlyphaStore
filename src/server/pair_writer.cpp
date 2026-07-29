@@ -79,8 +79,10 @@ struct AtomicLatencyHistogram final {
 } // namespace
 
 struct PairWriterPool::Lane final {
-    Lane(const std::size_t capacity, std::shared_ptr<const PairReadGeneration> initial)
-        : capacity_limit(capacity), queue(capacity), writer_generation(std::move(initial)) {
+    Lane(const std::size_t capacity, std::shared_ptr<const PairReadGeneration> initial,
+         const std::uint64_t catalog_revision)
+        : capacity_limit(capacity), queue(capacity), writer_generation(std::move(initial)),
+          published_catalog_revision(catalog_revision) {
         if (!writer_generation) {
             throw std::runtime_error{"paired Writer has no initial read generation"};
         }
@@ -106,25 +108,45 @@ struct PairWriterPool::Lane final {
     std::atomic<std::uint64_t> maximum_queue_wait_ns{};
     std::atomic<std::uint64_t> total_service_ns{};
     std::atomic<std::uint64_t> maximum_service_ns{};
+    std::atomic<std::uint64_t> read_refresh_attempts{};
+    std::atomic<std::uint64_t> read_refresh_successes{};
+    std::atomic<std::uint64_t> read_refresh_failures{};
+    std::atomic<std::uint64_t> read_refresh_deferrals{};
+    std::atomic<std::uint64_t> generations_retired{};
+    std::atomic<std::size_t> retired_generation_count{};
+    std::atomic_bool read_merge_active{};
+    std::atomic<std::size_t> read_merge_post_entries{};
+    std::atomic<std::uint64_t> read_merge_starts{};
+    std::atomic<std::uint64_t> read_merge_completions{};
+    std::atomic<std::uint64_t> read_merge_failures{};
+    std::atomic<std::uint64_t> read_merge_backpressure{};
+    std::atomic<std::uint64_t> read_merge_slots_processed{};
     AtomicLatencyHistogram queue_wait_histogram{};
     AtomicLatencyHistogram service_histogram{};
     std::shared_ptr<const PairReadGeneration> writer_generation;
+    std::unique_ptr<PairReadMerge> read_merge;
     std::vector<std::shared_ptr<const PairReadGeneration>> retired_generations;
     alignas(128) std::atomic<const PairReadGeneration*> published_generation{};
     alignas(128) std::atomic<std::uint64_t> reader_epoch{};
+    alignas(128) std::atomic<std::uint64_t> published_catalog_revision{};
+    alignas(128) std::atomic_bool refresh_requested{};
+    alignas(128) std::atomic_bool reclaim_requested{};
 };
 
 PairWriterPool::PairWriterPool(Store& store, const std::size_t worker_count,
                                const std::size_t capacity_per_worker,
                                const std::chrono::milliseconds maximum_queue_wait,
-                               std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations)
-    : store_(store), maximum_queue_wait_(maximum_queue_wait) {
-    if (initial_generations.size() != worker_count) {
+                               std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations,
+                               std::vector<std::uint64_t> initial_catalog_revisions,
+                               const PairReadMergeConfig read_merge)
+    : store_(store), maximum_queue_wait_(maximum_queue_wait), read_merge_config_(read_merge) {
+    if (initial_generations.size() != worker_count || initial_catalog_revisions.size() != worker_count) {
         throw std::invalid_argument{"paired Writer initial generation count mismatch"};
     }
     lanes_.reserve(worker_count);
     for (std::size_t worker = 0; worker < worker_count; ++worker) {
-        lanes_.push_back(std::make_unique<Lane>(capacity_per_worker, std::move(initial_generations[worker])));
+        lanes_.push_back(std::make_unique<Lane>(capacity_per_worker, std::move(initial_generations[worker]),
+                                                initial_catalog_revisions[worker]));
     }
 }
 
@@ -134,15 +156,23 @@ PairWriterPool::~PairWriterPool() {
 
 auto PairWriterPool::create(Store& store, const std::size_t worker_count,
                             const std::size_t capacity_per_worker,
-                            const std::chrono::milliseconds maximum_queue_wait)
+                            const std::chrono::milliseconds maximum_queue_wait,
+                            const PairReadMergeConfig read_merge)
     -> Result<std::unique_ptr<PairWriterPool>> try {
-    if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0) {
+    if (worker_count == 0 || worker_count != store.worker_count() || capacity_per_worker == 0 ||
+        read_merge.delta_entries == 0 || read_merge.maximum_post_entries == 0 ||
+        read_merge.quantum_slots == 0 ||
+        read_merge.delta_entries > PairReadGeneration::kMaximumIncrementalDeltaEntries ||
+        read_merge.maximum_post_entries >
+            PairReadGeneration::kMaximumIncrementalDeltaEntries - read_merge.delta_entries) {
         return fail(ErrorCode::invalid_argument,
                     "paired mutation executor requires exactly one Writer per nonempty Store shard");
     }
     const auto routing = detail::StoreAccess::worker_routing(store);
     std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations;
+    std::vector<std::uint64_t> initial_catalog_revisions;
     initial_generations.reserve(worker_count);
+    initial_catalog_revisions.reserve(worker_count);
     for (std::size_t worker = 0; worker < worker_count; ++worker) {
         Result<std::shared_ptr<const PairReadGeneration>> initial = PairReadGeneration::empty(routing);
         if (detail::StoreAccess::is_durable(store)) {
@@ -150,15 +180,19 @@ auto PairWriterPool::create(Store& store, const std::size_t worker_count,
             if (!snapshot) {
                 return unexpected(snapshot.error());
             }
-            initial = PairReadGeneration::from_durable_snapshot(routing, *snapshot);
+            initial = PairReadGeneration::from_durable_snapshot(routing, snapshot->records);
+            initial_catalog_revisions.push_back(snapshot->catalog_revision);
+        } else {
+            initial_catalog_revisions.push_back(0U);
         }
         if (!initial) {
             return unexpected(initial.error());
         }
         initial_generations.push_back(std::move(*initial));
     }
-    return std::unique_ptr<PairWriterPool>(new PairWriterPool(
-        store, worker_count, capacity_per_worker, maximum_queue_wait, std::move(initial_generations)));
+    return std::unique_ptr<PairWriterPool>(
+        new PairWriterPool(store, worker_count, capacity_per_worker, maximum_queue_wait,
+                           std::move(initial_generations), std::move(initial_catalog_revisions), read_merge));
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "paired mutation executor allocation failed");
 } catch (...) {
@@ -260,9 +294,29 @@ auto PairWriterPool::adopt_read_generation(const std::size_t worker_index) const
     if (generation != nullptr) {
         // This call is made only between Reader event-loop turns (or after a
         // synchronous response copy), therefore all older epochs are quiescent.
-        lane.reader_epoch.store(generation->epoch(), std::memory_order_release);
+        const auto previous = lane.reader_epoch.exchange(generation->epoch(), std::memory_order_acq_rel);
+        if (previous != generation->epoch() &&
+            !lane.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
+            lane.signal.fetch_add(1U, std::memory_order_release);
+            lane.signal.notify_one();
+        }
     }
     return generation;
+}
+
+void PairWriterPool::request_read_refresh(const std::size_t worker_index) noexcept {
+    if (worker_index >= lanes_.size()) {
+        return;
+    }
+    auto& lane = *lanes_[worker_index];
+    const auto current = detail::StoreAccess::durable_read_catalog_revision(store_, worker_index);
+    if (current == 0U || current == lane.published_catalog_revision.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!lane.refresh_requested.exchange(true, std::memory_order_acq_rel)) {
+        lane.signal.fetch_add(1U, std::memory_order_release);
+        lane.signal.notify_one();
+    }
 }
 
 void PairWriterPool::note_rejected(const std::size_t worker_index) noexcept {
@@ -292,6 +346,20 @@ auto PairWriterPool::stats() const -> std::vector<PairWriterStats> {
              .maximum_queue_wait_ns = lane.maximum_queue_wait_ns.load(std::memory_order_relaxed),
              .total_service_ns = lane.total_service_ns.load(std::memory_order_relaxed),
              .maximum_service_ns = lane.maximum_service_ns.load(std::memory_order_relaxed),
+             .read_catalog_revision = lane.published_catalog_revision.load(std::memory_order_relaxed),
+             .read_refresh_attempts = lane.read_refresh_attempts.load(std::memory_order_relaxed),
+             .read_refresh_successes = lane.read_refresh_successes.load(std::memory_order_relaxed),
+             .read_refresh_failures = lane.read_refresh_failures.load(std::memory_order_relaxed),
+             .read_refresh_deferrals = lane.read_refresh_deferrals.load(std::memory_order_relaxed),
+             .generations_retired = lane.generations_retired.load(std::memory_order_relaxed),
+             .retired_generation_count = lane.retired_generation_count.load(std::memory_order_relaxed),
+             .read_merge_active = lane.read_merge_active.load(std::memory_order_relaxed),
+             .read_merge_post_entries = lane.read_merge_post_entries.load(std::memory_order_relaxed),
+             .read_merge_starts = lane.read_merge_starts.load(std::memory_order_relaxed),
+             .read_merge_completions = lane.read_merge_completions.load(std::memory_order_relaxed),
+             .read_merge_failures = lane.read_merge_failures.load(std::memory_order_relaxed),
+             .read_merge_backpressure = lane.read_merge_backpressure.load(std::memory_order_relaxed),
+             .read_merge_slots_processed = lane.read_merge_slots_processed.load(std::memory_order_relaxed),
              .queue_wait_histogram = lane.queue_wait_histogram.snapshot(),
              .service_histogram = lane.service_histogram.snapshot()});
     }
@@ -377,8 +445,152 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
     durable_indices.reserve(maximum_batch_records);
     read_mutations.reserve(maximum_batch_records);
     read_mutation_indices.reserve(maximum_batch_records);
+    bool merge_retry_blocked{};
+
+    const auto publish_fail_closed = [&]() noexcept {
+        healthy_.store(false, std::memory_order_release);
+        detail::StoreAccess::mark_fail_closed(store_);
+        expire_remaining_.store(true, std::memory_order_release);
+        for (auto& affected_lane : lanes_) {
+            affected_lane->signal.fetch_add(1U, std::memory_order_release);
+            affected_lane->signal.notify_one();
+        }
+    };
+    const auto reclaim_quiescent = [&]() noexcept {
+        const auto before = lane.retired_generations.size();
+        const auto quiescent_epoch = lane.reader_epoch.load(std::memory_order_acquire);
+        std::erase_if(lane.retired_generations,
+                      [&](const auto& retired) { return retired->epoch() < quiescent_epoch; });
+        const auto retired = before - lane.retired_generations.size();
+        if (retired != 0U) {
+            lane.generations_retired.fetch_add(retired, std::memory_order_relaxed);
+        }
+        lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+    };
+    const auto process_reclamation = [&]() noexcept {
+        if (lane.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
+            reclaim_quiescent();
+        }
+    };
+    const auto process_refresh = [&]() noexcept {
+        if (!lane.refresh_requested.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        reclaim_quiescent();
+        if (lane.retired_generations.size() >= kMaximumRetiredReadGenerations) {
+            lane.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
+            return;
+        }
+        lane.read_refresh_attempts.fetch_add(1U, std::memory_order_relaxed);
+        auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, worker_index);
+        if (!snapshot) {
+            lane.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
+            if (snapshot.error().code != ErrorCode::resource_exhausted &&
+                !(lane.stopping.load(std::memory_order_acquire) &&
+                  snapshot.error().code == ErrorCode::unavailable)) {
+                publish_fail_closed();
+            }
+            return;
+        }
+        if (snapshot->catalog_revision == lane.published_catalog_revision.load(std::memory_order_acquire)) {
+            return;
+        }
+        auto next = PairReadGeneration::replace_durable_snapshot(lane.writer_generation, snapshot->records);
+        if (!next) {
+            lane.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
+            if (next.error().code != ErrorCode::resource_exhausted) {
+                publish_fail_closed();
+            }
+            return;
+        }
+        lane.retired_generations.push_back(lane.writer_generation);
+        lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+        lane.writer_generation = std::move(*next);
+        lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
+        lane.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
+        lane.read_merge.reset();
+        lane.read_merge_active.store(false, std::memory_order_relaxed);
+        lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+        merge_retry_blocked = false;
+        lane.read_refresh_successes.fetch_add(1U, std::memory_order_relaxed);
+    };
+    const auto process_merge = [&]() noexcept {
+        if (!lane.read_merge && !merge_retry_blocked &&
+            lane.writer_generation->delta_entries() >= read_merge_config_.delta_entries) {
+            auto started = PairReadGeneration::start_incremental_merge(
+                lane.writer_generation, read_merge_config_.maximum_post_entries);
+            if (!started) {
+                lane.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+                if (started.error().code == ErrorCode::resource_exhausted) {
+                    merge_retry_blocked = true;
+                } else {
+                    publish_fail_closed();
+                }
+                return;
+            }
+            lane.read_merge = std::move(*started);
+            lane.read_merge_active.store(true, std::memory_order_relaxed);
+            lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+            lane.read_merge_starts.fetch_add(1U, std::memory_order_relaxed);
+        }
+        if (!lane.read_merge) {
+            return;
+        }
+        if (!PairReadGeneration::merge_ready(*lane.read_merge)) {
+            auto advanced = PairReadGeneration::advance_incremental_merge(*lane.read_merge,
+                                                                          read_merge_config_.quantum_slots);
+            if (!advanced) {
+                lane.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+                if (advanced.error().code == ErrorCode::resource_exhausted) {
+                    lane.read_merge.reset();
+                    lane.read_merge_active.store(false, std::memory_order_relaxed);
+                    lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+                    merge_retry_blocked = true;
+                } else {
+                    publish_fail_closed();
+                }
+                return;
+            }
+            lane.read_merge_slots_processed.fetch_add(*advanced, std::memory_order_relaxed);
+        }
+        if (!PairReadGeneration::merge_ready(*lane.read_merge)) {
+            return;
+        }
+        reclaim_quiescent();
+        if (lane.retired_generations.size() >= kMaximumRetiredReadGenerations) {
+            return;
+        }
+        auto next = PairReadGeneration::finish_incremental_merge(lane.writer_generation, *lane.read_merge);
+        if (!next) {
+            lane.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+            lane.read_merge.reset();
+            lane.read_merge_active.store(false, std::memory_order_relaxed);
+            lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+            if (next.error().code == ErrorCode::resource_exhausted) {
+                merge_retry_blocked = true;
+            } else {
+                publish_fail_closed();
+            }
+            return;
+        }
+        lane.retired_generations.push_back(lane.writer_generation);
+        lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+        lane.writer_generation = std::move(*next);
+        lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
+        lane.read_merge.reset();
+        lane.read_merge_active.store(false, std::memory_order_relaxed);
+        lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+        lane.read_merge_completions.fetch_add(1U, std::memory_order_relaxed);
+        merge_retry_blocked = false;
+        reclaim_quiescent();
+    };
 
     for (;;) {
+        process_reclamation();
+        if (!lane.stopping.load(std::memory_order_acquire)) {
+            process_refresh();
+            process_merge();
+        }
         auto task = carried_task ? std::exchange(carried_task, std::nullopt) : lane.queue.try_pop();
         if (!task) {
             if (lane.stopping.load(std::memory_order_acquire)) {
@@ -386,7 +598,9 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             }
             const auto observed = lane.signal.load(std::memory_order_acquire);
             task = lane.queue.try_pop();
-            if (!task && !lane.stopping.load(std::memory_order_acquire)) {
+            if (!task && !lane.stopping.load(std::memory_order_acquire) &&
+                !lane.refresh_requested.load(std::memory_order_acquire) &&
+                !lane.reclaim_requested.load(std::memory_order_acquire) && !lane.read_merge) {
                 lane.signal.wait(observed, std::memory_order_acquire);
             }
             if (!task) {
@@ -473,10 +687,11 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
             read_mutations.push_back(std::move(publication));
             read_mutation_indices.push_back(batch_index);
         };
-        const auto quiescent_epoch = lane.reader_epoch.load(std::memory_order_acquire);
-        std::erase_if(lane.retired_generations,
-                      [&](const auto& retired) { return retired->epoch() < quiescent_epoch; });
-        const bool generation_pressure = lane.retired_generations.size() >= kMaximumRetiredReadGenerations;
+        reclaim_quiescent();
+        const bool retire_pressure = lane.retired_generations.size() >= kMaximumRetiredReadGenerations;
+        const bool merge_pressure = !PairReadGeneration::can_publish_incremental(
+            *lane.writer_generation, lane.read_merge.get(), batch.size());
+        const bool generation_pressure = retire_pressure || merge_pressure;
         const bool force_expire = expire_remaining_.load(std::memory_order_acquire);
         for (std::size_t index = 0; index < batch.size(); ++index) {
             auto& queued = batch[index];
@@ -498,12 +713,17 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                                    .request_id = queued.request_id,
                                    .admission_bytes = queued.admission_bytes});
             if (task_expired) {
+                if (merge_pressure && !retire_pressure && !force_expire) {
+                    lane.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
+                }
                 completions.back().error.emplace(
                     ErrorCode::unavailable,
                     force_expire
                         ? "mutation abandoned after shutdown drain deadline"
-                        : (generation_pressure ? "mutation rejected until paired Reader reaches quiescence"
-                                               : "mutation expired before Store execution"));
+                        : (retire_pressure
+                               ? "mutation rejected until paired Reader reaches quiescence"
+                               : (merge_pressure ? "mutation rejected until incremental read merge advances"
+                                                 : "mutation expired before Store execution")));
             } else if (batch_config) {
                 durable_views.push_back({.operation = queued.kind == MutationKind::put
                                                           ? detail::StoreAccess::MutationOperation::put
@@ -618,18 +838,12 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
         }
 
         if (post_commit_publication_failure) {
-            healthy_.store(false, std::memory_order_release);
-            detail::StoreAccess::mark_fail_closed(store_);
-            expire_remaining_.store(true, std::memory_order_release);
+            publish_fail_closed();
             for (const auto index : read_mutation_indices) {
                 if (!completions[index].error) {
                     completions[index].error.emplace(
                         ErrorCode::unavailable, "read publication batch aborted after a committed mutation");
                 }
-            }
-            for (auto& affected_lane : lanes_) {
-                affected_lane->signal.fetch_add(1U, std::memory_order_release);
-                affected_lane->signal.notify_one();
             }
         }
 
@@ -638,15 +852,10 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
         // (release) -> completion queue -> client ACK. A publication failure is
         // sticky and fail-closed because the mutable Store has already changed.
         if (!post_commit_publication_failure && !read_mutations.empty()) {
-            auto next = PairReadGeneration::publish(lane.writer_generation, read_mutations, 8'192U);
+            auto next = PairReadGeneration::publish_incremental(lane.writer_generation, read_mutations,
+                                                                lane.read_merge.get());
             if (!next) {
-                healthy_.store(false, std::memory_order_release);
-                detail::StoreAccess::mark_fail_closed(store_);
-                expire_remaining_.store(true, std::memory_order_release);
-                for (auto& affected_lane : lanes_) {
-                    affected_lane->signal.fetch_add(1U, std::memory_order_release);
-                    affected_lane->signal.notify_one();
-                }
+                publish_fail_closed();
                 for (const auto index : read_mutation_indices) {
                     completions[index].error.emplace(ErrorCode::unavailable,
                                                      "read publication failed after mutation linearization; "
@@ -654,11 +863,16 @@ void PairWriterPool::run(const std::size_t worker_index) noexcept {
                 }
             } else {
                 lane.retired_generations.push_back(lane.writer_generation);
+                lane.retired_generation_count.store(lane.retired_generations.size(),
+                                                    std::memory_order_relaxed);
                 lane.writer_generation = std::move(*next);
                 lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
-                const auto adopted_epoch = lane.reader_epoch.load(std::memory_order_acquire);
-                std::erase_if(lane.retired_generations,
-                              [&](const auto& retired) { return retired->epoch() < adopted_epoch; });
+                if (lane.read_merge) {
+                    lane.read_merge_post_entries.store(
+                        PairReadGeneration::merge_post_entries(*lane.read_merge), std::memory_order_relaxed);
+                }
+                merge_retry_blocked = false;
+                reclaim_quiescent();
             }
         }
 

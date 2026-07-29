@@ -29,7 +29,7 @@ struct DiskReadTask final {
     std::uint64_t request_id{};
     std::size_t worker_index{};
     detail::PreparedColdRead read;
-    std::shared_ptr<std::atomic_bool> cancelled;
+    detail::ColdReadCancellation cancellation;
     std::size_t maximum_value_bytes{};
     BoundedSpscQueue<DiskReadCompletion>* completions{};
     Wakeup* wakeup{};

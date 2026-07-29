@@ -9,11 +9,40 @@
 namespace glyphastore::server {
 
 struct DiskReadExecutor::Lane final {
-    explicit Lane(const std::size_t capacity) : queue(capacity) {}
+    explicit Lane(const std::size_t capacity)
+        : submitted(capacity), recycled(submitted.capacity()), slots(submitted.capacity()) {
+        free_slots.reserve(submitted.capacity());
+        for (std::size_t slot = submitted.capacity(); slot != 0; --slot) {
+            free_slots.push_back(slot - 1U);
+        }
+    }
 
-    BoundedSpscQueue<DiskReadTask> queue;
+    [[nodiscard]] auto acquire_slot() noexcept -> std::optional<std::size_t> {
+        while (auto recycled_slot = recycled.try_pop()) {
+            free_slots.push_back(*recycled_slot);
+        }
+        if (free_slots.empty()) {
+            return std::nullopt;
+        }
+        const auto slot = free_slots.back();
+        free_slots.pop_back();
+        return slot;
+    }
+
+    // The cross-thread rings transport only indices. Large move-only task
+    // payloads live in stable, preallocated slots and are transferred by the
+    // release/acquire edge of submitted/recycled.
+    BoundedSpscQueue<std::size_t> submitted;
+    BoundedSpscQueue<std::size_t> recycled;
+    std::vector<std::optional<DiskReadTask>> slots;
+    // Producer-private after construction; capacity never grows.
+    std::vector<std::size_t> free_slots;
     alignas(128) std::atomic_uint64_t signal{};
     alignas(128) std::atomic_bool stopping{};
+    // Consumer-private verified-record buffer. Capacity is retained across
+    // cold GETs, removing one allocator round-trip per request without sharing
+    // mutable storage with the Reader or Writer.
+    std::vector<std::byte> read_scratch;
     std::thread thread;
 };
 
@@ -93,7 +122,17 @@ auto DiskReadExecutor::try_submit(DiskReadTask task) -> bool {
         return false;
     }
     auto& lane = *lanes_[task.worker_index];
-    if (lane.stopping.load(std::memory_order_acquire) || !lane.queue.try_push(std::move(task))) {
+    if (lane.stopping.load(std::memory_order_acquire)) {
+        return false;
+    }
+    const auto slot = lane.acquire_slot();
+    if (!slot) {
+        return false;
+    }
+    lane.slots[*slot].emplace(std::move(task));
+    if (!lane.submitted.try_push(*slot)) {
+        lane.slots[*slot].reset();
+        lane.free_slots.push_back(*slot);
         return false;
     }
     lane.signal.fetch_add(1U, std::memory_order_release);
@@ -118,9 +157,10 @@ void DiskReadExecutor::stop() noexcept {
         if (lane->thread.joinable()) {
             lane->thread.join();
         }
-        while (lane->queue.try_pop()) {
+        while (auto slot = lane->submitted.try_pop()) {
             // Reactor ownership has ended. Destroy every cancelled queued pin
             // before Store::close releases the durable directory lifetime.
+            lane->slots[*slot].reset();
         }
     }
 }
@@ -128,30 +168,32 @@ void DiskReadExecutor::stop() noexcept {
 void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
     auto& lane = *lanes_[worker_index];
     while (true) {
-        auto task = lane.queue.try_pop();
-        if (!task) {
+        auto slot = lane.submitted.try_pop();
+        if (!slot) {
             if (lane.stopping.load(std::memory_order_acquire)) {
                 return;
             }
             const auto observed = lane.signal.load(std::memory_order_acquire);
-            task = lane.queue.try_pop();
-            if (!task && !lane.stopping.load(std::memory_order_acquire)) {
+            slot = lane.submitted.try_pop();
+            if (!slot && !lane.stopping.load(std::memory_order_acquire)) {
                 lane.signal.wait(observed, std::memory_order_acquire);
             }
-            if (!task) {
+            if (!slot) {
                 continue;
             }
         }
+        auto& task = *lane.slots[*slot];
 
-        DiskReadCompletion completion{.connection = task->connection, .request_id = task->request_id};
+        DiskReadCompletion completion{.connection = task.connection, .request_id = task.request_id};
         try {
-            auto result = task->cancelled->load(std::memory_order_acquire)
-                              ? fail(ErrorCode::unavailable, "cold read was cancelled")
-                              : detail::StoreAccess::complete_get_owned(
-                                    store_, task->worker_index, std::move(task->read), task->cancelled.get());
+            auto result =
+                task.cancellation.cancelled()
+                    ? fail(ErrorCode::unavailable, "cold read was cancelled")
+                    : detail::StoreAccess::complete_get_owned(store_, task.worker_index, std::move(task.read),
+                                                              &task.cancellation, &lane.read_scratch);
             if (!result) {
                 completion.error.emplace(std::move(result.error()));
-            } else if (result->bytes.size() > task->maximum_value_bytes) {
+            } else if (result->bytes.size() > task.maximum_value_bytes) {
                 completion.error.emplace(ErrorCode::record_too_large,
                                          "cold-read response exceeds its connection budget");
             } else {
@@ -165,10 +207,16 @@ void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
 
         // Admission is capped by the destination Reactor queue capacity, so a
         // completion cell must exist for every accepted request.
-        if (!task->completions->try_push(std::move(completion))) {
+        auto* completions = task.completions;
+        auto* wakeup = task.wakeup;
+        if (!completions->try_push(std::move(completion))) {
             std::terminate();
         }
-        static_cast<void>(task->wakeup->notify());
+        lane.slots[*slot].reset();
+        if (!lane.recycled.try_push(*slot)) {
+            std::terminate();
+        }
+        static_cast<void>(wakeup->notify());
     }
 }
 
