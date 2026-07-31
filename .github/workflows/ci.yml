@@ -109,6 +109,8 @@ jobs:
           ruby-version: "3.3"
       - name: Lock SDK versions
         run: ./scripts/check-sdk-versions.sh
+      - name: Assert typed SDK backup helpers
+        run: ./scripts/assert-sdk-backup-helpers.sh
       - name: Test Python client
         run: ./scripts/test-python-client.sh
       - name: Test Perl client

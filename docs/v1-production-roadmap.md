@@ -35,7 +35,8 @@ Open release gates (summary):
 - Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; online
   fenced `Store::backup_to`, live-daemon wire `BACKUP` (opcode 10, admin-gated), typed C++
   `Client::backup`, and official SDK `backup` helpers are available (admission pause during copy;
-  not fully hot concurrent I/O). Hot
+  not fully hot concurrent I/O); CI greps the typed surface via
+  `scripts/assert-sdk-backup-helpers.sh`. Hot
   zero-fence backup remains open. SDK tag provenance (Cosign + GitHub attestations, public /
   `ENABLE_ARTIFACT_ATTESTATIONS`) is gated; full SLSA L3 / project GPG and physical E3 remain
   open. Secure-profile

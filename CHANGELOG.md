@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
+  if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
+  wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.
 - Add SDK artifact attestation verification gate
   (`scripts/verify-sdk-artifact-attestations.sh`): fail-closed `gh attestation verify` on
   tagged supply-chain runs when attestations are produced (public or
