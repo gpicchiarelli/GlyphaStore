@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Extend secure-profile interop with Phase 5 principal quota → wire `OVERLOADED` (single-connection
+  burst) and refresh docs that still claimed the secure matrix was incomplete.
 - Add cross-builder SDK archive digest compare (`scripts/compare-sdk-artifact-sums.sh`, job
   `sdk-repro-cross` on `ubuntu-22.04` vs primary supply-chain sums) for tags/dispatch/weekly.
 - Normalize Python sdist / Perl tar.gz with `scripts/normalize-tar-gz.sh` (epoch mtimes +

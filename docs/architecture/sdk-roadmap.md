@@ -82,10 +82,10 @@ bounded server retention and recovery semantics. It is not part of wire v2 today
   cleartext for workers 2/4 when `INTEROP_KEYED=1` (default); binary keys, empty values, TTL,
   pipelines, structured `NOT_FOUND`, oversized local rejection and cross-client PUT→GET; TLS
   (FNV) is covered when dependencies are available.
-- `scripts/test-secure-profile-interop.sh` covers first-slice secure-profile (mTLS + authz + keyed
-  seed; cpp/python/go) and is wired into CI `sdk-clients`.
-- Supply-chain CI packages SDKs, writes `SHA256SUMS`, and requires syft SPDX JSON
-  (`.github/workflows/supply-chain.yml`). Signing remains operator-owned.
+- `scripts/test-secure-profile-interop.sh` covers mTLS + authz + prefix + CRL + principal quotas +
+  keyed seed (cpp/python/go; perl/ruby/erlang when available) and is wired into CI `sdk-clients`.
+- Supply-chain CI packages SDKs, writes `SHA256SUMS`, requires syft SPDX JSON, Cosign-signs tags,
+  and cross-checks archive digests across Linux builders (`.github/workflows/supply-chain.yml`).
 - Pipeline APIs operate on one Worker and never auto-retry. Batch APIs group by Worker, overlap
   independent connections where supported and restore caller order; they are not transactions.
 - Per-call deadlines reuse one absolute monotonic deadline across any permitted retry.

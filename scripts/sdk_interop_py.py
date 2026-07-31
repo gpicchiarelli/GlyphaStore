@@ -46,12 +46,20 @@ def main() -> int:
             "pipeline-put-get",
             "expect-not-found",
             "expect-permission-denied",
+            "expect-overloaded",
+            "burst-expect-overloaded",
             "expect-frame-limit",
         ),
     )
     parser.add_argument("--key-hex", default="")
     parser.add_argument("--value-hex", default="")
     parser.add_argument("--expire-at-ns", type=int, default=0)
+    parser.add_argument(
+        "--burst",
+        type=int,
+        default=32,
+        help="for burst-expect-overloaded: PUT attempts on one connection",
+    )
     parser.add_argument("--tls", action="store_true", help="opt-in TLS 1.3")
     parser.add_argument("--tls-ca", default=None, help="PEM CA / trust anchor")
     parser.add_argument("--tls-cert", default=None, help="client cert for mTLS")
@@ -118,6 +126,41 @@ def main() -> int:
             ):
                 return 0
             print(f"PUT unexpectedly allowed: {result}", file=sys.stderr)
+            return 1
+        if args.command == "expect-overloaded":
+            try:
+                result = client.put(key, value, expire_at_ns=args.expire_at_ns)
+            except GlyphaError as error:
+                if error.category == "overloaded":
+                    return 0
+                print(f"unexpected PUT error: {error.category}", file=sys.stderr)
+                return 1
+            if (
+                result.outcome is MutationOutcome.REJECTED
+                and result.error is not None
+                and result.error.category == "overloaded"
+            ):
+                return 0
+            print(f"PUT unexpectedly allowed under quota: {result}", file=sys.stderr)
+            return 1
+        if args.command == "burst-expect-overloaded":
+            # One connection: INIT+BIND already consumed quota tokens; keep PUTting until OVERLOADED.
+            for index in range(max(1, args.burst)):
+                burst_key = key if key else f"burst-{index}".encode()
+                try:
+                    result = client.put(burst_key, value or b"x", expire_at_ns=args.expire_at_ns)
+                except GlyphaError as error:
+                    if error.category == "overloaded":
+                        return 0
+                    print(f"unexpected PUT error: {error.category}", file=sys.stderr)
+                    return 1
+                if (
+                    result.outcome is MutationOutcome.REJECTED
+                    and result.error is not None
+                    and result.error.category == "overloaded"
+                ):
+                    return 0
+            print(f"burst of {args.burst} PUTs did not observe OVERLOADED", file=sys.stderr)
             return 1
         if args.command == "expect-frame-limit":
             result = client.put(b"limit", bytes([0xA5]) * config.maximum_frame_bytes)

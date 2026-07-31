@@ -2,8 +2,8 @@
 # Focused secure-profile interop smoke (ADR 0020–0022 + ADR 0030).
 # Proves: mTLS connect, --authz-map allows PUT/GET, keyed SipHash routing under
 # --worker-hash-seed with --secure-profile. Also covers authz deny, prefix scope,
-# and --tls-crl rejection. Happy path: cpp/python/go; plus perl/ruby/erlang when
-# their TLS toolchains are available.
+# --tls-crl rejection, and Phase 5 principal/connection quotas (OVERLOADED).
+# Happy path: cpp/python/go; plus perl/ruby/erlang when their TLS toolchains are available.
 #
 # Usage:
 #   ./scripts/test-secure-profile-interop.sh
@@ -558,4 +558,24 @@ if [[ "$crl_rc" -eq 0 ]]; then
 fi
 echo "  revoked client rejected (exit=$crl_rc) OK"
 
-echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL; ${sdks[*]})"
+echo "== principal quota → OVERLOADED =="
+stop_server
+cat >"$work/authz.map" <<EOF
+${client_principal} write
+EOF
+# Allow INIT+BIND+a few PUTs on one connection, then force OVERLOADED on the burst.
+# Connection limit stays loose so bootstrap is not the failure mode.
+start_server \
+  --principal-max-requests-per-sec 4 \
+  --connection-max-requests-per-sec 64 \
+  --principal-max-bytes-per-sec 1048576
+port="$(cat "$port_file")"
+if "$python" "$py_helper" --port "$port" "${tls_args[@]}" \
+  --burst 32 --value-hex "$(printf 'x' | to_hex)" burst-expect-overloaded; then
+  echo "  python single-connection burst → OVERLOADED OK"
+else
+  echo "principal quota did not produce OVERLOADED on a single-connection burst" >&2
+  exit 1
+fi
+
+echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"
