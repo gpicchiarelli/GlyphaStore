@@ -124,6 +124,17 @@ jobs:
             dist/sdk-artifacts/*.gem
             dist/sdk-artifacts/*.tar.gz
             dist/sdk-artifacts/*package-info.txt
+      - name: Verify SDK artifact attestations
+        # Same gate as actions/attest: tags + public (or private opt-in). Fail-closed.
+        if: |
+          startsWith(github.ref, 'refs/tags/') &&
+          (github.event.repository.visibility == 'public' ||
+           vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
+        env:
+          ATTESTATIONS_REQUIRED: "1"
+          ENABLE_ARTIFACT_ATTESTATIONS: ${{ vars.ENABLE_ARTIFACT_ATTESTATIONS }}
+          GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: ./scripts/verify-sdk-artifact-attestations.sh dist/sdk-artifacts
 
   # Second Linux image rebuilds archives with the same SOURCE_DATE_EPOCH and must match digests.
   sdk-repro-cross:

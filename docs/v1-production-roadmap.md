@@ -36,7 +36,9 @@ Open release gates (summary):
   fenced `Store::backup_to`, live-daemon wire `BACKUP` (opcode 10, admin-gated), typed C++
   `Client::backup`, and official SDK `backup` helpers are available (admission pause during copy;
   not fully hot concurrent I/O). Hot
-  zero-fence backup remains open. Release provenance and physical E3 remain open. Secure-profile
+  zero-fence backup remains open. SDK tag provenance (Cosign + GitHub attestations, public /
+  `ENABLE_ARTIFACT_ATTESTATIONS`) is gated; full SLSA L3 / project GPG and physical E3 remain
+  open. Secure-profile
   authn/authz + Phase 5 abuse controls are
   implemented; Phase 6 auth audit + local CRL fail-closed landed — configure `--tls-crl` before
   hostile public Internet; multi-tenant Phase 8 and physical E3 remain residual (live OCSP HTTP

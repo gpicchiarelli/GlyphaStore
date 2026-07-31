@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- Add SDK artifact attestation verification gate
+  (`scripts/verify-sdk-artifact-attestations.sh`): fail-closed `gh attestation verify` on
+  tagged supply-chain runs when attestations are produced (public or
+  `ENABLE_ARTIFACT_ATTESTATIONS`); soft-skip otherwise. Residuals: project GPG, full SLSA L3,
+  non-GHEC private without the opt-in variable.
 - Expose typed `backup(destination)` on official SDKs (Python, Go, Perl, Ruby, Erlang) mirroring
   C++ `Client::backup` for wire `BACKUP` (opcode 10): worker-0 routing, ASCII report on success,
   fenced (not hot zero-impact) semantics; admin under secure authz.
@@ -43,7 +48,8 @@
   (`timeout-minutes: 5`, TLS build forced `GLYPHASTORE_ENABLE_TLS=ON`).
 - Add supply-chain CI gate (`.github/workflows/supply-chain.yml`): package SDKs, require `syft`
   SPDX JSON (`SYFT_REQUIRED=1`), upload `SHA256SUMS` + `*.spdx.json`. Tag Cosign keyless signing
-  and SLSA provenance remain documented separately (signing now on tags; provenance still open).
+  and GitHub SLSA attestations land on tags (public / `ENABLE_ARTIFACT_ATTESTATIONS`); verify
+  via `scripts/verify-sdk-artifact-attestations.sh`. Residual: project GPG / full SLSA L3.
 - Complete the ADR 0030 keyed Worker routing SDK train: Python / Perl / Go / Erlang / Ruby decode
   plain and extended INIT identities, implement SipHash-2-4 bit-for-bit with C++, and route with
   the disclosed seed. Cleartext FNV default path unchanged. Interop harness runs FNV for the full
