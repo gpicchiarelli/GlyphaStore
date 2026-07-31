@@ -329,6 +329,7 @@ class DaemonProcess final {
                                     const bool expect_present) -> bool {
     auto opened = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},
+        .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
         .storage_mode = storage_mode(storage),
         .data_directory = data_dir,
         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,

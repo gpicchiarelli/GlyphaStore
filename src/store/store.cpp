@@ -613,6 +613,7 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     if (config.concurrency == StoreConcurrencyMode::paired) {
         // Generation-only ordinary reads (ADR 0032).
         runtime_options.limits.hot_cache_enabled = false;
+        runtime_options.exclusive_writer = true;
     }
     if (config.storage_mode == StorageMode::durable_periodic) {
         runtime_options.commit_sync = SegmentCommitSync::deferred;
@@ -1543,6 +1544,11 @@ auto detail::StoreAccess::durable_manifest(const Store& store) -> Result<Manifes
     if (config.concurrency != StoreConcurrencyMode::paired) {
         store.impl_->concurrency = config.concurrency;
         return {};
+    }
+    if (store.impl_->volatile_runtime) {
+        for (std::size_t index = 0; index < store.impl_->worker_count_value; ++index) {
+            store.impl_->volatile_runtime->workers.worker(index).set_exclusive_writer(true);
+        }
     }
     auto runtime = store::paired::ShardPairRuntime::create(store, config.paired);
     if (!runtime) {

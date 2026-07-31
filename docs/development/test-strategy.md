@@ -81,6 +81,18 @@ Line coverage is diagnostic, not the acceptance metric. Review must map each nor
 ./scripts/dev.sh test-lto
 ```
 
+Deprecated `legacy_mutex` open mode is exercised inside `glyphastore_tests` by white-box and
+concurrency cases that set `StoreConfig::concurrency = StoreConcurrencyMode::legacy_mutex`
+(`tests/integration/concurrency_tests.cpp`, `optimization_regression_tests.cpp`, and selected
+`store_tests.cpp` cases):
+
+```sh
+ctest --preset macos-debug -R '^glyphastore_tests$' --output-on-failure
+```
+
+On Linux CI presets use the matching configure preset (`unix-debug`, `unix-asan`, …). No separate
+legacy-only binary is required; those tests open Stores with the deprecated flag explicitly.
+
 `fuzz-run` expects a prior `fuzz-build` (or an equivalent `unix-fuzz` / `macos-fuzz` build) and
 defaults to 60s per target via `scripts/run-fuzzers.sh`. Override with
 `GLYPHASTORE_FUZZ_SECONDS`.

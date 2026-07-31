@@ -382,12 +382,11 @@ if(BUILD_TESTING)
     add_test(NAME glyphastore_crash_sync COMMAND glyphastore_crash_persistence --mode matrix)
     add_test(NAME glyphastore_crash_periodic COMMAND glyphastore_crash_persistence --mode periodic-matrix)
     add_test(NAME glyphastore_crash_group COMMAND glyphastore_crash_persistence --mode group-matrix)
-    set_tests_properties(
-        glyphastore_crash_sync
-        glyphastore_crash_periodic
-        glyphastore_crash_group
-        PROPERTIES TIMEOUT 600 LABELS "crash"
-    )
+    # Sync matrix is large; TSan instrumentation of recovery/encode paths routinely
+    # exceeds 10 minutes on hosted/macOS runners even when making forward progress.
+    set_tests_properties(glyphastore_crash_sync PROPERTIES TIMEOUT 2400 LABELS "crash")
+    set_tests_properties(glyphastore_crash_periodic glyphastore_crash_group PROPERTIES TIMEOUT 600
+                         LABELS "crash")
 
     add_executable(glyphastore_crash_daemon tests/crash/crash_daemon.cpp)
     target_link_libraries(glyphastore_crash_daemon

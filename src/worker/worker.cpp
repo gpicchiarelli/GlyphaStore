@@ -3,6 +3,8 @@
 #include "glyphastore/core/key_hash.hpp"
 
 #include <algorithm>
+#include <cassert>
+#include <mutex>
 #include <stdexcept>
 #include <type_traits>
 
@@ -324,6 +326,18 @@ auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> v
 
 auto Worker::put_locked_published(const HashedKey& key, const std::span<const std::byte> value,
                                   const std::uint64_t expire_at_ns) -> Result<WorkerMutationPublication> {
+#ifndef NDEBUG
+    if (exclusive_writer_) {
+        // Paired exclusive Writer must not hold mutex_ on the hot path. Compaction
+        // and verify still take it; if they race, wait then release before mutating.
+        std::unique_lock lock{mutex_, std::defer_lock};
+        if (!lock.try_lock()) {
+            lock.lock();
+        }
+        lock.unlock();
+        assert(!lock.owns_lock());
+    }
+#endif
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::put,
@@ -352,6 +366,16 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
 }
 
 auto Worker::erase_locked_published(const HashedKey& key) -> Result<WorkerMutationPublication> {
+#ifndef NDEBUG
+    if (exclusive_writer_) {
+        std::unique_lock lock{mutex_, std::defer_lock};
+        if (!lock.try_lock()) {
+            lock.lock();
+        }
+        lock.unlock();
+        assert(!lock.owns_lock());
+    }
+#endif
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");

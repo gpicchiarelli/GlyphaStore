@@ -12,6 +12,7 @@
 #include "persistence/hot_record_table.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <limits>
@@ -704,8 +705,13 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     // pins and relinearize against the Index. Writers, flush, and compaction do.
     bool mutation_io_active{};
     std::condition_variable mutation_io_finished;
-    bool compaction_commit_active{};
+    // Set while compaction holds logical ownership of this Worker's Index. Under
+    // exclusive_writer the hot path observes this atomically without the mutex.
+    std::atomic_bool compaction_commit_active{};
     std::condition_variable compaction_commit_finished;
+    // Nested exclusive-Writer hot-path depth. Compaction waits for zero before
+    // swapping the Index when exclusive_writer elides the Worker mutex.
+    std::atomic_uint32_t hot_path_depth{};
 
     [[nodiscard]] auto hot_cache_total_bytes() const noexcept -> std::uint64_t;
     void erase_hot_record(std::string_view key, std::uint64_t key_hash) noexcept;
@@ -1239,7 +1245,8 @@ auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) 
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
         worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
-        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
+        worker->compaction_commit_finished.wait(
+            lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
         std::shared_lock catalog_lock{catalog_mutex_};
         if (auto flushed = flush_worker_batch(*worker, lock, catalog_lock, sync); !flushed) {
             return flushed;
@@ -1252,7 +1259,8 @@ auto DurableRuntimeCatalog::flush_due_batches(const SegmentCommitSync sync) -> S
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
         worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
-        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
+        worker->compaction_commit_finished.wait(
+            lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
         if (!should_flush_batch(*worker)) {
             continue;
         }
@@ -1451,7 +1459,8 @@ auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
         worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
-        worker->compaction_commit_finished.wait(lock, [&] { return !worker->compaction_commit_active; });
+        worker->compaction_commit_finished.wait(
+            lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
         if (!worker->cached_file || !worker->cached_writable || !worker->cached_file->is_dirty()) {
             continue;
         }
@@ -1786,7 +1795,17 @@ auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_inde
     }
 
     auto& worker = *workers_[worker_index];
-    const std::lock_guard worker_lock{worker.mutex};
+    std::unique_lock worker_lock{worker.mutex, std::defer_lock};
+    if (!options_.exclusive_writer || flusher_ != nullptr) {
+        worker_lock.lock();
+    } else {
+#ifndef NDEBUG
+        if (!worker_lock.try_lock()) {
+            worker_lock.lock();
+        }
+        worker_lock.unlock();
+#endif
+    }
     const std::shared_lock catalog_lock{catalog_mutex_};
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
@@ -2057,16 +2076,18 @@ auto DurableRuntimeCatalog::erase(const HashedKey& key) -> DurableMutationResult
 auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_lock<std::mutex>& worker_lock)
     -> DurableMutationResult {
     // Linearization protocol (runtime contract):
-    //  1. caller owns worker.mutex; publication + catalog locks capture one
-    //     manifest generation, its immutable generation pin, and the writable
-    //     Segment handle;
+    //  1. caller owns worker.mutex (legacy / flusher paths) or is the paired
+    //     exclusive Writer with the mutex elided; publication + catalog locks
+    //     capture one manifest generation, its immutable generation pin, and
+    //     the writable Segment handle;
     //  2. mutation_io_active serializes writers while worker/catalog mutexes are
     //     released. GET remains lock-independent through the captured pin;
     //  3. after durable manifest publication, worker then catalog mutex are
-    //     reacquired and the prepared state is installed without allocation.
+    //     reacquired (when held) and the prepared state is installed without
+    //     allocation.
     // No RecordRef, file, or Segment generation crosses phase 1 without the
     // exact shared generation pin captured below.
-    if (!worker_lock.owns_lock()) {
+    if (!worker_lock.owns_lock() && !options_.exclusive_writer) {
         return mutation_failure(
             DurableMutationOutcome::indeterminate,
             Error{ErrorCode::internal_error, "rotation requires the owning Worker mutex"});
@@ -2090,14 +2111,43 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
         // A manifest publisher may perform durable I/O. Do not turn its
         // logical lease into equivalent Worker head-of-line blocking.
         publication_lock.unlock();
-        worker_lock.unlock();
+        if (worker_lock.owns_lock()) {
+            worker_lock.unlock();
+        }
+        // Exclusive Writer: drop hot_path_depth while blocked on another
+        // publisher (compaction). Compaction waits for depth==0 before the
+        // Index swap; keeping depth here deadlocks against that wait.
+        struct ExclusiveHotPathPause final {
+            RuntimeWorker* worker{};
+            bool paused{};
+
+            explicit ExclusiveHotPathPause(RuntimeWorker* owner, const bool enable) noexcept
+                : worker(enable ? owner : nullptr) {
+                if (worker == nullptr) {
+                    return;
+                }
+                if (worker->hot_path_depth.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+                    worker->hot_path_depth.notify_all();
+                }
+                paused = true;
+            }
+            ~ExclusiveHotPathPause() {
+                if (paused && worker != nullptr) {
+                    worker->hot_path_depth.fetch_add(1U, std::memory_order_acq_rel);
+                }
+            }
+            ExclusiveHotPathPause(const ExclusiveHotPathPause&) = delete;
+            auto operator=(const ExclusiveHotPathPause&) -> ExclusiveHotPathPause& = delete;
+        } hot_path_pause{&worker, options_.exclusive_writer};
         {
             std::unique_lock wait_lock{manifest_publication_mutex_};
             manifest_publication_changed_.wait(wait_lock, [&] {
                 return (!compaction_publication_active_ && !rotation_publication_active_) || !healthy();
             });
         }
-        worker_lock.lock();
+        if (!options_.exclusive_writer) {
+            worker_lock.lock();
+        }
         if (!healthy()) {
             return mutation_failure(DurableMutationOutcome::indeterminate,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
@@ -2218,8 +2268,9 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
     };
     worker.mutation_io_active = true;
     catalog_lock.unlock();
-    worker_lock.unlock();
-
+    if (worker_lock.owns_lock()) {
+        worker_lock.unlock();
+    }
     SegmentFileCreationResult created;
     SelectedSegmentCommit sealed_selected{};
     SelectedSegmentCommit replacement_selected{};
@@ -2341,7 +2392,9 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
             mutation_failure(DurableMutationOutcome::indeterminate, Error{ErrorCode::internal_error, {}});
     }
 
-    worker_lock.lock();
+    if (!options_.exclusive_writer) {
+        worker_lock.lock();
+    }
     catalog_lock.lock();
     const auto clear_reservation = [&]() noexcept {
         worker.mutation_io_active = false;
@@ -2454,16 +2507,59 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             GroupAdmission(const GroupAdmission&) = delete;
             auto operator=(const GroupAdmission&) -> GroupAdmission& = delete;
         } admission{strict_batch ? &worker.active_group_mutations : nullptr};
-        std::unique_lock worker_lock{worker.mutex};
-        // Both waits release the Worker mutex. Recheck both gates after every
-        // wake so a producer cannot enter a closing batch while another
-        // producer has just returned the writable handle (or vice versa).
-        while (healthy() &&
-               (worker.mutation_io_active || (dedicated_commit_executor_ && worker.batch_closing))) {
-            if (dedicated_commit_executor_ && worker.batch_closing) {
-                worker.batch_closed.wait(worker_lock);
-            } else {
-                worker.mutation_io_finished.wait(worker_lock);
+        // Paired exclusive Writer (no background flusher): skip Worker mutex on the
+        // ordinary mutate hot path. Compaction observes hot_path_depth instead.
+        // Group/periodic paths keep the mutex because the flush coordinator shares
+        // pending-batch and file state with mutate.
+        const bool elide_worker_mutex = options_.exclusive_writer && flusher_ == nullptr;
+        std::unique_lock worker_lock{worker.mutex, std::defer_lock};
+        struct ExclusiveHotPathGuard final {
+            RuntimeWorker* worker{};
+
+            explicit ExclusiveHotPathGuard(RuntimeWorker* owner) noexcept : worker(owner) {
+                if (worker != nullptr) {
+                    worker->hot_path_depth.fetch_add(1U, std::memory_order_acq_rel);
+                }
+            }
+            ~ExclusiveHotPathGuard() {
+                if (worker == nullptr) {
+                    return;
+                }
+                if (worker->hot_path_depth.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+                    worker->hot_path_depth.notify_all();
+                }
+            }
+            ExclusiveHotPathGuard(const ExclusiveHotPathGuard&) = delete;
+            auto operator=(const ExclusiveHotPathGuard&) -> ExclusiveHotPathGuard& = delete;
+        } hot_path{elide_worker_mutex ? &worker : nullptr};
+        if (elide_worker_mutex) {
+#ifndef NDEBUG
+            // Debug: the exclusive Writer must not find the mutex already held by
+            // compaction/verify/backup. If it is, wait then release — those paths
+            // retain the lock by design.
+            if (!worker_lock.try_lock()) {
+                worker_lock.lock();
+            }
+            worker_lock.unlock();
+#endif
+            if (worker.compaction_commit_active.load(std::memory_order_acquire)) {
+                return mutation_failure(
+                    DurableMutationOutcome::not_committed,
+                    Error{ErrorCode::sequence_conflict,
+                          "durable mutation conflicts with compaction manifest publication"});
+            }
+        } else {
+            worker_lock.lock();
+            // Both waits release the Worker mutex. Recheck both gates after every
+            // wake so a producer cannot enter a closing batch while another
+            // producer has just returned the writable handle (or vice versa).
+            while (healthy() &&
+                   (worker.mutation_io_active || (dedicated_commit_executor_ && worker.batch_closing))) {
+                if (dedicated_commit_executor_ && worker.batch_closing) {
+                    worker.batch_closed.wait(worker_lock);
+                } else {
+                    worker.mutation_io_finished.wait(worker_lock);
+                }
             }
         }
         if (!healthy()) {
@@ -2473,7 +2569,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         if (auto drained = worker.drain_deferred_ttl(worker.deferred_ttl_reclaims.size()); !drained) {
             return mutation_failure(DurableMutationOutcome::indeterminate, drained.error());
         }
-        if (worker.compaction_commit_active) {
+        if (worker.compaction_commit_active.load(std::memory_order_acquire)) {
             return mutation_failure(DurableMutationOutcome::not_committed,
                                     Error{ErrorCode::sequence_conflict,
                                           "durable mutation conflicts with compaction manifest publication"});
@@ -2559,7 +2655,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
         // overwriting a sleeping mutation's final Record.
         std::vector<std::byte> encoded_record{std::move(worker.encode_scratch)};
         ScopeExit restore_encode_scratch{[&]() noexcept {
-            if (worker_lock.owns_lock()) {
+            if (worker_lock.owns_lock() || elide_worker_mutex) {
                 worker.encode_scratch = std::move(encoded_record);
             }
         }};
@@ -2629,7 +2725,9 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             worker.cached_writable = false;
             worker.mutation_io_active = true;
             catalog_lock.unlock();
-            worker_lock.unlock();
+            if (worker_lock.owns_lock()) {
+                worker_lock.unlock();
+            }
 
             std::uint32_t offset{};
             // From the first persistent write until coherent runtime publication,
@@ -2664,7 +2762,9 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .error = Error{ErrorCode::internal_error, {}}};
             }
 
-            worker_lock.lock();
+            if (!elide_worker_mutex) {
+                worker_lock.lock();
+            }
             catalog_lock.lock();
             const auto current_position =
                 std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(), identity.segment_id,
@@ -3580,7 +3680,16 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             }
         }
 
-        worker.compaction_commit_active = true;
+        worker.compaction_commit_active.store(true, std::memory_order_release);
+        if (options_.exclusive_writer) {
+            for (;;) {
+                const auto depth = worker.hot_path_depth.load(std::memory_order_acquire);
+                if (depth == 0) {
+                    break;
+                }
+                worker.hot_path_depth.wait(depth, std::memory_order_acquire);
+            }
+        }
         struct WorkerCommitGate final {
             RuntimeWorker& worker;
             bool active{true};
@@ -3591,11 +3700,11 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                     return;
                 }
                 const std::lock_guard lock{worker.mutex};
-                worker.compaction_commit_active = false;
+                worker.compaction_commit_active.store(false, std::memory_order_release);
                 worker.compaction_commit_finished.notify_all();
             }
             void clear_locked() noexcept {
-                worker.compaction_commit_active = false;
+                worker.compaction_commit_active.store(false, std::memory_order_release);
                 active = false;
                 worker.compaction_commit_finished.notify_all();
             }

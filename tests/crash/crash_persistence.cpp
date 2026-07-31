@@ -276,6 +276,7 @@ struct CompactionHistory {
 void seed_put_store(const std::filesystem::path& data_dir) {
     std::filesystem::create_directories(data_dir.parent_path());
     auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
                                             .storage_mode = glyphastore::StorageMode::durable_sync,
                                             .data_directory = data_dir,
                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
@@ -851,6 +852,7 @@ enum class RecoveryExpectation { absent, optional, present };
 
     auto opened = glyphastore::Store::open(
         {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
          .storage_mode = recovery_storage_mode(options),
          .data_directory = options.data_dir,
          .durable_open_mode = glyphastore::DurableOpenMode::open_or_create,

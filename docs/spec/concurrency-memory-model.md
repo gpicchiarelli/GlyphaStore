@@ -52,7 +52,11 @@ When more than one lock is necessary, acquire locks only in these orders:
 3. manifest-publication mutex;
 4. durable catalog mutex.
 
-Paired ordinary `get` / `put` / `erase` do not acquire the Worker Index mutex on the hot path. Compaction, verify, backup, and durable catalog refresh may still take Worker and catalog locks as today.
+Paired ordinary `get` / `put` / `erase` do not acquire the Worker Index mutex on the hot path when
+the shard has an exclusive Writer and no background durable flusher. Compaction, verify, backup,
+and durable catalog refresh may still take Worker and catalog locks as today. Durable mutate still
+takes a catalog shared lock to pin the active generation; group/periodic modes retain the Worker
+mutex while a flush coordinator shares pending-batch state.
 
 For the volatile runtime, the allowed nested order is Worker mutex, then global segment-manager mutex. Code that holds the segment-manager mutex must not acquire a Worker mutex.
 

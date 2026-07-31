@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- Paired exclusive Writer mutex-elision (ADR 0032 T2): durable `mutate` / `capture_published_read`
+  skip the Worker mutex when `exclusive_writer` and no background flusher (`durable_sync`);
+  compaction waits on `hot_path_depth`. Volatile paired Writers keep generation-only publication
+  without `mutex_` on the hot path (debug assert). Compaction/verify/backup/catalog-refresh
+  snapshots retain locks. Catalog shared lock on mutate/capture remains (pin lookup).
+  Crash recovery harnesses open with deprecated `legacy_mutex` so TSan crash matrices are not
+  dominated by paired Writer startup. `legacy_mutex` ctest path documented in
+  `docs/development/test-strategy.md`.
 - ADR 0032: paired Reader/Writer concurrency is the product default for embedded `Store::open` as
   well as `glyphastored` (amends ADR 0031/0005/0009 concurrency notes). Persistence v1 and wire v2
   unchanged; public owning `Store::get` unchanged. Docs aligned

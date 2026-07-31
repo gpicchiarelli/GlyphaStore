@@ -55,6 +55,15 @@ class Worker final {
     [[nodiscard]] auto compact(std::uint64_t now_ns, VacuumPolicy policy = {})
         -> Result<std::optional<VacuumStats>>;
 
+    // Paired exclusive Writer (ADR 0032): ordinary put/erase publication must not
+    // acquire mutex_. Compaction and verify_index still take it.
+    void set_exclusive_writer(bool exclusive) noexcept {
+        exclusive_writer_ = exclusive;
+    }
+    [[nodiscard]] auto exclusive_writer() const noexcept -> bool {
+        return exclusive_writer_;
+    }
+
   private:
     [[nodiscard]] auto get_locked(const HashedKey& key, std::uint64_t now_ns) -> Result<RecordView>;
     [[nodiscard]] auto put_locked(const HashedKey& key, std::span<const std::byte> value,
@@ -81,6 +90,7 @@ class Worker final {
     std::vector<SegmentPtr> owned_;
     std::unordered_map<SegmentId, Segment*> owned_by_id_;
     mutable std::mutex mutex_;
+    bool exclusive_writer_{};
 
     friend class Store;
     friend class detail::StoreAccess;

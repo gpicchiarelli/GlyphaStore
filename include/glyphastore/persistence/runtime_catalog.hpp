@@ -57,6 +57,10 @@ struct DurableRuntimeOptions {
     std::optional<DurableGroupConfig> batch{};
     bool strict_ack{false};
     DurableResourceLimits limits{};
+    // Paired exclusive Writer (ADR 0032): ordinary mutate/capture skip the Worker
+    // mutex when no background flusher shares the shard. Compaction, verify,
+    // backup, and catalog-refresh snapshots still take Worker/catalog locks.
+    bool exclusive_writer{false};
 };
 
 struct DurableMutationResult {
