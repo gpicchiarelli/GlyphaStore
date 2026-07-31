@@ -30,10 +30,13 @@ generazionale Writer-owned bounded sulle versioni.
 
 Ordine operativo residuo (P1 — non riapre un dual-runtime):
 
-1. P1 — profilare e recuperare il circa 1,8% mixed del Delta arena senza indebolirne lifetime e
-   capacità per versioni;
-2. P1 — `get-into` o scatter multi-extent solo se supera il percorso adattivo su pipeline e memoria;
-3. P1 — A/B 1/2/4/8 pair Linux hard-pinned con `perf`, NUMA e working set oltre LLC;
+1. P1 — Delta mixed: candidate hierarchical directory-chunk COW landed; macOS advisory evidence in
+   [`paired-delta-directory-chunks-2026-07-31.md`](paired-delta-directory-chunks-2026-07-31.md);
+   magnitude vs the historical −1,8% still needs Linux hard-pinned confirmation;
+2. P1 — `get-into` / scatter multi-extent: **rejected pending proof**
+   ([`paired-get-into-multi-extent-reject-2026-07-31.md`](paired-get-into-multi-extent-reject-2026-07-31.md));
+3. P1 — A/B 1/2/4/8 pair Linux hard-pinned: harness ready, gate **not closed on macOS**
+   ([`paired-shards-linux-p1.md`](paired-shards-linux-p1.md));
 4. P1 — backend I/O Linux opzionale soltanto se riduce coda e syscall senza cambiare ordering.
 
 Il gate cold-read più recente è

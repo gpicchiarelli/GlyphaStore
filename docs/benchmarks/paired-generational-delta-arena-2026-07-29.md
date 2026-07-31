@@ -81,3 +81,10 @@ Il follow-up non deve cambiare lifetime o aggiungere una catena Delta. Va misura
 Writer separando `prepare`, pin retention, arena store, page COW, publication e completion. Il gate
 successivo è Linux hard-pinned con `perf`; un'ottimizzazione è accettabile solo se conserva capacità
 per versioni, publication atomica e QSBR.
+
+## Follow-up (2026-07-31)
+
+Candidate strutturale: directory-chunk COW
+([`paired-delta-directory-chunks-2026-07-31.md`](paired-delta-directory-chunks-2026-07-31.md)).
+La magnitude del recupero mixed resta da confermare su Linux hard-pinned.
+

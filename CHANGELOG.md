@@ -12,6 +12,8 @@
   macOS advisory A/B is noisy; Linux hard-pinned confirmation still required for magnitude claims.
 - P1 reject get-into / multi-extent scatter promotion without bounded+win proof
   ([paired-get-into-multi-extent-reject-2026-07-31](docs/benchmarks/paired-get-into-multi-extent-reject-2026-07-31.md)).
+- P1 Linux hard-pinned 1/2/4/8 harness + runbook + `workflow_dispatch` self-hosted workflow
+  ([paired-shards-linux-p1](docs/benchmarks/paired-shards-linux-p1.md)); macOS evidence stays advisory.
 - Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
   if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
   wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.
