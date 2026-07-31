@@ -87,7 +87,8 @@ below has automated evidence. A design document or implementation alone does not
   disk-full/quota/writeback-error and power-loss matrices are open.
 - [ ] Backup, restore, verification, and version migration are tested with released artifacts.
   Offline backup/restore/verify/repair and offline Worker reshard (`glyphastore_migrate_store`) are
-  implemented with unit tests. Released-tag artifact consumption remains open.
+  implemented with unit tests. Online fenced `Store::backup_to` copies under the open Store lock with
+  an admission pause (not zero-impact hot I/O). Released-tag artifact consumption remains open.
 
 ### Verification
 
