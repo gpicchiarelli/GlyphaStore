@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Add gitleaks + Trivy filesystem scanning CI (`.github/workflows/supply-chain-scan.yml`) for
+  Phase 7.1 secret/dependency gates on main and PRs. Artifact signing / Sigstore remain open.
 - Expand secure-profile interop smoke (`scripts/test-secure-profile-interop.sh`): authz deny for
   unmapped mTLS principals, `prefix=` key-scope allow/deny, and `--tls-crl` rejection of revoked
   client certs (cpp/python/go happy path unchanged). Residual: perl/ruby/erlang in that matrix.

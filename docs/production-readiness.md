@@ -169,7 +169,8 @@ below has automated evidence. A design document or implementation alone does not
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). SBOM + checksum CI landed
-  (`.github/workflows/supply-chain.yml`); dependency/secret scanning and signing remain open.
+  (`.github/workflows/supply-chain.yml`); gitleaks + Trivy fs CI landed
+  (`.github/workflows/supply-chain-scan.yml`); signing / provenance remain open.
 
 ### Distribution and lifecycle
 
