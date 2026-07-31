@@ -264,6 +264,16 @@ func (c *Client) Ping(payload []byte, opts ...CallOptions) ([]byte, error) {
 	return c.read(protocol.OpcodePing, nil, payload, opts...)
 }
 
+// Backup requests an online fenced durable catalog copy (wire BACKUP, opcode 10) via Worker 0.
+// Destination is a UTF-8 path to an empty directory. Not zero-impact hot I/O; admin under secure authz.
+// On success the returned bytes are a bounded ASCII report containing status=ok.
+func (c *Client) Backup(destination string, opts ...CallOptions) ([]byte, error) {
+	if destination == "" {
+		return nil, invalidArgument("backup destination must be non-empty")
+	}
+	return c.read(protocol.OpcodeBackup, []byte(destination), nil, opts...)
+}
+
 // Put stores a value. Outcomes are returned; the call does not fail solely for rejection.
 func (c *Client) Put(key, value []byte, expireAtNs uint64, opts ...CallOptions) MutationResult {
 	return c.mutate(protocol.OpcodePut, key, value, expireAtNs, opts...)
@@ -789,7 +799,7 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 		return nil, err
 	}
 	worker := uint32(0)
-	if opcode != protocol.OpcodePing {
+	if opcode != protocol.OpcodePing && opcode != protocol.OpcodeBackup {
 		var err error
 		worker, err = c.WorkerFor(key)
 		if err != nil {
@@ -877,6 +887,8 @@ func readOpName(opcode protocol.Opcode) string {
 		return "get"
 	case protocol.OpcodePing:
 		return "ping"
+	case protocol.OpcodeBackup:
+		return "backup"
 	default:
 		return "read"
 	}

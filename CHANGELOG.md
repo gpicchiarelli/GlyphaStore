@@ -1,9 +1,12 @@
 ## [Unreleased]
 
+- Expose typed `backup(destination)` on official SDKs (Python, Go, Perl, Ruby, Erlang) mirroring
+  C++ `Client::backup` for wire `BACKUP` (opcode 10): worker-0 routing, ASCII report on success,
+  fenced (not hot zero-impact) semantics; admin under secure authz.
 - Expose typed C++ `Client::backup(destination)` for wire `BACKUP` (opcode 10): worker-0 routing,
-  fenced (not hot zero-impact) semantics; other official SDKs may still omit a typed helper.
+  fenced (not hot zero-impact) semantics.
 - Expose online fenced backup on the live daemon: wire opcode `BACKUP` (10) and `Server::backup_to`,
-  admin-gated under secure authz; SDKs may still omit a typed helper.
+  admin-gated under secure authz.
 - Add online durable backup via `Store::backup_to`: fence admissions, flush, copy catalog under the
   open Store lock (writer fence, not fully hot concurrent I/O). Offline CLI still requires a stopped
   Store. Docs/CHANGELOG honesty updated; concurrent-writer unit coverage included.

@@ -164,6 +164,22 @@ class AsyncClient:
     ) -> bytes:
         return await self._read(Opcode.PING, b"", bytes(payload), timeout=timeout)
 
+    async def backup(
+        self,
+        destination: str | bytes | bytearray | memoryview,
+        *,
+        timeout: float | None = None,
+    ) -> bytes:
+        # Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
+        path = (
+            destination.encode("utf-8")
+            if isinstance(destination, str)
+            else bytes(destination)
+        )
+        if not path:
+            raise InvalidArgument("backup destination must be non-empty")
+        return await self._read(Opcode.BACKUP, path, b"", timeout=timeout)
+
     async def put(
         self,
         key: bytes | bytearray | memoryview,
@@ -576,7 +592,7 @@ class AsyncClient:
         if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
         deadline = self._request_deadline(timeout)
-        worker = 0 if opcode is Opcode.PING else self.worker_for(key)
+        worker = 0 if opcode in (Opcode.PING, Opcode.BACKUP) else self.worker_for(key)
         connection = self._connections[worker]
         async with connection.lock:
             if not self._healthy:

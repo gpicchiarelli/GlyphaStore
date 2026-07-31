@@ -120,8 +120,8 @@ same absolute monotonic deadline. Connect and bootstrap stay on the configured d
 UTF-8 and must name an empty directory (created as needed by the server). The call is **online
 fenced**, not zero-impact hot I/O: the daemon briefly pauses Store admissions while copying the
 durable catalog. Under the secure profile it requires the `admin` capability. On success the owned
-response bytes are a bounded ASCII report containing `status=ok` plus file/byte counts. Other
-official SDKs may still omit a typed helper.
+response bytes are a bounded ASCII report containing `status=ok` plus file/byte counts. Official
+SDKs expose the same typed `backup` helper (still fenced, not hot).
 
 ```cpp
 auto completed = cache.execute_batch(mixed_worker_requests);

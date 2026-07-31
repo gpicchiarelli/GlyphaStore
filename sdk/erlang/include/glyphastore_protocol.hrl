@@ -13,6 +13,7 @@
 -define(GS_OP_HEALTH, 7).
 -define(GS_OP_READY, 8).
 -define(GS_OP_STATS, 9).
+-define(GS_OP_BACKUP, 10).
 
 -define(GS_ST_OK, 0).
 -define(GS_ST_INVALID, 1).

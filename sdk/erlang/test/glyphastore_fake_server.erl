@@ -248,6 +248,11 @@ handle_request(Socket, Tab, Bound, Store, Request) ->
                 value => maps:get(value, Request)
             }),
             client_loop(Socket, Tab, Bound, Store);
+        ?GS_OP_BACKUP ->
+            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
+                value => <<"status=ok files=0 bytes=0">>
+            }),
+            client_loop(Socket, Tab, Bound, Store);
         _ ->
             reply(Socket, Cfg, glyphastore_protocol:status_unsupported(), Request, Meta),
             client_loop(Socket, Tab, Bound, Store)

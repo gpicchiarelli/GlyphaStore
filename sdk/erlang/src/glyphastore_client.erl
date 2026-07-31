@@ -14,6 +14,8 @@
     get/3,
     ping/2,
     ping/3,
+    backup/2,
+    backup/3,
     put/3,
     put/4,
     erase/2,
@@ -129,6 +131,13 @@ get(Client, Key, Opts) -> gen_server:call(Client, {read, get, Key, <<>>, Opts}, 
 
 ping(Client, Payload) -> ping(Client, Payload, #{}).
 ping(Client, Payload, Opts) -> gen_server:call(Client, {read, ping, <<>>, Payload, Opts}, infinity).
+
+%% Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
+backup(Client, Destination) -> backup(Client, Destination, #{}).
+backup(Client, Destination, Opts) when is_binary(Destination), Destination =/= <<>> ->
+    gen_server:call(Client, {read, backup, Destination, <<>>, Opts}, infinity);
+backup(_Client, _Destination, _Opts) ->
+    {error, glyphastore_error:invalid_argument(<<"backup destination must be non-empty">>)}.
 
 put(Client, Key, Value) -> put(Client, Key, Value, #{}).
 put(Client, Key, Value, Opts) ->
@@ -1509,7 +1518,8 @@ merge_group_by_index(Responses, Items, GroupResponses) ->
     ).
 
 read_op(get, Key) -> {glyphastore_protocol:opcode_get(), <<"get">>, Key};
-read_op(ping, _) -> {glyphastore_protocol:opcode_ping(), <<"ping">>, <<>>}.
+read_op(ping, _) -> {glyphastore_protocol:opcode_ping(), <<"ping">>, <<>>};
+read_op(backup, _) -> {glyphastore_protocol:opcode_backup(), <<"backup">>, <<>>}.
 
 mutate_opcode(put) -> glyphastore_protocol:opcode_put();
 mutate_opcode(erase) -> glyphastore_protocol:opcode_erase().

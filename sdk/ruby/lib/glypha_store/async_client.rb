@@ -94,6 +94,14 @@ module GlyphaStore
       read(Protocol::Opcode::PING, "".b, payload, timeout: timeout)
     end
 
+    # Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
+    def backup(destination, timeout: nil)
+      path = destination.is_a?(String) ? destination.b : destination.to_s.b
+      raise Error.invalid_argument("backup destination must be non-empty") if path.empty?
+
+      read(Protocol::Opcode::BACKUP, path, "".b, timeout: timeout)
+    end
+
     def put(key, value, expire_at_ns: 0, timeout: nil)
       mutate(Protocol::Opcode::PUT, key, value, expire_at_ns, timeout: timeout)
     end
@@ -423,9 +431,13 @@ module GlyphaStore
       raise Error.unavailable("client is closed or routing metadata changed") unless healthy?
 
       deadline = resolve_deadline(timeout)
-      worker = opcode == Protocol::Opcode::PING ? 0 : worker_for(key)
+      worker = [Protocol::Opcode::PING, Protocol::Opcode::BACKUP].include?(opcode) ? 0 : worker_for(key)
       conn = @connections[worker]
-      op = opcode == Protocol::Opcode::PING ? "ping" : "get"
+      op = case opcode
+           when Protocol::Opcode::PING then "ping"
+           when Protocol::Opcode::BACKUP then "backup"
+           else "get"
+           end
       last = Error.unavailable("request was not attempted")
       conn.synchronize do
         raise Error.unavailable("client closed before read admission") unless healthy?

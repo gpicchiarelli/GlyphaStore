@@ -16,7 +16,7 @@ sub _now {
 use GlyphaStore::Error;
 use GlyphaStore::Protocol qw(
     MAX_FRAME_BYTES NO_WORKER RESPONSE_HEADER_BYTES
-    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER
+    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_BACKUP
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
     STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND
     STATUS_PERMISSION_DENIED
@@ -437,6 +437,14 @@ sub ping {
     return $self->_read(OP_PING, '', $payload // '', $options{timeout});
 }
 
+sub backup {
+    my ($self, $destination, %options) = @_;
+    _throw('invalid_argument', 'backup destination must be non-empty')
+        if !defined $destination || $destination eq '';
+    # Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
+    return $self->_read(OP_BACKUP, $destination, '', $options{timeout});
+}
+
 sub put {
     my ($self, $key, $value, %options) = @_;
     return $self->_mutate(OP_PUT, $key, $value, $options{expire_at_ns} // 0, $options{timeout});
@@ -460,7 +468,7 @@ sub _read {
     my ($self, $opcode, $key, $value, $timeout) = @_;
     _throw('unavailable', 'client is closed or routing metadata changed') if !$self->{healthy};
     my $deadline = $self->_request_deadline($timeout);
-    my $worker = $opcode == OP_PING ? 0 : $self->worker_for($key);
+    my $worker = ($opcode == OP_PING || $opcode == OP_BACKUP) ? 0 : $self->worker_for($key);
     my $connection = $self->{connections}->[$worker];
     my $last_error = _error('unavailable', 'request was not attempted');
     for (1 .. 2) {
