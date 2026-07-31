@@ -706,6 +706,10 @@ fi
 
 printf 'E3 harness artifact written to %s\n' "$output_dir"
 printf 'Result: %s; label: %s; e3_certified: no\n' "$harness_result" "$attained_label"
+if ! "$root/scripts/assert-e3-rehearsal-honesty.sh" --dir "$output_dir" --kind harness; then
+  echo "error: harness honesty assert failed" >&2
+  exit 1
+fi
 if [[ "$harness_result" == "passed" ]]; then
   exit 0
 fi

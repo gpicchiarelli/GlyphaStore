@@ -205,9 +205,12 @@ periodic/group put, and rotation checkpoints. Instance-local raw I/O seams force
 `pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS`. The
 [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines
 cumulative E0–E4 claims, provenance, promotion rules, a collector for native E2 artifacts, and an
-in-repo E3 block-reset harness for linux-ext4 loopback / macOS APFS diskimage rehearsal.
+in-repo E3 block-reset harness for linux-ext4 loopback / macOS APFS diskimage rehearsal,
+campaign orchestrator (`scripts/run-e3-campaign.sh`), honesty assert
+(`scripts/assert-e3-rehearsal-honesty.sh`), and weekly CI campaign-profile / orchestrator rehearsal
+(still `e3_certified=no`).
 Controller caches, torn sectors, sudden physical power loss, and reviewed pinned native filesystem
-rows still require dedicated campaign infrastructure beyond CI smoke.
+rows still require dedicated lab campaigns beyond hosted CI.
 
 **Required change:** add deterministic short-write/read, `EINTR`, delayed writeback `EIO`, `ENOSPC`,
 `EDQUOT`, `EROFS`, missing file, corrupt directory entry, rename, file-sync, and directory-sync
@@ -225,8 +228,9 @@ Durable mutation tests cross write, Record sync, commit-slot write, and commit-s
 oracle. Namespace recovery rejects missing catalog files, malformed names, symlinks, hard links,
 and unlisted entries without adopting them. NFS, SMB, FUSE, overlay, and other remote/user-space
 storage are unsupported. In-repo VM/block-device reset automation exists as a rehearsal harness
-(`scripts/run-e3-block-reset.sh`); repeated reviewed E3 campaigns and E4 release artifacts remain
-open. No row is E3/E4 certified.
+(`scripts/run-e3-block-reset.sh`, `scripts/run-e3-campaign.sh`, weekly
+`durability-evidence.yml` campaign-profile / orchestrator jobs); reviewed E3 campaigns on pinned
+lab disks and E4 release artifacts remain open. No row is E3/E4 certified.
 
 ### P0-08 — Implement crash-safe durable compaction in v1
 

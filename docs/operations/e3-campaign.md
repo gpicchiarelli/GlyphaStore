@@ -4,7 +4,7 @@ Status: descriptive
 Applies to: `scripts/run-e3-campaign.sh`, `scripts/run-e3-block-reset.sh`,
 `scripts/collect-durability-evidence.sh`  
 Owner: release and storage maintainers  
-Last reviewed: 2026-07-25
+Last reviewed: 2026-07-31
 
 Operator procedure to produce a **retained E3 campaign-prep artifact** on a declared hardware/VM
 and filesystem pin. A coding agent cannot certify E3 on real NVMe. This runbook exists so a
@@ -12,7 +12,10 @@ maintainer can run, review, and — only when gates pass — promote a row.
 
 **Hard rule:** every automated artifact keeps `e3_certified=no` until a human completes the
 sign-off checklist and updates the evidence matrix / release notes. A green campaign exit code is
-not certification.
+not certification. CI (`.github/workflows/durability-evidence.yml`) exercises harness smoke,
+weekly campaign-profile loopback/diskimage rehearsal, and an optional hosted-ci E0→E3 orchestrator
+path; all of those remain rehearsal. `scripts/assert-e3-rehearsal-honesty.sh` fails closed if an
+artifact claims `e3_certified=yes` or release-certification eligibility.
 
 Normative claim rules:
 [platform durability evidence matrix](../architecture/platform-durability-evidence.md).
@@ -167,6 +170,27 @@ loop file), set for example:
 
 If the harness still uses a loop image *on* that disk, keep `loopback-…` in the boundary string;
 do not claim bare-partition certification from a loop row.
+
+Options of note:
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--e3-profile` | `campaign` | Use `smoke` only for CI / diagnostic rehearsal of the orchestrator path |
+| `--repeat` | `10` | Per-checkpoint E3 reps; CI weekly uses lower values on purpose |
+| `--e2-repeat` | `3` | Process-kill suite reps |
+
+### CI rehearsal (not certification)
+
+`.github/workflows/durability-evidence.yml`:
+
+| Trigger | What runs | Claim |
+|---|---|---|
+| PR / push `main` | E2 metadata + linux-ext4 **smoke** harness | Harness regression only |
+| Weekly schedule | E2 process-kill + linux-ext4 **campaign** profile (repeat 3) + macOS APFS campaign (repeat 2) + hosted-ci E0→E3 orchestrator (`--e3-profile smoke`, low reps) | Still `e3_certified=no`; `hardware_class=hosted-ci` cannot promote |
+| `workflow_dispatch` | Operator-chosen E2/E3 profile/repeat; optional orchestrator | Same honesty gates |
+
+After every harness/campaign write, scripts and CI call
+`scripts/assert-e3-rehearsal-honesty.sh`.
 
 ## Artifact layout
 

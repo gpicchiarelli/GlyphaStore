@@ -13,6 +13,7 @@ output_dir=""
 build_dir=""
 platform="auto"
 reset_mechanism="auto"
+e3_profile="campaign"
 repeat=10
 e2_repeat=3
 image_size_mib=""
@@ -51,6 +52,7 @@ Required pin declaration (recorded into campaign-pin.txt):
 
 Options:
   --platform auto|linux-ext4|macos-apfs   E3 harness row (default: auto)
+  --e3-profile smoke|campaign    Checkpoint set for E3 (default: campaign)
   --reset-mechanism auto|abrupt-detach|dm-flakey
   --repeat N                     E3 per-checkpoint repetitions (default: 10)
   --e2-repeat N                  E2 process-kill suite repetitions (default: 3)
@@ -85,6 +87,11 @@ while [[ $# -gt 0 ]]; do
     --platform)
       [[ $# -ge 2 ]] || { echo "error: --platform requires a value" >&2; exit 2; }
       platform="$2"
+      shift 2
+      ;;
+    --e3-profile)
+      [[ $# -ge 2 ]] || { echo "error: --e3-profile requires a value" >&2; exit 2; }
+      e3_profile="$2"
       shift 2
       ;;
     --reset-mechanism)
@@ -174,6 +181,9 @@ done
 [[ -n "$hardware_class" ]] || { echo "error: --hardware-class is required" >&2; exit 2; }
 [[ -n "$fs_pin" ]] || { echo "error: --fs-pin is required" >&2; exit 2; }
 [[ -n "$guest_host_boundary" ]] || { echo "error: --guest-host-boundary is required" >&2; exit 2; }
+
+[[ "$e3_profile" == "smoke" || "$e3_profile" == "campaign" ]] ||
+  { echo "error: --e3-profile accepts smoke|campaign" >&2; exit 2; }
 
 case "$hardware_class" in
   hosted-ci|diskimage-rehearsal|vm-dedicated-disk|bare-metal-nvme|bare-metal-other) ;;
@@ -308,7 +318,7 @@ fi
   printf 'fs_pin=%s\n' "$fs_pin"
   printf 'guest_host_boundary=%s\n' "$guest_host_boundary"
   printf 'platform_row=%s\n' "$platform"
-  printf 'e3_profile=campaign\n'
+  printf 'e3_profile=%s\n' "$e3_profile"
   printf 'e3_repeat=%s\n' "$repeat"
   printf 'e2_repeat=%s\n' "$e2_repeat"
   printf 'reset_mechanism=%s\n' "$reset_mechanism"
@@ -434,13 +444,13 @@ elif [[ "$campaign_failed" -ne 0 ]]; then
   printf 'skipped\n' >"$e3_dir/result.txt"
   printf 'e3\tskipped\tprior stage failed\n' >>"$stage_results"
 else
-  printf 'Running E3 block-reset campaign (profile=campaign, repeat=%s)...\n' "$repeat"
+  printf 'Running E3 block-reset (profile=%s, repeat=%s)...\n' "$e3_profile" "$repeat"
   e3_cmd=(
     "$root/scripts/run-e3-block-reset.sh"
     --output "$e3_dir"
     --build-dir "$build_dir"
     --platform "$platform"
-    --profile campaign
+    --profile "$e3_profile"
     --reset-mechanism "$reset_mechanism"
     --repeat "$repeat"
   )
@@ -458,7 +468,7 @@ else
   e3_rc=$?
   if [[ "$e3_rc" -eq 0 ]]; then
     printf 'passed\n' >"$stages/e3-result.txt"
-    printf 'e3\tpassed\tcampaign profile repeat=%s\n' "$repeat" >>"$stage_results"
+    printf 'e3\tpassed\tprofile=%s repeat=%s\n' "$e3_profile" "$repeat" >>"$stage_results"
   else
     # Distinguish FAIL vs INCONCLUSIVE from harness provenance when present.
     e3_outcome="failed"
@@ -506,7 +516,7 @@ fi
   printf -- '- FS pin: `%s`\n' "$fs_pin"
   printf -- '- Guest/host boundary: `%s`\n' "$guest_host_boundary"
   printf -- '- Platform row: `%s`\n' "$platform"
-  printf -- '- E3 profile / repeat: `campaign` / `%s`\n' "$repeat"
+  printf -- '- E3 profile / repeat: `%s` / `%s`\n' "$e3_profile" "$repeat"
   printf -- '- E2 repeat: `%s`\n' "$e2_repeat"
   printf -- '- Campaign result: `%s`\n' "$campaign_result"
   printf -- '- E3 certified: `no`\n'
@@ -566,6 +576,11 @@ if [[ "$skip_tarball" != "yes" ]]; then
   if digest_line="$(sha256_file "$tarball_path" 2>/dev/null)"; then
     printf '%s\n' "$digest_line" >"${tarball_path}.sha256"
   fi
+fi
+
+if ! "$root/scripts/assert-e3-rehearsal-honesty.sh" --dir "$output_dir" --kind campaign; then
+  echo "error: campaign honesty assert failed" >&2
+  campaign_result="failed"
 fi
 
 printf 'E3 campaign artifact written to %s\n' "$output_dir"

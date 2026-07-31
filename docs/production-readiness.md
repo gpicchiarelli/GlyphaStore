@@ -58,7 +58,9 @@ below has automated evidence. A design document or implementation alone does not
   `scripts/run-e3-block-reset.sh`, `scripts/run-e3-campaign.sh`,
   `.github/workflows/durability-evidence.yml`) produce rehearsal / campaign-prep artifacts that must
   keep `e3_certified=no` until a reviewed pinned campaign is published
-  ([E3 campaign runbook](operations/e3-campaign.md)).
+  ([E3 campaign runbook](operations/e3-campaign.md)). Weekly CI rehearses campaign-profile
+  loopback/diskimage rows and a hosted-ci E0→E3 orchestrator path; `assert-e3-rehearsal-honesty.sh`
+  rejects accidental certification labels. That is not physical E3.
 - [ ] Write ordering, synchronization, manifest publication, and directory synchronization are specified.
   Platform-aware descriptor, locking, full-I/O, atomic manifest publication, preallocated Segment
   creation, alternating commit-slot layer, and Store integration are implemented with fault and

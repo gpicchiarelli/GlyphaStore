@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Harden E3 rehearsal (not certification): `scripts/assert-e3-rehearsal-honesty.sh` fails closed on
+  accidental `e3_certified=yes` / release-eligible labels; campaign `--e3-profile`; weekly
+  `durability-evidence.yml` runs campaign-profile loopback/APFS + hosted-ci E0→E3 orchestrator
+  rehearsal while keeping `e3_certified=no`.
 - Extend secure-profile interop with Phase 5 principal quota → wire `OVERLOADED` (single-connection
   burst) and refresh docs that still claimed the secure matrix was incomplete.
 - Add cross-builder SDK archive digest compare (`scripts/compare-sdk-artifact-sums.sh`, job

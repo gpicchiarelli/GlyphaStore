@@ -101,7 +101,9 @@ scripts/collect-durability-evidence.sh \
 ```
 
 CI: `.github/workflows/durability-evidence.yml` archives metadata on every change, process-kill on the
-weekly schedule / manual dispatch, and never labels the upload as power-loss certification.
+weekly schedule / manual dispatch, E3 harness smoke on PRs, weekly campaign-profile loopback/APFS
+rehearsal plus a hosted-ci E0→E3 orchestrator path, and never labels the upload as power-loss
+certification (`scripts/assert-e3-rehearsal-honesty.sh`).
 
 ## E3 block-reset harness (first pinned rehearsal rows)
 
@@ -265,7 +267,8 @@ Any change to write ordering, synchronization primitives, manifest/intent public
 handling, recovery authority, filesystem policy, or power-loss harness invalidates the affected
 campaign. Kernel/filesystem/device changes require review and usually a new campaign.
 
-CI may archive E2 collector output for every change and E3 harness smoke for the linux-ext4
-rehearsal row. E3 certification campaigns should run on dedicated scheduled infrastructure, and E4
-is a reviewed release campaign. Until those gates exist, GlyphaStore remains experimental for durable
-deployment even when every process-kill and harness-smoke test passes.
+CI may archive E2 collector output for every change, E3 harness smoke for the linux-ext4 rehearsal
+row on PRs, and weekly campaign-profile / orchestrator rehearsal artifacts. E3 certification
+campaigns should run on dedicated lab pins (not hosted-ci), and E4 is a reviewed release campaign.
+Until those gates exist, GlyphaStore remains experimental for durable deployment even when every
+process-kill and harness-smoke test passes.
