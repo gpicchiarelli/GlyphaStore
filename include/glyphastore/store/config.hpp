@@ -137,6 +137,51 @@ enum class DurableOpenMode : std::uint8_t {
     create_new,
 };
 
+// Store linearization model (ADR 0032). paired is the product default: every
+// Worker/shard owns one Writer thread plus one immutable published read
+// generation, so ordinary get never acquires the Index mutex and multi-thread
+// put/erase serialize on the Writer lane.
+//
+// legacy_mutex restores the historical Worker-mutex path. It is deprecated for
+// 0.1.x and removed in 0.2. The two models must never mutate the same Store
+// instance: mixing a legacy mutex mutator with a paired Writer is refused at
+// open, and any later detection fails the Store closed.
+enum class StoreConcurrencyMode : std::uint8_t {
+    paired,
+    // Deprecated in 0.1.x; removed in 0.2. Prefer paired.
+    legacy_mutex,
+};
+
+inline constexpr std::size_t kDefaultPairedMergeDeltaEntries = 8'192;
+inline constexpr std::size_t kDefaultPairedMergeMaximumPostEntries = 32'736;
+inline constexpr std::size_t kDefaultPairedMergeQuantumSlots = 4'096;
+
+// Paired runtime tuning. Embedded callers only need the merge quanta: the
+// synchronous put/erase handoff borrows caller memory and needs no payload
+// arena. glyphastored configures the asynchronous lane so its Reader can hand
+// off borrowed frame bytes without blocking.
+struct PairedConcurrencyConfig {
+    // Zero disables the asynchronous lane entirely (embedded default): no queue
+    // cells and no payload arena are allocated for the shard.
+    std::size_t async_lane_capacity{};
+    std::size_t async_lane_payload_bytes{};
+    // Per-request payload ceiling for the asynchronous lane. Zero means the
+    // lane's whole payload budget.
+    std::size_t async_maximum_payload_bytes{};
+    // Inclusive queue-wait budget for asynchronous submissions. Zero never
+    // expires queued work. Synchronous embedded mutations always wait.
+    std::uint32_t async_queue_wait_ms{};
+    std::size_t merge_delta_entries{kDefaultPairedMergeDeltaEntries};
+    std::size_t merge_maximum_post_entries{kDefaultPairedMergeMaximumPostEntries};
+    std::size_t merge_quantum_slots{kDefaultPairedMergeQuantumSlots};
+    // True when exactly one Reader thread per shard adopts generations with the
+    // epoch handshake (glyphastored). Embedded readers use the counted read
+    // lease instead, so the Writer reclaims retired generations at quiescence.
+    bool reader_epoch_lease{};
+
+    auto operator==(const PairedConcurrencyConfig&) const -> bool = default;
+};
+
 struct DurablePeriodicConfig {
     std::uint32_t sync_interval_ms{1000};
     std::optional<DurableGroupConfig> batch{
@@ -163,6 +208,9 @@ struct WorkerRoutingConfig {
 struct StoreConfig {
     WorkerCountConfig worker_config{};
     WorkerRoutingConfig worker_routing{};
+    // Paired Reader/Writer shards are the default. legacy_mutex is deprecated.
+    StoreConcurrencyMode concurrency{StoreConcurrencyMode::paired};
+    PairedConcurrencyConfig paired{};
     StorageMode storage_mode{StorageMode::volatile_memory};
     std::optional<std::filesystem::path> data_directory{};
     DurableOpenMode durable_open_mode{DurableOpenMode::open_or_create};

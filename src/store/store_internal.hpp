@@ -4,7 +4,9 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment.hpp"
+#include "glyphastore/store/config.hpp"
 #include "glyphastore/store/maintenance.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/prepared_read.hpp"
 #include "glyphastore/store/store.hpp"
 #include "glyphastore/worker/worker.hpp"
@@ -118,6 +120,9 @@ class StoreAccess final {
     // Durable-only. Lexicographically sorted live Index keys for offline tools.
     [[nodiscard]] static auto snapshot_live_keys(Store& store) -> Result<std::vector<std::string>>;
     [[nodiscard]] static auto durable_manifest(const Store& store) -> Result<Manifest>;
+    [[nodiscard]] static auto attach_paired_runtime(Store& store, const StoreConfig& config) -> Status;
+    [[nodiscard]] static auto shard_pair_runtime(Store& store) noexcept -> store::paired::ShardPairRuntime*;
+    [[nodiscard]] static auto concurrency(const Store& store) noexcept -> StoreConcurrencyMode;
 };
 
 } // namespace glyphastore::detail

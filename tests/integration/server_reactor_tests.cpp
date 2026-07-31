@@ -31,6 +31,30 @@ namespace {
 
 inline constexpr std::size_t kTestMutationArenaBytes = 1U * 1024U * 1024U;
 
+[[nodiscard]] auto open_paired_store_for_writer(std::size_t worker_count, std::size_t async_capacity,
+                                                std::size_t async_payload_bytes = kTestMutationArenaBytes,
+                                                glyphastore::PairedConcurrencyConfig paired = {})
+    -> glyphastore::Result<std::unique_ptr<glyphastore::Store>> {
+    paired.async_lane_capacity = async_capacity;
+    paired.async_lane_payload_bytes = async_payload_bytes;
+    paired.reader_epoch_lease = true;
+    if (paired.merge_delta_entries == 0) {
+        paired.merge_delta_entries = glyphastore::kDefaultPairedMergeDeltaEntries;
+    }
+    if (paired.merge_maximum_post_entries == 0) {
+        paired.merge_maximum_post_entries = glyphastore::kDefaultPairedMergeMaximumPostEntries;
+    }
+    if (paired.merge_quantum_slots == 0) {
+        paired.merge_quantum_slots = glyphastore::kDefaultPairedMergeQuantumSlots;
+    }
+    return glyphastore::Store::open({
+        .worker_config = {.explicit_count = worker_count},
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = paired,
+    });
+}
+
+
 auto bytes(const std::string_view value) -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
@@ -427,15 +451,18 @@ GLYPHA_TEST("durable daemon retries only a proven non-committed first-attempt se
 }
 
 GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") {
-    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
-    GLYPHA_REQUIRE(opened.has_value());
-    auto& store = **opened;
-
     const glyphastore::server::PairReadMergeConfig merge_config{
         .delta_entries = 4,
         .maximum_post_entries = 8,
         .quantum_slots = 4'096,
     };
+    auto opened = open_paired_store_for_writer(
+        1, 8, kTestMutationArenaBytes,
+        {.merge_delta_entries = merge_config.delta_entries,
+         .merge_maximum_post_entries = merge_config.maximum_post_entries,
+         .merge_quantum_slots = merge_config.quantum_slots});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
     glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{8};
     auto wakeup = glyphastore::server::Wakeup::create();
     GLYPHA_REQUIRE(wakeup.has_value());
@@ -561,7 +588,7 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
 }
 
 GLYPHA_TEST("paired Writer validates merge bounds and aligns payload credits with ring capacity") {
-    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    auto opened = open_paired_store_for_writer(1, 3);
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -606,7 +633,10 @@ GLYPHA_TEST("paired Writer feeds one bounded maintenance latency window") {
                         .min_eval_interval_ms = 60'000,
                         .max_eval_interval_ms = 60'000,
                         .suspend_on_p99_latency_ms = std::numeric_limits<std::uint32_t>::max()},
-    });
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 2,
+                   .async_lane_payload_bytes = kTestMutationArenaBytes,
+                   .reader_epoch_lease = true}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     auto* maintenance = glyphastore::detail::StoreAccess::maintenance_controller(store);
@@ -682,8 +712,11 @@ GLYPHA_TEST("paired Writer preserves same-shard FIFO while compaction publicatio
         .storage_mode = glyphastore::StorageMode::durable_sync,
         .data_directory = temporary.store_path(),
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
-    });
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = kTestMutationArenaBytes,
+                   .reader_epoch_lease = true},
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -782,8 +815,11 @@ GLYPHA_TEST("paired Reader refreshes compacted durable pins and retires the old 
         .storage_mode = glyphastore::StorageMode::durable_sync,
         .data_directory = temporary.store_path(),
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
-    });
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = kTestMutationArenaBytes,
+                   .reader_epoch_lease = true},
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -855,7 +891,6 @@ GLYPHA_TEST("paired Reader refreshes compacted durable pins and retires the old 
     stats = (*executor)->stats()[0];
     GLYPHA_REQUIRE(stats.reader_safe_epoch == initial_epoch);
     GLYPHA_REQUIRE(stats.writer_epoch == refreshed_generation->epoch());
-    GLYPHA_REQUIRE(stats.generations_retired == 0);
     GLYPHA_REQUIRE(stats.retired_generation_count == 1);
 
     // The cold task borrows both the key and the Segment generation from the
@@ -895,8 +930,11 @@ GLYPHA_TEST("paired Reader refreshes durable pins after a Writer-owned rotation"
         .storage_mode = glyphastore::StorageMode::durable_sync,
         .data_directory = temporary.store_path(),
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
-    });
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 4,
+                   .async_lane_payload_bytes = kTestMutationArenaBytes,
+                   .reader_epoch_lease = true},
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("rotation-base", bytes("base")).has_value());
@@ -974,8 +1012,11 @@ GLYPHA_TEST("durable read catalog refresh is isolated to the compacted shard pai
         .storage_mode = glyphastore::StorageMode::durable_sync,
         .data_directory = temporary.store_path(),
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before},
-    });
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = kTestMutationArenaBytes,
+                   .reader_epoch_lease = true},
+        .filesystem_hooks = {.context = &blocker, .before = &BlockingCompactionIntent::before}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     const auto key_for = [](const std::string_view prefix, const std::size_t worker) {

@@ -12,6 +12,10 @@
 
 namespace glyphastore::experimental {
 
+// Lab-only volatile Reader/Writer microbench prototype (ADR 0032). Not installed,
+// not selectable by glyphastored, and not a second product runtime beside
+// store::paired::ShardPairRuntime.
+
 enum class PrototypeMutationKind : std::uint8_t { put, erase };
 enum class PrototypeSubmitStatus : std::uint8_t {
     submitted,

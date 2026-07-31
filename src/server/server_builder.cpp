@@ -65,6 +65,15 @@ auto ServerBuilder::build() -> Result<ServerRuntime> {
         return fail(ErrorCode::invalid_argument, "Store worker count must match the server executor count");
     }
     store_config_.worker_config.explicit_count = config_.worker_count;
+    store_config_.concurrency = StoreConcurrencyMode::paired;
+    store_config_.paired.async_lane_capacity = config_.durable_mutation_queue_capacity;
+    store_config_.paired.async_lane_payload_bytes = config_.durable_mutation_queue_bytes;
+    store_config_.paired.async_queue_wait_ms = config_.durable_mutation_queue_wait_ms;
+    store_config_.paired.reader_epoch_lease = true;
+    if (store_config_.storage_mode != StorageMode::volatile_memory) {
+        // Generation-only ordinary reads for the daemon paired path.
+        store_config_.durable_limits.hot_cache_enabled = false;
+    }
     auto store = Store::open(std::move(store_config_));
     if (!store) {
         return unexpected(store.error());

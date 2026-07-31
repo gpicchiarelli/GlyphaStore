@@ -6,9 +6,9 @@
 #include "glyphastore/server/latency_histogram.hpp"
 #include "glyphastore/server/pair_read_generation.hpp"
 #include "glyphastore/server/wakeup.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/store.hpp"
 
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -16,12 +16,11 @@
 #include <memory>
 #include <optional>
 #include <span>
-#include <thread>
 #include <vector>
 
 namespace glyphastore::server {
 
-enum class MutationKind : std::uint8_t { put, erase };
+enum class MutationKind : std::uint8_t { put = 0, erase = 1 };
 
 struct MutationCompletion final {
     ConnectionToken connection;
@@ -103,19 +102,17 @@ struct PairReadMergeConfig final {
     std::size_t quantum_slots{4'096};
 };
 
-// Paired Writer runtime. Every Store shard owns exactly one persistent Writer
-// thread and one bounded SPSC mutation lane.
-// The paired Reader is the sole producer, so the normal mutation path contains
-// no mutex, condition variable, allocation for queue cells, or competing
-// mutator. The same lane serves volatile and durable Stores.
+// Thin daemon adapter over Store-owned ShardPairRuntime (ADR 0032). Generation
+// authority and Writer threads live in the Store; this type only maps Reactor
+// ConnectionToken/Wakeup completions onto the shared runtime.
 class PairWriterPool final {
   public:
-    static constexpr std::size_t kMaximumRetiredReadGenerations = 64;
-    static constexpr std::size_t kMaximumReaderLeaseEpochs = kMaximumRetiredReadGenerations + 1U;
-    // Stable cross-platform accounting charge. Queue cells and payload storage
-    // are preallocated, but preserving a metadata charge keeps the configured
-    // byte-admission contract independent of ABI-specific sizeof values.
-    static constexpr std::size_t kMutationAdmissionOverheadBytes = 128;
+    static constexpr std::size_t kMaximumRetiredReadGenerations =
+        store::paired::ShardPairRuntime::kMaximumRetiredReadGenerations;
+    static constexpr std::size_t kMaximumReaderLeaseEpochs =
+        store::paired::ShardPairRuntime::kMaximumReaderLeaseEpochs;
+    static constexpr std::size_t kMutationAdmissionOverheadBytes =
+        store::paired::ShardPairRuntime::kMutationAdmissionOverheadBytes;
 
     [[nodiscard]] static auto create(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
                                      std::size_t payload_bytes_per_worker,
@@ -130,67 +127,26 @@ class PairWriterPool final {
     auto operator=(PairWriterPool&&) -> PairWriterPool& = delete;
 
     [[nodiscard]] auto start() -> Status;
-    // Copies the borrowed request bytes into the lane's preallocated slot pool
-    // before returning. nullopt means bounded admission rejected the request.
     [[nodiscard]] auto try_submit(const MutationRequest& request) noexcept -> std::optional<std::size_t>;
-    // Reader-only after acquiring the matching completion. False is an
-    // internal FIFO/lifetime violation and must fail the Reactor closed.
     [[nodiscard]] auto release_payload(std::size_t worker_index, std::uint32_t payload_slot) noexcept -> bool;
     [[nodiscard]] static auto mutation_admission_bytes(std::size_t key_bytes,
                                                        std::size_t value_bytes) noexcept
         -> std::optional<std::size_t>;
     void note_rejected(std::size_t worker_index) noexcept;
     [[nodiscard]] auto stats() const -> std::vector<PairWriterStats>;
-    // Acquire one immutable view per Reader event-loop turn and report the
-    // adopted epoch. The paired Writer retains that epoch until a later turn
-    // reports quiescence; GET performs no refcount or lock operation.
-    // minimum_leased_epoch is the oldest generation still borrowed by an
-    // asynchronous Reader operation, or UINT64_MAX when none exists. The
-    // Writer may reclaim only generations older than the resulting safe epoch.
     [[nodiscard]] auto adopt_read_generation(
         std::size_t worker_index,
         std::uint64_t minimum_leased_epoch = std::numeric_limits<std::uint64_t>::max()) const noexcept
         -> const PairReadGeneration*;
-    // Reader-side atomic poll. A stale durable catalog wakes only the paired
-    // Writer; snapshot construction and publication never execute on Reader.
     void request_read_refresh(std::size_t worker_index) noexcept;
-    [[nodiscard]] auto healthy() const noexcept -> bool {
-        return healthy_.load(std::memory_order_acquire);
-    }
-    // Stops admission and drains every admitted mutation before returning.
-    // nullopt waits unbounded. A set deadline expires remaining queued (pre-Store)
-    // work as unavailable once it elapses (including a zero deadline, which arms
-    // expiry immediately); in-flight Store mutations are never cancelled.
-    // Returns unavailable if the deadline expired before workers finished.
+    [[nodiscard]] auto healthy() const noexcept -> bool;
     [[nodiscard]] auto stop_and_drain(std::optional<std::chrono::milliseconds> deadline = std::nullopt)
         -> Status;
 
   private:
-    struct Lane;
+    explicit PairWriterPool(store::paired::ShardPairRuntime& runtime) noexcept;
 
-    PairWriterPool(Store& store, std::size_t worker_count, std::size_t capacity_per_worker,
-                   std::size_t payload_bytes_per_worker, std::chrono::milliseconds maximum_queue_wait,
-                   std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations,
-                   std::vector<std::uint64_t> initial_catalog_revisions, PairReadMergeConfig read_merge);
-    void run(std::size_t worker_index) noexcept;
-    void note_worker_exit() noexcept;
-    [[nodiscard]] auto begin_submission() noexcept -> bool;
-    void finish_submission() noexcept;
-
-    static constexpr auto kAdmissionClosed = std::size_t{1}
-                                             << (std::numeric_limits<std::size_t>::digits - 1U);
-    static constexpr auto kAdmissionCountMask = kAdmissionClosed - 1U;
-
-    Store& store_;
-    const std::chrono::milliseconds maximum_queue_wait_;
-    const PairReadMergeConfig read_merge_config_;
-    std::vector<std::unique_ptr<Lane>> lanes_;
-    std::atomic_size_t active_workers_{};
-    std::atomic_size_t admission_state_{};
-    std::atomic_bool started_{};
-    std::atomic_bool stopping_{};
-    std::atomic_bool expire_remaining_{};
-    std::atomic_bool healthy_{true};
+    store::paired::ShardPairRuntime& runtime_;
 };
 
 } // namespace glyphastore::server

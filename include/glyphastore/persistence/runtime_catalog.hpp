@@ -39,9 +39,13 @@ class DurableFlushCoordinator;
 namespace detail {
 class StoreAccess;
 }
-namespace server {
+namespace store::paired {
 class ImmutableReadIndex;
 class PairReadGeneration;
+} // namespace store::paired
+namespace server {
+using store::paired::ImmutableReadIndex;
+using store::paired::PairReadGeneration;
 } // namespace server
 
 enum class DurableMutationOutcome { committed, not_committed, indeterminate };
@@ -268,8 +272,8 @@ class DurableRuntimeCatalog final {
         const PublishedReadPin* pin_{};
 
         friend class DurableRuntimeCatalog;
-        friend class server::ImmutableReadIndex;
-        friend class server::PairReadGeneration;
+        friend class store::paired::ImmutableReadIndex;
+        friend class store::paired::PairReadGeneration;
     };
     static_assert(std::is_trivially_copyable_v<PublishedReadView>);
     static_assert(sizeof(PublishedReadView) <= 72);

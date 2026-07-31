@@ -108,6 +108,9 @@ add_library(glyphastore_core
     src/segment/segment.cpp
     src/segment/segment_header.cpp
     src/store/maintenance.cpp
+    src/store/paired/mutation_slot_pool.cpp
+    src/store/paired/read_generation.cpp
+    src/store/paired/shard_pair_runtime.cpp
     src/store/store.cpp
     src/vacuum/vacuum.cpp
     src/worker/pool.cpp
@@ -214,8 +217,6 @@ add_library(glyphastore_server_core
     src/server/daemon_config.cpp
     src/server/daemon_log.cpp
     src/server/disk_read_executor.cpp
-    src/server/mutation_slot_pool.cpp
-    src/server/pair_read_generation.cpp
     src/server/pair_writer.cpp
     src/server/openbsd_sandbox.cpp
     src/server/peercred.cpp
@@ -328,6 +329,7 @@ if(BUILD_TESTING)
         tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp
         tests/integration/optimization_regression_tests.cpp
+        tests/integration/paired_store_tests.cpp
         tests/integration/persistence_recovery_tests.cpp
         tests/integration/paired_reactor_prototype_tests.cpp
         tests/integration/rebuild_vacuum_tests.cpp

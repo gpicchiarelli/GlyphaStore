@@ -6,6 +6,12 @@
   (`concurrency-memory-model`, `worker-model`, `public-api-contract`, glossary). Deprecated
   `legacy_mutex` escape hatch documented for 0.1.x removal in 0.2; mixing legacy mutators with a
   paired Writer on one Store is refused / UB.
+- Embed `ShardPairRuntime` in `glyphastore_core`: `Store::open` defaults to paired (Writer thread +
+  published `ReadGeneration` per shard). Public `get` adopts the generation (durable cold reads
+  complete synchronously); `put`/`erase` hand off to the Writer. Durable hot-cache admission is
+  disabled in paired mode (generation-only). `glyphastored` opens the same paired Store and uses a
+  thin `PairWriterPool` adapter (no second publication spine). `src/experimental/paired_*` remains
+  lab-only.
 - Document paired Reader–Writer as the sole `glyphastored` 0.1.0 runtime (ADR 0031); the volatile
   engine under `src/experimental/` remains lab-only and is not a second selectable daemon. Inventory:
   public `Store::get` keeps owning pins; daemon GET borrows a Reader-local `ReadGeneration`;

@@ -8,6 +8,7 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/store/maintenance.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
@@ -341,21 +342,34 @@ struct Store::Impl {
             }
         } finalizer{this};
 
+        // Drain paired Writers while Store admission is still open so exclusive
+        // StoreAccess mutations nested under the Writer can still admit.
+        Status result;
+        if (pair_runtime) {
+            auto drained = pair_runtime->stop_and_drain();
+            if (!drained) {
+                result = std::move(drained);
+            }
+        }
+
         close_admission();
         // Stop new maintenance evaluations, then drain admitted ops (including compact),
         // then join the controller — matching DurableFlushCoordinator shutdown ordering.
         if (maintenance) {
             maintenance->request_stop();
         }
-        Status result;
         try {
             if (durable_runtime) {
                 durable_runtime->request_close_flush();
             }
         } catch (const std::bad_alloc&) {
-            result = resource_exhausted();
+            if (result) {
+                result = resource_exhausted();
+            }
         } catch (...) {
-            result = internal_failure();
+            if (result) {
+                result = internal_failure();
+            }
         }
         if (!result && durable_runtime) {
             // Release any strict-group producer even when posting the close flush itself failed.
@@ -365,6 +379,8 @@ struct Store::Impl {
         if (maintenance) {
             maintenance->join();
         }
+        // Keep pair_runtime until Store destruction so thin daemon adapters can
+        // still read stats after stop_and_drain / close.
 
         try {
             if (durable_runtime) {
@@ -413,9 +429,11 @@ struct Store::Impl {
 
     std::size_t worker_count_value{};
     WorkerRoutingState routing{};
+    StoreConcurrencyMode concurrency{StoreConcurrencyMode::paired};
     std::unique_ptr<ActiveOperationCounter[]> active_operations;
     std::unique_ptr<VolatileStoreRuntime> volatile_runtime;
     std::unique_ptr<DurableRuntimeCatalog> durable_runtime;
+    std::unique_ptr<store::paired::ShardPairRuntime> pair_runtime;
     std::shared_ptr<const StoreClock> clock;
     std::atomic<std::uint64_t> latest_now_ns{};
     std::mutex compaction_mutex;
@@ -478,6 +496,11 @@ detail::PreparedColdRead::~PreparedColdRead() {
     reset();
 }
 
+
+[[nodiscard]] auto start_paired_runtime(Store& store, StoreConfig config) -> Status {
+    return detail::StoreAccess::attach_paired_runtime(store, config);
+}
+
 Store::Store(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
 Store::~Store() {
     try {
@@ -492,6 +515,10 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         config.storage_mode != StorageMode::durable_periodic &&
         config.storage_mode != StorageMode::durable_group) {
         return fail(ErrorCode::invalid_argument, "storage mode is unsupported");
+    }
+    if (config.concurrency != StoreConcurrencyMode::paired &&
+        config.concurrency != StoreConcurrencyMode::legacy_mutex) {
+        return fail(ErrorCode::invalid_argument, "store concurrency mode is unsupported");
     }
     if (config.durable_open_mode != DurableOpenMode::open_or_create &&
         config.durable_open_mode != DurableOpenMode::open_existing &&
@@ -542,6 +569,11 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
                 return MaintenanceObservation{.durable = false};
             });
         store->impl_->maintenance->start();
+        store->impl_->concurrency = config.concurrency;
+        if (auto paired = start_paired_runtime(*store, config); !paired) {
+            static_cast<void>(store->close());
+            return unexpected(paired.error());
+        }
         return store;
     }
     if (!config.data_directory || config.data_directory->empty()) {
@@ -578,6 +610,10 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     }
     DurableRuntimeOptions runtime_options{};
     runtime_options.limits = config.durable_limits;
+    if (config.concurrency == StoreConcurrencyMode::paired) {
+        // Generation-only ordinary reads (ADR 0032).
+        runtime_options.limits.hot_cache_enabled = false;
+    }
     if (config.storage_mode == StorageMode::durable_periodic) {
         runtime_options.commit_sync = SegmentCommitSync::deferred;
         runtime_options.sync_interval_ms = config.durable_periodic.sync_interval_ms;
@@ -619,6 +655,11 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
             return observation;
         });
     store->impl_->maintenance->start();
+    store->impl_->concurrency = config.concurrency;
+    if (auto paired = start_paired_runtime(*store, config); !paired) {
+        static_cast<void>(store->close());
+        return unexpected(paired.error());
+    }
     return store;
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
@@ -640,11 +681,37 @@ auto Store::get(const std::span<const std::byte> key) -> Result<OwnedValue> {
 
 auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
     const HashedKey hashed{key, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     const auto now_ns = impl_->now_ns();
+    if (impl_->pair_runtime) {
+        store::paired::ShardPairRuntime::ReadLease lease{*impl_->pair_runtime, shard};
+        if (!lease) {
+            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+        }
+        if (impl_->durable_runtime) {
+            auto view = lease.generation()->prepare_durable(hashed);
+            if (!view) {
+                return unexpected(view.error());
+            }
+            auto prepared =
+                detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
+            if (!prepared) {
+                return unexpected(prepared.error());
+            }
+            if (prepared->value) {
+                return std::move(*prepared->value);
+            }
+            if (prepared->cold) {
+                return detail::StoreAccess::complete_get_owned(*this, shard, std::move(*prepared->cold));
+            }
+            return fail(ErrorCode::internal_error, "paired durable GET produced no result");
+        }
+        return lease.generation()->get(hashed, now_ns);
+    }
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->get(hashed, now_ns);
     }
@@ -665,11 +732,37 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
 auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue> try {
     const auto key_view = as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     const auto now_ns = impl_->now_ns();
+    if (impl_->pair_runtime) {
+        store::paired::ShardPairRuntime::ReadLease lease{*impl_->pair_runtime, shard};
+        if (!lease) {
+            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+        }
+        if (impl_->durable_runtime) {
+            auto view = lease.generation()->prepare_durable(hashed);
+            if (!view) {
+                return unexpected(view.error());
+            }
+            auto prepared =
+                detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
+            if (!prepared) {
+                return unexpected(prepared.error());
+            }
+            if (prepared->value) {
+                return std::move(*prepared->value);
+            }
+            if (prepared->cold) {
+                return detail::StoreAccess::complete_get_owned(*this, shard, std::move(*prepared->cold));
+            }
+            return fail(ErrorCode::internal_error, "paired durable GET produced no result");
+        }
+        return lease.generation()->get(hashed, now_ns);
+    }
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->get(hashed, now_ns);
     }
@@ -690,12 +783,17 @@ auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue>
 auto Store::put(const std::string_view key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status try {
     const HashedKey hashed{key, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
+    }
+    if (impl_->pair_runtime) {
+        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::put, hashed, value,
+                                           expire_at_ns);
     }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
@@ -712,12 +810,17 @@ auto Store::put(const std::span<const std::byte> key, const std::span<const std:
                 const std::uint64_t expire_at_ns) -> Status try {
     const auto key_view = as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
+    }
+    if (impl_->pair_runtime) {
+        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::put, hashed, value,
+                                           expire_at_ns);
     }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
@@ -732,12 +835,16 @@ auto Store::put(const std::span<const std::byte> key, const std::span<const std:
 
 auto Store::erase(const std::string_view key) -> Status try {
     const HashedKey hashed{key, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
+    }
+    if (impl_->pair_runtime) {
+        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::erase, hashed, {}, 0);
     }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(hashed));
@@ -753,12 +860,16 @@ auto Store::erase(const std::string_view key) -> Status try {
 auto Store::erase(const std::span<const std::byte> key) -> Status try {
     const auto key_view = as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    Impl::OperationGuard operation{*impl_, route_worker(hashed.hash, impl_->worker_count_value)};
+    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
         return closed_store();
     }
     if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
+    }
+    if (impl_->pair_runtime) {
+        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::erase, hashed, {}, 0);
     }
     if (impl_->durable_runtime) {
         return durable_status(impl_->durable_runtime->erase(hashed));
@@ -1425,6 +1536,32 @@ auto detail::StoreAccess::durable_manifest(const Store& store) -> Result<Manifes
         return fail(ErrorCode::invalid_argument, "durable manifest requires a durable Store");
     }
     return store.impl_->durable_runtime->manifest();
+}
+
+[[nodiscard]] auto detail::StoreAccess::attach_paired_runtime(Store& store, const StoreConfig& config)
+    -> Status {
+    if (config.concurrency != StoreConcurrencyMode::paired) {
+        store.impl_->concurrency = config.concurrency;
+        return {};
+    }
+    auto runtime = store::paired::ShardPairRuntime::create(store, config.paired);
+    if (!runtime) {
+        return unexpected(runtime.error());
+    }
+    if (auto started = (*runtime)->start(); !started) {
+        return started;
+    }
+    store.impl_->concurrency = StoreConcurrencyMode::paired;
+    store.impl_->pair_runtime = std::move(*runtime);
+    return {};
+}
+
+auto detail::StoreAccess::shard_pair_runtime(Store& store) noexcept -> store::paired::ShardPairRuntime* {
+    return store.impl_->pair_runtime.get();
+}
+
+auto detail::StoreAccess::concurrency(const Store& store) noexcept -> StoreConcurrencyMode {
+    return store.impl_->concurrency;
 }
 
 } // namespace glyphastore

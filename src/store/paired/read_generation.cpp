@@ -1,4 +1,4 @@
-#include "glyphastore/server/pair_read_generation.hpp"
+#include "glyphastore/store/paired/read_generation.hpp"
 
 #include "glyphastore/index/swiss_control_group.hpp"
 
@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace glyphastore::server {
+namespace glyphastore::store::paired {
 namespace {
 
 inline constexpr std::size_t kDeltaPageSlots = 16;
@@ -1453,4 +1453,4 @@ auto PairReadGeneration::base_entries() const noexcept -> std::size_t {
     return base_->size();
 }
 
-} // namespace glyphastore::server
+} // namespace glyphastore::store::paired
