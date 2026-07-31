@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Add cross-builder SDK archive digest compare (`scripts/compare-sdk-artifact-sums.sh`, job
+  `sdk-repro-cross` on `ubuntu-22.04` vs primary supply-chain sums) for tags/dispatch/weekly.
 - Normalize Python sdist / Perl tar.gz with `scripts/normalize-tar-gz.sh` (epoch mtimes +
   `gzip -n`) so two-pass reproducibility covers wheels, gems, and those archives.
 - Pin `SOURCE_DATE_EPOCH` for SDK packaging (`scripts/export-reproducible-build-env.sh`) and gate

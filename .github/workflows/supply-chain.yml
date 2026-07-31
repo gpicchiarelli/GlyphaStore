@@ -124,3 +124,44 @@ jobs:
             dist/sdk-artifacts/*.gem
             dist/sdk-artifacts/*.tar.gz
             dist/sdk-artifacts/*package-info.txt
+
+  # Second Linux image rebuilds archives with the same SOURCE_DATE_EPOCH and must match digests.
+  sdk-repro-cross:
+    name: Cross-builder archive digests
+    needs: sdk-sbom
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Export reproducible build env
+        run: |
+          {
+            echo "GLYPHASTORE_ROOT=${{ github.workspace }}"
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)"
+            echo "TZ=UTC"
+            echo "PYTHONHASHSEED=0"
+            echo "PERL_HASH_SEED=0"
+            echo "DETERMINISTIC_BUILD=1"
+          } >>"$GITHUB_ENV"
+      - name: Package Python / Perl / Ruby archives
+        run: |
+          ./scripts/package-python-client.sh
+          ./scripts/package-perl-client.sh
+          ./scripts/package-ruby-client.sh
+          ./scripts/checksum-sdk-artifacts.sh dist/sdk-artifacts-cross
+      - name: Download reference sums from primary builder
+        uses: actions/download-artifact@v4
+        with:
+          name: sdk-supply-chain-${{ github.sha }}
+          path: dist/sdk-artifacts-ref
+      - name: Compare archive digests across builders
+        run: |
+          ./scripts/compare-sdk-artifact-sums.sh \
+            dist/sdk-artifacts-ref/SHA256SUMS \
+            dist/sdk-artifacts-cross/SHA256SUMS

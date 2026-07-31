@@ -182,12 +182,10 @@ below has automated evidence. A design document or implementation alone does not
   Tagged release-artifact CI (signed tarballs / provenance attach) remains deferred; current CI proves
   build/test/install-consumer gates plus SDK checksum/SBOM upload, not a full signed release pipeline.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
-  Checksums + SPDX + Cosign tag signing + SLSA attestations (public/opt-in) landed. Two-pass
-  reproducibility under `SOURCE_DATE_EPOCH` covers wheels, gems, and normalized sdists/Perl
-  tarballs. Residual: multi-builder comparison across OS images.
-  Checksums + SPDX SBOM generation are gated in CI (`SYFT_REQUIRED=1`); release tags produce
-  Cosign keyless `.cosign.bundle` signatures. Reproducibility and SLSA provenance attestations
-  remain open.
+  Checksums + SPDX + Cosign tag signing + SLSA attestations (public/opt-in) landed. Two-pass and
+  cross-builder (`ubuntu-latest` vs `ubuntu-22.04`) archive digest checks gate tags/dispatch/weekly
+  under `SOURCE_DATE_EPOCH` + `normalize-tar-gz.sh`. Residual: macOS/Windows builders if those
+  become release hosts.
 - [x] Upgrade, downgrade, deprecation, support, and end-of-life policies are published for 0.x /
   persistence v1 (reopen rules, offline Worker migrate, no ABI before 1.0). Formal support windows
   for beta/RC/stable remain P3.

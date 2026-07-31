@@ -47,7 +47,8 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
 
 1. Run `./scripts/package-all-sdk-clients.sh` (exports `SOURCE_DATE_EPOCH` from HEAD)
 2. Optionally `./scripts/verify-sdk-artifact-reproducibility.sh` (two-pass digest compare for
-   wheels, gems, and normalized sdists/Perl tarballs)
+   wheels, gems, and normalized sdists/Perl tarballs). Supply-chain CI also rebuilds on
+   `ubuntu-22.04` and runs `./scripts/compare-sdk-artifact-sums.sh` against the primary sums.
 3. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
    (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain

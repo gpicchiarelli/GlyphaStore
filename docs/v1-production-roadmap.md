@@ -451,9 +451,9 @@ Primary references:
   an artifact. Fail or warn on unexpectedly low analyzed-source coverage.
 - Checksums + SPDX SBOM for packaged SDK artifacts are gated in CI
   (`.github/workflows/supply-chain.yml`, `SYFT_REQUIRED=1`). Tag pushes keyless-sign blobs with
-  Cosign/Sigstore (`.cosign.bundle`). Tag/dispatch runs also verify wheel/gem/sdist/Perl-tarball
-  bit-reproducibility under `SOURCE_DATE_EPOCH` + `normalize-tar-gz.sh`. Still open: independent
-  multi-builder comparison across OS images.
+  Cosign/Sigstore (`.cosign.bundle`). Tag/dispatch/weekly runs verify two-pass digests and a second
+  Linux builder (`ubuntu-22.04`) against the primary sums. Residual: non-Linux release hosts if
+  added later.
 - Test installation/uninstallation, static/shared policy, symbol visibility, consumer exceptions/RTTI
   compatibility, and the declared compiler/standard-library matrix. Continue to avoid an ABI promise
   before 1.0.
