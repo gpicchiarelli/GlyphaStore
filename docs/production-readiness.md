@@ -170,7 +170,8 @@ below has automated evidence. A design document or implementation alone does not
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). SBOM + checksum CI landed
   (`.github/workflows/supply-chain.yml`); gitleaks + Trivy fs CI landed
-  (`.github/workflows/supply-chain-scan.yml`); signing / provenance remain open.
+  (`.github/workflows/supply-chain-scan.yml`); tag Cosign/Sigstore keyless blob signing
+  is wired in `supply-chain.yml`; project GPG / SLSA provenance remain optional.
 
 ### Distribution and lifecycle
 
@@ -180,8 +181,9 @@ below has automated evidence. A design document or implementation alone does not
   Tagged release-artifact CI (signed tarballs / provenance attach) remains deferred; current CI proves
   build/test/install-consumer gates plus SDK checksum/SBOM upload, not a full signed release pipeline.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
-  Checksums + SPDX SBOM generation are gated in CI (`SYFT_REQUIRED=1`); signing, reproducibility,
-  and provenance attestations remain open.
+  Checksums + SPDX SBOM generation are gated in CI (`SYFT_REQUIRED=1`); release tags produce
+  Cosign keyless `.cosign.bundle` signatures. Reproducibility and SLSA provenance attestations
+  remain open.
 - [x] Upgrade, downgrade, deprecation, support, and end-of-life policies are published for 0.x /
   persistence v1 (reopen rules, offline Worker migrate, no ABI before 1.0). Formal support windows
   for beta/RC/stable remain P3.

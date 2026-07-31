@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write # Sigstore keyless (Fulcio) on tag pushes
 
 concurrency:
   group: supply-chain-${{ github.ref }}
@@ -56,11 +57,41 @@ jobs:
         env:
           SYFT_REQUIRED: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
-      - name: Upload SHA256SUMS and SPDX SBOMs
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: sigstore/cosign-installer@v3.8.2
+      - name: Keyless-sign SDK artifacts (Sigstore)
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: dist/sdk-artifacts
+        run: |
+          set -euo pipefail
+          # Sign each packaged blob + the checksums manifest. Bundles attach Fulcio cert + Rekor entry.
+          while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            case "$base" in
+              *.spdx.json|*.cosign.bundle|SHA256SUMS) continue ;;
+            esac
+            echo "cosign sign-blob $base"
+            cosign sign-blob --yes --bundle "${base}.cosign.bundle" "$base"
+          done < <(find . -maxdepth 1 -type f -print0)
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          identity="https://github.com/${{ github.repository }}/.github/workflows/supply-chain.yml@${{ github.ref }}"
+          issuer="https://token.actions.githubusercontent.com"
+          echo "verify identity=$identity"
+          while IFS= read -r -d '' bundle; do
+            artifact="${bundle%.cosign.bundle}"
+            cosign verify-blob \
+              --bundle "$bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" \
+              "$artifact"
+          done < <(find . -maxdepth 1 -type f -name '*.cosign.bundle' -print0)
+      - name: Upload SHA256SUMS, SPDX, and cosign bundles
         uses: actions/upload-artifact@v4
         with:
           name: sdk-supply-chain-${{ github.sha }}
           path: |
             dist/sdk-artifacts/SHA256SUMS
             dist/sdk-artifacts/*.spdx.json
+            dist/sdk-artifacts/*.cosign.bundle
           if-no-files-found: error

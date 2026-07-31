@@ -1,7 +1,9 @@
 ## [Unreleased]
 
+- Wire Cosign/Sigstore keyless `sign-blob` for packaged SDK artifacts on tag pushes
+  (`.github/workflows/supply-chain.yml`); verify bundles in-job. Project GPG remains optional.
 - Add gitleaks + Trivy filesystem scanning CI (`.github/workflows/supply-chain-scan.yml`) for
-  Phase 7.1 secret/dependency gates on main and PRs. Artifact signing / Sigstore remain open.
+  Phase 7.1 secret/dependency gates on main and PRs.
 - Expand secure-profile interop smoke (`scripts/test-secure-profile-interop.sh`): authz deny for
   unmapped mTLS principals, `prefix=` key-scope allow/deny, and `--tls-crl` rejection of revoked
   client certs (cpp/python/go happy path unchanged). Residual: perl/ruby/erlang in that matrix.
@@ -10,8 +12,8 @@
   `--secure-profile`, cpp/python/go PUT→GET + keyed owner checks; wired into CI `sdk-clients`
   (`timeout-minutes: 5`, TLS build forced `GLYPHASTORE_ENABLE_TLS=ON`).
 - Add supply-chain CI gate (`.github/workflows/supply-chain.yml`): package SDKs, require `syft`
-  SPDX JSON (`SYFT_REQUIRED=1`), upload `SHA256SUMS` + `*.spdx.json`. Artifact signing / Sigstore
-  and build provenance remain open.
+  SPDX JSON (`SYFT_REQUIRED=1`), upload `SHA256SUMS` + `*.spdx.json`. Tag Cosign keyless signing
+  and SLSA provenance remain documented separately (signing now on tags; provenance still open).
 - Complete the ADR 0030 keyed Worker routing SDK train: Python / Perl / Go / Erlang / Ruby decode
   plain and extended INIT identities, implement SipHash-2-4 bit-for-bit with C++, and route with
   the disclosed seed. Cleartext FNV default path unchanged. Interop harness runs FNV for the full

@@ -50,7 +50,9 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
    (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain
    distinct on case-insensitive filesystems)
-3. Sign with Sigstore/`cosign` or project GPG when keys/OIDC are configured (not wired yet)
+3. On tagged releases the supply-chain workflow keyless-signs blobs with Cosign/Sigstore
+   (`.cosign.bundle` next to each artifact + `SHA256SUMS`). Optional project GPG remains
+   operator-owned.
 4. Publish:
    - Python: `twine upload` (Trusted Publisher preferred)
    - Perl: PAUSE upload of `GlyphaStore-VERSION.tar.gz`
