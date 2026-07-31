@@ -1,15 +1,17 @@
-# Offline durable backup and restore
+# Durable backup and restore
 
-Status: implemented for stopped Stores
-Applies to: durable data directories (`manifest.glypha` + catalog Segments)
-Owner: persistence maintainers
-Last reviewed: 2026-07-21
+Status: offline implemented; online fenced backup implemented for open Stores  
+Applies to: durable data directories (`manifest.glypha` + catalog Segments)  
+Owner: persistence maintainers  
+Last reviewed: 2026-07-31
 
 ## Contract
 
-Backup and restore are **offline** operations. Stop `glyphastored` / close every Store that holds the
-source directory before running them. The implementation takes the exclusive Store lock and fails
-closed if the directory is already locked.
+### Offline (`glyphastore_backup_store` / `backup_durable_store`)
+
+Backup and restore are **offline** operations when driven by the CLI. Stop `glyphastored` / close
+every Store that holds the source directory before running them. The implementation takes the
+exclusive Store lock and fails closed if the directory is already locked.
 
 Procedure:
 
@@ -23,9 +25,23 @@ Procedure:
 Restore is the same verified copy from a backup directory into a new empty destination. Ordinary
 `Store::open(..., open_existing)` rebuilds Indexes via recovery.
 
+### Online (`Store::backup_to`)
+
+An open durable Store may copy its catalog into an empty destination without releasing the
+data-directory lock:
+
+1. Fence new Store admissions (in-flight ops drain; concurrent `put`/`get` see `unavailable` briefly).
+2. Flush durable state.
+3. Hold the catalog exclusive lock; verify + copy Manifest catalog Segments then `manifest.glypha`.
+4. Resume admissions; verify the destination independently.
+
+This is **online** (daemon/Store process stays up) with a **writer fence** during the copy window.
+It is not a fully concurrent hot copy of active Segment tails under unpaced writers, and it is not
+filesystem freeze / COW snapshot orchestration.
+
 ## Explicit non-goals
 
-- Live/hot backup while writers hold the Store lock
+- Fully concurrent hot backup with zero admission fencing
 - Copying crash temporaries, compaction intents, or bootstrap intents into a backup
 - In-place destructive repair
 - Filesystem freeze / COW snapshot orchestration
@@ -39,14 +55,21 @@ Operator procedures: [backup-restore runbook](../operations/backup-restore.md),
 
 | Condition | Result |
 | --- | --- |
-| Source locked by Store/daemon | `io_error` (already locked) |
+| Source locked by Store/daemon (offline tool) | `io_error` (already locked) |
 | Source fails verify | same error as `verify_durable_store` |
 | Destination exists / non-empty | `sequence_conflict` or `invalid_argument` |
 | Copy I/O failure mid-way | fail closed; destination may be incomplete and must not be opened for service without re-verify |
+| Online backup on volatile Store | `invalid_argument` |
 
 ## Tooling
 
 ```bash
 glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/backup
 glyphastore_backup_store [--json] [--no-scan] -- /path/to/backup /path/to/restored
+```
+
+Embedded / in-process:
+
+```cpp
+store->backup_to("/path/to/empty/backup");
 ```

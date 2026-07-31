@@ -32,8 +32,9 @@ Open release gates (summary):
   reclaim-debt override. Phase 5 connection/handshake/principal rate limits and idle/request deadlines are
   implemented (`--secure-profile` applies defaults).
 - Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification (E3/E4 open).
-- Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; live/hot
-  backup and release provenance remain open. Secure-profile authn/authz + Phase 5 abuse controls are
+- Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; online
+  fenced `Store::backup_to` is available (admission pause during copy; not fully hot concurrent I/O).
+  Release provenance and physical E3 remain open. Secure-profile authn/authz + Phase 5 abuse controls are
   implemented; Phase 6 auth audit + local CRL fail-closed landed — configure `--tls-crl` before
   hostile public Internet; multi-tenant Phase 8 and physical E3 remain residual (live OCSP HTTP
   unsupported).
@@ -314,11 +315,12 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   `glyphastore_repair_store` performs offline fail-closed repair into an explicit empty workspace
   (`store/` + `quarantine/` + audit): it never mutates the source, quarantines non-catalog anomalies,
   and refuses missing catalog or unsafe namespace entries. In-place destructive rewrite remains
-  forbidden. Live/hot backup remains open. `glyphastore_rebuild_index` permanently refuses offline
+  forbidden. Fully concurrent hot backup (zero admission fence) remains open; online fenced
+  `Store::backup_to` is implemented. `glyphastore_rebuild_index` permanently refuses offline
   Index rewrite for durable v1 with an explicit recovery/repair operator path; durable Indexes are
   rebuilt by Store recovery.
-- Live/hot backup and snapshot under concurrent writers remain open; the offline contract is in
-  [backup-restore](architecture/backup-restore.md). Operator procedures:
+- Live/hot backup with zero writer fencing remains open; online fenced backup and the offline
+  contract are in [backup-restore](architecture/backup-restore.md). Operator procedures:
   [backup-restore runbook](operations/backup-restore.md), [corruption-repair runbook](operations/corruption-repair.md).
 - Publish upgrade/downgrade rules for persistence v1 and test artifacts created by every released
   reader/writer. Worker-count changes and resharding require an offline, resumable, verified v1

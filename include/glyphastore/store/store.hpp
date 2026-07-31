@@ -1,12 +1,14 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/maintenance_types.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -55,6 +57,11 @@ class Store final {
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 
     [[nodiscard]] auto flush() -> Status;
+    // Online durable backup while this Store holds the data-directory lock. Briefly fences new
+    // admissions (writers/readers retry), flushes, then copies catalog files. Not a fully concurrent
+    // hot copy during the copy window; external offline backup_durable_store still fails if locked.
+    [[nodiscard]] auto backup_to(const std::filesystem::path& destination, bool scan_records = true)
+        -> Result<DurableStoreBackupReport>;
     // Runs at most one Worker compaction transaction. Durable mode replaces a
     // whole sealed Worker history; volatile mode vacuums selected sparse sealed
     // Segments. Calls do not queue behind an existing compaction. An empty

@@ -4,9 +4,11 @@
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <vector>
 
@@ -137,4 +139,83 @@ GLYPHA_TEST("backup_durable_store refuses a non-empty destination") {
     GLYPHA_REQUIRE(!refused.has_value());
     GLYPHA_REQUIRE(refused.error().code == glyphastore::ErrorCode::sequence_conflict ||
                    refused.error().code == glyphastore::ErrorCode::invalid_argument);
+}
+
+GLYPHA_TEST("Store::backup_to copies while the Store remains open under writer fence") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+    const auto restored = root.path() / "restored";
+
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = source,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("alpha", bytes("one")).has_value());
+    GLYPHA_REQUIRE(store.put("beta", bytes("two")).has_value());
+
+    // Offline path still fails closed against the live lock.
+    const auto contested = glyphastore::backup_durable_store(source, root.path() / "offline");
+    GLYPHA_REQUIRE(!contested.has_value());
+    GLYPHA_REQUIRE(contested.error().code == glyphastore::ErrorCode::io_error);
+
+    std::error_code ec;
+    std::filesystem::create_directories(backup, ec);
+    GLYPHA_REQUIRE(!ec);
+
+    // Single-threaded online backup first (Store stays open; flock retained).
+    {
+        const auto dest = backup / "solo";
+        const auto backed = store.backup_to(dest);
+        GLYPHA_REQUIRE(backed.has_value());
+        GLYPHA_REQUIRE(backed->files_copied >= 2);
+    }
+    GLYPHA_REQUIRE(store.put("gamma", bytes("three")).has_value());
+
+    std::atomic_bool stop{false};
+    std::atomic_uint64_t writes{0};
+    std::thread writer{[&] {
+        std::uint64_t i = 0;
+        while (!stop.load(std::memory_order_relaxed)) {
+            const auto key = "w" + std::to_string(i++);
+            if (store.put(key, bytes("v")).has_value()) {
+                writes.fetch_add(1, std::memory_order_relaxed);
+            } else {
+                // Admission fence during backup: brief pause then retry.
+                std::this_thread::yield();
+            }
+        }
+    }};
+
+    for (int round = 0; round < 3; ++round) {
+        const auto dest = backup / ("round-" + std::to_string(round));
+        const auto backed = store.backup_to(dest);
+        GLYPHA_REQUIRE(backed.has_value());
+        GLYPHA_REQUIRE(backed->files_copied >= 2);
+    }
+
+    stop.store(true, std::memory_order_relaxed);
+    writer.join();
+    GLYPHA_REQUIRE(writes.load(std::memory_order_relaxed) > 0);
+
+    const auto final_backup = store.backup_to(backup / "final");
+    GLYPHA_REQUIRE(final_backup.has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+
+    const auto restored_copy = glyphastore::restore_durable_store(backup / "final", restored);
+    GLYPHA_REQUIRE(restored_copy.has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("alpha")) == "one");
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("beta")) == "two");
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("gamma")) == "three");
 }

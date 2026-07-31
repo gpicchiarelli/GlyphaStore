@@ -259,6 +259,15 @@ struct Store::Impl {
         }
     }
 
+    void resume_admission_if_open() noexcept {
+        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
+            return;
+        }
+        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
+            active_operations[shard].state.fetch_and(~kAdmissionClosed, std::memory_order_release);
+        }
+    }
+
     void wait_for_active_operations() const noexcept {
         // Waiting directly on each atomic closes the check-to-sleep race of a
         // condition variable whose predicate is not protected by its mutex.
@@ -771,6 +780,47 @@ auto Store::flush() -> Status try {
         return impl_->durable_runtime->flush();
     }
     return {};
+} catch (const std::bad_alloc&) {
+    return resource_exhausted();
+} catch (...) {
+    impl_->mark_durable_fail_closed();
+    return internal_failure();
+}
+
+auto Store::backup_to(const std::filesystem::path& destination, const bool scan_records)
+    -> Result<DurableStoreBackupReport> try {
+    if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
+        return closed_store();
+    }
+    if (!impl_->durable_runtime) {
+        return fail(ErrorCode::invalid_argument, "online backup requires a durable Store");
+    }
+
+    // Fence admissions before taking compaction_mutex so a compact that already holds the mutex
+    // (and an OperationGuard) cannot deadlock against wait_for_active_operations.
+    impl_->close_admission();
+    struct AdmissionResume final {
+        Impl* impl;
+        ~AdmissionResume() {
+            if (impl != nullptr) {
+                impl->resume_admission_if_open();
+            }
+        }
+    } resume{impl_.get()};
+
+    impl_->wait_for_active_operations();
+
+    if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
+        return closed_store();
+    }
+
+    std::unique_lock compaction_lock{impl_->compaction_mutex};
+
+    if (!impl_->durable_runtime || !impl_->durable_runtime->healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is unavailable");
+    }
+
+    return impl_->durable_runtime->backup_to(destination, scan_records);
 } catch (const std::bad_alloc&) {
     return resource_exhausted();
 } catch (...) {

@@ -1478,6 +1478,27 @@ auto DurableRuntimeCatalog::flush() -> Status {
     return flush_dirty_segments();
 }
 
+auto DurableRuntimeCatalog::backup_to(const std::filesystem::path& destination, const bool scan_records,
+                                      const DurableResourceLimits& limits)
+    -> Result<DurableStoreBackupReport> {
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    if (auto flushed = flush(); !flushed) {
+        return unexpected(flushed.error());
+    }
+    // Exclusive catalog lock blocks rotation/compaction publication for the copy window. Callers must
+    // already have fenced Store admissions so no mutation holds a worker lock waiting on shared
+    // catalog (which would deadlock with this unique lock).
+    const std::unique_lock catalog_lock{catalog_mutex_};
+    if (!healthy()) {
+        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
+    }
+    const Manifest catalog_snapshot = manifest_;
+    return backup_durable_store_from_open_directory(directory_, catalog_snapshot, destination, scan_records,
+                                                    limits);
+}
+
 void DurableRuntimeCatalog::request_close_flush() {
     if (flusher_) {
         flusher_->request_flush_all();

@@ -85,30 +85,32 @@ namespace {
 
 } // namespace
 
-auto backup_durable_store(const std::filesystem::path& source, const std::filesystem::path& destination,
-                          const bool scan_records, const DurableResourceLimits& limits)
+auto backup_durable_store_from_open_directory(DataDirectory& source, const Manifest& catalog_manifest,
+                                              const std::filesystem::path& destination,
+                                              const bool scan_records, const DurableResourceLimits& limits)
     -> Result<DurableStoreBackupReport> {
-    if (source.empty() || destination.empty()) {
-        return fail(ErrorCode::invalid_argument, "backup source and destination paths are required");
+    if (destination.empty()) {
+        return fail(ErrorCode::invalid_argument, "backup destination path is required");
     }
-    if (source == destination) {
-        return fail(ErrorCode::invalid_argument, "backup source and destination must differ");
+    if (!source.healthy()) {
+        return fail(ErrorCode::unavailable, "cannot backup through a poisoned data-directory instance");
     }
 
-    DurableStoreBackupReport report{.source = source, .destination = destination};
+    DurableStoreBackupReport report{.destination = destination};
+
+    auto source_verification = verify_durable_store(source, scan_records, limits);
+    if (!source_verification) {
+        return unexpected(source_verification.error());
+    }
+    // Prefer the caller's catalog snapshot when verify rebuilt an equivalent Manifest.
+    if (source_verification->manifest.store_id != catalog_manifest.store_id ||
+        source_verification->manifest.segments.size() != catalog_manifest.segments.size()) {
+        return fail(ErrorCode::corrupted_data,
+                    "open-store backup Manifest disagrees with the live catalog snapshot");
+    }
+    report.source_verification = std::move(*source_verification);
 
     {
-        auto source_locked = DataDirectory::open_and_lock(source, DataDirectoryOpenMode::existing);
-        if (!source_locked) {
-            return unexpected(source_locked.error());
-        }
-        auto source_verification = verify_durable_store(*source_locked, scan_records, limits);
-        if (!source_verification) {
-            return unexpected(source_verification.error());
-        }
-        source_verification->path = source;
-        report.source_verification = std::move(*source_verification);
-
         auto destination_locked =
             DataDirectory::open_and_lock(destination, DataDirectoryOpenMode::create_new);
         if (!destination_locked) {
@@ -120,23 +122,22 @@ auto backup_durable_store(const std::filesystem::path& source, const std::filesy
             return fail(ErrorCode::invalid_argument, "backup destination data directory is not empty");
         }
 
-        FileDescriptor source_root{
-            interrupted_open(source.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
         FileDescriptor destination_root{
             interrupted_open(destination.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
-        if (!source_root.valid() || !destination_root.valid()) {
-            return persistence_system_error("open(backup directory for copy)");
+        if (!destination_root.valid()) {
+            return persistence_system_error("open(backup destination directory for copy)");
         }
 
-        for (const auto& entry : report.source_verification.manifest.segments) {
+        const int source_fd = source.directory_descriptor();
+        for (const auto& entry : catalog_manifest.segments) {
             const SegmentHeaderIdentity identity{
-                .store_id = report.source_verification.manifest.store_id,
+                .store_id = catalog_manifest.store_id,
                 .segment_id = entry.segment_id,
                 .generation = entry.generation,
                 .owner_worker = entry.owner_worker,
             };
             const auto name = segment_filename(identity);
-            auto copied = copy_named_file(source_root.get(), destination_root.get(), name.c_str());
+            auto copied = copy_named_file(source_fd, destination_root.get(), name.c_str());
             if (!copied) {
                 return unexpected(copied.error());
             }
@@ -144,8 +145,7 @@ auto backup_durable_store(const std::filesystem::path& source, const std::filesy
             report.bytes_copied += *copied;
         }
 
-        auto manifest_copied =
-            copy_named_file(source_root.get(), destination_root.get(), kManifestFilename);
+        auto manifest_copied = copy_named_file(source_fd, destination_root.get(), kManifestFilename);
         if (!manifest_copied) {
             return unexpected(manifest_copied.error());
         }
@@ -155,7 +155,7 @@ auto backup_durable_store(const std::filesystem::path& source, const std::filesy
         if (auto synced = destination_root.sync(FileSyncMode::full); !synced) {
             return unexpected(synced.error());
         }
-    }
+    } // release destination exclusive lock before verify re-opens the path
 
     auto destination_verification = verify_durable_store_path(destination, scan_records, limits);
     if (!destination_verification) {
@@ -163,6 +163,36 @@ auto backup_durable_store(const std::filesystem::path& source, const std::filesy
     }
     report.destination_verification = std::move(*destination_verification);
     return report;
+}
+
+auto backup_durable_store(const std::filesystem::path& source, const std::filesystem::path& destination,
+                          const bool scan_records, const DurableResourceLimits& limits)
+    -> Result<DurableStoreBackupReport> {
+    if (source.empty() || destination.empty()) {
+        return fail(ErrorCode::invalid_argument, "backup source and destination paths are required");
+    }
+    if (source == destination) {
+        return fail(ErrorCode::invalid_argument, "backup source and destination must differ");
+    }
+
+    auto source_locked = DataDirectory::open_and_lock(source, DataDirectoryOpenMode::existing);
+    if (!source_locked) {
+        return unexpected(source_locked.error());
+    }
+    auto source_verification = verify_durable_store(*source_locked, scan_records, limits);
+    if (!source_verification) {
+        return unexpected(source_verification.error());
+    }
+    source_verification->path = source;
+    const Manifest catalog = source_verification->manifest;
+    auto backed =
+        backup_durable_store_from_open_directory(*source_locked, catalog, destination, scan_records, limits);
+    if (!backed) {
+        return unexpected(backed.error());
+    }
+    backed->source = source;
+    backed->source_verification.path = source;
+    return backed;
 }
 
 } // namespace glyphastore

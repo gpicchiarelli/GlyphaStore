@@ -241,6 +241,10 @@ class DataDirectory final {
     // Returns an independently positioned descriptor for descriptor-relative
     // namespace enumeration. The caller owns the returned descriptor.
     [[nodiscard]] auto open_directory_for_enumeration() const -> Result<FileDescriptor>;
+    // Descriptor-relative openat for catalog backup/copy while the Store lock is held.
+    [[nodiscard]] auto directory_descriptor() const noexcept -> int {
+        return directory_.get();
+    }
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return health_ && health_->load(std::memory_order_acquire);
     }

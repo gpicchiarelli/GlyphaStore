@@ -1,25 +1,33 @@
-# Runbook: offline backup and restore
+# Runbook: backup and restore
 
 Status: descriptive
 Applies to: durable data directories (`manifest.glypha` + catalog Segments)
 Owner: persistence maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-31
 
 Architecture contract: [backup-restore](../architecture/backup-restore.md). CLI reference:
 [cli.md § glyphastore_backup_store](../cli.md#glyphastore_backup_store).
 
 ## Purpose
 
-Create a verified, offline copy of a stopped Store for migration, disaster recovery, or pre-change
-safety. Restore is the same verified copy into a **new empty** destination.
+Create a verified copy of a Store for migration, disaster recovery, or pre-change safety. Restore is
+the same verified copy into a **new empty** destination.
+
+Two paths:
+
+| Path | When | Mechanism |
+|---|---|---|
+| Offline CLI | Stopped Store / stopped `glyphastored` | Exclusive data-dir lock via `glyphastore_backup_store` |
+| Online API | Open durable `Store` (embedded or future daemon hook) | `Store::backup_to` fences admissions, flushes, copies |
 
 ## Hard requirements (fail closed)
 
-- **Stop all writers** before backup or restore. The tool takes an exclusive Store lock and fails if
-  `glyphastored` or another `Store` holds the directory.
+- **Offline CLI:** stop all writers before backup or restore. The tool takes an exclusive Store lock
+  and fails if `glyphastored` or another `Store` holds the directory.
+- **Online API:** Store stays open and keeps the lock; mutations are **briefly fenced** (not a fully
+  concurrent hot copy). Prefer offline CLI for cold release backups.
 - **Destination must be empty** (`create_new`). Non-empty destinations fail with `sequence_conflict`
   or `invalid_argument`.
-- **No live/hot backup** while writers hold the lock — not a product feature.
 - **No in-place restore** over the production directory; always copy into a new path, verify, then
   swap at the orchestration layer (rename/mount/service pointer), not by overwriting open files.
 - Copies include **only** recovery-safe catalog Segments and `manifest.glypha` (last). Crash
@@ -27,14 +35,16 @@ safety. Restore is the same verified copy into a **new empty** destination.
 
 ## Backup procedure
 
-### 1. Quiesce writers
+### Offline (preferred for release artifacts)
+
+#### 1. Quiesce writers
 
 ```bash
 systemctl stop glyphastored
 # confirm no process holds the data dir
 ```
 
-### 2. Optional: structural verify (recommended)
+#### 2. Optional: structural verify (recommended)
 
 ```bash
 glyphastore_verify_store -- /var/lib/glyphastore
@@ -44,7 +54,7 @@ glyphastore_verify_store --json -- /var/lib/glyphastore
 Exit `1` means do **not** proceed to backup until corruption runbook is followed
 ([corruption-repair.md](corruption-repair.md)).
 
-### 3. Run backup into a new empty directory
+#### 3. Run backup into a new empty directory
 
 ```bash
 install -d -m 700 /backup/glyphastore-2026-07-23
@@ -66,12 +76,19 @@ glyphastore_backup_store --no-scan -- /var/lib/glyphastore /backup/glyphastore-2
 Prefer full scan for release backups; `--no-scan` is for repeated operator checks when header/commit
 validation is sufficient.
 
-### 4. Confirm success
+#### 4. Confirm success
 
 - Exit code `0`.
 - Tool verifies the destination after copy (lock → verify source → copy catalog files → sync → verify
   destination).
 - Store backup artifacts outside the live data directory (separate volume or object storage).
+
+### Online (embedded Store)
+
+Use `Store::backup_to(destination)` against an open durable Store when stopping the process is not
+acceptable. Expect a short admission fence (in-flight ops drain; new ops return `unavailable` until
+copy completes). External `glyphastore_backup_store` against the same path still fails with
+`io_error` while the Store holds the lock.
 
 ## Restore procedure
 
@@ -108,25 +125,14 @@ update), start the daemon, re-verify `READY`.
 
 | Condition | Result | Operator action |
 |---|---|---|
-| Source locked | `io_error` (already locked) | Stop writers; retry |
+| Source locked (offline CLI) | `io_error` (already locked) | Stop writers; retry, or use `Store::backup_to` |
 | Source fails verify | same error as `verify_store` | Follow corruption runbook; do not treat backup as valid |
 | Destination exists / non-empty | `sequence_conflict` / `invalid_argument` | Choose a new empty path |
-| Copy I/O failure mid-way | fail closed; destination may be incomplete | Delete incomplete destination; retry from step 3 |
+| Copy I/O failure mid-way | fail closed; destination may be incomplete | Delete incomplete destination; retry |
 
 ## What NOT to do
 
 - Do **not** run `glyphastore_backup_store` against a live data directory “for convenience”.
+- Do **not** treat online fenced backup as zero-impact under load; schedule it or use offline CLI.
 - Do **not** restore by copying files manually without verify/sync ordering; use the tool so catalog
   Segments and Manifest publication order match the implementation contract.
-- Do **not** use filesystem snapshots as a substitute unless writers are fully stopped and the
-  snapshot boundary is verified with `glyphastore_verify_store` on the frozen image.
-- Do **not** run `glyphastore_rebuild_index` for durable v1; it refuses offline Index rewrite.
-
-## Related commands
-
-```bash
-glyphastore_verify_store [--json] [--no-scan] -- /path/to/data-dir
-glyphastore_inspect_segment [--json] [--no-scan] -- segment-<16hex>-<8hex>.glypha
-```
-
-See [corruption-repair.md](corruption-repair.md) when verify fails before backup.

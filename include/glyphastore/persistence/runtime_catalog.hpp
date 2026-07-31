@@ -9,6 +9,7 @@
 #include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/persistence/recovery.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/maintenance_types.hpp"
@@ -391,6 +392,11 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto snapshot_live_keys() -> Result<std::vector<std::string>>;
     [[nodiscard]] auto verify_index() -> Status;
     [[nodiscard]] auto flush() -> Status;
+    // Online catalog backup: caller must fence Store admissions. Copies Manifest + Segments into an
+    // empty destination while holding the catalog exclusive lock (writers already paused).
+    [[nodiscard]] auto backup_to(const std::filesystem::path& destination, bool scan_records = true,
+                                 const DurableResourceLimits& limits = {})
+        -> Result<DurableStoreBackupReport>;
     void request_close_flush();
     [[nodiscard]] auto close() -> Status;
     void mark_fail_closed() noexcept;

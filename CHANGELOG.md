@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Add online durable backup via `Store::backup_to`: fence admissions, flush, copy catalog under the
+  open Store lock (writer fence, not fully hot concurrent I/O). Offline CLI still requires a stopped
+  Store. Docs/CHANGELOG honesty updated; concurrent-writer unit coverage included.
 - Harden E3 rehearsal (not certification): `scripts/assert-e3-rehearsal-honesty.sh` fails closed on
   accidental `e3_certified=yes` / release-eligible labels; campaign `--e3-profile`; weekly
   `durability-evidence.yml` runs campaign-profile loopback/APFS + hosted-ci E0→E3 orchestrator
