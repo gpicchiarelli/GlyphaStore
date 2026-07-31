@@ -2,7 +2,9 @@
 
 - Status: accepted
 - Date: 2026-07-11
-- Amended by: [0024](0024-offline-worker-migration.md) (offline Worker-count migration)
+- Amended by: [0024](0024-offline-worker-migration.md) (offline Worker-count migration);
+  [0031](paired-reader-writer-shards.md) / [0032](0032-paired-concurrency-embedded-store.md)
+  (paired runtime; Worker count remains the ownership identity)
 
 GlyphaStore detects usable physical CPU and memory topology at startup, applies reserved-core,
 maximum-Worker, memory-per-Worker, and explicit-override policies, and fixes the Worker count for

@@ -2,13 +2,17 @@
 
 - Status: accepted
 - Date: 2026-07-14
+- Amended by: [0032](0032-paired-concurrency-embedded-store.md) (paired concurrency for ordinary
+  GET; owning return value unchanged)
 
 The alpha C++ API does not expose an unpinned `RecordView`, `Worker`, `Index`, `Segment`, Segment
 manager, mutable Segment bytes, or caller-supplied routing hash as supported public surface.
 Implementation headers may exist while the prototype is being migrated, but installing a header
 does not by itself make that header a compatibility commitment.
 
-The default public read returns an owning value copy. A future zero-copy public read may return a
+The default public read returns an owning value copy. Under paired concurrency (ADR 0032) the Store
+may satisfy that copy from an immutable published `ReadGeneration`, but the public result remains
+an `OwnedValue` independent of later Store operations. A future zero-copy public read may return a
 move-only pinned handle whose immutable spans remain valid for the handle lifetime. The handle
 keeps the underlying Segment generation resident even if the key is replaced, vacuum publishes a
 new Segment set, or the Store object closes. Reclamation, unmapping, and Segment reuse must wait for

@@ -3,48 +3,56 @@
 Status: normative for the current implementation
 Applies to: repository version `0.1.x`
 Owner: project maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-07-31
 
 ## 1. Scope
 
 This specification defines thread ownership, synchronization domains, lock order, operation admission, linearization, and shutdown. It does not standardize implementation-private class names, but every shared mutable object must map to one of the domains below.
 
+Product default concurrency is **paired** ([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md)): each owner shard has one serial Writer and an immutable published `ReadGeneration`. The deprecated `legacy_mutex` open mode retains the historical per-Worker mutex path through 0.1.x.
+
 ## 2. Threads and executors
 
-An embedded Store has caller threads and, in durable mode, one flush-coordinator thread. The TCP daemon additionally has an acceptor and one reactor/executor thread per Worker. An executor owns all mutable state of each connection assigned to it.
+An embedded Store has caller threads, one Writer thread per shard in paired mode, and, in durable mode, one flush-coordinator thread. The TCP daemon additionally has an acceptor and one Reader/Reactor thread per shard pair; it is thin I/O over the same Store paired runtime and must not publish a second generation authority for the same shard.
 
-Store callers may invoke public operations concurrently unless a method explicitly says otherwise. Thread safety does not create multi-key atomicity.
+Store callers may invoke public operations concurrently unless a method explicitly says otherwise. Thread safety does not create multi-key atomicity. Mixing `legacy_mutex` mutators with a paired Writer on the same Store instance is undefined behavior and must be refused at open.
 
 ## 3. Ownership table
 
 | State | Owner / synchronization | Notes |
 |---|---|---|
-| Volatile Worker Index and segments | that Worker's mutex | ordinary key operations acquire exactly one Worker mutex |
-| Durable Worker Index, active file, hot records, group state | that durable Worker's mutex | never accessed concurrently without the mutex |
+| Paired published `ReadGeneration` | immutable after Writer release | ordinary paired GET adopts with acquire; no Index mutex |
+| Paired mutable Index / active Segment / delta | that shard's Writer thread | sole mutator; callers enqueue on the SPSC lane |
+| Volatile Worker Index and segments (`legacy_mutex`) | that Worker's mutex | ordinary key operations acquire exactly one Worker mutex |
+| Durable Worker Index, active file, hot records, group state (`legacy_mutex`) | that durable Worker's mutex | never accessed concurrently without the mutex |
+| Durable hot cache (paired) | disabled / not ordinary-read authority | generation-only policy; compaction/verify/backup still use catalog locks |
 | Volatile global segment namespace | `GlobalSegmentManager` mutex | snapshots are copied while locked |
 | Durable segment catalog | catalog shared mutex | readers take shared; namespace mutation takes exclusive |
 | Manifest publication | manifest-publication mutex + condition variable | serializes generations; rotation waits for an active compaction lease |
 | Public compaction | Store compaction mutex | only one compaction attempt runs at once |
 | Store lifecycle admission | sharded atomic counters | one shard per Worker plus one control shard |
 | Flush scheduling state | coordinator mutex and condition variables | callback executes after releasing this mutex |
-| TCP connection | exactly one executor | ownership may transfer once after bind |
-| Executor handoff queue | bounded MPSC protocol | many producers, one owning consumer |
+| TCP connection | exactly one Reader/executor | ownership may transfer once after bind |
+| Paired mutation / completion lanes | bounded SPSC | one Reader (or embedded submitter) producer, one Writer consumer |
+| Executor handoff queue (connection bind) | bounded MPSC protocol | many producers, one owning consumer |
 | Directory health | atomic state plus protected error payload | acquire/release publishes terminal health |
 
 No reference, iterator, or span into a protected container may escape after its lock is released unless the referenced object has independent shared ownership and immutable lifetime guarantees. Snapshot APIs therefore return copies such as `std::vector<SegmentPtr>` and `std::vector<SegmentId>`.
 
 ## 4. Worker routing
 
-The complete key is hashed before acquiring a Worker. The selected Worker is stable for the duration of the operation because worker count and routing epoch are immutable for an open Store. A Store operation must not lock a second Worker to recover from a miss. A miss in the owning Index is authoritative for the current in-memory state.
+The complete key is hashed before selecting the owner shard. The selected Worker/shard is stable for the duration of the operation because worker count and routing epoch are immutable for an open Store. A Store operation must not consult a second Worker to recover from a miss. A miss in the owning Index or published generation is authoritative for the current in-memory state.
 
 ## 5. Lock order
 
 When more than one lock is necessary, acquire locks only in these orders:
 
 1. public compaction mutex;
-2. Worker mutex;
+2. Worker / RuntimeWorker mutex (legacy path, or paired maintenance/snapshot/refresh that still takes it);
 3. manifest-publication mutex;
 4. durable catalog mutex.
+
+Paired ordinary `get` / `put` / `erase` do not acquire the Worker Index mutex on the hot path. Compaction, verify, backup, and durable catalog refresh may still take Worker and catalog locks as today.
 
 For the volatile runtime, the allowed nested order is Worker mutex, then global segment-manager mutex. Code that holds the segment-manager mutex must not acquire a Worker mutex.
 
@@ -81,7 +89,7 @@ An operation:
 2. detects the closed bit;
 3. if closed, immediately decrements and fails;
 4. otherwise completes all access to Store-owned runtime state;
-5. decrements the shard and notifies a closer when it was the last admitted operation.
+5. decrements the shard and notifies that closer when it was the last admitted operation.
 
 Closing atomically sets the closed bit on every shard, then waits directly on each atomic counter
 with acquire observations until its count reaches zero. The last admitted operation publishes the
@@ -91,16 +99,21 @@ destruction of runtime objects happens after every previously admitted operation
 The lifecycle transition is one-way. Repeated `close()` calls wait directly on the atomic lifecycle
 state and observe the first close result after its protected error payload is published.
 
+In paired mode, `close()` also stops Writer admission and drains every admitted mutation before
+tearing down generations and Writer threads.
+
 No operation may retain a raw pointer into the Store after releasing its admission token.
 
 ## 7. Linearization points
 
 | Operation | Linearization point |
 |---|---|
-| Volatile `get` | read and validation of the current Index mapping while holding the owner mutex |
-| Durable `get` | selection and validation of the record identified by the owner Index while holding the owner mutex |
-| `put` | publication of the new `RecordRef` in the owner Index, after the complete record exists |
-| `erase` | removal/tombstone publication in the owner Index, after any required durable record exists |
+| Paired `get` | validation of the mapping in the adopted `ReadGeneration` (after acquire of the published pointer) |
+| Paired `put` / `erase` | Writer publication of the new generation that includes the mutation (release), after the Store mutate has committed in-process |
+| Volatile `get` (`legacy_mutex`) | read and validation of the current Index mapping while holding the owner mutex |
+| Durable `get` (`legacy_mutex`) | selection and validation of the record identified by the owner Index while holding the owner mutex |
+| `put` (`legacy_mutex`) | publication of the new `RecordRef` in the owner Index, after the complete record exists |
+| `erase` (`legacy_mutex`) | removal/tombstone publication in the owner Index, after any required durable record exists |
 | `flush` | completion of the requested flush generation or synchronous persistence boundary |
 | `compact` | publication of the accepted replacement namespace; cleanup may follow |
 | `close` | successful transition that closes admission; completion additionally waits for drain and teardown |
@@ -113,6 +126,7 @@ Memory orders are chosen for a specific publication relation:
 
 - admission count arithmetic may be relaxed, while close/drain uses acquire/release operations to order teardown after admitted work;
 - terminal health and lifecycle publication use release stores and acquire loads so observers see the associated state;
+- paired `ReadGeneration` pointer publication uses release store by the Writer and acquire load by Readers;
 - queue cell sequence numbers use release publication and acquire consumption; enqueue/dequeue positions may use relaxed arithmetic because cell sequence is the handoff barrier;
 - counters used only as statistics, high-water marks, or scheduling hints may be relaxed and must never be used to publish object contents.
 

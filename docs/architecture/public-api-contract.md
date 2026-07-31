@@ -73,9 +73,15 @@ boundary or be stored in connection state.
 
 ## Concurrency
 
-Public key operations are safe to call concurrently. Operations on the same Worker may serialize;
-the API does not promise lock freedom. A completed mutation happens before a later operation that
-observes its result. There is no atomicity across multiple keys in alpha.
+Public key operations are safe to call concurrently. The default open mode is paired
+([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md)): ordinary GET adopts a published
+immutable generation; same-shard `put`/`erase` serialize on the Writer lane. The API does not
+promise lock freedom. A completed mutation happens before a later operation that observes its
+result. There is no atomicity across multiple keys in alpha.
+
+`StoreConfig::concurrency = StoreConcurrencyMode::legacy_mutex` restores Worker-mutex serialization
+and is deprecated in 0.1.x (removed in 0.2). Mixing legacy and paired mutators on one Store is
+refused at open.
 
 Configuration is immutable after open. Diagnostics return owning snapshots rather than references
 to live Index, Worker, or Segment containers. Public callers cannot acquire engine mutexes, mutate
@@ -83,11 +89,11 @@ Segment bytes, publish `RecordRef` values, or invoke unchecked owner-specific pa
 
 `Store::close()` linearizes when it changes admission from open to closing. Operations admitted
 before that point complete; later reads, mutations, verification, and flush calls return
-`unavailable`. Close forces partial strict groups, waits for admitted calls, performs the final
-durability barrier, joins internal executors, releases Store resources and the data-directory lock,
-and returns a sticky idempotent status. Concurrent close callers receive the same outcome. The
-destructor performs close as a non-throwing fallback but cannot expose its result. Owned values
-remain valid after close and destruction.
+`unavailable`. Close forces partial strict groups, waits for admitted calls, drains paired Writer
+lanes when present, performs the final durability barrier, joins internal executors, releases Store
+resources and the data-directory lock, and returns a sticky idempotent status. Concurrent close
+callers receive the same outcome. The destructor performs close as a non-throwing fallback but
+cannot expose its result. Owned values remain valid after close and destruction.
 
 ## Durable resource policy
 

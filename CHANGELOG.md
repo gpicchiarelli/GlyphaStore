@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+- ADR 0032: paired Reader/Writer concurrency is the product default for embedded `Store::open` as
+  well as `glyphastored` (amends ADR 0031/0005/0009 concurrency notes). Persistence v1 and wire v2
+  unchanged; public owning `Store::get` unchanged. Docs aligned
+  (`concurrency-memory-model`, `worker-model`, `public-api-contract`, glossary). Deprecated
+  `legacy_mutex` escape hatch documented for 0.1.x removal in 0.2; mixing legacy mutators with a
+  paired Writer on one Store is refused / UB.
 - Document paired Reader–Writer as the sole `glyphastored` 0.1.0 runtime (ADR 0031); the volatile
   engine under `src/experimental/` remains lab-only and is not a second selectable daemon. Inventory:
   public `Store::get` keeps owning pins; daemon GET borrows a Reader-local `ReadGeneration`;

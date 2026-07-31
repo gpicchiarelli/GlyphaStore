@@ -3,7 +3,7 @@
 Status: normative terminology
 Applies to: current architecture, public API, persistence v1, wire protocol v2
 Owner: GlyphaStore maintainers
-Last reviewed: 2026-07-31
+Last reviewed: 2026-07-31 (ADR 0032 paired embedded Store)
 
 Terms in this glossary use their exact capitalization when they name an architectural entity.
 
@@ -11,10 +11,12 @@ Terms in this glossary use their exact capitalization when they name an architec
 |---|---|
 | Store | One logical exact-key key-space exposed by the embedded API or daemon. |
 | Worker | The unit of key ownership and mutation serialization on disk and wire. A key has exactly one owner Worker for a routing epoch. In the 0.1.0 daemon this is one shard pair; Manifest and wire still use `worker_count` / owner Worker ids. |
-| ShardPair | One Reader/Reactor plus one serial Writer for a single owner id ([ADR 0031](adr/paired-reader-writer-shards.md)). `glyphastored` 0.1.0 runs only this model. |
-| Reader | The readiness-driven half of a ShardPair: owns sockets/buffers and serves GET from a local immutable `ReadGeneration`. |
+| ShardPair | One Reader plus one serial Writer for a single owner id ([ADR 0031](adr/paired-reader-writer-shards.md), [ADR 0032](adr/0032-paired-concurrency-embedded-store.md)). Default for embedded `Store::open` and the sole `glyphastored` 0.1.0 runtime. |
+| ShardPairRuntime | Library-owned paired runtime inside `glyphastore_core`: Writer threads, SPSC lanes, and generation publication shared by embedded Store and the daemon thin I/O layer. |
+| Reader | Half of a ShardPair that serves GET from a local immutable `ReadGeneration` (daemon: readiness/Reactor; embedded: caller thread adopting the published generation). |
 | Writer | The serial mutator half of a ShardPair: sole append/publication path for that owner; reached only via bounded SPSC lanes. |
-| ReadGeneration | Immutable publication descriptor adopted once per Reader event-loop turn for daemon GET (borrowed / leased), distinct from public owning `Store::get`. |
+| ReadGeneration | Immutable publication descriptor for ordinary paired GET. Daemon Readers adopt it once per event-loop turn (borrowed/leased); public `Store::get` still returns an owning `OwnedValue` ([ADR 0009](adr/0009-public-read-ownership.md)). |
+| StoreConcurrencyMode | Open-time concurrency: `paired` (default) or deprecated `legacy_mutex` (0.1.x escape hatch; removed in 0.2). Mixing both mutator styles on one Store is refused / UB. |
 | executor | A server thread running one Reader for one shard pair (historically “Reactor + Worker”). It is not a separate Store. |
 | Reactor | Synonym in docs for the Reader’s readiness loop: owner of a set of network sockets and their connection buffers. |
 | Index | Derived acceleration state mapping a complete key to one `RecordRef`. It is partitioned physically by Worker. |
@@ -63,4 +65,4 @@ Terms in this glossary use their exact capitalization when they name an architec
 | secure profile | Opt-in fail-closed daemon posture: TLS 1.3 + mTLS + `--authz-map` default-deny; refuses dual cleartext (`--tls-port`); Phase 5 abuse defaults; Phase 6 auth audit JSON + optional `--tls-crl`. |
 | E2 / E3 / E4 durability | Evidence levels from [platform durability evidence](architecture/platform-durability-evidence.md). Current durable claim is **E2** (process-kill); E3/E4 sudden power-loss remain open. In-repo E3 block-reset harness is rehearsal only (`e3_certified=no`). FreeBSD CI is a **portability** signal, not storage certification. |
 | fuzz / soak smoke | CI/default fuzz and `soak_daemon.sh --profile smoke` (~45s) / weekly `long` (30m) are short gates, not multi-hour hardware proof. Optional `1h`/`4h` profiles live in `soak-extended.yml` (dispatch/monthly only). |
-| experimental paired prototype | Lab-only volatile TCP engine under `src/experimental/`; not installed and not selectable by `glyphastored`. |
+| experimental paired prototype | Lab-only volatile TCP engine under `src/experimental/`; microbench/archive only. Not installed, not selectable by `glyphastored`, and not a second product runtime beside `ShardPairRuntime` ([ADR 0032](adr/0032-paired-concurrency-embedded-store.md)). |

@@ -30,11 +30,11 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0002](0002-fixed-segment-size.md) | Fixed 64 MiB Segments | accepted | — |
 | [0003](0003-log-indexed-storage.md) | Append-only Records plus positional Index | accepted | — |
 | [0004](0004-index-as-derived-state.md) | Index is rebuildable acceleration state | accepted | — |
-| [0005](0005-worker-auto-sizing.md) | Automatic creation-time Worker sizing | accepted | depends on 0006 for durable ownership |
+| [0005](0005-worker-auto-sizing.md) | Automatic creation-time Worker sizing | accepted | depends on 0006 for durable ownership; concurrency amends 0031/0032 |
 | [0006](0006-key-routing-hash.md) | Persisted FNV-1a-64 routing v1 | accepted | amended by 0024, 0030 (keyed SipHash) |
 | [0007](0007-swiss-table-index.md) | SwissTable-style Worker Index | accepted | detailed by Index v1 specification; mix seed configurable (0026) |
 | [0008](0008-alpha-persistence-contract.md) | Base volatile/sync/periodic persistence contract | amended | amended by 0010 and 0011 |
-| [0009](0009-public-read-ownership.md) | Owning public reads; pinned reads reserved | accepted | pinned API remains unimplemented |
+| [0009](0009-public-read-ownership.md) | Owning public reads; pinned reads reserved | accepted | pinned API remains unimplemented; concurrency notes amended by 0032 |
 | [0010](0010-durable-periodic-policy.md) | Periodic durability policy | amended | amended by 0011 batching |
 | [0011](0011-durable-group-commit.md) | Strict and periodic group batching | accepted | amends 0008 and 0010 |
 | [0012](0012-worker-affine-reactors.md) | One Reactor/executor per Worker; one-time connection handoff | amended | amended by 0031: Reactor is the Reader half of a mandatory pair |
@@ -56,7 +56,8 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0028](0028-per-tenant-data-dir-deferred.md) | Per-tenant data-dir isolation | proposed | deferred; do not half-break single Store |
 | [0029](0029-uds-peercred.md) | UDS transport + optional peercred principals | accepted | amends 0021; Phase 8 local authn |
 | [0030](0030-keyed-worker-routing.md) | Keyed Worker routing (SipHash + Manifest seed) | accepted | amends 0006, 0024, 0026 |
-| [0031](paired-reader-writer-shards.md) | Shard obbligatori a coppie Reader–Writer | accepted | modello obbligatorio per 0.1.0; amends 0005, 0012, 0016, 0018, 0023, 0030 |
+| [0031](paired-reader-writer-shards.md) | Shard obbligatori a coppie Reader–Writer | accepted | modello obbligatorio per 0.1.0; amends 0005, 0012, 0016, 0018, 0023, 0030; amended by 0032 |
+| [0032](0032-paired-concurrency-embedded-store.md) | Paired concurrency for embedded Store | accepted | amends 0031, 0005, 0009 (concurrency notes); supersedes mutex default |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).

@@ -27,19 +27,29 @@ offline [store migration](store-migration.md) ([ADR 0024](../adr/0024-offline-wo
 
 ## Concurrency
 
-The public `Store` API (`get`, `put`, `erase`) is thread-safe by routing each key to one Worker
-and serializing callers on that Worker's mutex. Independent keys on different Workers execute in
-parallel. Each Worker resolves records through its local catalog of owned Segments, so the hot
-`get`, `put`, and `erase` paths do not consult the global catalog. `GlobalSegmentManager` is the
-control plane for Segment allocation, rotation, retirement, and global snapshots.
+The public `Store` API (`get`, `put`, `erase`) is thread-safe. The product default is **paired**
+concurrency ([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md)): each key routes to one
+owner shard; ordinary GET adopts that shard's immutable `ReadGeneration` without taking the Index
+mutex; `put`/`erase` hand off to the shard's serial Writer. Independent keys on different shards
+execute in parallel. Same-shard mutations serialize on the Writer lane.
 
-Routing ownership is authoritative: a miss in the routed Worker is a Store miss, not a request to
-search peer Workers. Future rebalancing must transfer ownership through an explicit routing-table
-state transition; it must not introduce peer-to-peer fallback searches in the normal data path.
+Deprecated `StoreConcurrencyMode::legacy_mutex` restores the historical path that serializes callers
+on that Worker's mutex. Mixing legacy mutex mutators with a paired Writer on the same Store is
+refused at open.
+
+Routing ownership is authoritative: a miss in the routed Worker/generation is a Store miss, not a
+request to search peer Workers. Future rebalancing must transfer ownership through an explicit
+routing-table state transition; it must not introduce peer-to-peer fallback searches in the normal
+data path.
+
+Each Worker resolves records through its local catalog of owned Segments, so the hot data path does
+not consult the global catalog. `GlobalSegmentManager` is the control plane for Segment allocation,
+rotation, retirement, and global snapshots.
 
 Lock ordering for maintenance: `verify_index()` acquires every Worker mutex in ascending index order
 before scanning Segments or comparing Index partitions. Direct use of `Worker::index()` bypasses
-this synchronization and is intended for single-threaded tests and tools only.
+this synchronization and is intended for single-threaded tests and tools only. Compaction, backup,
+and durable catalog refresh retain their existing locks under paired mode.
 
 The complete lock order, atomic publication rules, operation admission, and shutdown model are
 normative in the [concurrency and memory model](../spec/concurrency-memory-model.md).

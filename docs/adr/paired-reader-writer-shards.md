@@ -1,11 +1,14 @@
 # ADR 0031: shard a coppie Reader–Writer
 
-- Status: accepted
+- Status: accepted (product concurrency for `glyphastored`; amended for embedded Store by 0032)
 - Date: 2026-07-28
 - Deciders: project owner, storage, networking, performance e reliability maintainers
-- Applies to: nuovo runtime paired; persistence v1 e wire protocol v2 restano invariati
+- Applies to: runtime paired; persistence v1 e wire protocol v2 restano invariati
 - Amends: ADR 0005, 0012, 0016, 0018, 0023 e 0030
-- Supersedes: il modello Worker-affine corrente solo dopo il completamento dei gate di migrazione
+- Amended by: [ADR 0032](0032-paired-concurrency-embedded-store.md) (paired concurrency becomes the
+  default for embedded `Store` as well as the daemon; supersedes Worker-mutex as product default)
+- Supersedes: il modello Worker-affine / mutex sull’Index come default di prodotto (completato con
+  ADR 0032); non supersede persistence v1 né wire v2
 
 ## Contesto
 
