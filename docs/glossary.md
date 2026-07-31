@@ -3,16 +3,20 @@
 Status: normative terminology
 Applies to: current architecture, public API, persistence v1, wire protocol v2
 Owner: GlyphaStore maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-07-31
 
 Terms in this glossary use their exact capitalization when they name an architectural entity.
 
 | Term | Meaning |
 |---|---|
 | Store | One logical exact-key key-space exposed by the embedded API or daemon. |
-| Worker | The unit of key ownership and mutation serialization. A key has exactly one owner Worker for a routing epoch. |
-| executor | A server thread pairing one Reactor with the data path of one Worker. It is not a separate Store. |
-| Reactor | The readiness-driven owner of a set of network sockets and their connection buffers. |
+| Worker | The unit of key ownership and mutation serialization on disk and wire. A key has exactly one owner Worker for a routing epoch. In the 0.1.0 daemon this is one shard pair; Manifest and wire still use `worker_count` / owner Worker ids. |
+| ShardPair | One Reader/Reactor plus one serial Writer for a single owner id ([ADR 0031](adr/paired-reader-writer-shards.md)). `glyphastored` 0.1.0 runs only this model. |
+| Reader | The readiness-driven half of a ShardPair: owns sockets/buffers and serves GET from a local immutable `ReadGeneration`. |
+| Writer | The serial mutator half of a ShardPair: sole append/publication path for that owner; reached only via bounded SPSC lanes. |
+| ReadGeneration | Immutable publication descriptor adopted once per Reader event-loop turn for daemon GET (borrowed / leased), distinct from public owning `Store::get`. |
+| executor | A server thread running one Reader for one shard pair (historically “Reactor + Worker”). It is not a separate Store. |
+| Reactor | Synonym in docs for the Reader’s readiness loop: owner of a set of network sockets and their connection buffers. |
 | Index | Derived acceleration state mapping a complete key to one `RecordRef`. It is partitioned physically by Worker. |
 | Segment | A fixed 64 MiB append unit containing a 4 KiB header followed by immutable Records. |
 | active Segment | The one Segment to which a Worker may append. |
@@ -29,7 +33,7 @@ Terms in this glossary use their exact capitalization when they name an architec
 | recovery authority | The durable objects allowed to determine recovered state: the authoritative Manifest and its committed Segment extents, plus a validated recovery intent where specified. |
 | routing hash | Deterministic FNV-1a-64 over the complete binary key in routing algorithm v1. |
 | routing epoch | Persisted identifier for one key-to-Worker ownership assignment. It changes only through an explicit migration. |
-| owner-bound | A connection or operation executes on the Worker selected by the routing function. |
+| owner-bound | A connection or operation executes on the Worker/shard pair selected by the routing function. |
 | worker-affine benchmark | A workload assigning each client thread keys owned by one Worker while using the public Store path. |
 | owner-bound benchmark | A workload using an already owner-checked internal path; it must not be compared as if it measured the public locking path. |
 | data plane | Exact-key get, put, and erase execution and their immediately required Index/Segment work. |
@@ -59,3 +63,4 @@ Terms in this glossary use their exact capitalization when they name an architec
 | secure profile | Opt-in fail-closed daemon posture: TLS 1.3 + mTLS + `--authz-map` default-deny; refuses dual cleartext (`--tls-port`); Phase 5 abuse defaults; Phase 6 auth audit JSON + optional `--tls-crl`. |
 | E2 / E3 / E4 durability | Evidence levels from [platform durability evidence](architecture/platform-durability-evidence.md). Current durable claim is **E2** (process-kill); E3/E4 sudden power-loss remain open. In-repo E3 block-reset harness is rehearsal only (`e3_certified=no`). FreeBSD CI is a **portability** signal, not storage certification. |
 | fuzz / soak smoke | CI/default fuzz and `soak_daemon.sh --profile smoke` (~45s) / weekly `long` (30m) are short gates, not multi-hour hardware proof. Optional `1h`/`4h` profiles live in `soak-extended.yml` (dispatch/monthly only). |
+| experimental paired prototype | Lab-only volatile TCP engine under `src/experimental/`; not installed and not selectable by `glyphastored`. |

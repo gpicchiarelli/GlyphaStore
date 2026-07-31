@@ -50,24 +50,23 @@ Implemented surfaces:
 ## Architecture
 
 ```text
-key ── hash/routing seed ──> owner Worker ──> exact-key Index
-                                                    │
-PUT/ERASE ──> append immutable Record ──────────────┤
-GET       <── validated RecordRef <── Segment ──────┘
+key ── hash/routing seed ──> owner shard pair ──> exact-key Index
+                                                       │
+PUT/ERASE ── Reader ── SPSC ── Writer ── append Record ─┤
+GET       <── ReadGeneration (Reader-local) <── Segment ┘
 ```
 
-The current daemon pairs one Reactor with one Store Worker. After `INIT`, a client binds each
-connection to one Worker; if necessary, the daemon hands the socket and its buffered state to the
-owning Reactor exactly once. Requests for a different owner return `WRONG_OWNER` and are not
-forwarded internally. Durable cold reads and durable mutations leave the Reactor through bounded
-executors while response order remains per connection.
+For 0.1.0, `glyphastored` runs only the paired Reader–Writer model ([ADR 0031](docs/adr/paired-reader-writer-shards.md)):
+each shard pair has one Reader/Reactor and one serial Writer. After `INIT`, a client binds each
+connection to one owner id; if necessary, the daemon hands the socket and its buffered state to the
+owning Reader exactly once. Requests for a different owner return `WRONG_OWNER` and are not
+forwarded. Mutations leave the Reader through a bounded SPSC lane to that pair’s Writer; GET uses a
+local immutable `ReadGeneration` adopted once per event-loop turn. Wire `worker_count` /
+`--workers` remain 0.1.x names for shard-pair count.
 
-The next Reader–Writer paired-shard design is a separate experimental target. It is exercised by
-tests and dedicated benchmarks but **cannot be selected by `glyphastored`**. Its evidence and open
-gates are recorded in the
-[paired-shard prototype note](docs/architecture/paired-shard-volatile-prototype.md) and
-[accepted ADR 0031](docs/adr/paired-reader-writer-shards.md). Acceptance makes it the 0.1.0 target;
-the current daemon remains the legacy implementation until the migration gates pass.
+The volatile TCP engine under `src/experimental/` is a **lab-only** prototype (tests and dedicated
+benchmarks). It is not installed and is not reachable from `glyphastored`. Residual P1 performance
+gates are tracked in [paired-shards-plan.md](docs/benchmarks/paired-shards-plan.md).
 
 Authoritative details live in the [architecture specification](docs/spec/architecture.md),
 [server model](docs/architecture/server-model.md), and
@@ -104,7 +103,7 @@ sanitizers, fuzzing and hardening options are in [docs/development.md](docs/deve
 ### Run the daemon
 
 ```bash
-./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379 --workers 4
+./build/macos-debug/glyphastored --bind 127.0.0.1 --port 7379 --shard-pairs 4
 ```
 
 Use the corresponding `build/unix-debug` path on Linux or BSD. The default endpoint is cleartext
@@ -204,9 +203,9 @@ Publishable comparisons require identical code, workload, routing, durability, d
 affinity and measurement rules. Those rules are defined in the
 [benchmark standard](docs/spec/benchmark-standard.md).
 
-Current experimental Reader–Writer measurements and their limitations are kept outside this
-README in [docs/benchmarks/paired-shards-plan.md](docs/benchmarks/paired-shards-plan.md). Raw local
-benchmark output is intentionally gitignored.
+Paired-runtime benchmark gates and residual P1 work are kept outside this README in
+[docs/benchmarks/paired-shards-plan.md](docs/benchmarks/paired-shards-plan.md). Raw local benchmark
+output is intentionally gitignored.
 
 ## Documentation
 

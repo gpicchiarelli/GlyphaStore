@@ -110,12 +110,13 @@ after fixing capacity or shedding load.
 
 ### Operator response checklist
 
-1. **`STATS`**: inspect per-Worker lane `admitted`/`rejected`/`expired`, queue depth, maintenance
-   emergency/skip reason, and rotation phase timings.
+1. **`STATS`**: inspect per-shard-pair mutation lane `admitted`/`rejected`/`expired`, queue depth,
+   maintenance emergency/skip reason, and rotation phase timings (`pair_writer_stats` / wire Worker
+   lane counters name the same topology).
 2. **Capacity**: check `--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`,
    `--max-hot-cache-bytes`, connection and buffer limits via `--dump-config`.
-3. **Shed load**: stop new clients, reduce Worker hot spots, or add instances (Worker count changes
-   require offline migration — not an in-place rewrite).
+3. **Shed load**: stop new clients, reduce shard-pair hot spots, or add instances (shard-pair /
+   Worker count changes require offline migration — not an in-place rewrite).
 4. **Do not** rely on killing the process to “clear queues”; use graceful drain so admitted work can
    finish within `--shutdown-drain-ms`.
 

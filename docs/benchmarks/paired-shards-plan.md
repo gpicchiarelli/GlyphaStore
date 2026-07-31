@@ -17,17 +17,18 @@ Gate directory/batching:
 Gate Reactor TCP, una coppia:
 `benchmark-results/paired-reactor/d2077cf-dirty/macos-m4/2026-07-28-phase2-tcp/`.
 
-## Stato corrente — 2026-07-29
+## Stato corrente — 2026-07-31
 
 Le sezioni storiche sotto documentano i gate che hanno preceduto la migrazione. Il daemon non offre
-più due modelli concorrenti: Reader/Reactor e Writer seriale per shard sono il solo runtime di
-destinazione 0.1.0. Sono chiusi e coperti da test il routing multi-pair, mutation/completion SPSC,
-publication immutabile, refresh per rotation/compaction, Base Index compatto, merge incrementale,
-cold-read lane per pair, task slot preallocati, lease QSBR del cold I/O, output lease cleartext
-adattiva con short-write backpressure, mutation slot/key/value arena bounded e Delta generazionale
-Writer-owned bounded sulle versioni.
+due modelli concorrenti: Reader/Reactor e Writer seriale per shard sono il **solo** runtime di
+`glyphastored` 0.1.0. Il prototipo volatile sotto `src/experimental/` resta lab-only e non è un
+secondo modello selezionabile. Sono chiusi e coperti da test il routing multi-pair, mutation/completion
+SPSC, publication immutabile, refresh per rotation/compaction, Base Index compatto, merge
+incrementale, cold-read lane per pair, task slot preallocati, lease QSBR del cold I/O, output lease
+cleartext adattiva con short-write backpressure, mutation slot/key/value arena bounded e Delta
+generazionale Writer-owned bounded sulle versioni.
 
-Ordine operativo residuo:
+Ordine operativo residuo (P1 — non riapre un dual-runtime):
 
 1. P1 — profilare e recuperare il circa 1,8% mixed del Delta arena senza indebolirne lifetime e
    capacità per versioni;

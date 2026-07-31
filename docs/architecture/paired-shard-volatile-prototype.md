@@ -1,9 +1,9 @@
 # Prototipo volatile a coppia Reader–Writer
 
-Status: sperimentale, confinato a test e benchmark dedicati
-Applies to: prototipo volatile Reader–Writer e Reactor TCP a coppia singola
+Status: sperimentale, lab-only (test e benchmark dedicati; non raggiungibile da `glyphastored`)
+Applies to: prototipo volatile Reader–Writer e Reactor TCP a coppia singola sotto `src/experimental/`
 Owner: storage, networking e performance maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-07-31
 
 ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md)
 
@@ -126,13 +126,19 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
 
 ## Prossimo gate
 
-1. P0: ridurre il costo per publication isolata e il doppio scheduling Reader→Writer→Reader;
-   misurare adaptive spin/park, wakeup Reader→Writer e frozen-delta construction senza alterare
-   read-after-write o la memoria bounded;
-2. aggiungere istogrammi distinti GET/PUT e un workload con reader e writer su connessioni separate,
-   così il gate p99 GET sotto scritture non dipende dalla latenza dell'intera pipeline;
-3. aggiungere multi-pair, routing e affinity nel solo target sperimentale soltanto dopo che 99/1 a
-   64 B non regredisce materialmente;
-4. progettare allocator per classi di size con retention bounded dopo il profiling TCP;
-5. integrare Segment v1 e durability solo dopo i gate precedenti;
-6. proporre l'integrazione nel daemon soltanto dopo equivalenza funzionale e gate A/B completi.
+Il prototipo sotto `src/experimental/` resta **lab-only**: non è un secondo runtime selezionabile e
+non verrà promosso in `glyphastored`. Il daemon di produzione è già il modello paired
+([ADR 0031](../adr/paired-reader-writer-shards.md), [server model](server-model.md)).
+
+I residuali di adozione e performance sono i gate P1 del piano di produzione, non un cutover del
+prototipo volatile:
+
+1. P1 — profilare e recuperare il circa 1,8% mixed del Delta arena senza indebolirne lifetime e
+   capacità per versioni ([paired-shards-plan](../benchmarks/paired-shards-plan.md));
+2. P1 — `get-into` o scatter multi-extent solo con prova bounded e vantaggio sul path adattivo;
+3. P1 — A/B 1/2/4/8 pair Linux hard-pinned (`perf`, NUMA, working set > LLC);
+4. P1 — backend I/O Linux opzionale solo se riduce coda/syscall senza cambiare ordering.
+
+Il lavoro lab sul prototipo TCP volatile (istogrammi GET/PUT distinti, affinity sperimentale,
+allocator a classi di size) può continuare nei target dedicati, ma non è un gate di integrazione
+nel daemon.

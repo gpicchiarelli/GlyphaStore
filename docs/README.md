@@ -5,18 +5,21 @@ make the project maintainable without relying on oral history or knowledge held 
 
 ## Current implementation boundary
 
-The production path in the repository is the Worker-affine embedded Store plus `glyphastored`.
-Each daemon executor owns one Reactor and one Worker; durable cold reads and mutations use bounded
-executors as described by the server model. The accepted Reader–Writer paired target is still
-compiled only into tests and dedicated benchmark executables and cannot be enabled in the daemon.
-Keep the current implementation and migration target distinct when reading measurements or roadmap
-material.
+For 0.1.0, `glyphastored` uses a single runtime: paired Reader–Writer shard pairs
+([ADR 0031](adr/paired-reader-writer-shards.md)). Each pair has one Reader/Reactor and one serial
+Writer connected by bounded SPSC mutation and completion lanes; GET adopts an immutable
+`ReadGeneration` on the Reader. There is no second selectable daemon model.
 
-- Current runtime: [architecture specification](spec/architecture.md) and
+The volatile TCP engine under `src/experimental/` (`paired_shard` / `paired_reactor`) remains
+**lab-only**: compiled into tests and dedicated benchmarks, not installed, and not reachable from
+`glyphastored`. Residual P1 performance and Linux hard-pinned A/B work is tracked in the
+benchmark plan — it does not reopen a dual-runtime choice.
+
+- Daemon runtime: [architecture specification](spec/architecture.md) and
   [server model](architecture/server-model.md)
-- Target runtime under gated migration: [paired-shard prototype](architecture/paired-shard-volatile-prototype.md),
-  [accepted ADR 0031](adr/paired-reader-writer-shards.md), and
+- Decision and migration state: [accepted ADR 0031](adr/paired-reader-writer-shards.md) and
   [benchmark gates](benchmarks/paired-shards-plan.md)
+- Lab-only prototype: [paired-shard volatile note](architecture/paired-shard-volatile-prototype.md)
 
 ## Authority and document classes
 
@@ -76,9 +79,9 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - `durable-runtime-catalog.md` describes the implemented durable runtime;
 - `durable-compaction.md` describes whole-Worker durable compaction;
 - `build-hardening.md` defines compiler, linker, and artifact verification;
-- `server-model.md` explains Reactor and connection ownership;
-- `paired-shard-volatile-prototype.md` records the isolated Reader–Writer engine and TCP Reactor
-  prototype; it is not daemon architecture;
+- `server-model.md` explains ShardPair Reader/Writer ownership, SPSC lanes, and connection ownership;
+- `paired-shard-volatile-prototype.md` records the lab-only volatile TCP prototype under
+  `src/experimental/`; it is not the `glyphastored` runtime;
 - `where-performance-matters.md` frames when engine speed helps real apps (and when it does not);
 - `sdk-roadmap.md` prioritizes shared SDK contract work versus more languages.
 

@@ -20,12 +20,17 @@ Operator guide for durable deployments: [durable TCP daemon](operations/durable-
 (profile/mode selection, resource flags, `HEALTH`/`READY`/`STATS`, drain, offline backup pointers).
 
 ```bash
-glyphastored --bind 127.0.0.1 --port 7379 --workers 4
+glyphastored --bind 127.0.0.1 --port 7379 --shard-pairs 4
 glyphastored --config /etc/glyphastore/daemon.conf
 glyphastored --profile embedded --data-dir /var/lib/glyphastore --dump-config
-glyphastored --port 0 --workers 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
+glyphastored --port 0 --shard-pairs 2 --max-input-bytes 4MiB --max-output-bytes 4MiB
 glyphastored --help
 ```
+
+`--shard-pairs COUNT` is the canonical setting for the number of Reader/Writer shard pairs
+([ADR 0031](adr/paired-reader-writer-shards.md)). `--workers COUNT` (`-w`) is a deprecated 0.1.x
+alias for the same value; naming both flags together fails closed. Wire and Manifest still report
+`worker_count` as that pair count.
 
 ### Configuration precedence
 
@@ -88,9 +93,9 @@ input/output buffers. Durable deployments also expose batch and resource caps:
 `--sync-interval-ms`, `--group-max-records` / `--group-max-bytes` / `--group-max-wait-ms`,
 `--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, and
 `--max-temporary-compaction-bytes`. Those flags require a durable `--storage-mode` and are validated
-before the process listens. Unsupported Worker counts and buffers smaller than protocol headers are rejected before
+before the process listens. Unsupported shard-pair counts and buffers smaller than protocol headers are rejected before
 the server binds a socket. `--reuse-port` and `--no-reuse-port` are mutually exclusive; the operating system
-decides whether per-executor listeners are available. Executor affinity is strict on supported Linux systems
+decides whether per-Reader listeners are available. Executor affinity is strict on supported Linux systems
 and advisory on macOS.
 
 `--maintenance-max-copy-bytes-per-cycle` bounds the exact Index-referenced live Record bytes of one

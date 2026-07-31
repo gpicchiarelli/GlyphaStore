@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+- Document paired Reader–Writer as the sole `glyphastored` 0.1.0 runtime (ADR 0031); the volatile
+  engine under `src/experimental/` remains lab-only and is not a second selectable daemon. Inventory:
+  public `Store::get` keeps owning pins; daemon GET borrows a Reader-local `ReadGeneration`;
+  `Server::pair_writer_stats()` is the paired mutation-lane surface while Manifest/wire
+  `worker_count` and CLI `--workers` stay 0.1.x aliases of shard-pair count; no dual-select runtime
+  exists. Residual P1: Delta arena mixed ~1.8%, Linux hard-pinned A/B, optional get-into/scatter
+  ([paired-shards-plan](docs/benchmarks/paired-shards-plan.md)).
 - Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
   if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
   wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.

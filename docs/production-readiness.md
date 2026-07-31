@@ -3,6 +3,26 @@
 GlyphaStore is an architectural prototype. A release level advances only when every mandatory gate
 below has automated evidence. A design document or implementation alone does not close a gate.
 
+## Daemon runtime boundary (0.1.0)
+
+`glyphastored` runs only the paired Reader–Writer model ([ADR 0031](adr/paired-reader-writer-shards.md),
+[server model](architecture/server-model.md)): one ShardPair (Reader + serial Writer + SPSC lanes)
+per owner id. There is no dual-select daemon runtime. The volatile engine under `src/experimental/`
+is lab-only.
+
+Read path boundary:
+
+- Public embedded `Store::get` returns an owning value (ADR 0009). Offline tools and the installed
+  C++ API keep this contract.
+- Daemon wire GET borrows from a Reader-local immutable `ReadGeneration` for the response lifetime.
+  Do not unify these paths silently; lifetime and ownership differ by design.
+
+Operator naming: prefer shard pair / Reader / Writer in new prose. Manifest and wire keep
+`worker_count` / owner Worker ids; CLI `--workers` remains a 0.1.x alias of `--shard-pairs`.
+Internal telemetry exposes `pair_writer_stats()` alongside durable batch counters that still use
+Worker-named types for compatibility. Residual P1 performance gates remain open
+([paired-shards-plan](benchmarks/paired-shards-plan.md)); closing them does not change this boundary.
+
 ## Release levels
 
 - **Prototype:** architecture and performance exploration; no compatibility or durability promise.

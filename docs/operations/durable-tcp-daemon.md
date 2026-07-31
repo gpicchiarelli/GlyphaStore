@@ -1,13 +1,15 @@
 # Operator guide: durable TCP daemon
 
 Status: descriptive
-Applies to: `glyphastored` wire protocol v2 with durable storage
+Applies to: `glyphastored` wire protocol v2 with durable storage (paired Reader–Writer runtime)
 Owner: platform and persistence maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-07-31
 
-End-to-end checklist for running a durable `glyphastored` instance. Normative CLI and wire rules
-live in [cli.md](../cli.md) and [wire protocol v2](../spec/wire-protocol-v2.md); this guide ties
-configuration, probes, drain, and offline maintenance into one completeness story.
+End-to-end checklist for running a durable `glyphastored` instance. For 0.1.0 the daemon uses only
+paired shard pairs (Reader/Reactor + serial Writer); prefer `--shard-pairs` (`--workers` is a 0.1.x
+alias). Normative CLI and wire rules live in [cli.md](../cli.md) and
+[wire protocol v2](../spec/wire-protocol-v2.md); this guide ties configuration, probes, drain, and
+offline maintenance into one completeness story.
 
 ## 1. Choose storage mode and open policy
 
