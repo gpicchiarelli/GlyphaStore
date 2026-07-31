@@ -183,6 +183,14 @@ class FakeServer:
                             owner_worker=bound_worker,
                             value=request.value,
                         )
+                    elif request.opcode is Opcode.BACKUP:
+                        self._send(
+                            connection,
+                            Status.OK,
+                            request.request_id,
+                            owner_worker=bound_worker,
+                            value=b"status=ok files=0 bytes=0",
+                        )
                     elif request.opcode is Opcode.PUT:
                         owner = worker_for(request.key, self._worker_count, self._routing)
                         if bound_worker != owner:
@@ -279,6 +287,10 @@ class ClientTests(unittest.TestCase):
             self.assertTrue(client.put(b"binary\x00key", b"value\x00\xff").committed)
             self.assertEqual(client.get(b"binary\x00key"), b"value\x00\xff")
             self.assertEqual(client.ping(b"hello"), b"hello")
+            report = client.backup("/tmp/glyphastore-sdk-backup")
+            self.assertIn(b"status=ok", report)
+            with self.assertRaises(InvalidArgument):
+                client.backup("")
             rejected = client.put(b"bad-expiry", b"value", expire_at_ns=-1)
             self.assertEqual(rejected.outcome, MutationOutcome.REJECTED)
             self.assertTrue(client.erase(b"binary\x00key").committed)
