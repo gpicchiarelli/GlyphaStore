@@ -3,6 +3,10 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export GLYPHASTORE_ROOT="$root"
+# shellcheck disable=SC1091
+source "$root/scripts/export-reproducible-build-env.sh"
+echo "reproducible packaging SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 
 "$root/scripts/check-sdk-versions.sh"
 "$root/scripts/sync-sdk-fixtures.sh"

@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Pin `SOURCE_DATE_EPOCH` for SDK packaging (`scripts/export-reproducible-build-env.sh`) and gate
+  two-pass wheel/gem digest equality (`scripts/verify-sdk-artifact-reproducibility.sh`) on tags /
+  workflow_dispatch. Residual: normalize Python sdist / Perl tar.gz host metadata.
 - Expand secure-profile interop to ruby/erlang when toolchains are present (CI already has
   Ruby 3.3 + Erlang/rebar3; local soft-skips). Full official-SDK secure matrix is now opt-in by
   availability rather than cpp/python/go-only.

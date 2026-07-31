@@ -45,15 +45,16 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
 
 ## Artifact perfection (release day)
 
-1. Run `./scripts/package-all-sdk-clients.sh`
-2. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
+1. Run `./scripts/package-all-sdk-clients.sh` (exports `SOURCE_DATE_EPOCH` from HEAD)
+2. Optionally `./scripts/verify-sdk-artifact-reproducibility.sh` (two-pass wheel/gem digest compare)
+3. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
    (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain
    distinct on case-insensitive filesystems)
-3. On tagged releases the supply-chain workflow keyless-signs blobs with Cosign/Sigstore
+4. On tagged releases the supply-chain workflow keyless-signs blobs with Cosign/Sigstore
    (`.cosign.bundle` next to each artifact + `SHA256SUMS`). Optional project GPG remains
    operator-owned.
-4. Publish:
+5. Publish:
    - Python: `twine upload` (Trusted Publisher preferred)
    - Perl: PAUSE upload of `GlyphaStore-VERSION.tar.gz`
    - Ruby: `gem push` (MFA required; `allowed_push_host=rubygems.org`)

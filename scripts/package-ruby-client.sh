@@ -3,12 +3,26 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export GLYPHASTORE_ROOT="$root"
+# shellcheck disable=SC1091
+source "$root/scripts/export-reproducible-build-env.sh"
 sdk="$root/sdk/ruby"
 ruby_bin="${RUBY:-}"
-if [[ -z "$ruby_bin" && -x "${HOME:-}/.local/bin/mise" ]]; then
-  ruby_bin="$("${HOME}/.local/bin/mise" exec ruby@3.3 -- which ruby 2>/dev/null || true)"
+if [[ -z "$ruby_bin" ]]; then
+  for candidate in \
+    "$HOME/.local/share/mise/installs/ruby/3.3.12/bin/ruby" \
+    "$HOME/.local/share/mise/installs/ruby/3.3.0/bin/ruby"; do
+    if [[ -x "$candidate" ]]; then
+      ruby_bin="$candidate"
+      break
+    fi
+  done
 fi
-ruby_bin="${ruby_bin:-$(command -v ruby)}"
+ruby_bin="${ruby_bin:-$(command -v ruby || true)}"
+if [[ -z "$ruby_bin" || ! -x "$ruby_bin" ]]; then
+  echo "ruby >= 3.2 required for packaging" >&2
+  exit 1
+fi
 gem_bin="${GEM:-$("$ruby_bin" -e 'print Gem.default_bindir + "/gem"')}"
 if [[ ! -x "$gem_bin" ]]; then
   gem_bin="$(dirname "$ruby_bin")/gem"
@@ -26,6 +40,10 @@ expected="$(tr -d '[:space:]' <"$root/VERSION")"
 got="$(RUBYLIB="$sdk/lib" "$ruby_bin" -e 'require "glypha_store/version"; print GlyphaStore::VERSION')"
 if [[ "$got" != "$expected" ]]; then
   echo "GlyphaStore::VERSION='$got' does not match VERSION='$expected'" >&2
+  exit 1
+fi
+if ! "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)'; then
+  echo "ruby >= 3.2 required to package gem (got $($ruby_bin -v))" >&2
   exit 1
 fi
 

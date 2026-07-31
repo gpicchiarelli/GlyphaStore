@@ -3,6 +3,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export GLYPHASTORE_ROOT="$root"
+# shellcheck disable=SC1091
+source "$root/scripts/export-reproducible-build-env.sh"
 go_bin="${GO:-go}"
 sdk="$root/sdk/go"
 
@@ -53,7 +56,8 @@ mkdir -p "$sdk/dist"
   echo "version=$got"
   echo "tag_hint=sdk/go/v$got"
   echo "go=$("$go_bin" version)"
-  echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "source_date_epoch=$SOURCE_DATE_EPOCH"
+  echo "built_at=$(glyphastore_repro_iso8601)"
 } >"$sdk/dist/package-info.txt"
 
 echo "Go packaging verification OK ($sdk/dist/package-info.txt)"

@@ -3,6 +3,9 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export GLYPHASTORE_ROOT="$root"
+# shellcheck disable=SC1091
+source "$root/scripts/export-reproducible-build-env.sh"
 sdk="$root/sdk/erlang"
 
 if ! command -v rebar3 >/dev/null 2>&1; then
@@ -46,7 +49,8 @@ mkdir -p "$sdk/dist"
   echo "version=$got"
   echo "otp=$(erl -noshell -eval 'io:format("~s", [erlang:system_info(otp_release)]), halt().')"
   echo "rebar3=$(rebar3 version | head -1)"
-  echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "source_date_epoch=$SOURCE_DATE_EPOCH"
+  echo "built_at=$(glyphastore_repro_iso8601)"
 } >"$sdk/dist/package-info.txt"
 
 echo "Erlang packaging verification OK ($sdk/dist/package-info.txt)"

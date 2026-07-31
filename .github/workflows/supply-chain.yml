@@ -47,6 +47,16 @@ jobs:
           syft version
       - name: Lock SDK versions
         run: ./scripts/check-sdk-versions.sh
+      - name: Export reproducible build env
+        run: |
+          {
+            echo "GLYPHASTORE_ROOT=${{ github.workspace }}"
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)"
+            echo "TZ=UTC"
+            echo "PYTHONHASHSEED=0"
+            echo "PERL_HASH_SEED=0"
+            echo "DETERMINISTIC_BUILD=1"
+          } >>"$GITHUB_ENV"
       - name: Package SDK clients
         run: |
           ./scripts/package-python-client.sh
@@ -58,6 +68,9 @@ jobs:
         env:
           SYFT_REQUIRED: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
+      - name: Verify wheel/sdist/gem reproducibility
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        run: ./scripts/verify-sdk-artifact-reproducibility.sh
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
         uses: sigstore/cosign-installer@v3.8.2
