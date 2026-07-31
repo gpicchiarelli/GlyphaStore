@@ -10,6 +10,8 @@
   store) to cut per-publication spine traffic without changing version capacity or QSBR lifetime
   ([paired-delta-directory-chunks-2026-07-31](docs/benchmarks/paired-delta-directory-chunks-2026-07-31.md)).
   macOS advisory A/B is noisy; Linux hard-pinned confirmation still required for magnitude claims.
+- P1 reject get-into / multi-extent scatter promotion without bounded+win proof
+  ([paired-get-into-multi-extent-reject-2026-07-31](docs/benchmarks/paired-get-into-multi-extent-reject-2026-07-31.md)).
 - Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
   if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
   wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.

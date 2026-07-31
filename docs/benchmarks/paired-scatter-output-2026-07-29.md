@@ -92,3 +92,10 @@ Il P0 output è chiuso per il percorso cleartext diretto; `get-into` può ancora
 materializzazione nel helper, ma richiede buffer ownership e checksum verification senza prestito
 oltre la generation. Il prossimo blocco con impatto più generale è la mutation arena preallocata per
 eliminare `string`/`vector` per PUT/ERASE mantenendo completion credit e byte budget invariati.
+
+## Successor (2026-07-31)
+
+La promozione di `get-into` / coda multi-extent è stata **respinta** senza prova bounded+win:
+[`paired-get-into-multi-extent-reject-2026-07-31.md`](paired-get-into-multi-extent-reject-2026-07-31.md).
+Il percorso adattivo di questo gate resta il data path di produzione.
+
