@@ -57,7 +57,7 @@ module GlyphaStore
       end
     end
 
-    attr_reader :worker_count, :routing_epoch
+    attr_reader :worker_count, :routing_epoch, :routing
 
     def self.connect(config = ClientConfig.defaults)
       config = merge_config(config)
@@ -72,6 +72,7 @@ module GlyphaStore
       @connections = []
       @worker_count = 0
       @routing_epoch = 0
+      @routing = Protocol::WorkerRouting.new
       @request_id = 1
       @request_id_mutex = Mutex.new
       @healthy = true
@@ -85,7 +86,7 @@ module GlyphaStore
     def worker_for(key)
       raise Error.unavailable("client is not connected") if @worker_count.zero?
 
-      Protocol.worker_for(key, @worker_count)
+      Protocol.worker_for(key, @worker_count, @routing)
     end
 
     def get(key, timeout: nil)
@@ -216,11 +217,12 @@ module GlyphaStore
 
     def bootstrap_all!
       first = Connection.new(0)
-      worker_count, routing_epoch = bootstrap!(first, nil)
+      worker_count, routing_epoch, routing = bootstrap!(first, nil)
       @worker_count = worker_count
       @routing_epoch = routing_epoch
+      @routing = routing
       @connections << first
-      expected = [worker_count, routing_epoch]
+      expected = [worker_count, routing_epoch, routing]
       (1...worker_count).each do |worker|
         conn = Connection.new(worker)
         bootstrap!(conn, expected)
@@ -312,13 +314,19 @@ module GlyphaStore
       response = exchange!(conn, frame, deadline)
       if response.status != Protocol::Status::OK ||
          response.request_id != init_id ||
-         response.value != Protocol::IDENTITY ||
          response.worker_count.zero? || response.worker_count > 256 ||
          response.routing_epoch.zero?
         conn.reset!
         raise Error.protocol("server INIT response is inconsistent")
       end
-      if expected && (response.worker_count != expected[0] || response.routing_epoch != expected[1])
+      begin
+        routing = Protocol.decode_init_identity(response.value)
+      rescue ArgumentError
+        conn.reset!
+        raise Error.protocol("server INIT response is inconsistent")
+      end
+      meta = [response.worker_count, response.routing_epoch, routing]
+      if expected && meta != expected
         conn.reset!
         raise Error.unavailable("server routing metadata changed during bootstrap")
       end
@@ -336,7 +344,7 @@ module GlyphaStore
         conn.reset!
         raise Error.protocol("server BIND_WORKER response is inconsistent")
       end
-      [response.worker_count, response.routing_epoch]
+      meta
     rescue SendFailure => e
       conn.reset!
       raise Error.unavailable(e.error.message)
@@ -350,7 +358,7 @@ module GlyphaStore
     def ensure_connected!(conn)
       return if conn.socket
 
-      bootstrap!(conn, [@worker_count, @routing_epoch])
+      bootstrap!(conn, [@worker_count, @routing_epoch, @routing])
     end
 
     def send!(conn, frame, deadline)

@@ -1,5 +1,5 @@
 // Package protocol implements GlyphaStore wire protocol v2 encoding, decoding,
-// and canonical FNV-1a Worker routing.
+// and Worker routing (FNV-1a / SipHash-2-4 per ADR 0030).
 package protocol
 
 import (
@@ -9,13 +9,28 @@ import (
 )
 
 const (
-	Version             = 2
-	RequestHeaderBytes  = 40
-	ResponseHeaderBytes = 40
-	MaxFrameBytes       = 2 * 1024 * 1024
-	NoWorker            = 0xFFFF_FFFF
-	Identity            = "GlyphaStore/2"
+	Version                     = 2
+	RequestHeaderBytes          = 40
+	ResponseHeaderBytes         = 40
+	MaxFrameBytes               = 2 * 1024 * 1024
+	NoWorker                    = 0xFFFF_FFFF
+	Identity                    = "GlyphaStore/2"
+	RoutingAlgFNV1a64V1         = 1
+	RoutingAlgSipHash24V1       = 2
+	WorkerRoutingSipKey1Xor     = 0x6a09e667f3bcc909
+	InitIdentityExtendedBytes   = len(Identity) + 1 + 4 + 8
 )
+
+// WorkerRouting is the session Worker ownership algorithm (ADR 0030).
+type WorkerRouting struct {
+	Algorithm uint32
+	Seed      uint64
+}
+
+// Keyed reports whether SipHash-2-4 routing is active.
+func (r WorkerRouting) Keyed() bool {
+	return r.Algorithm == RoutingAlgSipHash24V1
+}
 
 // Opcode is a wire-protocol v2 request opcode.
 type Opcode uint8
@@ -333,7 +348,7 @@ func DecodeResponse(frame []byte, maximumFrameBytes int) (Response, error) {
 	return response, nil
 }
 
-// FNV1a64 returns the canonical 64-bit FNV-1a hash used for Worker routing.
+// FNV1a64 returns the canonical 64-bit FNV-1a hash used for default Worker routing.
 func FNV1a64(key []byte) uint64 {
 	const (
 		offset = 14695981039346656037
@@ -347,12 +362,143 @@ func FNV1a64(key []byte) uint64 {
 	return value
 }
 
-// WorkerFor returns the owning Worker index for key under workerCount.
-func WorkerFor(key []byte, workerCount uint32) (uint32, error) {
+func rotl64(value uint64, shift uint) uint64 {
+	return (value << shift) | (value >> (64 - shift))
+}
+
+func sipRound(v0, v1, v2, v3 *uint64) {
+	*v0 += *v1
+	*v1 = rotl64(*v1, 13)
+	*v1 ^= *v0
+	*v0 = rotl64(*v0, 32)
+	*v2 += *v3
+	*v3 = rotl64(*v3, 16)
+	*v3 ^= *v2
+	*v0 += *v3
+	*v3 = rotl64(*v3, 21)
+	*v3 ^= *v0
+	*v2 += *v1
+	*v1 = rotl64(*v1, 17)
+	*v1 ^= *v2
+	*v2 = rotl64(*v2, 32)
+}
+
+// SipHash24 matches the C++ core SipHash-2-4 (Aumasson/Bernstein).
+func SipHash24(key []byte, k0, k1 uint64) uint64 {
+	v0 := k0 ^ 0x736f6d6570736575
+	v1 := k1 ^ 0x646f72616e646f6d
+	v2 := k0 ^ 0x6c7967656e657261
+	v3 := k1 ^ 0x7465646279746573
+	length := len(key)
+	offset := 0
+	for offset+8 <= length {
+		message := binary.LittleEndian.Uint64(key[offset : offset+8])
+		v3 ^= message
+		sipRound(&v0, &v1, &v2, &v3)
+		sipRound(&v0, &v1, &v2, &v3)
+		v0 ^= message
+		offset += 8
+	}
+	message := uint64(length) << 56
+	for i := 0; offset+i < length; i++ {
+		message |= uint64(key[offset+i]) << (8 * uint(i))
+	}
+	v3 ^= message
+	sipRound(&v0, &v1, &v2, &v3)
+	sipRound(&v0, &v1, &v2, &v3)
+	v0 ^= message
+	v2 ^= 0xff
+	sipRound(&v0, &v1, &v2, &v3)
+	sipRound(&v0, &v1, &v2, &v3)
+	sipRound(&v0, &v1, &v2, &v3)
+	sipRound(&v0, &v1, &v2, &v3)
+	return v0 ^ v1 ^ v2 ^ v3
+}
+
+// ValidateWorkerRouting rejects unsupported algorithm/seed combinations.
+// Algorithm 0 is treated as fnv1a64-v1 so the Go zero value matches C++ defaults.
+func ValidateWorkerRouting(routing WorkerRouting) error {
+	algorithm := routing.Algorithm
+	if algorithm == 0 {
+		algorithm = RoutingAlgFNV1a64V1
+	}
+	switch algorithm {
+	case RoutingAlgFNV1a64V1:
+		if routing.Seed != 0 {
+			return errors.New("fnv1a64-v1 Worker routing requires a zero hash seed")
+		}
+		return nil
+	case RoutingAlgSipHash24V1:
+		return nil
+	default:
+		return errors.New("unsupported Worker routing algorithm")
+	}
+}
+
+// HashKeyRouting hashes key under the given routing state (default FNV).
+func HashKeyRouting(key []byte, routing WorkerRouting) (uint64, error) {
+	if err := ValidateWorkerRouting(routing); err != nil {
+		return 0, err
+	}
+	if routing.Algorithm == RoutingAlgSipHash24V1 {
+		return SipHash24(key, routing.Seed, routing.Seed^WorkerRoutingSipKey1Xor), nil
+	}
+	return FNV1a64(key), nil
+}
+
+// EncodeInitIdentity encodes plain FNV or extended SipHash INIT identity bytes.
+func EncodeInitIdentity(routing WorkerRouting) ([]byte, error) {
+	if err := ValidateWorkerRouting(routing); err != nil {
+		return nil, err
+	}
+	if !routing.Keyed() {
+		return []byte(Identity), nil
+	}
+	out := make([]byte, InitIdentityExtendedBytes)
+	copy(out, Identity)
+	out[len(Identity)] = 0
+	binary.LittleEndian.PutUint32(out[len(Identity)+1:], routing.Algorithm)
+	binary.LittleEndian.PutUint64(out[len(Identity)+1+4:], routing.Seed)
+	return out, nil
+}
+
+// DecodeInitIdentity parses plain FNV or extended SipHash INIT identity (fail closed).
+func DecodeInitIdentity(value []byte) (WorkerRouting, error) {
+	if string(value) == Identity {
+		return WorkerRouting{Algorithm: RoutingAlgFNV1a64V1}, nil
+	}
+	if len(value) != InitIdentityExtendedBytes {
+		return WorkerRouting{}, errors.New("server INIT identity value has unexpected length")
+	}
+	if string(value[:len(Identity)]) != Identity || value[len(Identity)] != 0 {
+		return WorkerRouting{}, errors.New("server INIT identity prefix is invalid")
+	}
+	algorithm := binary.LittleEndian.Uint32(value[len(Identity)+1:])
+	seed := binary.LittleEndian.Uint64(value[len(Identity)+1+4:])
+	state := WorkerRouting{Algorithm: algorithm, Seed: seed}
+	if err := ValidateWorkerRouting(state); err != nil {
+		return WorkerRouting{}, err
+	}
+	if !state.Keyed() {
+		return WorkerRouting{}, errors.New("server INIT extended identity must use siphash24-v1 routing")
+	}
+	return state, nil
+}
+
+// WorkerFor returns the owning Worker index for key under workerCount and optional routing.
+func WorkerFor(key []byte, workerCount uint32, routing ...WorkerRouting) (uint32, error) {
 	if workerCount == 0 {
 		return 0, errors.New("worker_count must be positive")
 	}
-	return uint32(FNV1a64(key) % uint64(workerCount)), nil
+	state := WorkerRouting{Algorithm: RoutingAlgFNV1a64V1}
+	if len(routing) > 0 {
+		state = routing[0]
+	}
+	digest, err := HashKeyRouting(key, state)
+	if err != nil {
+		return 0, err
+	}
+	return uint32(digest % uint64(workerCount)), nil
 }
 
 func validOpcode(opcode Opcode) bool {

@@ -172,8 +172,11 @@ handle_request(Socket, Tab, Bound, Store, Request) ->
     },
     case maps:get(opcode, Request) of
         ?GS_OP_INIT ->
+            {ok, Identity} = glyphastore_protocol:encode_init_identity(
+                maps:get(routing, Cfg, glyphastore_protocol:default_routing())
+            ),
             reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
-                value => glyphastore_protocol:identity(),
+                value => Identity,
                 owner_worker => glyphastore_protocol:no_worker()
             }),
             client_loop(Socket, Tab, Bound, Store);

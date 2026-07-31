@@ -33,7 +33,9 @@ from glyphastore.client import _retryability_for, build_ssl_context  # noqa: E40
 from glyphastore.protocol import (  # noqa: E402
     Opcode,
     Status,
+    WorkerRouting,
     decode_request,
+    encode_init_identity,
     encode_response,
     worker_for,
 )
@@ -50,12 +52,14 @@ class FakeServer:
         internal_error_on_put: bool = False,
         stall_on_get: bool = False,
         ssl_context: ssl.SSLContext | None = None,
+        routing: WorkerRouting | None = None,
     ) -> None:
         self._worker_count = worker_count
         self._disconnect_on_put = disconnect_on_put
         self._internal_error_on_put = internal_error_on_put
         self._stall_on_get = stall_on_get
         self._ssl_context = ssl_context
+        self._routing = routing or WorkerRouting()
         self._values: dict[bytes, bytes] = {}
         self._values_lock = threading.Lock()
         self._listener = socket.socket()
@@ -146,7 +150,7 @@ class FakeServer:
                             Status.OK,
                             request.request_id,
                             owner_worker=0,
-                            value=b"GlyphaStore/2",
+                            value=encode_init_identity(self._routing),
                         )
                     elif request.opcode is Opcode.BIND_WORKER:
                         if request.target_worker >= self._worker_count:
@@ -180,7 +184,7 @@ class FakeServer:
                             value=request.value,
                         )
                     elif request.opcode is Opcode.PUT:
-                        owner = worker_for(request.key, self._worker_count)
+                        owner = worker_for(request.key, self._worker_count, self._routing)
                         if bound_worker != owner:
                             self._send(
                                 connection,
@@ -211,7 +215,7 @@ class FakeServer:
                         if self._stall_on_get:
                             self._stop.wait(timeout=3600)
                             return
-                        owner = worker_for(request.key, self._worker_count)
+                        owner = worker_for(request.key, self._worker_count, self._routing)
                         if bound_worker != owner:
                             self._send(
                                 connection,
@@ -238,7 +242,7 @@ class FakeServer:
                                 value=value,
                             )
                     elif request.opcode is Opcode.ERASE:
-                        owner = worker_for(request.key, self._worker_count)
+                        owner = worker_for(request.key, self._worker_count, self._routing)
                         if bound_worker != owner:
                             self._send(
                                 connection,
@@ -342,6 +346,18 @@ class ClientTests(unittest.TestCase):
             for key in keys:
                 self.assertEqual(client.get(key), key[::-1])
                 self.assertEqual(worker_for(key, 2), owners[key])
+        server.join()
+
+    def test_keyed_siphash_init_and_routing(self) -> None:
+        routing = WorkerRouting(algorithm=2, seed=0x1111_2222_3333_4444)
+        server = FakeServer(worker_count=8, routing=routing)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            self.assertTrue(client.routing.keyed)
+            self.assertEqual(client.routing.seed, routing.seed)
+            key = b"tenant-a/orders/1"
+            self.assertEqual(client.worker_for(key), 6)
+            self.assertTrue(client.put(key, b"v").committed)
+            self.assertEqual(client.get(key), b"v")
         server.join()
 
     def test_disconnect_after_mutation_is_indeterminate(self) -> None:

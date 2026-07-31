@@ -8,7 +8,21 @@ module GlyphaStore
     RESPONSE_HEADER_BYTES = 40
     MAX_FRAME_BYTES = 2 * 1024 * 1024
     NO_WORKER = 0xFFFF_FFFF
-    IDENTITY = "GlyphaStore/2"
+    IDENTITY = "GlyphaStore/2".b
+    ROUTING_ALG_FNV1A64_V1 = 1
+    ROUTING_ALG_SIPHASH24_V1 = 2
+    WORKER_ROUTING_SIP_KEY1_XOR = 0x6a09e667f3bcc909
+    INIT_IDENTITY_EXTENDED_BYTES = IDENTITY.bytesize + 1 + 4 + 8
+
+    WorkerRouting = Struct.new(:algorithm, :seed, keyword_init: true) do
+      def initialize(algorithm: ROUTING_ALG_FNV1A64_V1, seed: 0)
+        super(algorithm: algorithm, seed: seed)
+      end
+
+      def keyed?
+        algorithm == ROUTING_ALG_SIPHASH24_V1
+      end
+    end
 
     module Opcode
       INIT = 1
@@ -153,10 +167,105 @@ module GlyphaStore
       value
     end
 
-    def worker_for(key, worker_count)
+    def siphash24(key, k0, k1)
+      key = binary!(key)
+      k0 &= 0xFFFF_FFFF_FFFF_FFFF
+      k1 &= 0xFFFF_FFFF_FFFF_FFFF
+      rotl = ->(value, shift) { ((value << shift) | (value >> (64 - shift))) & 0xFFFF_FFFF_FFFF_FFFF }
+      sipround = lambda do |v0, v1, v2, v3|
+        v0 = (v0 + v1) & 0xFFFF_FFFF_FFFF_FFFF
+        v1 = rotl.call(v1, 13)
+        v1 ^= v0
+        v0 = rotl.call(v0, 32)
+        v2 = (v2 + v3) & 0xFFFF_FFFF_FFFF_FFFF
+        v3 = rotl.call(v3, 16)
+        v3 ^= v2
+        v0 = (v0 + v3) & 0xFFFF_FFFF_FFFF_FFFF
+        v3 = rotl.call(v3, 21)
+        v3 ^= v0
+        v2 = (v2 + v1) & 0xFFFF_FFFF_FFFF_FFFF
+        v1 = rotl.call(v1, 17)
+        v1 ^= v2
+        v2 = rotl.call(v2, 32)
+        [v0, v1, v2, v3]
+      end
+      v0 = k0 ^ 0x736f6d6570736575
+      v1 = k1 ^ 0x646f72616e646f6d
+      v2 = k0 ^ 0x6c7967656e657261
+      v3 = k1 ^ 0x7465646279746573
+      length = key.bytesize
+      offset = 0
+      while offset + 8 <= length
+        message = key.byteslice(offset, 8).unpack1("Q<")
+        v3 ^= message
+        v0, v1, v2, v3 = sipround.call(v0, v1, v2, v3)
+        v0, v1, v2, v3 = sipround.call(v0, v1, v2, v3)
+        v0 ^= message
+        offset += 8
+      end
+      message = length << 56
+      key.byteslice(offset, length - offset).to_s.each_byte.with_index do |byte, index|
+        message |= byte << (8 * index)
+      end
+      v3 ^= message
+      v0, v1, v2, v3 = sipround.call(v0, v1, v2, v3)
+      v0, v1, v2, v3 = sipround.call(v0, v1, v2, v3)
+      v0 ^= message
+      v2 ^= 0xff
+      4.times { v0, v1, v2, v3 = sipround.call(v0, v1, v2, v3) }
+      v0 ^ v1 ^ v2 ^ v3
+    end
+
+    def validate_worker_routing!(routing)
+      case routing.algorithm
+      when ROUTING_ALG_FNV1A64_V1
+        raise ArgumentError, "fnv1a64-v1 Worker routing requires a zero hash seed" unless routing.seed.zero?
+      when ROUTING_ALG_SIPHASH24_V1
+        nil
+      else
+        raise ArgumentError, "unsupported Worker routing algorithm"
+      end
+    end
+
+    def hash_key_routing(key, routing = WorkerRouting.new)
+      validate_worker_routing!(routing)
+      if routing.algorithm == ROUTING_ALG_SIPHASH24_V1
+        siphash24(key, routing.seed, routing.seed ^ WORKER_ROUTING_SIP_KEY1_XOR)
+      else
+        fnv1a64(key)
+      end
+    end
+
+    def encode_init_identity(routing = WorkerRouting.new)
+      validate_worker_routing!(routing)
+      return IDENTITY.b unless routing.keyed?
+
+      IDENTITY.b + "\x00".b + [routing.algorithm, routing.seed].pack("L<Q<")
+    end
+
+    def decode_init_identity(value)
+      value = binary!(value)
+      if value == IDENTITY.b
+        return WorkerRouting.new
+      end
+      if value.bytesize != INIT_IDENTITY_EXTENDED_BYTES
+        raise ArgumentError, "server INIT identity value has unexpected length"
+      end
+      if value.byteslice(0, IDENTITY.bytesize) != IDENTITY.b || value.getbyte(IDENTITY.bytesize) != 0
+        raise ArgumentError, "server INIT identity prefix is invalid"
+      end
+      algorithm, seed = value.byteslice(IDENTITY.bytesize + 1, 12).unpack("L<Q<")
+      state = WorkerRouting.new(algorithm: algorithm, seed: seed)
+      validate_worker_routing!(state)
+      raise ArgumentError, "server INIT extended identity must use siphash24-v1 routing" unless state.keyed?
+
+      state
+    end
+
+    def worker_for(key, worker_count, routing = WorkerRouting.new)
       raise ArgumentError, "worker_count must be positive" if worker_count <= 0
 
-      fnv1a64(key) % worker_count
+      hash_key_routing(key, routing) % worker_count
     end
 
     def valid_opcode?(opcode)

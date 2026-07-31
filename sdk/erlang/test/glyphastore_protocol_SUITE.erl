@@ -5,7 +5,14 @@
 -include_lib("common_test/include/ct.hrl").
 
 all() ->
-    [request_encoder_matches_fixtures, request_decoder_round_trips, response_round_trips, worker_routing, rejects_noncanonical_reserved].
+    [
+        request_encoder_matches_fixtures,
+        request_decoder_round_trips,
+        response_round_trips,
+        worker_routing,
+        keyed_routing_and_init_identity,
+        rejects_noncanonical_reserved
+    ].
 
 request_encoder_matches_fixtures(Config) ->
     Expected = frames(fixture(Config, "wire_requests_v2.hex")),
@@ -66,6 +73,38 @@ worker_routing(_Config) ->
     true = Worker =:= glyphastore_protocol:fnv1a64(Key) rem 4,
     {ok, Worker2} = glyphastore_protocol:worker_for(Key, 4),
     true = Worker =:= Worker2.
+
+keyed_routing_and_init_identity(_Config) ->
+    K0 = 16#0706050403020100,
+    K1 = 16#0f0e0d0c0b0a0908,
+    true = glyphastore_protocol:siphash24(<<>>, K0, K1) =:= 16#726fdb47dd0e0e31,
+    true = glyphastore_protocol:siphash24(<<0, 1, 2>>, K0, K1) =:= 16#85676696d7fb7e2d,
+    Keyed = #{
+        algorithm => glyphastore_protocol:routing_alg_siphash24_v1(),
+        seed => 16#1111222233334444
+    },
+    {ok, Digest} = glyphastore_protocol:hash_key_routing(<<"tenant-a/orders/1">>, Keyed),
+    true = Digest =:= 16#712fcec57ac84546,
+    {ok, 6} = glyphastore_protocol:worker_for(<<"tenant-a/orders/1">>, 8, Keyed),
+    {ok, Fnv} = glyphastore_protocol:hash_key_routing(<<"tenant-a/orders/1">>, glyphastore_protocol:default_routing()),
+    true = Digest =/= Fnv,
+    {ok, Plain} = glyphastore_protocol:encode_init_identity(glyphastore_protocol:default_routing()),
+    true = Plain =:= glyphastore_protocol:identity(),
+    {ok, DecodedPlain} = glyphastore_protocol:decode_init_identity(Plain),
+    true = DecodedPlain =:= glyphastore_protocol:default_routing(),
+    ExtendedSeed = 16#ABCDEF0123456789,
+    {ok, Extended} = glyphastore_protocol:encode_init_identity(#{
+        algorithm => glyphastore_protocol:routing_alg_siphash24_v1(),
+        seed => ExtendedSeed
+    }),
+    true = byte_size(Extended) =:= 26,
+    {ok, Decoded} = glyphastore_protocol:decode_init_identity(Extended),
+    true = Decoded =:= #{
+        algorithm => glyphastore_protocol:routing_alg_siphash24_v1(),
+        seed => ExtendedSeed
+    },
+    {error, _} = glyphastore_protocol:decode_init_identity(<<"GlyphaStore/2", 0, "bad">>),
+    {error, _} = glyphastore_protocol:decode_init_identity(<<"GlyphaStore/3">>).
 
 rejects_noncanonical_reserved(_Config) ->
     {ok, Frame} = glyphastore_protocol:encode_request(

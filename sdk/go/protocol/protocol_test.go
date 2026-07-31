@@ -264,3 +264,77 @@ func TestRoutingIsBinaryAndDeterministic(t *testing.T) {
 		t.Fatal("routing not deterministic")
 	}
 }
+
+func TestSipHash24PaperVectors(t *testing.T) {
+	const (
+		k0 = 0x0706050403020100
+		k1 = 0x0f0e0d0c0b0a0908
+	)
+	if got := protocol.SipHash24(nil, k0, k1); got != 0x726fdb47dd0e0e31 {
+		t.Fatalf("empty: %#x", got)
+	}
+	if got := protocol.SipHash24([]byte{0, 1, 2}, k0, k1); got != 0x85676696d7fb7e2d {
+		t.Fatalf("3-byte: %#x", got)
+	}
+}
+
+func TestKeyedRoutingAndInitIdentity(t *testing.T) {
+	keyed := protocol.WorkerRouting{Algorithm: protocol.RoutingAlgSipHash24V1, Seed: 0x1111222233334444}
+	digest, err := protocol.HashKeyRouting([]byte("tenant-a/orders/1"), keyed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest != 0x712fcec57ac84546 {
+		t.Fatalf("digest %#x", digest)
+	}
+	owner, err := protocol.WorkerFor([]byte("tenant-a/orders/1"), 8, keyed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner != 6 {
+		t.Fatalf("owner %d", owner)
+	}
+	fnv, err := protocol.HashKeyRouting([]byte("tenant-a/orders/1"), protocol.WorkerRouting{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if digest == fnv {
+		t.Fatal("siphash digest must differ from FNV for this seed")
+	}
+
+	plain, err := protocol.EncodeInitIdentity(protocol.WorkerRouting{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plain) != protocol.Identity {
+		t.Fatalf("plain identity %q", plain)
+	}
+	decoded, err := protocol.DecodeInitIdentity(plain)
+	if err != nil || decoded.Algorithm != protocol.RoutingAlgFNV1a64V1 || decoded.Seed != 0 {
+		t.Fatalf("plain decode: %#v %v", decoded, err)
+	}
+
+	extended, err := protocol.EncodeInitIdentity(protocol.WorkerRouting{
+		Algorithm: protocol.RoutingAlgSipHash24V1,
+		Seed:      0xABCDEF0123456789,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(extended) != protocol.InitIdentityExtendedBytes {
+		t.Fatalf("extended len %d", len(extended))
+	}
+	decoded, err = protocol.DecodeInitIdentity(extended)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Algorithm != protocol.RoutingAlgSipHash24V1 || decoded.Seed != 0xABCDEF0123456789 {
+		t.Fatalf("decoded %#v", decoded)
+	}
+	if _, err := protocol.DecodeInitIdentity([]byte("GlyphaStore/2\x00bad")); err == nil {
+		t.Fatal("expected malformed rejection")
+	}
+	if _, err := protocol.DecodeInitIdentity([]byte("GlyphaStore/3")); err == nil {
+		t.Fatal("expected prefix rejection")
+	}
+}

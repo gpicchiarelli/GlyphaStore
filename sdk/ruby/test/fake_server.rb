@@ -6,6 +6,7 @@ require "glypha_store"
 
 class FakeServer
   attr_reader :port
+  attr_accessor :routing
 
   def initialize(workers: 1, internal_error_on_put: false, drop_after_mutation: false,
                  deny_data_plane: false, ssl_context: nil)
@@ -62,7 +63,7 @@ class FakeServer
       case request.opcode
       when GlyphaStore::Protocol::Opcode::INIT
         reply(socket, status: GlyphaStore::Protocol::Status::OK, request_id: request.request_id,
-                      value: GlyphaStore::Protocol::IDENTITY, owner_worker: GlyphaStore::Protocol::NO_WORKER,
+                      value: GlyphaStore::Protocol.encode_init_identity(@routing || GlyphaStore::Protocol::WorkerRouting.new), owner_worker: GlyphaStore::Protocol::NO_WORKER,
                       worker_count: @workers, routing_epoch: 9)
       when GlyphaStore::Protocol::Opcode::BIND_WORKER
         bound = request.target_worker

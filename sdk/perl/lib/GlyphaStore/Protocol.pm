@@ -17,11 +17,14 @@ BEGIN {
 
 our @EXPORT_OK = qw(
     PROTOCOL_VERSION REQUEST_HEADER_BYTES RESPONSE_HEADER_BYTES MAX_FRAME_BYTES NO_WORKER
+    IDENTITY ROUTING_ALG_FNV1A64_V1 ROUTING_ALG_SIPHASH24_V1 WORKER_ROUTING_SIP_KEY1_XOR
+    INIT_IDENTITY_EXTENDED_BYTES
     OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
     STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND STATUS_PERMISSION_DENIED
     encode_request encode_request_parts encode_request_hot decode_request encode_response
-    decode_response worker_for
+    decode_response fnv1a64 siphash24 hash_key_routing encode_init_identity decode_init_identity
+    worker_for
 );
 
 use constant PROTOCOL_VERSION      => 2;
@@ -29,9 +32,18 @@ use constant REQUEST_HEADER_BYTES  => 40;
 use constant RESPONSE_HEADER_BYTES => 40;
 use constant MAX_FRAME_BYTES       => 2 * 1024 * 1024;
 use constant NO_WORKER             => 4_294_967_295;
+use constant IDENTITY              => 'GlyphaStore/2';
+use constant ROUTING_ALG_FNV1A64_V1 => 1;
+use constant ROUTING_ALG_SIPHASH24_V1 => 2;
+use constant WORKER_ROUTING_SIP_KEY1_XOR => 7_640_891_576_956_012_809; # 0x6a09e667f3bcc909
+use constant INIT_IDENTITY_EXTENDED_BYTES => 26;
 use constant FNV1A_OFFSET          => 14_695_981_039_346_656_037;
 use constant FNV1A_PRIME           => 1_099_511_628_211;
 use constant U64_MAX               => '18446744073709551615';
+use constant SIP_C0                => 8_317_987_319_222_330_741; # 0x736f6d6570736575
+use constant SIP_C1                => 7_237_128_888_997_146_477; # 0x646f72616e646f6d
+use constant SIP_C2                => 7_816_392_313_619_706_465; # 0x6c7967656e657261
+use constant SIP_C3                => 8_387_220_255_154_660_723; # 0x7465646279746573
 
 use constant OP_INIT        => 1;
 use constant OP_PING        => 2;
@@ -251,11 +263,9 @@ sub decode_response {
     };
 }
 
-sub worker_for {
-    my ($key, $worker_count) = @_;
-    die "worker_count must be positive\n" if !$worker_count || $worker_count < 0;
+sub fnv1a64 {
+    my ($key) = @_;
     $key = _require_bytes($key, 'key');
-    # Signed 64-bit wrapping multiply matches unsigned FNV-1a on two's-complement hosts.
     my $hash;
     {
         use integer;
@@ -265,7 +275,150 @@ sub worker_for {
             $hash *= FNV1A_PRIME;
         }
     }
-    return unpack('Q<', pack('q<', $hash)) % $worker_count;
+    return unpack('Q<', pack('q<', $hash));
+}
+
+# Force a native value into unsigned 64-bit (matches C++ uint64_t wraps).
+sub _u64 {
+    my ($value) = @_;
+    use integer;
+    return unpack('Q<', pack('q<', $value));
+}
+
+sub _add64 {
+    my ($a, $b) = @_;
+    use integer;
+    return unpack('Q<', pack('q<', unpack('q<', pack('Q<', $a)) + unpack('q<', pack('Q<', $b))));
+}
+
+sub _xor64 {
+    my ($a, $b) = @_;
+    use integer;
+    return unpack('Q<', pack('q<', unpack('q<', pack('Q<', $a)) ^ unpack('q<', pack('Q<', $b))));
+}
+
+sub _rotl64 {
+    my ($value, $shift) = @_;
+    $shift %= 64;
+    return unpack('Q<', pack('Q<', $value)) if $shift == 0;
+    my ($lo, $hi) = unpack('V2', pack('Q<', $value));
+    if ($shift >= 32) {
+        ($lo, $hi) = ($hi, $lo);
+        $shift -= 32;
+        return unpack('Q<', pack('V2', $lo, $hi)) if $shift == 0;
+    }
+    my $new_hi = (($hi << $shift) | ($lo >> (32 - $shift))) & 0xFFFFFFFF;
+    my $new_lo = (($lo << $shift) | ($hi >> (32 - $shift))) & 0xFFFFFFFF;
+    return unpack('Q<', pack('V2', $new_lo, $new_hi));
+}
+
+sub _sipround {
+    my ($v0, $v1, $v2, $v3) = @_;
+    $v0 = _add64($v0, $v1);
+    $v1 = _rotl64($v1, 13);
+    $v1 = _xor64($v1, $v0);
+    $v0 = _rotl64($v0, 32);
+    $v2 = _add64($v2, $v3);
+    $v3 = _rotl64($v3, 16);
+    $v3 = _xor64($v3, $v2);
+    $v0 = _add64($v0, $v3);
+    $v3 = _rotl64($v3, 21);
+    $v3 = _xor64($v3, $v0);
+    $v2 = _add64($v2, $v1);
+    $v1 = _rotl64($v1, 17);
+    $v1 = _xor64($v1, $v2);
+    $v2 = _rotl64($v2, 32);
+    return ($v0, $v1, $v2, $v3);
+}
+
+sub siphash24 {
+    my ($key, $k0, $k1) = @_;
+    $key = _require_bytes($key, 'key');
+    $k0 = _u64($k0);
+    $k1 = _u64($k1);
+    my $v0 = _xor64($k0, SIP_C0);
+    my $v1 = _xor64($k1, SIP_C1);
+    my $v2 = _xor64($k0, SIP_C2);
+    my $v3 = _xor64($k1, SIP_C3);
+    my $length = length($key);
+    my $offset = 0;
+    while ($offset + 8 <= $length) {
+        my $message = unpack('Q<', substr($key, $offset, 8));
+        $v3 = _xor64($v3, $message);
+        ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
+        ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
+        $v0 = _xor64($v0, $message);
+        $offset += 8;
+    }
+    my $message = _u64($length << 56);
+    my $i = 0;
+    while ($offset + $i < $length) {
+        $message = _xor64($message, _u64(ord(substr($key, $offset + $i, 1)) << (8 * $i)));
+        $i += 1;
+    }
+    $v3 = _xor64($v3, $message);
+    ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
+    ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
+    $v0 = _xor64($v0, $message);
+    $v2 = _xor64($v2, 0xFF);
+    for (1 .. 4) {
+        ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
+    }
+    return _xor64(_xor64($v0, $v1), _xor64($v2, $v3));
+}
+
+sub _normalize_routing {
+    my ($routing) = @_;
+    $routing //= {};
+    my $algorithm = $routing->{algorithm} // ROUTING_ALG_FNV1A64_V1;
+    my $seed = $routing->{seed} // 0;
+    if ($algorithm == ROUTING_ALG_FNV1A64_V1) {
+        die "fnv1a64-v1 Worker routing requires a zero hash seed\n" if $seed != 0;
+    }
+    elsif ($algorithm != ROUTING_ALG_SIPHASH24_V1) {
+        die "unsupported Worker routing algorithm\n";
+    }
+    return { algorithm => $algorithm, seed => $seed };
+}
+
+sub hash_key_routing {
+    my ($key, $routing) = @_;
+    my $state = _normalize_routing($routing);
+    $key = _require_bytes($key, 'key');
+    if ($state->{algorithm} == ROUTING_ALG_SIPHASH24_V1) {
+        return siphash24($key, $state->{seed}, _xor64($state->{seed}, WORKER_ROUTING_SIP_KEY1_XOR));
+    }
+    return fnv1a64($key);
+}
+
+sub encode_init_identity {
+    my ($routing) = @_;
+    my $state = _normalize_routing($routing);
+    return IDENTITY if $state->{algorithm} != ROUTING_ALG_SIPHASH24_V1;
+    return IDENTITY . "\0" . pack('L<Q<', $state->{algorithm}, $state->{seed});
+}
+
+sub decode_init_identity {
+    my ($value) = @_;
+    $value = _require_bytes($value, 'value');
+    if ($value eq IDENTITY) {
+        return { algorithm => ROUTING_ALG_FNV1A64_V1, seed => 0 };
+    }
+    die "server INIT identity value has unexpected length\n"
+        if length($value) != INIT_IDENTITY_EXTENDED_BYTES;
+    die "server INIT identity prefix is invalid\n"
+        if substr($value, 0, length(IDENTITY)) ne IDENTITY || substr($value, length(IDENTITY), 1) ne "\0";
+    my ($algorithm, $seed) = unpack('L<Q<', substr($value, length(IDENTITY) + 1));
+    my $state = _normalize_routing({ algorithm => $algorithm, seed => $seed });
+    die "server INIT extended identity must use siphash24-v1 routing\n"
+        if $state->{algorithm} != ROUTING_ALG_SIPHASH24_V1;
+    return $state;
+}
+
+sub worker_for {
+    my ($key, $worker_count, $routing) = @_;
+    die "worker_count must be positive\n" if !$worker_count || $worker_count < 0;
+    return hash_key_routing($key, $routing) % $worker_count;
 }
 
 1;

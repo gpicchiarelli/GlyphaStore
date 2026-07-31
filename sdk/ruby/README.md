@@ -7,9 +7,7 @@ zero-byte mutations, and `committed` / `rejected` / `indeterminate` outcomes.
 Implements [client semantics v1](../../docs/spec/client-semantics-v1.md). Roadmap:
 [Ruby SDK roadmap](../../docs/architecture/ruby-sdk-roadmap.md).
 
-Current routing limit: the Ruby client accepts the plain FNV `GlyphaStore/2` identity only. It fails
-closed on the keyed SipHash `INIT` extension used by `--secure-profile`; see the shared
-[SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+Worker routing follows ADR 0030: plain `GlyphaStore/2` is FNV-1a; the extended INIT identity selects SipHash-2-4.
 
 **Gem:** `glyphastore` · **Module:** `GlyphaStore` · **Ruby:** ≥ 3.2 · **License:** BSD-3-Clause
 

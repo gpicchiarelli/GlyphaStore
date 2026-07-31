@@ -30,7 +30,15 @@
     encode_response/6,
     decode_response/2,
     fnv1a64/1,
-    worker_for/2
+    siphash24/3,
+    hash_key_routing/2,
+    encode_init_identity/1,
+    decode_init_identity/1,
+    worker_for/2,
+    worker_for/3,
+    routing_alg_fnv1a64_v1/0,
+    routing_alg_siphash24_v1/0,
+    default_routing/0
 ]).
 
 -define(VERSION, 2).
@@ -62,6 +70,14 @@
 -define(FNV_OFFSET, 14695981039346656037).
 -define(FNV_PRIME, 1099511628211).
 -define(U64_MASK, 16#FFFFFFFFFFFFFFFF).
+-define(ROUTING_ALG_FNV1A64_V1, 1).
+-define(ROUTING_ALG_SIPHASH24_V1, 2).
+-define(WORKER_ROUTING_SIP_KEY1_XOR, 16#6a09e667f3bcc909).
+-define(INIT_IDENTITY_EXTENDED_BYTES, 26).
+-define(SIP_C0, 16#736f6d6570736575).
+-define(SIP_C1, 16#646f72616e646f6d).
+-define(SIP_C2, 16#6c7967656e657261).
+-define(SIP_C3, 16#7465646279746573).
 
 version() -> ?VERSION.
 request_header_bytes() -> ?REQUEST_HEADER_BYTES.
@@ -333,11 +349,154 @@ decode_response_body(FrameSize, Rest) ->
 fnv1a64(Key) ->
     fnv1a64(Key, ?FNV_OFFSET).
 
+routing_alg_fnv1a64_v1() -> ?ROUTING_ALG_FNV1A64_V1.
+routing_alg_siphash24_v1() -> ?ROUTING_ALG_SIPHASH24_V1.
+default_routing() -> #{algorithm => ?ROUTING_ALG_FNV1A64_V1, seed => 0}.
+
+-spec siphash24(binary(), non_neg_integer(), non_neg_integer()) -> non_neg_integer().
+siphash24(Key0, K0, K1) ->
+    Key = ensure_binary(Key0),
+    V0 = (K0 bxor ?SIP_C0) band ?U64_MASK,
+    V1 = (K1 bxor ?SIP_C1) band ?U64_MASK,
+    V2 = (K0 bxor ?SIP_C2) band ?U64_MASK,
+    V3 = (K1 bxor ?SIP_C3) band ?U64_MASK,
+    siphash24_body(Key, V0, V1, V2, V3, byte_size(Key), 0).
+
+siphash24_body(Key, V0, V1, V2, V3, Length, Offset) when Offset + 8 =< Length ->
+    <<_:Offset/binary, Message:64/little, _/binary>> = Key,
+    V3a = V3 bxor Message,
+    {A0, A1, A2, A3} = sipround(V0, V1, V2, V3a),
+    {B0, B1, B2, B3} = sipround(A0, A1, A2, A3),
+    siphash24_body(Key, B0 bxor Message, B1, B2, B3, Length, Offset + 8);
+siphash24_body(Key, V0, V1, V2, V3, Length, Offset) ->
+    Message0 = (Length bsl 56) band ?U64_MASK,
+    Message = siphash_tail(Key, Offset, Length, 0, Message0),
+    V3a = V3 bxor Message,
+    {A0, A1, A2, A3} = sipround(V0, V1, V2, V3a),
+    {B0, B1, B2, B3} = sipround(A0, A1, A2, A3),
+    V0b = B0 bxor Message,
+    V2b = B2 bxor 16#FF,
+    {C0, C1, C2, C3} = sipround(V0b, B1, V2b, B3),
+    {D0, D1, D2, D3} = sipround(C0, C1, C2, C3),
+    {E0, E1, E2, E3} = sipround(D0, D1, D2, D3),
+    {F0, F1, F2, F3} = sipround(E0, E1, E2, E3),
+    (F0 bxor F1 bxor F2 bxor F3) band ?U64_MASK.
+
+siphash_tail(_Key, Offset, Length, _I, Acc) when Offset >= Length ->
+    Acc;
+siphash_tail(Key, Offset, Length, I, Acc) ->
+    <<_:Offset/binary, Byte, _/binary>> = Key,
+    Acc1 = Acc bor ((Byte bsl (8 * I)) band ?U64_MASK),
+    siphash_tail(Key, Offset + 1, Length, I + 1, Acc1 band ?U64_MASK).
+
+sipround(V0, V1, V2, V3) ->
+    V0a = (V0 + V1) band ?U64_MASK,
+    V1a = rotl64(V1, 13),
+    V1b = V1a bxor V0a,
+    V0b = rotl64(V0a, 32),
+    V2a = (V2 + V3) band ?U64_MASK,
+    V3a = rotl64(V3, 16),
+    V3b = V3a bxor V2a,
+    V0c = (V0b + V3b) band ?U64_MASK,
+    V3c = rotl64(V3b, 21),
+    V3d = V3c bxor V0c,
+    V2b = (V2a + V1b) band ?U64_MASK,
+    V1c = rotl64(V1b, 17),
+    V1d = V1c bxor V2b,
+    V2c = rotl64(V2b, 32),
+    {V0c, V1d, V2c, V3d}.
+
+rotl64(Value, Shift) ->
+    (((Value bsl Shift) band ?U64_MASK) bor (Value bsr (64 - Shift))) band ?U64_MASK.
+
+validate_routing(#{algorithm := ?ROUTING_ALG_FNV1A64_V1, seed := 0}) ->
+    ok;
+validate_routing(#{algorithm := ?ROUTING_ALG_FNV1A64_V1, seed := _}) ->
+    {error, {invalid_argument, <<"fnv1a64-v1 Worker routing requires a zero hash seed">>}};
+validate_routing(#{algorithm := ?ROUTING_ALG_SIPHASH24_V1, seed := _}) ->
+    ok;
+validate_routing(_) ->
+    {error, {invalid_argument, <<"unsupported Worker routing algorithm">>}}.
+
+hash_key_routing(Key, Routing0) ->
+    Routing = normalize_routing(Routing0),
+    case validate_routing(Routing) of
+        ok ->
+            case maps:get(algorithm, Routing) of
+                ?ROUTING_ALG_SIPHASH24_V1 ->
+                    Seed = maps:get(seed, Routing),
+                    {ok, siphash24(ensure_binary(Key), Seed, Seed bxor ?WORKER_ROUTING_SIP_KEY1_XOR)};
+                _ ->
+                    {ok, fnv1a64(ensure_binary(Key))}
+            end;
+        Error ->
+            Error
+    end.
+
+normalize_routing(undefined) ->
+    default_routing();
+normalize_routing(Routing) when is_map(Routing) ->
+    #{
+        algorithm => maps:get(algorithm, Routing, ?ROUTING_ALG_FNV1A64_V1),
+        seed => maps:get(seed, Routing, 0)
+    }.
+
+encode_init_identity(Routing0) ->
+    Routing = normalize_routing(Routing0),
+    case validate_routing(Routing) of
+        ok ->
+            case maps:get(algorithm, Routing) of
+                ?ROUTING_ALG_SIPHASH24_V1 ->
+                    Algo = maps:get(algorithm, Routing),
+                    Seed = maps:get(seed, Routing),
+                    {ok, <<(identity())/binary, 0, Algo:32/little, Seed:64/little>>};
+                _ ->
+                    {ok, identity()}
+            end;
+        Error ->
+            Error
+    end.
+
+decode_init_identity(Value0) ->
+    Value = ensure_binary(Value0),
+    Ident = identity(),
+    case Value of
+        Ident ->
+            {ok, default_routing()};
+        _ when byte_size(Value) =/= ?INIT_IDENTITY_EXTENDED_BYTES ->
+            {error, {invalid_argument, <<"server INIT identity value has unexpected length">>}};
+        <<Prefix:13/binary, 0, Algo:32/little, Seed:64/little>> ->
+            case Prefix =:= Ident of
+                false ->
+                    {error, {invalid_argument, <<"server INIT identity prefix is invalid">>}};
+                true ->
+                    State = #{algorithm => Algo, seed => Seed},
+                    case validate_routing(State) of
+                        ok when Algo =:= ?ROUTING_ALG_SIPHASH24_V1 ->
+                            {ok, State};
+                        ok ->
+                            {error, {invalid_argument, <<"server INIT extended identity must use siphash24-v1 routing">>}};
+                        Error ->
+                            Error
+                    end
+            end;
+        _ ->
+            {error, {invalid_argument, <<"server INIT identity prefix is invalid">>}}
+    end.
+
 -spec worker_for(binary(), pos_integer()) ->
     {ok, non_neg_integer()} | {error, {invalid_argument, binary()}}.
-worker_for(Key, WorkerCount) when WorkerCount > 0 ->
-    {ok, fnv1a64(ensure_binary(Key)) rem WorkerCount};
-worker_for(_Key, _WorkerCount) ->
+worker_for(Key, WorkerCount) ->
+    worker_for(Key, WorkerCount, default_routing()).
+
+-spec worker_for(binary(), pos_integer(), map()) ->
+    {ok, non_neg_integer()} | {error, {invalid_argument, binary()}}.
+worker_for(Key, WorkerCount, Routing) when WorkerCount > 0 ->
+    case hash_key_routing(Key, Routing) of
+        {ok, Digest} -> {ok, Digest rem WorkerCount};
+        Error -> Error
+    end;
+worker_for(_Key, _WorkerCount, _Routing) ->
     {error, {invalid_argument, <<"worker_count must be positive">>}}.
 
 ensure_binary(undefined) -> <<>>;

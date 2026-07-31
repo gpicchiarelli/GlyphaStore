@@ -9,10 +9,7 @@ the same codec, configuration, and outcome model. Runtime dependency: none (Pyth
 Portable error/retry/deadline rules:
 [client semantics v1](../../docs/spec/client-semantics-v1.md).
 
-Current routing limit: the Python client accepts the plain FNV `GlyphaStore/2` identity only. It
-fails closed when the daemon advertises the keyed SipHash `INIT` extension used by
-`--secure-profile`; that SDK parity work is tracked in the
-[SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+Worker routing follows ADR 0030: plain `GlyphaStore/2` is FNV-1a; the extended INIT identity selects SipHash-2-4.
 
 **Security posture:** cleartext TCP by default (no authentication). Opt-in TLS 1.3 via
 `ClientConfig(tls=True, tls_ca=..., cert_file=..., key_file=..., server_name=...,

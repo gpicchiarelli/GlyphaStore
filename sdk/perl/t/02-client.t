@@ -85,7 +85,7 @@ sub start_server {
                         send_response($handle,
                             status => STATUS_OK,
                             request_id => $request->{request_id},
-                            value => 'GlyphaStore/2',
+                            value => GlyphaStore::Protocol::encode_init_identity(),
                             owner_worker => 0,
                             worker_count => $worker_count,
                             routing_epoch => 9);
@@ -405,7 +405,7 @@ SKIP: {
                         owner_worker  => 0,
                         worker_count  => 1,
                         routing_epoch => 9,
-                        value         => 'GlyphaStore/2'
+                        value         => GlyphaStore::Protocol::encode_init_identity()
                     );
                 }
                 elsif ($opcode == OP_BIND_WORKER) {

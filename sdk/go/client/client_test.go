@@ -22,11 +22,20 @@ import (
 	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
 )
 
+func mustEncodeInitIdentity(routing protocol.WorkerRouting) []byte {
+	identity, err := protocol.EncodeInitIdentity(routing)
+	if err != nil {
+		panic(err)
+	}
+	return identity
+}
+
 type fakeServer struct {
 	workerCount        uint32
 	disconnectOnPut    bool
 	internalErrorOnPut bool
 	stallOnGet         bool
+	routing            protocol.WorkerRouting
 	tlsConfig          *tls.Config
 	ln                 net.Listener
 	values             map[string][]byte
@@ -142,7 +151,7 @@ func (s *fakeServer) send(conn net.Conn, status protocol.Status, requestID uint6
 func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request) bool {
 	switch req.Opcode {
 	case protocol.OpcodeInit:
-		return s.send(conn, protocol.StatusOK, req.RequestID, 0, []byte(protocol.Identity))
+		return s.send(conn, protocol.StatusOK, req.RequestID, 0, mustEncodeInitIdentity(s.routing))
 	case protocol.OpcodeBindWorker:
 		if req.TargetWorker >= s.workerCount {
 			return s.send(conn, protocol.StatusInvalidRequest, req.RequestID, 0, nil)
@@ -159,7 +168,7 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 	case protocol.OpcodePing:
 		return s.send(conn, protocol.StatusOK, req.RequestID, ownerBound, req.Value)
 	case protocol.OpcodePut:
-		owner, _ := protocol.WorkerFor(req.Key, s.workerCount)
+		owner, _ := protocol.WorkerFor(req.Key, s.workerCount, s.routing)
 		if ownerBound != owner {
 			return s.send(conn, protocol.StatusWrongOwner, req.RequestID, owner, nil)
 		}
@@ -181,7 +190,7 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 			}
 			return false
 		}
-		owner, _ := protocol.WorkerFor(req.Key, s.workerCount)
+		owner, _ := protocol.WorkerFor(req.Key, s.workerCount, s.routing)
 		if ownerBound != owner {
 			return s.send(conn, protocol.StatusWrongOwner, req.RequestID, owner, nil)
 		}
@@ -193,7 +202,7 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 		}
 		return s.send(conn, protocol.StatusOK, req.RequestID, ownerBound, value)
 	case protocol.OpcodeErase:
-		owner, _ := protocol.WorkerFor(req.Key, s.workerCount)
+		owner, _ := protocol.WorkerFor(req.Key, s.workerCount, s.routing)
 		if ownerBound != owner {
 			return s.send(conn, protocol.StatusWrongOwner, req.RequestID, owner, nil)
 		}
@@ -265,6 +274,36 @@ func TestInternalErrorMutationIsIndeterminate(t *testing.T) {
 	result := c.Put([]byte("key"), []byte("value"), 0)
 	if result.Outcome != client.MutationIndeterminate {
 		t.Fatalf("outcome=%s", result.Outcome)
+	}
+}
+
+
+func TestKeyedSipHashInitAndRouting(t *testing.T) {
+	server := startFakeServer(t, 8, false, false)
+	server.routing = protocol.WorkerRouting{Algorithm: protocol.RoutingAlgSipHash24V1, Seed: 0x1111222233334444}
+	defer server.close()
+	c, err := client.Connect(client.Config{Port: server.port()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if !c.Routing().Keyed() || c.Routing().Seed != 0x1111222233334444 {
+		t.Fatalf("routing=%+v", c.Routing())
+	}
+	owner, err := c.WorkerFor([]byte("tenant-a/orders/1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if owner != 6 {
+		t.Fatalf("owner=%d", owner)
+	}
+	result := c.Put([]byte("tenant-a/orders/1"), []byte("v"), 0)
+	if !result.Committed() {
+		t.Fatalf("%v", result.Err)
+	}
+	got, err := c.Get([]byte("tenant-a/orders/1"))
+	if err != nil || string(got) != "v" {
+		t.Fatalf("%q %v", got, err)
 	}
 }
 

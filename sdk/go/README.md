@@ -9,9 +9,7 @@ categories, monotonic request deadlines, at-most-one automatic retry, and
 `committed` / `rejected` / `indeterminate` mutation outcomes. Pipelines are single-Worker;
 `ExecuteBatch` groups by Worker, overlaps goroutines, and restores caller order.
 
-Current routing limit: the Go client accepts the plain FNV `GlyphaStore/2` identity only. It fails
-closed on the keyed SipHash `INIT` extension used by `--secure-profile`; see the
-[SDK roadmap](../../docs/architecture/sdk-roadmap.md).
+Worker routing follows ADR 0030: plain `GlyphaStore/2` is FNV-1a; the extended INIT identity selects SipHash-2-4.
 
 Module: `github.com/gpicchiarelli/GlyphaStore/sdk/go`  
 Version: `client.Version` (must match repository `VERSION`)  

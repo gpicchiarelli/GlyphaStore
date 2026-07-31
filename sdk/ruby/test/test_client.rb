@@ -232,4 +232,23 @@ class ClientTest < Minitest::Test
   rescue Errno::ENOENT
     nil
   end
+  def test_keyed_siphash_init_and_routing
+    server = FakeServer.new(workers: 8)
+    server.routing = GlyphaStore::Protocol::WorkerRouting.new(
+      algorithm: GlyphaStore::Protocol::ROUTING_ALG_SIPHASH24_V1,
+      seed: 0x1111222233334444
+    )
+    client = GlyphaStore::Client.connect(GlyphaStore::ClientConfig.new(port: server.port))
+    begin
+      assert client.routing.keyed?
+      assert_equal 0x1111222233334444, client.routing.seed
+      assert_equal 6, client.worker_for("tenant-a/orders/1".b)
+      assert client.put("tenant-a/orders/1".b, "v".b).committed?
+      assert_equal "v".b, client.get("tenant-a/orders/1".b)
+    ensure
+      client.close
+      server&.join
+    end
+  end
+
 end

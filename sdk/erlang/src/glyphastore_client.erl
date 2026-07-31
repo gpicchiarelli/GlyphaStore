@@ -79,6 +79,7 @@
     config :: config(),
     worker_count = 0 :: non_neg_integer(),
     routing_epoch = 0 :: non_neg_integer(),
+    routing = #{algorithm => 1, seed => 0} :: map(),
     request_id = 1 :: non_neg_integer(),
     healthy = true :: boolean(),
     workers = #{} :: #{non_neg_integer() => pid()},
@@ -156,13 +157,14 @@ init(Config) ->
     case glyphastore_conn_sup:start_link() of
         {ok, Sup} ->
             case bootstrap_all(Sup, Config, 1) of
-                {ok, Workers, WorkerCount, RoutingEpoch, NextId, ConnMons} ->
+                {ok, Workers, WorkerCount, RoutingEpoch, Routing, NextId, ConnMons} ->
                     {ok,
                         #state{
                             config = Config,
                             workers = Workers,
                             worker_count = WorkerCount,
                             routing_epoch = RoutingEpoch,
+                            routing = Routing,
                             request_id = NextId,
                             sup = Sup,
                             conn_mons = ConnMons
@@ -181,8 +183,8 @@ handle_call(worker_count, _From, State) -> {reply, State#state.worker_count, Sta
 handle_call(routing_epoch, _From, State) -> {reply, State#state.routing_epoch, State};
 handle_call({worker_for, _Key}, _From, #state{worker_count = 0} = State) ->
     {reply, {error, glyphastore_error:unavailable(<<"client is not connected">>)}, State};
-handle_call({worker_for, Key}, _From, #state{worker_count = WC} = State) ->
-    {reply, glyphastore_protocol:worker_for(Key, WC), State};
+handle_call({worker_for, Key}, _From, #state{worker_count = WC, routing = Routing} = State) ->
+    {reply, glyphastore_protocol:worker_for(Key, WC, Routing), State};
 handle_call({read, Op, Key, Value, Opts}, From, State) ->
     dispatch_read(Op, Key, Value, Opts, From, State);
 handle_call({mutate, Op, Key, Value, Expire, Opts}, From, State) ->
@@ -266,8 +268,8 @@ bootstrap_all(Sup, Config, NextId) ->
         {ok, Conn0} ->
             Mon0 = monitor(process, Conn0),
             case bootstrap_conn(Conn0, 0, undefined, Config, NextId) of
-                {ok, WC, Epoch, NextId1} ->
-                    bootstrap_rest(Sup, 1, WC, Epoch, Config, #{0 => Conn0}, #{Mon0 => 0}, NextId1);
+                {ok, WC, Epoch, Routing, NextId1} ->
+                    bootstrap_rest(Sup, 1, WC, Epoch, Routing, Config, #{0 => Conn0}, #{Mon0 => 0}, NextId1);
                 {error, Err} ->
                     demonitor(Mon0, [flush]),
                     {error, Err}
@@ -276,19 +278,20 @@ bootstrap_all(Sup, Config, NextId) ->
             {error, glyphastore_error:internal(iolist_to_binary(io_lib:format("conn start: ~p", [Err])))}
     end.
 
-bootstrap_rest(_Sup, W, WC, Epoch, _Config, Workers, ConnMons, NextId) when W >= WC ->
-    {ok, Workers, WC, Epoch, NextId, ConnMons};
-bootstrap_rest(Sup, W, WC, Epoch, Config, Workers, ConnMons, NextId) ->
+bootstrap_rest(_Sup, W, WC, Epoch, Routing, _Config, Workers, ConnMons, NextId) when W >= WC ->
+    {ok, Workers, WC, Epoch, Routing, NextId, ConnMons};
+bootstrap_rest(Sup, W, WC, Epoch, Routing, Config, Workers, ConnMons, NextId) ->
     case glyphastore_conn_sup:start_conn(Sup, W, Config) of
         {ok, Conn} ->
             Mon = monitor(process, Conn),
-            case bootstrap_conn(Conn, W, {WC, Epoch}, Config, NextId) of
-                {ok, WC, Epoch, NextId1} ->
+            case bootstrap_conn(Conn, W, {WC, Epoch, Routing}, Config, NextId) of
+                {ok, WC, Epoch, Routing, NextId1} ->
                     bootstrap_rest(
                         Sup,
                         W + 1,
                         WC,
                         Epoch,
+                        Routing,
                         Config,
                         Workers#{W => Conn},
                         ConnMons#{Mon => W},
@@ -314,7 +317,8 @@ bootstrap_conn(Conn, Worker, Expected, Config, NextId) ->
                     case glyphastore_conn:exchange(Conn, Frame, Deadline) of
                         {ok, Response} ->
                             case validate_init(Response, InitId, Expected) of
-                                ok -> bind_worker(Conn, Worker, Response, Deadline, NextAfterInit);
+                                {ok, Routing} ->
+                                    bind_worker(Conn, Worker, Response, Routing, Deadline, NextAfterInit);
                                 {error, Err} ->
                                     glyphastore_conn:reset(Conn),
                                     {error, Err}
@@ -334,7 +338,7 @@ bootstrap_conn(Conn, Worker, Expected, Config, NextId) ->
             {error, Err}
     end.
 
-bind_worker(Conn, Worker, InitResponse, Deadline, BindId) ->
+bind_worker(Conn, Worker, InitResponse, Routing, Deadline, BindId) ->
     case glyphastore_protocol:encode_request(
         glyphastore_protocol:opcode_bind_worker(), BindId, <<>>, <<>>, 0, Worker
     ) of
@@ -344,7 +348,7 @@ bind_worker(Conn, Worker, InitResponse, Deadline, BindId) ->
                     case validate_bind(Bound, BindId, Worker, InitResponse) of
                         ok ->
                             {ok, maps:get(worker_count, InitResponse), maps:get(routing_epoch, InitResponse),
-                                advance_id(BindId)};
+                                Routing, advance_id(BindId)};
                         {error, Err} ->
                             glyphastore_conn:reset(Conn),
                             {error, Err}
@@ -1532,20 +1536,27 @@ encode_request(Opcode, RequestId, Key, Value, Expire, State) ->
 validate_init(Response, InitId, Expected) ->
     Base = maps:get(status, Response) =:= glyphastore_protocol:status_ok()
         andalso maps:get(request_id, Response) =:= InitId
-        andalso maps:get(value, Response) =:= glyphastore_protocol:identity()
         andalso maps:get(worker_count, Response) > 0
         andalso maps:get(worker_count, Response) =< 256
         andalso maps:get(routing_epoch, Response) > 0,
     case Base of
         false -> {error, glyphastore_error:protocol(<<"server INIT response is inconsistent">>)};
         true ->
-            case Expected of
-                undefined -> ok;
-                {WC, Epoch} ->
-                    case maps:get(worker_count, Response) =:= WC andalso maps:get(routing_epoch, Response) =:= Epoch of
-                        true -> ok;
-                        false -> {error, glyphastore_error:unavailable(<<"server routing metadata changed during bootstrap">>)}
-                    end
+            case glyphastore_protocol:decode_init_identity(maps:get(value, Response)) of
+                {ok, Routing} ->
+                    case Expected of
+                        undefined -> {ok, Routing};
+                        {WC, Epoch, ExpRouting} ->
+                            case maps:get(worker_count, Response) =:= WC
+                                andalso maps:get(routing_epoch, Response) =:= Epoch
+                                andalso Routing =:= ExpRouting
+                            of
+                                true -> {ok, Routing};
+                                false -> {error, glyphastore_error:unavailable(<<"server routing metadata changed during bootstrap">>)}
+                            end
+                    end;
+                {error, _} ->
+                    {error, glyphastore_error:protocol(<<"server INIT response is inconsistent">>)}
             end
     end.
 
@@ -1570,8 +1581,8 @@ resolve_deadline(State, Opts) ->
 
 worker_index(#state{worker_count = 0}, _Key) ->
     {error, glyphastore_error:unavailable(<<"client is not connected">>)};
-worker_index(#state{worker_count = WC, workers = Workers}, Key) ->
-    case glyphastore_protocol:worker_for(Key, WC) of
+worker_index(#state{worker_count = WC, workers = Workers, routing = Routing}, Key) ->
+    case glyphastore_protocol:worker_for(Key, WC, Routing) of
         {ok, Worker} ->
             case maps:find(Worker, Workers) of
                 {ok, Conn} ->
@@ -1597,8 +1608,9 @@ ensure_connected(Conn, Worker, State) ->
                 false ->
                     WC = State#state.worker_count,
                     Epoch = State#state.routing_epoch,
-                    case bootstrap_conn(Conn, Worker, {WC, Epoch}, State#state.config, State#state.request_id) of
-                        {ok, WC, Epoch, NextId} ->
+                    Routing = State#state.routing,
+                    case bootstrap_conn(Conn, Worker, {WC, Epoch, Routing}, State#state.config, State#state.request_id) of
+                        {ok, WC, Epoch, Routing, NextId} ->
                             {ok, State#state{request_id = NextId}};
                         {error, Err} ->
                             {{error, Err}, State}
@@ -1622,8 +1634,9 @@ replace_and_bootstrap(Worker, State) ->
             },
             WC = State1#state.worker_count,
             Epoch = State1#state.routing_epoch,
-            case bootstrap_conn(Conn, Worker, {WC, Epoch}, Config, State1#state.request_id) of
-                {ok, WC, Epoch, NextId} ->
+            Routing = State1#state.routing,
+            case bootstrap_conn(Conn, Worker, {WC, Epoch, Routing}, Config, State1#state.request_id) of
+                {ok, WC, Epoch, Routing, NextId} ->
                     {ok, State1#state{request_id = NextId}};
                 {error, Err} ->
                     {{error, Err}, State1}

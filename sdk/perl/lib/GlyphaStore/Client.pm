@@ -61,6 +61,7 @@ sub connect {
         insecure_skip_verify      => $config{insecure_skip_verify} ? 1 : 0,
         worker_count              => 0,
         routing_epoch             => 0,
+        routing                   => { algorithm => 1, seed => 0 },
         next_request_id           => 1,
         healthy                   => 1,
         connections               => [],
@@ -68,13 +69,14 @@ sub connect {
     $self->_validate_config;
     my $ok = eval {
         my $first = $self->_new_connection(0);
-        my ($worker_count, $routing_epoch) = $self->_bootstrap($first, undef);
+        my ($worker_count, $routing_epoch, $routing) = $self->_bootstrap($first, undef);
         $self->{worker_count} = $worker_count;
         $self->{routing_epoch} = $routing_epoch;
+        $self->{routing} = $routing;
         push @{$self->{connections}}, $first;
         for my $worker (1 .. $worker_count - 1) {
             my $connection = $self->_new_connection($worker);
-            $self->_bootstrap($connection, [$worker_count, $routing_epoch]);
+            $self->_bootstrap($connection, [$worker_count, $routing_epoch, $routing]);
             push @{$self->{connections}}, $connection;
         }
         1;
@@ -132,7 +134,7 @@ sub healthy       { return $_[0]->{healthy} ? 1 : 0 }
 
 sub worker_for {
     my ($self, $key) = @_;
-    return GlyphaStore::Protocol::worker_for($key, $self->{worker_count});
+    return GlyphaStore::Protocol::worker_for($key, $self->{worker_count}, $self->{routing});
 }
 
 sub _next_request_id {
@@ -348,13 +350,19 @@ sub _bootstrap {
         _throw('protocol', 'server INIT response is inconsistent')
             if $response->{status} != STATUS_OK
             || $response->{request_id} != $init_id
-            || $response->{value} ne 'GlyphaStore/2'
             || $response->{worker_count} < 1
             || $response->{worker_count} > 256
             || !$response->{routing_epoch};
-        my @metadata = ($response->{worker_count}, $response->{routing_epoch});
-        _throw('unavailable', 'server routing metadata changed during bootstrap')
-            if $expected && ($metadata[0] != $expected->[0] || $metadata[1] != $expected->[1]);
+        my $routing = eval { GlyphaStore::Protocol::decode_init_identity($response->{value}) };
+        _throw('protocol', 'server INIT response is inconsistent') if !$routing;
+        my @metadata = ($response->{worker_count}, $response->{routing_epoch}, $routing);
+        if ($expected) {
+            _throw('unavailable', 'server routing metadata changed during bootstrap')
+                if $metadata[0] != $expected->[0]
+                || $metadata[1] != $expected->[1]
+                || $metadata[2]->{algorithm} != $expected->[2]->{algorithm}
+                || $metadata[2]->{seed} != $expected->[2]->{seed};
+        }
         my $bind_id = $self->_next_request_id;
         my $bound = $self->_exchange($connection,
             $self->_encode_request(OP_BIND_WORKER, $bind_id, '', '', 0, $connection->{worker}));
@@ -383,7 +391,7 @@ sub _bootstrap {
 sub _ensure_connected {
     my ($self, $connection) = @_;
     return if $connection->{socket};
-    $self->_bootstrap($connection, [$self->{worker_count}, $self->{routing_epoch}]);
+    $self->_bootstrap($connection, [$self->{worker_count}, $self->{routing_epoch}, $self->{routing}]);
     return;
 }
 

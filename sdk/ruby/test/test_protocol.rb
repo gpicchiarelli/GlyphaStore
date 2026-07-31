@@ -81,4 +81,29 @@ class ProtocolTest < Minitest::Test
     mutated.setbyte(36, 1)
     assert_raises(ArgumentError) { GlyphaStore::Protocol.decode_request(mutated) }
   end
+
+  def test_siphash24_paper_vectors
+    k0 = 0x0706050403020100
+    k1 = 0x0f0e0d0c0b0a0908
+    assert_equal 0x726fdb47dd0e0e31, GlyphaStore::Protocol.siphash24("".b, k0, k1)
+    assert_equal 0x85676696d7fb7e2d, GlyphaStore::Protocol.siphash24("\x00\x01\x02".b, k0, k1)
+  end
+
+  def test_keyed_routing_and_init_identity
+    keyed = GlyphaStore::Protocol::WorkerRouting.new(algorithm: GlyphaStore::Protocol::ROUTING_ALG_SIPHASH24_V1, seed: 0x1111222233334444)
+    digest = GlyphaStore::Protocol.hash_key_routing("tenant-a/orders/1".b, keyed)
+    assert_equal 0x712fcec57ac84546, digest
+    assert_equal 6, GlyphaStore::Protocol.worker_for("tenant-a/orders/1".b, 8, keyed)
+    plain = GlyphaStore::Protocol.encode_init_identity
+    assert_equal GlyphaStore::Protocol::IDENTITY.b, plain
+    assert_equal false, GlyphaStore::Protocol.decode_init_identity(plain).keyed?
+    extended = GlyphaStore::Protocol.encode_init_identity(
+      GlyphaStore::Protocol::WorkerRouting.new(algorithm: GlyphaStore::Protocol::ROUTING_ALG_SIPHASH24_V1, seed: 0xABCDEF0123456789)
+    )
+    assert_equal 26, extended.bytesize
+    decoded = GlyphaStore::Protocol.decode_init_identity(extended)
+    assert_equal true, decoded.keyed?
+    assert_equal 0xABCDEF0123456789, decoded.seed
+    assert_raises(ArgumentError) { GlyphaStore::Protocol.decode_init_identity("GlyphaStore/2\x00bad".b) }
+  end
 end

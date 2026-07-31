@@ -61,6 +61,7 @@ type Client struct {
 	connections  []*connection
 	workerCount  uint32
 	routingEpoch uint64
+	routing      protocol.WorkerRouting
 	requestID    atomic.Uint64
 	healthy      atomic.Bool
 }
@@ -76,24 +77,31 @@ func Connect(cfg Config) (*Client, error) {
 	client.requestID.Store(1)
 
 	first := &connection{worker: 0}
-	workerCount, routingEpoch, err := client.bootstrap(first, nil)
+	workerCount, routingEpoch, routing, err := client.bootstrap(first, nil)
 	if err != nil {
 		client.Close()
 		return nil, err
 	}
 	client.workerCount = workerCount
 	client.routingEpoch = routingEpoch
+	client.routing = routing
 	client.connections = append(client.connections, first)
-	expected := [2]uint64{uint64(workerCount), routingEpoch}
+	expected := &sessionMeta{workerCount: workerCount, routingEpoch: routingEpoch, routing: routing}
 	for worker := uint32(1); worker < workerCount; worker++ {
 		conn := &connection{worker: worker}
-		if _, _, err := client.bootstrap(conn, &expected); err != nil {
+		if _, _, _, err := client.bootstrap(conn, expected); err != nil {
 			client.Close()
 			return nil, err
 		}
 		client.connections = append(client.connections, conn)
 	}
 	return client, nil
+}
+
+type sessionMeta struct {
+	workerCount  uint32
+	routingEpoch uint64
+	routing      protocol.WorkerRouting
 }
 
 func mergeConfig(cfg Config) Config {
@@ -232,6 +240,9 @@ func (c *Client) WorkerCount() uint32 { return c.workerCount }
 // RoutingEpoch returns the session routing epoch.
 func (c *Client) RoutingEpoch() uint64 { return c.routingEpoch }
 
+// Routing returns the session Worker routing state from INIT.
+func (c *Client) Routing() protocol.WorkerRouting { return c.routing }
+
 // Healthy reports whether the client may still be used.
 func (c *Client) Healthy() bool { return c.healthy.Load() }
 
@@ -240,7 +251,7 @@ func (c *Client) WorkerFor(key []byte) (uint32, error) {
 	if c.workerCount == 0 {
 		return 0, unavailable("client is not connected")
 	}
-	return protocol.WorkerFor(key, c.workerCount)
+	return protocol.WorkerFor(key, c.workerCount, c.routing)
 }
 
 // Get loads a value by key.
@@ -571,11 +582,11 @@ func (c *Client) nextRequestID() uint64 {
 	}
 }
 
-func (c *Client) bootstrap(conn *connection, expected *[2]uint64) (uint32, uint64, error) {
+func (c *Client) bootstrap(conn *connection, expected *sessionMeta) (uint32, uint64, protocol.WorkerRouting, error) {
 	conn.reset()
 	raw, err := c.dial()
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, protocol.WorkerRouting{}, err
 	}
 	conn.conn = raw
 	deadline := time.Now().Add(c.cfg.RequestTimeout)
@@ -584,49 +595,57 @@ func (c *Client) bootstrap(conn *connection, expected *[2]uint64) (uint32, uint6
 	frame, err := protocol.EncodeRequest(protocol.OpcodeInit, initID, nil, nil, 0, protocol.NoWorker)
 	if err != nil {
 		conn.reset()
-		return 0, 0, invalidArgument(err.Error())
+		return 0, 0, protocol.WorkerRouting{}, invalidArgument(err.Error())
 	}
 	response, err := c.exchange(conn, frame, deadline)
 	if err != nil {
 		conn.reset()
 		if sf, ok := err.(*sendFailure); ok {
-			return 0, 0, unavailable(sf.err.Message)
+			return 0, 0, protocol.WorkerRouting{}, unavailable(sf.err.Message)
 		}
 		if ge, ok := err.(*Error); ok && ge.Category == CategoryTransport {
-			return 0, 0, unavailable(ge.Message)
+			return 0, 0, protocol.WorkerRouting{}, unavailable(ge.Message)
 		}
-		return 0, 0, err
+		return 0, 0, protocol.WorkerRouting{}, err
 	}
 	if response.Status != protocol.StatusOK ||
 		response.RequestID != initID ||
-		string(response.Value) != protocol.Identity ||
 		response.WorkerCount == 0 || response.WorkerCount > 256 ||
 		response.RoutingEpoch == 0 {
 		conn.reset()
-		return 0, 0, protocolErr("server INIT response is inconsistent")
+		return 0, 0, protocol.WorkerRouting{}, protocolErr("server INIT response is inconsistent")
 	}
-	if expected != nil &&
-		(uint64(response.WorkerCount) != expected[0] || response.RoutingEpoch != expected[1]) {
+	routing, err := protocol.DecodeInitIdentity(response.Value)
+	if err != nil {
 		conn.reset()
-		return 0, 0, unavailable("server routing metadata changed during bootstrap")
+		return 0, 0, protocol.WorkerRouting{}, protocolErr("server INIT response is inconsistent")
+	}
+	meta := sessionMeta{
+		workerCount:  response.WorkerCount,
+		routingEpoch: response.RoutingEpoch,
+		routing:      routing,
+	}
+	if expected != nil && *expected != meta {
+		conn.reset()
+		return 0, 0, protocol.WorkerRouting{}, unavailable("server routing metadata changed during bootstrap")
 	}
 
 	bindID := c.nextRequestID()
 	bindFrame, err := protocol.EncodeRequest(protocol.OpcodeBindWorker, bindID, nil, nil, 0, conn.worker)
 	if err != nil {
 		conn.reset()
-		return 0, 0, invalidArgument(err.Error())
+		return 0, 0, protocol.WorkerRouting{}, invalidArgument(err.Error())
 	}
 	bound, err := c.exchange(conn, bindFrame, deadline)
 	if err != nil {
 		conn.reset()
 		if sf, ok := err.(*sendFailure); ok {
-			return 0, 0, unavailable(sf.err.Message)
+			return 0, 0, protocol.WorkerRouting{}, unavailable(sf.err.Message)
 		}
 		if ge, ok := err.(*Error); ok && ge.Category == CategoryTransport {
-			return 0, 0, unavailable(ge.Message)
+			return 0, 0, protocol.WorkerRouting{}, unavailable(ge.Message)
 		}
-		return 0, 0, err
+		return 0, 0, protocol.WorkerRouting{}, err
 	}
 	if bound.Status != protocol.StatusOK ||
 		bound.RequestID != bindID ||
@@ -634,17 +653,21 @@ func (c *Client) bootstrap(conn *connection, expected *[2]uint64) (uint32, uint6
 		bound.WorkerCount != response.WorkerCount ||
 		bound.RoutingEpoch != response.RoutingEpoch {
 		conn.reset()
-		return 0, 0, protocolErr("server BIND_WORKER response is inconsistent")
+		return 0, 0, protocol.WorkerRouting{}, protocolErr("server BIND_WORKER response is inconsistent")
 	}
-	return response.WorkerCount, response.RoutingEpoch, nil
+	return response.WorkerCount, response.RoutingEpoch, routing, nil
 }
 
 func (c *Client) ensureConnected(conn *connection) error {
 	if conn.conn != nil {
 		return nil
 	}
-	expected := [2]uint64{uint64(c.workerCount), c.routingEpoch}
-	_, _, err := c.bootstrap(conn, &expected)
+	expected := &sessionMeta{
+		workerCount:  c.workerCount,
+		routingEpoch: c.routingEpoch,
+		routing:      c.routing,
+	}
+	_, _, _, err := c.bootstrap(conn, expected)
 	return err
 }
 

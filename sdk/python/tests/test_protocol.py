@@ -13,12 +13,18 @@ except ImportError:
 from glyphastore.protocol import (  # noqa: E402
     REQUEST_HEADER_BYTES,
     RESPONSE_HEADER_BYTES,
+    ROUTING_ALG_SIPHASH24_V1,
     Opcode,
     Status,
+    WorkerRouting,
+    decode_init_identity,
     decode_request,
     decode_response,
+    encode_init_identity,
     encode_request,
     encode_response,
+    hash_key_routing,
+    siphash24,
     worker_for,
 )
 
@@ -119,6 +125,36 @@ class ProtocolTests(unittest.TestCase):
     def test_routing_is_binary_and_deterministic(self) -> None:
         self.assertEqual(worker_for(b"", 4), 1)
         self.assertEqual(worker_for(b"key\x00\xff", 4), worker_for(b"key\x00\xff", 4))
+
+    def test_siphash24_matches_aumasson_bernstein_vectors(self) -> None:
+        k0 = 0x0706050403020100
+        k1 = 0x0F0E0D0C0B0A0908
+        self.assertEqual(siphash24(b"", k0, k1), 0x726F_DB47_DD0E_0E31)
+        self.assertEqual(siphash24(bytes([0, 1, 2]), k0, k1), 0x8567_6696_D7FB_7E2D)
+
+    def test_keyed_routing_and_init_identity(self) -> None:
+        keyed = WorkerRouting(algorithm=ROUTING_ALG_SIPHASH24_V1, seed=0x1111_2222_3333_4444)
+        digest = hash_key_routing(b"tenant-a/orders/1", keyed)
+        self.assertEqual(digest, 0x712F_CEC5_7AC8_4546)
+        self.assertEqual(worker_for(b"tenant-a/orders/1", 8, keyed), 6)
+        self.assertNotEqual(digest, hash_key_routing(b"tenant-a/orders/1"))
+
+        plain = encode_init_identity()
+        self.assertEqual(plain, b"GlyphaStore/2")
+        self.assertEqual(decode_init_identity(plain), WorkerRouting())
+
+        extended = encode_init_identity(
+            WorkerRouting(algorithm=ROUTING_ALG_SIPHASH24_V1, seed=0xABCD_EF01_2345_6789)
+        )
+        self.assertEqual(len(extended), 26)
+        self.assertEqual(
+            decode_init_identity(extended),
+            WorkerRouting(algorithm=ROUTING_ALG_SIPHASH24_V1, seed=0xABCD_EF01_2345_6789),
+        )
+        with self.assertRaises(ValueError):
+            decode_init_identity(b"GlyphaStore/2\x00bad")
+        with self.assertRaises(ValueError):
+            decode_init_identity(b"GlyphaStore/3")
 
     def test_u64_fields_reject_out_of_range_values(self) -> None:
         with self.assertRaises(ValueError):

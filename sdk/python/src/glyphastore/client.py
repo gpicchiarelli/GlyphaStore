@@ -10,7 +10,6 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
-from typing import Final
 
 from .protocol import (
     MAX_FRAME_BYTES,
@@ -18,12 +17,12 @@ from .protocol import (
     Opcode,
     Response,
     Status,
+    WorkerRouting,
+    decode_init_identity,
     decode_response,
     encode_request,
     worker_for,
 )
-
-_IDENTITY: Final = b"GlyphaStore/2"
 
 
 class GlyphaError(Exception):
@@ -290,6 +289,7 @@ class Client:
         self._connections: list[_Connection] = []
         self._worker_count = 0
         self._routing_epoch = 0
+        self._routing = WorkerRouting()
         self._request_id = 1
         self._request_id_lock = threading.Lock()
         self._healthy = True
@@ -299,11 +299,12 @@ class Client:
         client = cls(config or ClientConfig())
         first = _Connection(0)
         try:
-            worker_count, routing_epoch = client._bootstrap(first, None)
+            worker_count, routing_epoch, routing = client._bootstrap(first, None)
             client._worker_count = worker_count
             client._routing_epoch = routing_epoch
+            client._routing = routing
             client._connections.append(first)
-            expected = (worker_count, routing_epoch)
+            expected = (worker_count, routing_epoch, routing)
             for worker in range(1, worker_count):
                 connection = _Connection(worker)
                 client._bootstrap(connection, expected)
@@ -344,13 +345,17 @@ class Client:
         return self._routing_epoch
 
     @property
+    def routing(self) -> WorkerRouting:
+        return self._routing
+
+    @property
     def healthy(self) -> bool:
         return self._healthy
 
     def worker_for(self, key: bytes | bytearray | memoryview) -> int:
         if self._worker_count <= 0:
             raise Unavailable("client is not connected")
-        return worker_for(bytes(key), self._worker_count)
+        return worker_for(bytes(key), self._worker_count, self._routing)
 
     def get(
         self,
@@ -602,8 +607,10 @@ class Client:
             raise Unavailable(f"could not connect to GlyphaStore: {error}") from error
 
     def _bootstrap(
-        self, connection: _Connection, expected: tuple[int, int] | None
-    ) -> tuple[int, int]:
+        self,
+        connection: _Connection,
+        expected: tuple[int, int, WorkerRouting] | None,
+    ) -> tuple[int, int, WorkerRouting]:
         connection.reset()
         connection.socket = self._open_socket()
         deadline = _deadline_after(self._config.request_timeout)
@@ -615,12 +622,15 @@ class Client:
             if (
                 response.status is not Status.OK
                 or response.request_id != init_id
-                or response.value != _IDENTITY
                 or not 0 < response.worker_count <= 256
                 or response.routing_epoch == 0
             ):
                 raise ProtocolError("server INIT response is inconsistent")
-            metadata = (response.worker_count, response.routing_epoch)
+            try:
+                routing = decode_init_identity(response.value)
+            except ValueError as error:
+                raise ProtocolError("server INIT response is inconsistent") from error
+            metadata = (response.worker_count, response.routing_epoch, routing)
             if expected is not None and metadata != expected:
                 raise Unavailable("server routing metadata changed during bootstrap")
             bind_id = self._next_request_id()
@@ -637,7 +647,8 @@ class Client:
                 bound.status is not Status.OK
                 or bound.request_id != bind_id
                 or bound.owner_worker != connection.worker
-                or (bound.worker_count, bound.routing_epoch) != metadata
+                or bound.worker_count != response.worker_count
+                or bound.routing_epoch != response.routing_epoch
             ):
                 raise ProtocolError("server BIND_WORKER response is inconsistent")
             return metadata
@@ -653,7 +664,9 @@ class Client:
 
     def _ensure_connected(self, connection: _Connection) -> None:
         if connection.socket is None:
-            self._bootstrap(connection, (self._worker_count, self._routing_epoch))
+            self._bootstrap(
+                connection, (self._worker_count, self._routing_epoch, self._routing)
+            )
 
     def _send(self, connection: _Connection, frame: bytes, deadline: float) -> None:
         assert connection.socket is not None

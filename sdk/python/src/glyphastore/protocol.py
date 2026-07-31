@@ -4,16 +4,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
-from struct import Struct
+from struct import Struct, pack, unpack_from
 
 VERSION = 2
 REQUEST_HEADER_BYTES = 40
 RESPONSE_HEADER_BYTES = 40
 MAX_FRAME_BYTES = 2 * 1024 * 1024
 NO_WORKER = 0xFFFF_FFFF
+IDENTITY = b"GlyphaStore/2"
+ROUTING_ALG_FNV1A64_V1 = 1
+ROUTING_ALG_SIPHASH24_V1 = 2
+WORKER_ROUTING_SIP_KEY1_XOR = 0x6A09_E667_F3BC_C909
+INIT_IDENTITY_EXTENDED_BYTES = len(IDENTITY) + 1 + 4 + 8
 
 _REQUEST_HEADER = Struct("<IHBBQIIQII")
 _RESPONSE_HEADER = Struct("<IHHQIIIIQ")
+_U64_MASK = 0xFFFF_FFFF_FFFF_FFFF
 
 
 class Opcode(IntEnum):
@@ -260,15 +266,120 @@ def decode_response(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class WorkerRouting:
+    """Process / session Worker ownership algorithm (ADR 0030)."""
+
+    algorithm: int = ROUTING_ALG_FNV1A64_V1
+    seed: int = 0
+
+    @property
+    def keyed(self) -> bool:
+        return self.algorithm == ROUTING_ALG_SIPHASH24_V1
+
+
 def fnv1a64(key: bytes) -> int:
     value = 14_695_981_039_346_656_037
     for byte in key:
         value ^= byte
-        value = (value * 1_099_511_628_211) & 0xFFFF_FFFF_FFFF_FFFF
+        value = (value * 1_099_511_628_211) & _U64_MASK
     return value
 
 
-def worker_for(key: bytes, worker_count: int) -> int:
+def siphash24(key: bytes, k0: int, k1: int) -> int:
+    """SipHash-2-4 matching the C++ core (Aumasson/Bernstein)."""
+    k0 &= _U64_MASK
+    k1 &= _U64_MASK
+
+    def rotl(value: int, shift: int) -> int:
+        return ((value << shift) | (value >> (64 - shift))) & _U64_MASK
+
+    def sipround(v0: int, v1: int, v2: int, v3: int) -> tuple[int, int, int, int]:
+        v0 = (v0 + v1) & _U64_MASK
+        v1 = rotl(v1, 13)
+        v1 ^= v0
+        v0 = rotl(v0, 32)
+        v2 = (v2 + v3) & _U64_MASK
+        v3 = rotl(v3, 16)
+        v3 ^= v2
+        v0 = (v0 + v3) & _U64_MASK
+        v3 = rotl(v3, 21)
+        v3 ^= v0
+        v2 = (v2 + v1) & _U64_MASK
+        v1 = rotl(v1, 17)
+        v1 ^= v2
+        v2 = rotl(v2, 32)
+        return v0, v1, v2, v3
+
+    v0 = k0 ^ 0x736F_6D65_7073_6575
+    v1 = k1 ^ 0x646F_7261_6E64_6F6D
+    v2 = k0 ^ 0x6C79_6765_6E65_7261
+    v3 = k1 ^ 0x7465_6462_7974_6573
+    length = len(key)
+    offset = 0
+    while offset + 8 <= length:
+        message = int.from_bytes(key[offset : offset + 8], "little")
+        v3 ^= message
+        v0, v1, v2, v3 = sipround(v0, v1, v2, v3)
+        v0, v1, v2, v3 = sipround(v0, v1, v2, v3)
+        v0 ^= message
+        offset += 8
+    message = length << 56
+    for index, byte in enumerate(key[offset:]):
+        message |= byte << (8 * index)
+    v3 ^= message
+    v0, v1, v2, v3 = sipround(v0, v1, v2, v3)
+    v0, v1, v2, v3 = sipround(v0, v1, v2, v3)
+    v0 ^= message
+    v2 ^= 0xFF
+    for _ in range(4):
+        v0, v1, v2, v3 = sipround(v0, v1, v2, v3)
+    return v0 ^ v1 ^ v2 ^ v3
+
+
+def validate_worker_routing(routing: WorkerRouting) -> None:
+    if routing.algorithm == ROUTING_ALG_FNV1A64_V1:
+        if routing.seed != 0:
+            raise ValueError("fnv1a64-v1 Worker routing requires a zero hash seed")
+        return
+    if routing.algorithm == ROUTING_ALG_SIPHASH24_V1:
+        return
+    raise ValueError("unsupported Worker routing algorithm")
+
+
+def hash_key_routing(key: bytes, routing: WorkerRouting | None = None) -> int:
+    state = routing or WorkerRouting()
+    validate_worker_routing(state)
+    if state.algorithm == ROUTING_ALG_SIPHASH24_V1:
+        return siphash24(key, state.seed, state.seed ^ WORKER_ROUTING_SIP_KEY1_XOR)
+    return fnv1a64(key)
+
+
+def encode_init_identity(routing: WorkerRouting | None = None) -> bytes:
+    state = routing or WorkerRouting()
+    validate_worker_routing(state)
+    if not state.keyed:
+        return IDENTITY
+    return IDENTITY + b"\x00" + pack("<IQ", state.algorithm, state.seed)
+
+
+def decode_init_identity(value: bytes) -> WorkerRouting:
+    """Parse INIT identity: plain FNV or extended SipHash (fail closed)."""
+    if value == IDENTITY:
+        return WorkerRouting()
+    if len(value) != INIT_IDENTITY_EXTENDED_BYTES:
+        raise ValueError("server INIT identity value has unexpected length")
+    if value[: len(IDENTITY)] != IDENTITY or value[len(IDENTITY)] != 0:
+        raise ValueError("server INIT identity prefix is invalid")
+    algorithm, seed = unpack_from("<IQ", value, len(IDENTITY) + 1)
+    state = WorkerRouting(algorithm=algorithm, seed=seed)
+    validate_worker_routing(state)
+    if not state.keyed:
+        raise ValueError("server INIT extended identity must use siphash24-v1 routing")
+    return state
+
+
+def worker_for(key: bytes, worker_count: int, routing: WorkerRouting | None = None) -> int:
     if worker_count <= 0:
         raise ValueError("worker_count must be positive")
-    return fnv1a64(key) % worker_count
+    return hash_key_routing(key, routing) % worker_count

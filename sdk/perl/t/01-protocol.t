@@ -83,6 +83,27 @@ is_deeply(\@reencoded_responses, \@expected_responses, 'response codec round-tri
 is(worker_for('', 4), 1, 'empty-key FNV routing matches canonical implementation');
 is(worker_for("key\x00\xff", 17), worker_for("key\x00\xff", 17), 'binary routing is stable');
 
+use GlyphaStore::Protocol qw(
+    ROUTING_ALG_SIPHASH24_V1 siphash24 hash_key_routing encode_init_identity decode_init_identity
+);
+is(siphash24('', 506_097_522_914_230_528, 1_084_818_905_618_843_912), 8_246_050_544_436_514_353,
+    'siphash24 empty paper vector');
+is(siphash24("\x00\x01\x02", 506_097_522_914_230_528, 1_084_818_905_618_843_912), 9_612_764_727_700_323_885,
+    'siphash24 3-byte paper vector');
+my $keyed = { algorithm => ROUTING_ALG_SIPHASH24_V1, seed => 1_229_801_703_532_086_340 };
+is(hash_key_routing('tenant-a/orders/1', $keyed), 8_155_964_797_755_082_054, 'keyed digest fixture');
+is(worker_for('tenant-a/orders/1', 8, $keyed), 6, 'keyed worker_for fixture');
+isnt(hash_key_routing('tenant-a/orders/1', $keyed), hash_key_routing('tenant-a/orders/1'),
+    'siphash differs from FNV');
+is(encode_init_identity(), 'GlyphaStore/2', 'plain INIT identity');
+my $extended = encode_init_identity({ algorithm => ROUTING_ALG_SIPHASH24_V1, seed => 12_379_813_738_877_118_345 });
+is(length($extended), 26, 'extended INIT length');
+is_deeply(decode_init_identity($extended),
+    { algorithm => ROUTING_ALG_SIPHASH24_V1, seed => 12_379_813_738_877_118_345 },
+    'extended INIT round-trip');
+ok(!eval { decode_init_identity("GlyphaStore/2\x00bad"); 1 }, 'malformed extended INIT rejected');
+ok(!eval { decode_init_identity('GlyphaStore/3'); 1 }, 'wrong INIT prefix rejected');
+
 my $noncanonical = $expected_requests[0];
 substr($noncanonical, 36, 1, "\x01");
 ok(!eval { decode_request($noncanonical); 1 }, 'decoder rejects noncanonical reserved fields');
