@@ -19,7 +19,7 @@ our @EXPORT_OK = qw(
     PROTOCOL_VERSION REQUEST_HEADER_BYTES RESPONSE_HEADER_BYTES MAX_FRAME_BYTES NO_WORKER
     IDENTITY ROUTING_ALG_FNV1A64_V1 ROUTING_ALG_SIPHASH24_V1 WORKER_ROUTING_SIP_KEY1_XOR
     INIT_IDENTITY_EXTENDED_BYTES
-    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS
+    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS OP_BACKUP
     STATUS_OK STATUS_INVALID_REQUEST STATUS_UNSUPPORTED STATUS_INTERNAL_ERROR
     STATUS_NOT_FOUND STATUS_OVERLOADED STATUS_WRONG_OWNER STATUS_NOT_BOUND STATUS_PERMISSION_DENIED
     encode_request encode_request_parts encode_request_hot decode_request encode_response
@@ -54,6 +54,7 @@ use constant OP_BIND_WORKER => 6;
 use constant OP_HEALTH      => 7;
 use constant OP_READY       => 8;
 use constant OP_STATS       => 9;
+use constant OP_BACKUP      => 10;
 
 use constant STATUS_OK              => 0;
 use constant STATUS_INVALID_REQUEST => 1;
@@ -94,7 +95,7 @@ sub _as_u64 {
 sub encode_request_parts {
     my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
     die "unknown protocol-v2 opcode\n"
-        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_STATS;
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BACKUP;
 
     $key   = _require_bytes($key, 'key');
     $value = _require_bytes($value, 'value');
@@ -111,7 +112,7 @@ sub encode_request_parts {
 sub encode_request_hot {
     my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
     die "unknown protocol-v2 opcode\n"
-        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_STATS;
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BACKUP;
     $key   = _require_bytes($key, 'key');
     $value = _require_bytes($value, 'value');
     $expire_at_ns = 0 unless defined $expire_at_ns;
@@ -153,6 +154,9 @@ sub _validate_control_request_fields {
         && ($key_len || $value_len || $expire || $target_worker != NO_WORKER))
     {
         die "lifecycle probe cannot carry key, value, expiry, or target_worker\n";
+    }
+    if ($opcode == OP_BACKUP && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+        die "BACKUP requires a destination path key and no value, expiry, or target_worker\n";
     }
     return;
 }
@@ -200,7 +204,7 @@ sub decode_request {
         if $frame_size != length($frame) || $frame_size > $maximum;
     die "request protocol version is unsupported\n" if $version != PROTOCOL_VERSION;
     die "request canonical fields are invalid\n" if $flags != 0 || $reserved != 0;
-    die "unknown protocol-v2 opcode\n" if $opcode < OP_INIT || $opcode > OP_STATS;
+    die "unknown protocol-v2 opcode\n" if $opcode < OP_INIT || $opcode > OP_BACKUP;
     die "request payload extent is invalid\n"
         if REQUEST_HEADER_BYTES + $key_size + $value_size != $frame_size;
     my $key = substr($frame, REQUEST_HEADER_BYTES, $key_size);

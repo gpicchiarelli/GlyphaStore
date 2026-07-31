@@ -394,6 +394,7 @@ struct PairedReactorPrototype::Impl final {
                                      : std::as_bytes(std::span{"GlyphaStore/ready", 17});
                 break;
             case RequestOpcode::stats:
+            case RequestOpcode::backup:
                 response.status = ResponseStatus::unsupported;
                 break;
             case RequestOpcode::get: {

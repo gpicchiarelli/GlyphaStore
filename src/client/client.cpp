@@ -495,6 +495,8 @@ struct WorkerConnection {
         return "ready";
     case server::RequestOpcode::stats:
         return "stats";
+    case server::RequestOpcode::backup:
+        return "backup";
     }
     return "unknown";
 }

@@ -32,6 +32,7 @@ class Opcode(IntEnum):
     HEALTH = 7
     READY = 8
     STATS = 9
+    BACKUP = 10
 
 
 class Status(IntEnum):
@@ -107,6 +108,12 @@ def _validate_request_fields(
         key or value or expire_at_ns != 0 or target_worker != NO_WORKER
     ):
         raise ValueError("lifecycle probe cannot carry key, value, expiry, or target_worker")
+    if opcode is Opcode.BACKUP and (
+        not key or value or expire_at_ns != 0 or target_worker != NO_WORKER
+    ):
+        raise ValueError(
+            "BACKUP requires a destination path key and no value, expiry, or target_worker"
+        )
 
 
 def encode_request(

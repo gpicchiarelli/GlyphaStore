@@ -18,7 +18,7 @@ Two paths:
 | Path | When | Mechanism |
 |---|---|---|
 | Offline CLI | Stopped Store / stopped `glyphastored` | Exclusive data-dir lock via `glyphastore_backup_store` |
-| Online API | Open durable `Store` (embedded or future daemon hook) | `Store::backup_to` fences admissions, flushes, copies |
+| Online API | Open durable `Store` / live `glyphastored` | `Store::backup_to` or wire `BACKUP` (opcode 10) |
 
 ## Hard requirements (fail closed)
 
@@ -83,12 +83,13 @@ validation is sufficient.
   destination).
 - Store backup artifacts outside the live data directory (separate volume or object storage).
 
-### Online (embedded Store)
+### Online (embedded Store / live daemon)
 
-Use `Store::backup_to(destination)` against an open durable Store when stopping the process is not
-acceptable. Expect a short admission fence (in-flight ops drain; new ops return `unavailable` until
-copy completes). External `glyphastore_backup_store` against the same path still fails with
-`io_error` while the Store holds the lock.
+Use `Store::backup_to(destination)` against an open durable Store, or wire opcode `BACKUP` (10) against
+a live `glyphastored` (key = UTF-8 destination path; requires `admin` under `--authz-map`). Expect a
+short admission fence (in-flight ops drain; new ops return `unavailable` until copy completes).
+External `glyphastore_backup_store` against the same path still fails with `io_error` while the Store
+holds the lock. Official SDKs may not wrap `BACKUP` yet.
 
 ## Restore procedure
 

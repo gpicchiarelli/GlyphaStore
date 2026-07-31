@@ -5,7 +5,9 @@
 #include "server/server_stats.hpp"
 #include "store/store_internal.hpp"
 
+#include <filesystem>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace glyphastore::server {
@@ -28,6 +30,32 @@ namespace {
         out = std::move(*report);
         return true;
     } catch (...) {
+        return false;
+    }
+}
+
+[[nodiscard]] auto probe_server_backup(void* context, const std::string_view destination,
+                                       std::string& out) noexcept -> bool {
+    try {
+        auto* server = static_cast<Server*>(context);
+        auto report = server->backup_to(std::filesystem::path{std::string{destination}});
+        if (!report) {
+            out = report.error().message.empty() ? std::string{"backup failed"}
+                                                 : std::string{report.error().message};
+            return false;
+        }
+        out = "status=ok\ndestination=" + report->destination.string() +
+              "\nfiles_copied=" + std::to_string(report->files_copied) +
+              "\nbytes_copied=" + std::to_string(report->bytes_copied) +
+              "\nsource_segments=" + std::to_string(report->source_verification.segments.size()) +
+              "\ndestination_segments=" +
+              std::to_string(report->destination_verification.segments.size()) + '\n';
+        return true;
+    } catch (const std::exception& exception) {
+        out = exception.what();
+        return false;
+    } catch (...) {
+        out = "backup failed";
         return false;
     }
 }
@@ -59,6 +87,7 @@ auto Server::create(const ReactorConfig& config, StoreConfig store_config)
         .live = probe_server_live,
         .ready = probe_server_ready,
         .stats = probe_server_stats,
+        .backup = probe_server_backup,
         .context = server.get(),
     };
     auto reactors = builder.create_reactors(*server->store_, server->mesh_, *server->disk_reads_,
@@ -133,6 +162,20 @@ auto Server::stats_report() const -> Result<std::string> {
     snapshot.authz_principals = config_.authz.size();
     constexpr std::size_t kStatsBudgetBytes = 256U * 1024U;
     return ServerStatsReporter::render(snapshot, kStatsBudgetBytes);
+}
+
+auto Server::backup_to(const std::filesystem::path& destination, const bool scan_records)
+    -> Result<DurableStoreBackupReport> {
+    if (!live()) {
+        return fail(ErrorCode::unavailable, "server is not live");
+    }
+    if (stop_requested()) {
+        return fail(ErrorCode::unavailable, "server is shutting down");
+    }
+    if (!store_) {
+        return fail(ErrorCode::unavailable, "server has no Store");
+    }
+    return store_->backup_to(destination, scan_records);
 }
 
 auto Server::adopted_connections_per_executor() const -> std::vector<std::size_t> {

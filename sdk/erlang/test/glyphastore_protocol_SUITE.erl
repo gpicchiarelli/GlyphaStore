@@ -25,7 +25,9 @@ request_encoder_matches_fixtures(Config) ->
         enc(glyphastore_protocol:opcode_bind_worker(), 6, <<>>, <<>>, 0, 2),
         enc(glyphastore_protocol:opcode_health(), 7, <<>>, <<>>, 0, glyphastore_protocol:no_worker()),
         enc(glyphastore_protocol:opcode_ready(), 8, <<>>, <<>>, 0, glyphastore_protocol:no_worker()),
-        enc(glyphastore_protocol:opcode_stats(), 9, <<>>, <<>>, 0, glyphastore_protocol:no_worker())
+        enc(glyphastore_protocol:opcode_stats(), 9, <<>>, <<>>, 0, glyphastore_protocol:no_worker()),
+        enc(glyphastore_protocol:opcode_backup(), 10, <<"/tmp/glyphastore-backup">>, <<>>, 0,
+            glyphastore_protocol:no_worker())
     ],
     true = Expected =:= Encoded.
 

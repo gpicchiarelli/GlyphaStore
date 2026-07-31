@@ -6,7 +6,7 @@ use Test::More;
 
 use lib "$FindBin::Bin/../lib";
 use GlyphaStore::Protocol qw(
-    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS
+    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_HEALTH OP_READY OP_STATS OP_BACKUP
     encode_request decode_request encode_response decode_response worker_for
 );
 
@@ -44,11 +44,12 @@ my @encoded_requests = (
     encode_request(opcode => OP_HEALTH, request_id => 7),
     encode_request(opcode => OP_READY, request_id => 8),
     encode_request(opcode => OP_STATS, request_id => 9),
+    encode_request(opcode => OP_BACKUP, request_id => 10, key => '/tmp/glyphastore-backup'),
 );
 is_deeply(\@encoded_requests, \@expected_requests, 'request encoder matches canonical corpus');
 
 my @decoded_requests = map { decode_request($_) } @expected_requests;
-is_deeply([map { $_->{opcode} } @decoded_requests], [1 .. 9], 'request decoder covers every opcode');
+is_deeply([map { $_->{opcode} } @decoded_requests], [1 .. 10], 'request decoder covers every opcode');
 is($decoded_requests[1]->{value}, "\x00ping\xff", 'PING payload is binary exact');
 is($decoded_requests[3]->{expire_at_ns}, 123_456_789, 'PUT expiry is preserved');
 my @reencoded_requests = map {

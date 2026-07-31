@@ -1,6 +1,8 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/persistence/store_backup.hpp"
+#include "glyphastore/client/client.hpp"
 #include "glyphastore/segment/record.hpp"
+#include "glyphastore/server/server.hpp"
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
@@ -218,4 +220,52 @@ GLYPHA_TEST("Store::backup_to copies while the Store remains open under writer f
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("alpha")) == "one");
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("beta")) == "two");
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("gamma")) == "three");
+}
+
+GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+    const auto restored = root.path() / "restored";
+
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = source,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto& client = *connected;
+    GLYPHA_REQUIRE(client.put("daemon-key", "daemon-value").committed());
+
+    std::error_code ec;
+    std::filesystem::create_directories(backup, ec);
+    GLYPHA_REQUIRE(!ec);
+    const auto dest = backup / "live";
+    const auto backed = server.backup_to(dest);
+    GLYPHA_REQUIRE(backed.has_value());
+    GLYPHA_REQUIRE(backed->files_copied >= 2);
+
+    const auto contested =
+        glyphastore::backup_durable_store(source, backup / "offline-contested");
+    GLYPHA_REQUIRE(!contested.has_value());
+
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    const auto restored_copy = glyphastore::restore_durable_store(dest, restored);
+    GLYPHA_REQUIRE(restored_copy.has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("daemon-key")) == "daemon-value");
 }

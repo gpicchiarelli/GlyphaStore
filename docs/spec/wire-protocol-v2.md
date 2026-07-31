@@ -80,6 +80,7 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 | 7 | `HEALTH` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/live`; liveness probe |
 | 8 | `READY` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/ready`; readiness probe |
 | 9 | `STATS` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is bounded ASCII `GlyphaStore/stats` report |
+| 10 | `BACKUP` | non-empty key = UTF-8 destination data-dir path; empty value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is bounded ASCII online-backup report (`status=ok`, file/byte counts); destination must be empty |
 
 `HEALTH`, `READY`, and `STATS` are accepted before initialization and binding. They do not mutate
 Store state. `HEALTH` returns `OK` while the daemon process is live (started and no executor failure
@@ -96,6 +97,12 @@ liveness/readiness/stats probes return `INTERNAL_ERROR` with an empty value. Und
 profile, unscoped `STATS` requires the `read` capability; prefix-scoped principals need `admin`
 ([ADR 0027](../adr/0027-stats-isolation-prefix-principals.md)). It never returns TLS private-key
 material.
+
+`BACKUP` performs an **online fenced** durable catalog copy into an empty destination path while the
+daemon keeps the Store lock (`Server::backup_to` / `Store::backup_to`). It briefly pauses Store
+admissions during the copy window and is not a zero-impact hot snapshot. Under the secure profile it
+requires the `admin` capability. Failed backups return `INTERNAL_ERROR` (optional ASCII reason in
+value). Official SDKs may not expose `BACKUP` yet; wire clients can encode opcode `10` directly.
 
 Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
 decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode

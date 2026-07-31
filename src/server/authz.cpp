@@ -237,6 +237,8 @@ auto required_capability(const RequestOpcode opcode,
         // Phase 8: prefix-scoped principals must not observe daemon-wide STATS
         // (fail closed). Unscoped principals keep read; admin always implies read.
         return key_prefix.empty() ? Capability::read : Capability::admin;
+    case RequestOpcode::backup:
+        return Capability::admin;
     case RequestOpcode::put:
     case RequestOpcode::erase:
         return Capability::write;
@@ -256,6 +258,7 @@ auto opcode_requires_key_prefix_check(const RequestOpcode opcode) noexcept -> bo
     case RequestOpcode::health:
     case RequestOpcode::ready:
     case RequestOpcode::stats:
+    case RequestOpcode::backup:
         return false;
     }
     return true;

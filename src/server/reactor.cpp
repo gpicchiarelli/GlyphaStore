@@ -717,6 +717,42 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             }
             break;
         }
+        case RequestOpcode::backup: {
+            if (lifecycle_probes_.backup == nullptr) {
+                response.status = ResponseStatus::unsupported;
+                break;
+            }
+            try {
+                const auto destination = std::string_view{
+                    reinterpret_cast<const char*>(decoded->frame.key.data()), decoded->frame.key.size()};
+                std::string report;
+                if (!lifecycle_probes_.backup(const_cast<void*>(lifecycle_probes_.context), destination,
+                                              report)) {
+                    response.status = ResponseStatus::internal_error;
+                    response.value = std::as_bytes(std::span<const char>{report.data(), report.size()});
+                    if (auto queued = queue_response(token, response); !queued) {
+                        return queued;
+                    }
+                    immediate_response = false;
+                    break;
+                }
+                const auto value_budget = config_.maximum_output_bytes > kResponseHeaderBytes
+                                              ? config_.maximum_output_bytes - kResponseHeaderBytes
+                                              : std::size_t{0};
+                if (report.size() > value_budget || report.size() + kResponseHeaderBytes > kMaxFrameBytes) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                response.value = std::as_bytes(std::span<const char>{report.data(), report.size()});
+                if (auto queued = queue_response(token, response); !queued) {
+                    return queued;
+                }
+                immediate_response = false;
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+            }
+            break;
+        }
         case RequestOpcode::get:
         case RequestOpcode::put:
         case RequestOpcode::erase:
@@ -1035,6 +1071,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
     case RequestOpcode::health:
     case RequestOpcode::ready:
     case RequestOpcode::stats:
+    case RequestOpcode::backup:
     case RequestOpcode::bind_worker:
         response.status = ResponseStatus::invalid_request;
         break;

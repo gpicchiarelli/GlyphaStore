@@ -63,6 +63,7 @@ class ProtocolTests(unittest.TestCase):
             encode_request(Opcode.HEALTH, 7),
             encode_request(Opcode.READY, 8),
             encode_request(Opcode.STATS, 9),
+            encode_request(Opcode.BACKUP, 10, key=b"/tmp/glyphastore-backup"),
         ]
         self.assertEqual(encoded, expected)
 

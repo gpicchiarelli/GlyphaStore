@@ -72,4 +72,7 @@ Embedded / in-process:
 
 ```cpp
 store->backup_to("/path/to/empty/backup");
+server->backup_to("/path/to/empty/backup");
 ```
+
+Live daemon (wire opcode `BACKUP` = 10; key = destination path; `admin` under secure authz).

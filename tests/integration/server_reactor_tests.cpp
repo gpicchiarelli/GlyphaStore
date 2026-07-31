@@ -1,7 +1,9 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
+#include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
@@ -1133,6 +1135,73 @@ GLYPHA_TEST("server StoreConfig persists acknowledged wire writes across restart
     static_cast<void>(::close(socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("wire BACKUP copies a live durable Server catalog into an empty destination") {
+    ServerTemporaryDirectory temporary;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 90,
+        .key = bytes("backup-live-key"),
+        .value = bytes("backup-live-value"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    const auto put_response = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    const auto backup_dir = temporary.store_path().parent_path() / "online-backup";
+    const auto backup_path = backup_dir.string();
+    const auto backup = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::backup,
+        .request_id = 91,
+        .key = bytes(backup_path),
+    });
+    GLYPHA_REQUIRE(backup.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *backup));
+    const auto backup_frame = receive_response(socket);
+    const auto backup_response = glyphastore::server::decode_response(backup_frame);
+    GLYPHA_REQUIRE(backup_response.has_value());
+    GLYPHA_REQUIRE(backup_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(backup_response->frame.value).find("status=ok") != std::string_view::npos);
+
+    // Offline tool still fails while the Server holds the lock.
+    const auto contested = glyphastore::backup_durable_store(
+        temporary.store_path(), temporary.store_path().parent_path() / "offline-contested");
+    GLYPHA_REQUIRE(!contested.has_value());
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    const auto restored_dir = temporary.store_path().parent_path() / "restored";
+    const auto restored = glyphastore::restore_durable_store(backup_dir, restored_dir);
+    GLYPHA_REQUIRE(restored.has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored_dir,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto got = (*reopened)->get("backup-live-key");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(text(got->bytes) == "backup-live-value");
 }
 
 GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded FIFO admission") {

@@ -33,8 +33,9 @@ Open release gates (summary):
   implemented (`--secure-profile` applies defaults).
 - Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification (E3/E4 open).
 - Offline inspect/verify/backup/repair/migrate tools exist; offline Index rebuild is refused; online
-  fenced `Store::backup_to` is available (admission pause during copy; not fully hot concurrent I/O).
-  Release provenance and physical E3 remain open. Secure-profile authn/authz + Phase 5 abuse controls are
+  fenced `Store::backup_to` and live-daemon wire `BACKUP` (opcode 10, admin-gated) are available
+  (admission pause during copy; not fully hot concurrent I/O). Release provenance and physical E3
+  remain open. Secure-profile authn/authz + Phase 5 abuse controls are
   implemented; Phase 6 auth audit + local CRL fail-closed landed — configure `--tls-crl` before
   hostile public Internet; multi-tenant Phase 8 and physical E3 remain residual (live OCSP HTTP
   unsupported).

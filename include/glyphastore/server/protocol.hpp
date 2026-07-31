@@ -25,6 +25,7 @@ enum class RequestOpcode : std::uint8_t {
     health = 7,
     ready = 8,
     stats = 9,
+    backup = 10,
 };
 enum class ResponseStatus : std::uint16_t {
     ok = 0,

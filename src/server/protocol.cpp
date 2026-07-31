@@ -77,6 +77,8 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         return RequestOpcode::ready;
     case static_cast<std::uint8_t>(RequestOpcode::stats):
         return RequestOpcode::stats;
+    case static_cast<std::uint8_t>(RequestOpcode::backup):
+        return RequestOpcode::backup;
     default:
         return fail(ErrorCode::invalid_record, "request contains an unknown opcode");
     }
@@ -142,6 +144,13 @@ void store_u64(const std::span<std::byte> output, const std::size_t offset,
         if (has_key || has_expiry || has_target) {
             return fail(ErrorCode::invalid_argument,
                         "PING request cannot carry key, expiry, or target_worker");
+        }
+        return {};
+    case RequestOpcode::backup:
+        // Key carries the destination data-directory path (UTF-8). No value/expiry/target.
+        if (!has_key || has_value || has_expiry || has_target) {
+            return fail(ErrorCode::invalid_argument,
+                        "BACKUP requires a destination path key and no value, expiry, or target_worker");
         }
         return {};
     case RequestOpcode::get:
@@ -398,6 +407,8 @@ auto request_opcode_name(const RequestOpcode opcode) noexcept -> std::string_vie
         return "ready";
     case RequestOpcode::stats:
         return "stats";
+    case RequestOpcode::backup:
+        return "backup";
     }
     return "unknown";
 }

@@ -37,6 +37,9 @@ struct ServerLifecycleProbes final {
     // Optional read-only admin probe. Writes a bounded ASCII report into `out`.
     // Returns false when the process is not live or the report cannot be built.
     bool (*stats)(const void* context, std::string& out) noexcept {};
+    // Optional online backup probe. `destination` is a filesystem path (UTF-8). Writes a bounded
+    // ASCII report into `out` on success; returns false on failure (message may be in `out`).
+    bool (*backup)(void* context, std::string_view destination, std::string& out) noexcept {};
     const void* context{};
 };
 

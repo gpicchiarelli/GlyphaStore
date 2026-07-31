@@ -38,7 +38,10 @@ class ProtocolTest < Minitest::Test
       ),
       GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::HEALTH, 7),
       GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::READY, 8),
-      GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::STATS, 9)
+      GlyphaStore::Protocol.encode_request(GlyphaStore::Protocol::Opcode::STATS, 9),
+      GlyphaStore::Protocol.encode_request(
+        GlyphaStore::Protocol::Opcode::BACKUP, 10, key: "/tmp/glyphastore-backup".b
+      )
     ]
     assert_equal expected, encoded
   end

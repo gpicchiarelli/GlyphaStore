@@ -15,6 +15,7 @@
     opcode_health/0,
     opcode_ready/0,
     opcode_stats/0,
+    opcode_backup/0,
     status_ok/0,
     status_invalid_request/0,
     status_unsupported/0,
@@ -56,6 +57,7 @@
 -define(OP_HEALTH, 7).
 -define(OP_READY, 8).
 -define(OP_STATS, 9).
+-define(OP_BACKUP, 10).
 
 -define(ST_OK, 0).
 -define(ST_INVALID, 1).
@@ -94,6 +96,7 @@ opcode_bind_worker() -> ?OP_BIND.
 opcode_health() -> ?OP_HEALTH.
 opcode_ready() -> ?OP_READY.
 opcode_stats() -> ?OP_STATS.
+opcode_backup() -> ?OP_BACKUP.
 status_ok() -> ?ST_OK.
 status_invalid_request() -> ?ST_INVALID.
 status_unsupported() -> ?ST_UNSUPPORTED.
@@ -519,7 +522,7 @@ u32(V, _Field) when is_integer(V), V >= 0, V =< 16#FFFFFFFF ->
 u32(_, Field) ->
     {error, {invalid_argument, iolist_to_binary([Field, <<" is outside unsigned 32-bit range">>])}}.
 
-valid_opcode(Opcode) when Opcode >= ?OP_INIT, Opcode =< ?OP_STATS ->
+valid_opcode(Opcode) when Opcode >= ?OP_INIT, Opcode =< ?OP_BACKUP ->
     true;
 valid_opcode(_) ->
     false.
@@ -592,6 +595,12 @@ validate_request_fields(Opcode, Key, Value, ExpireAtNs, TargetWorker) ->
                 Key =:= <<>> andalso Value =:= <<>> andalso ExpireAtNs =:= 0
                     andalso TargetWorker =:= ?NO_WORKER,
                 <<"lifecycle probe cannot carry key, value, expiry, or target_worker">>
+            );
+        ?OP_BACKUP ->
+            reject_if(
+                Key =/= <<>> andalso Value =:= <<>> andalso ExpireAtNs =:= 0
+                    andalso TargetWorker =:= ?NO_WORKER,
+                <<"BACKUP requires a destination path key and no value, expiry, or target_worker">>
             );
         _ ->
             {error, {invalid_argument, <<"opcode is not defined by wire protocol v2">>}}

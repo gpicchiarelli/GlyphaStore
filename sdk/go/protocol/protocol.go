@@ -45,6 +45,7 @@ const (
 	OpcodeHealth     Opcode = 7
 	OpcodeReady      Opcode = 8
 	OpcodeStats      Opcode = 9
+	OpcodeBackup     Opcode = 10
 )
 
 // Status is a wire-protocol v2 response status.
@@ -200,6 +201,10 @@ func validateRequestFields(
 		}
 		if targetWorker == NoWorker {
 			return errors.New("BIND_WORKER request requires an explicit target_worker")
+		}
+	case OpcodeBackup:
+		if len(key) == 0 || len(value) != 0 || expireAtNs != 0 || targetWorker != NoWorker {
+			return errors.New("BACKUP requires a destination path key and no value, expiry, or target_worker")
 		}
 	default:
 		return errors.New("opcode is not defined by wire protocol v2")
@@ -504,7 +509,7 @@ func WorkerFor(key []byte, workerCount uint32, routing ...WorkerRouting) (uint32
 func validOpcode(opcode Opcode) bool {
 	switch opcode {
 	case OpcodeInit, OpcodePing, OpcodeGet, OpcodePut, OpcodeErase, OpcodeBindWorker,
-		OpcodeHealth, OpcodeReady, OpcodeStats:
+		OpcodeHealth, OpcodeReady, OpcodeStats, OpcodeBackup:
 		return true
 	default:
 		return false

@@ -2,6 +2,7 @@
 
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
+#include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/reactor.hpp"
 #include "glyphastore/server/thread_affinity.hpp"
@@ -11,6 +12,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -72,6 +74,10 @@ class Server final {
     // Bounded ASCII admin report (version, live/ready, connections, lane/batch, maintenance).
     // Read-only; fails closed when not live or when the report would exceed the size budget.
     [[nodiscard]] auto stats_report() const -> Result<std::string>;
+    // Online durable backup while this Server holds the Store. Fences Store admissions during the
+    // copy window (see Store::backup_to). Destination must be an empty new data directory path.
+    [[nodiscard]] auto backup_to(const std::filesystem::path& destination, bool scan_records = true)
+        -> Result<DurableStoreBackupReport>;
 
   private:
     Server(ReactorConfig config, ServerRuntime&& runtime);

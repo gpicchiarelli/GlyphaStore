@@ -93,6 +93,11 @@ func TestRequestEncoderMatchesEveryCanonicalFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded = append(encoded, frame)
+	frame, err = protocol.EncodeRequest(protocol.OpcodeBackup, 10, []byte("/tmp/glyphastore-backup"), nil, 0, protocol.NoWorker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded = append(encoded, frame)
 
 	if len(encoded) != len(expected) {
 		t.Fatalf("frame count: got %d want %d", len(encoded), len(expected))
@@ -118,6 +123,7 @@ func TestRequestDecoderRoundTripsCanonicalFixture(t *testing.T) {
 		protocol.OpcodeInit, protocol.OpcodePing, protocol.OpcodeGet,
 		protocol.OpcodePut, protocol.OpcodeErase, protocol.OpcodeBindWorker,
 		protocol.OpcodeHealth, protocol.OpcodeReady, protocol.OpcodeStats,
+		protocol.OpcodeBackup,
 	}
 	for i, opcode := range wantOpcodes {
 		if decoded[i].Opcode != opcode {

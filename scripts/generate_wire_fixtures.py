@@ -85,6 +85,7 @@ def request_corpus() -> bytes:
         request(7, 7),
         request(8, 8),
         request(9, 9),
+        request(10, 10, key=b"/tmp/glyphastore-backup"),
     )
     return b"".join(frames)
 
@@ -113,7 +114,7 @@ def split_frames(data: bytes, header_bytes: int) -> list[bytes]:
 
 def verify_requests(data: bytes) -> None:
     frames = split_frames(data, REQUEST_HEADER_BYTES)
-    if len(frames) != 9:
+    if len(frames) != 10:
         raise ValueError("request corpus must contain every protocol-v2 opcode")
     for expected_opcode, frame in enumerate(frames, start=1):
         frame_size, version, opcode, flags, request_id, key_size, value_size = struct.unpack_from(
@@ -143,6 +144,8 @@ def verify_requests(data: bytes) -> None:
             raise ValueError("PUT fixture requires a key")
         if expected_opcode == 6 and (key_size or value_size or expire_at_ns):
             raise ValueError("BIND_WORKER fixture cannot carry key, value, or expiry")
+        if expected_opcode == 10 and (value_size or expire_at_ns or key_size == 0):
+            raise ValueError("BACKUP fixture must carry a destination path key without value/expiry")
 
 
 def verify_responses(data: bytes) -> None:

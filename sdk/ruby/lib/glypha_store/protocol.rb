@@ -34,6 +34,7 @@ module GlyphaStore
       HEALTH = 7
       READY = 8
       STATS = 9
+      BACKUP = 10
     end
 
     module Status
@@ -269,7 +270,7 @@ module GlyphaStore
     end
 
     def valid_opcode?(opcode)
-      opcode.between?(Opcode::INIT, Opcode::STATS)
+      opcode.between?(Opcode::INIT, Opcode::BACKUP)
     end
 
     def valid_status?(status)
@@ -329,6 +330,11 @@ module GlyphaStore
       when Opcode::HEALTH, Opcode::READY, Opcode::STATS
         if !key.empty? || !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
           raise ArgumentError, "lifecycle probe cannot carry key, value, expiry, or target_worker"
+        end
+      when Opcode::BACKUP
+        if key.empty? || !value.empty? || expire_at_ns != 0 || target_worker != NO_WORKER
+          raise ArgumentError,
+                "BACKUP requires a destination path key and no value, expiry, or target_worker"
         end
       else
         raise ArgumentError, "opcode is not defined by wire protocol v2"

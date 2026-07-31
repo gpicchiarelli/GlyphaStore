@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Expose online fenced backup on the live daemon: wire opcode `BACKUP` (10) and `Server::backup_to`,
+  admin-gated under secure authz; SDKs may still omit a typed helper.
 - Add online durable backup via `Store::backup_to`: fence admissions, flush, copy catalog under the
   open Store lock (writer fence, not fully hot concurrent I/O). Offline CLI still requires a stopped
   Store. Docs/CHANGELOG honesty updated; concurrent-writer unit coverage included.
