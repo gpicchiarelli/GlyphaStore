@@ -20,6 +20,10 @@ namespace {
 
 inline constexpr std::size_t kDeltaPageSlots = 16;
 inline constexpr std::size_t kDeltaDirectoryBlockPages = 16;
+// Second COW level above directory blocks. A full 40 960-entry Delta uses 256
+// blocks; copying that spine on every single-record publication was a mixed-path
+// tax. Chunks keep per-publication spine traffic to one 16-block group.
+inline constexpr std::size_t kDeltaDirectoryChunkBlocks = 16;
 inline constexpr std::size_t kFlatDeltaMaximumPages = 32;
 inline constexpr std::size_t kMaximumPublicationBatch = 32;
 inline constexpr std::size_t kDeltaArenaBlockRecords = 64;
@@ -208,21 +212,21 @@ class DeltaArena final {
             pin = retain_segment_pin(*source.segment, source.record);
         }
 
-        auto compact = DeltaRecord{.record = source.record,
-                                   .pin = pin,
-                                   .key_size = static_cast<std::uint32_t>(source.key.size()),
-                                   .opcode = source.opcode,
-                                   .durable = durable};
-        if (external_key == nullptr) {
-            std::ranges::copy(source.key, compact.key.inline_key.begin());
-        } else {
-            std::ranges::copy(source.key, external_key);
-            compact.key.external_key = external_key;
-            key_blocks_.back().used += source.key.size();
-        }
         auto& block = record_blocks_.back();
         auto* destination = &block.records[block.used++];
-        *destination = compact;
+        destination->record = source.record;
+        destination->pin = pin;
+        destination->key_size = static_cast<std::uint32_t>(source.key.size());
+        destination->opcode = source.opcode;
+        destination->durable = durable;
+        if (external_key == nullptr) {
+            std::ranges::copy(source.key, destination->key.inline_key.begin());
+        } else {
+            std::ranges::copy(source.key, external_key);
+            destination->key.external_key = external_key;
+            key_blocks_.back().used += source.key.size();
+            key_bytes_ += source.key.size();
+        }
         ++record_count_;
         return destination;
     }
@@ -240,19 +244,11 @@ class DeltaArena final {
     }
 
     [[nodiscard]] auto key_bytes() const noexcept -> std::size_t {
-        std::size_t result{};
-        for (const auto& block : key_blocks_) {
-            result += block.used;
-        }
-        return result;
+        return key_bytes_;
     }
 
     [[nodiscard]] auto allocated_key_bytes() const noexcept -> std::size_t {
-        std::size_t result{};
-        for (const auto& block : key_blocks_) {
-            result += block.capacity;
-        }
-        return result;
+        return allocated_key_bytes_;
     }
 
   private:
@@ -270,6 +266,7 @@ class DeltaArena final {
         if (key_blocks_.empty() || size > key_blocks_.back().capacity - key_blocks_.back().used) {
             const auto capacity = std::max(kKeyBlockBytes, size);
             key_blocks_.push_back({.bytes = std::make_unique<char[]>(capacity), .capacity = capacity});
+            allocated_key_bytes_ += capacity;
         }
         return key_blocks_.back().bytes.get() + key_blocks_.back().used;
     }
@@ -307,6 +304,8 @@ class DeltaArena final {
 
     const std::size_t maximum_records_;
     std::size_t record_count_{};
+    std::size_t key_bytes_{};
+    std::size_t allocated_key_bytes_{};
     std::vector<DeltaRecordBlock> record_blocks_;
     std::vector<DeltaKeyBlock> key_blocks_;
     std::vector<std::unique_ptr<SegmentPtr>> segment_pins_;
@@ -325,6 +324,10 @@ struct DeltaPage final {
 
 struct DeltaDirectoryBlock final {
     std::array<std::shared_ptr<const DeltaPage>, kDeltaDirectoryBlockPages> pages{};
+};
+
+struct DeltaDirectoryChunk final {
+    std::array<std::shared_ptr<const DeltaDirectoryBlock>, kDeltaDirectoryChunkBlocks> blocks{};
 };
 
 struct CompactReadRecord;
@@ -688,10 +691,10 @@ class DeltaState final {
   public:
     DeltaState(const std::size_t capacity, const std::size_t maximum_entries, const std::size_t size,
                std::vector<std::shared_ptr<const DeltaPage>> flat_pages,
-               std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory,
+               std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks,
                std::shared_ptr<DeltaArena> primary_arena, std::shared_ptr<DeltaArena> secondary_arena = {})
         : capacity_(capacity), maximum_entries_(maximum_entries), size_(size),
-          flat_pages_(std::move(flat_pages)), directory_(std::move(directory)),
+          flat_pages_(std::move(flat_pages)), directory_chunks_(std::move(directory_chunks)),
           primary_arena_(std::move(primary_arena)), secondary_arena_(std::move(secondary_arena)) {
         if (!primary_arena_) {
             throw std::invalid_argument{"Delta state has no primary record arena"};
@@ -811,10 +814,15 @@ class DeltaState final {
     }
 
     [[nodiscard]] auto page_at(const std::size_t page_index) const noexcept -> const DeltaPage* {
-        if (directory_.empty()) {
+        if (directory_chunks_.empty()) {
             return flat_pages_[page_index].get();
         }
-        const auto& block = directory_[page_index / kDeltaDirectoryBlockPages];
+        const auto block_index = page_index / kDeltaDirectoryBlockPages;
+        const auto& chunk = directory_chunks_[block_index / kDeltaDirectoryChunkBlocks];
+        if (!chunk) {
+            return nullptr;
+        }
+        const auto& block = chunk->blocks[block_index % kDeltaDirectoryChunkBlocks];
         return block ? block->pages[page_index % kDeltaDirectoryBlockPages].get() : nullptr;
     }
 
@@ -831,7 +839,7 @@ class DeltaState final {
     std::size_t maximum_entries_{};
     std::size_t size_{};
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
-    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory_;
+    std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks_;
     std::shared_ptr<DeltaArena> primary_arena_;
     std::shared_ptr<DeltaArena> secondary_arena_;
 
@@ -855,12 +863,14 @@ class DeltaState final {
     if (page_count <= kFlatDeltaMaximumPages) {
         return std::make_shared<const DeltaState>(
             capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>(page_count),
-            std::vector<std::shared_ptr<const DeltaDirectoryBlock>>{}, std::move(arena));
+            std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{}, std::move(arena));
     }
     const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
+    const auto chunk_count =
+        (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
     return std::make_shared<const DeltaState>(
         capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
-        std::vector<std::shared_ptr<const DeltaDirectoryBlock>>(directory_count), std::move(arena));
+        std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count), std::move(arena));
 }
 
 class DeltaBuilder final {
@@ -868,7 +878,7 @@ class DeltaBuilder final {
     explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous,
                           std::shared_ptr<DeltaArena> allocation_arena = {})
         : previous_(std::move(previous)), flat_pages_(previous_->flat_pages_),
-          directory_(previous_->directory_), primary_arena_(previous_->primary_arena_),
+          directory_chunks_(previous_->directory_chunks_), primary_arena_(previous_->primary_arena_),
           secondary_arena_(previous_->secondary_arena_), size_(previous_->size_) {
         if (allocation_arena) {
             if (allocation_arena != primary_arena_ && allocation_arena != secondary_arena_) {
@@ -879,6 +889,7 @@ class DeltaBuilder final {
             }
         }
         allocation_arena_ = secondary_arena_ ? secondary_arena_ : primary_arena_;
+        mutable_chunks_.reserve(kMaximumPublicationBatch);
         mutable_blocks_.reserve(kMaximumPublicationBatch);
         mutable_pages_.reserve(kMaximumPublicationBatch);
     }
@@ -949,7 +960,7 @@ class DeltaBuilder final {
 
     [[nodiscard]] auto freeze() && -> std::shared_ptr<const DeltaState> {
         return std::make_shared<const DeltaState>(previous_->capacity_, previous_->maximum_entries_, size_,
-                                                  std::move(flat_pages_), std::move(directory_),
+                                                  std::move(flat_pages_), std::move(directory_chunks_),
                                                   std::move(primary_arena_), std::move(secondary_arena_));
     }
 
@@ -959,10 +970,15 @@ class DeltaBuilder final {
 
   private:
     [[nodiscard]] auto page_at(const std::size_t page_index) const noexcept -> const DeltaPage* {
-        if (directory_.empty()) {
+        if (directory_chunks_.empty()) {
             return flat_pages_[page_index].get();
         }
-        const auto& block = directory_[page_index / kDeltaDirectoryBlockPages];
+        const auto block_index = page_index / kDeltaDirectoryBlockPages;
+        const auto& chunk = directory_chunks_[block_index / kDeltaDirectoryChunkBlocks];
+        if (!chunk) {
+            return nullptr;
+        }
+        const auto& block = chunk->blocks[block_index % kDeltaDirectoryChunkBlocks];
         return block ? block->pages[page_index % kDeltaDirectoryBlockPages].get() : nullptr;
     }
 
@@ -976,41 +992,63 @@ class DeltaBuilder final {
     }
 
     [[nodiscard]] auto mutable_page(const std::size_t page_index) -> DeltaPage& {
+        if (last_mutable_page_index_ == page_index && last_mutable_page_ != nullptr) {
+            return *last_mutable_page_;
+        }
         const auto found_page = std::find_if(mutable_pages_.begin(), mutable_pages_.end(),
                                              [&](const auto& entry) { return entry.first == page_index; });
         if (found_page != mutable_pages_.end()) {
+            last_mutable_page_index_ = page_index;
+            last_mutable_page_ = found_page->second.get();
             return *found_page->second;
         }
         const auto* existing = page_at(page_index);
         auto page = existing ? std::make_shared<DeltaPage>(*existing) : std::make_shared<DeltaPage>();
         mutable_pages_.emplace_back(page_index, page);
-        if (directory_.empty()) {
+        if (directory_chunks_.empty()) {
             flat_pages_[page_index] = page;
         } else {
             const auto block_index = page_index / kDeltaDirectoryBlockPages;
+            const auto chunk_index = block_index / kDeltaDirectoryChunkBlocks;
+            const auto block_offset = block_index % kDeltaDirectoryChunkBlocks;
+            auto found_chunk = std::find_if(mutable_chunks_.begin(), mutable_chunks_.end(),
+                                            [&](const auto& entry) { return entry.first == chunk_index; });
+            if (found_chunk == mutable_chunks_.end()) {
+                auto chunk = directory_chunks_[chunk_index]
+                                 ? std::make_shared<DeltaDirectoryChunk>(*directory_chunks_[chunk_index])
+                                 : std::make_shared<DeltaDirectoryChunk>();
+                mutable_chunks_.emplace_back(chunk_index, chunk);
+                directory_chunks_[chunk_index] = chunk;
+                found_chunk = std::prev(mutable_chunks_.end());
+            }
             auto found_block = std::find_if(mutable_blocks_.begin(), mutable_blocks_.end(),
                                             [&](const auto& entry) { return entry.first == block_index; });
             if (found_block == mutable_blocks_.end()) {
-                auto block = directory_[block_index]
-                                 ? std::make_shared<DeltaDirectoryBlock>(*directory_[block_index])
+                auto block = found_chunk->second->blocks[block_offset]
+                                 ? std::make_shared<DeltaDirectoryBlock>(*found_chunk->second->blocks[block_offset])
                                  : std::make_shared<DeltaDirectoryBlock>();
                 mutable_blocks_.emplace_back(block_index, block);
-                directory_[block_index] = block;
+                found_chunk->second->blocks[block_offset] = block;
                 found_block = std::prev(mutable_blocks_.end());
             }
             found_block->second->pages[page_index % kDeltaDirectoryBlockPages] = page;
         }
+        last_mutable_page_index_ = page_index;
+        last_mutable_page_ = page.get();
         return *page;
     }
 
     std::shared_ptr<const DeltaState> previous_;
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
-    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory_;
+    std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks_;
+    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryChunk>>> mutable_chunks_;
     std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryBlock>>> mutable_blocks_;
     std::vector<std::pair<std::size_t, std::shared_ptr<DeltaPage>>> mutable_pages_;
     std::shared_ptr<DeltaArena> primary_arena_;
     std::shared_ptr<DeltaArena> secondary_arena_;
     std::shared_ptr<DeltaArena> allocation_arena_;
+    DeltaPage* last_mutable_page_{};
+    std::size_t last_mutable_page_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t size_{};
 };
 

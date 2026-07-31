@@ -5,8 +5,11 @@
   public `Store::get` keeps owning pins; daemon GET borrows a Reader-local `ReadGeneration`;
   `Server::pair_writer_stats()` is the paired mutation-lane surface while Manifest/wire
   `worker_count` and CLI `--workers` stay 0.1.x aliases of shard-pair count; no dual-select runtime
-  exists. Residual P1: Delta arena mixed ~1.8%, Linux hard-pinned A/B, optional get-into/scatter
-  ([paired-shards-plan](docs/benchmarks/paired-shards-plan.md)).
+  exists.
+- P1 Delta mixed follow-up: hierarchical directory-chunk COW (plus O(1) arena key counters / in-place
+  store) to cut per-publication spine traffic without changing version capacity or QSBR lifetime
+  ([paired-delta-directory-chunks-2026-07-31](docs/benchmarks/paired-delta-directory-chunks-2026-07-31.md)).
+  macOS advisory A/B is noisy; Linux hard-pinned confirmation still required for magnitude claims.
 - Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
   if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
   wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.
