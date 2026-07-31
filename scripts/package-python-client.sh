@@ -38,6 +38,12 @@ mkdir -p "$sdk/dist"
   "$python" -m build --outdir "$sdk/dist"
   "$python" -m twine check "$sdk/dist"/*
 )
+# Normalize sdist tar metadata (wheels are already bit-stable under SOURCE_DATE_EPOCH).
+shopt -s nullglob
+for sdist in "$sdk/dist"/*.tar.gz; do
+  "$root/scripts/normalize-tar-gz.sh" "$sdist"
+done
+shopt -u nullglob
 
 "$python" -m venv "$work/venv"
 # shellcheck disable=SC1091

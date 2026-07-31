@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Normalize Python sdist / Perl tar.gz with `scripts/normalize-tar-gz.sh` (epoch mtimes +
+  `gzip -n`) so two-pass reproducibility covers wheels, gems, and those archives.
 - Pin `SOURCE_DATE_EPOCH` for SDK packaging (`scripts/export-reproducible-build-env.sh`) and gate
   two-pass wheel/gem digest equality (`scripts/verify-sdk-artifact-reproducibility.sh`) on tags /
   workflow_dispatch. Residual: normalize Python sdist / Perl tar.gz host metadata.

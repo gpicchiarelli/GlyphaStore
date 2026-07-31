@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # Package SDK clients twice with a pinned SOURCE_DATE_EPOCH and compare digests of
-# wheels and gems. Python sdists / Perl tar.gz are intentionally excluded until tar
-# metadata is normalized. package-info.txt sidecars are excluded.
+# wheels, gems, and normalized tar.gz archives. package-info.txt sidecars are excluded.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,12 +40,11 @@ package_once "$work/b"
 
 # Compare SHA256SUMS entries for archive-like artifacts only.
 filter_sums() {
-  # Pure-Python wheels and Ruby gems are bit-stable under SOURCE_DATE_EPOCH today.
-  # Python sdists and Perl tar.gz still embed host tar metadata on some platforms;
-  # those remain a residual normalization task.
+  # Wheels, gems, and normalized sdists/Perl tarballs (gzip -n + epoch mtimes).
   awk '
     $2 ~ /\.whl$/ { print }
     $2 ~ /\.gem$/ { print }
+    $2 ~ /\.tar\.gz$/ { print }
   ' "$1" | sort
 }
 
@@ -64,5 +62,5 @@ if ! cmp -s "$work/a.filtered" "$work/b.filtered"; then
   exit 1
 fi
 
-echo "SDK wheel/gem reproducibility OK (SOURCE_DATE_EPOCH=$epoch)"
+echo "SDK archive reproducibility OK (SOURCE_DATE_EPOCH=$epoch)"
 cat "$work/a.filtered"

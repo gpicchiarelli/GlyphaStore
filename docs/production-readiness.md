@@ -182,9 +182,9 @@ below has automated evidence. A design document or implementation alone does not
   Tagged release-artifact CI (signed tarballs / provenance attach) remains deferred; current CI proves
   build/test/install-consumer gates plus SDK checksum/SBOM upload, not a full signed release pipeline.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
-  Checksums + SPDX + Cosign tag signing + SLSA attestations (public/opt-in) landed. Wheel/gem
-  two-pass reproducibility under `SOURCE_DATE_EPOCH` is gated on tags/dispatch. Residual: sdist /
-  Perl tar.gz metadata normalization and multi-builder comparison.
+  Checksums + SPDX + Cosign tag signing + SLSA attestations (public/opt-in) landed. Two-pass
+  reproducibility under `SOURCE_DATE_EPOCH` covers wheels, gems, and normalized sdists/Perl
+  tarballs. Residual: multi-builder comparison across OS images.
   Checksums + SPDX SBOM generation are gated in CI (`SYFT_REQUIRED=1`); release tags produce
   Cosign keyless `.cosign.bundle` signatures. Reproducibility and SLSA provenance attestations
   remain open.
