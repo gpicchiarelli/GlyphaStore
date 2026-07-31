@@ -26,8 +26,8 @@ opt-in.
 > [!NOTE]
 > Official SDKs parse plain and extended keyed-routing `INIT` identities (ADR 0030). Secure-profile
 > smoke (`scripts/test-secure-profile-interop.sh`: mTLS + `--authz-map` + keyed seed + prefix deny +
-> `--tls-crl`, cpp/python/go + perl when SSL is available) is in CI. Residual: ruby/erlang in that
-> matrix, quotas, and claiming the complete SDK security train.
+> `--tls-crl`, cpp/python/go + perl/ruby/erlang when their TLS toolchains are available) is in CI.
+> Residual: quotas and claiming the complete SDK security train.
 
 ### Optional Unix-domain socket (Phase 8 / ADR 0029)
 

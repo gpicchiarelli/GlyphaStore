@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Expand secure-profile interop to ruby/erlang when toolchains are present (CI already has
+  Ruby 3.3 + Erlang/rebar3; local soft-skips). Full official-SDK secure matrix is now opt-in by
+  availability rather than cpp/python/go-only.
 - Add GitHub SLSA provenance attestations for tagged SDK packages (`actions/attest` in
   `supply-chain.yml`; public repos or private with `ENABLE_ARTIFACT_ATTESTATIONS=true` / GHEC).
 - Include Perl in secure-profile interop when `IO::Socket::SSL` is present (CI installs

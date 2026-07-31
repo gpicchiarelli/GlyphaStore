@@ -2,8 +2,8 @@
 # Focused secure-profile interop smoke (ADR 0020–0022 + ADR 0030).
 # Proves: mTLS connect, --authz-map allows PUT/GET, keyed SipHash routing under
 # --worker-hash-seed with --secure-profile. Also covers authz deny, prefix scope,
-# and --tls-crl rejection. Happy path: cpp/python/go, plus perl when IO::Socket::SSL
-# is available.
+# and --tls-crl rejection. Happy path: cpp/python/go; plus perl/ruby/erlang when
+# their TLS toolchains are available.
 #
 # Usage:
 #   ./scripts/test-secure-profile-interop.sh
@@ -11,7 +11,7 @@
 #   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT / GLYPHASTORE_GO_INTEROP
 #   INTEROP_WORKER_HASH_SEED (default 13957458623937596)
 #   INTEROP_SECURE_WORKERS (default 2)
-#   PYTHON / GO
+#   PYTHON / PERL / RUBY / GO
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -75,19 +75,56 @@ export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 py_helper="$root/scripts/sdk_interop_py.py"
 pl_helper="$root/scripts/sdk_interop_perl.pl"
+ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
+erlang_helper="$root/sdk/erlang/scripts/glyphastore-interop.escript"
 go_helper="${GLYPHASTORE_GO_INTEROP:-}"
 if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
   mkdir -p "$root/sdk/go/bin"
   (cd "$root/sdk/go" && "${GO:-go}" build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
   go_helper="$root/sdk/go/bin/glyphastore-interop"
 fi
-chmod +x "$py_helper" 2>/dev/null || true
+chmod +x "$py_helper" "$ruby_helper" "$erlang_helper" 2>/dev/null || true
 
 perl_ready=0
 if "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
   perl_ready=1
 else
   echo "note: Perl without IO::Socket::SSL — excluding perl from secure-profile matrix" >&2
+fi
+
+ruby_bin="${RUBY:-}"
+ruby_ready=0
+if [[ -z "$ruby_bin" ]]; then
+  for candidate in \
+    "$HOME/.local/share/mise/installs/ruby/3.3.12/bin/ruby" \
+    "$HOME/.local/share/mise/installs/ruby/3.3.0/bin/ruby"; do
+    if [[ -x "$candidate" ]]; then
+      ruby_bin="$candidate"
+      break
+    fi
+  done
+fi
+if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
+  ruby_bin="$(command -v ruby)"
+fi
+if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
+  "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
+  ruby_ready=1
+  export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+else
+  echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
+  ruby_bin=""
+fi
+
+erlang_ready=0
+if command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+  if (cd "$root/sdk/erlang" && rebar3 compile >/dev/null 2>&1); then
+    erlang_ready=1
+  else
+    echo "note: Erlang rebar3 compile failed — excluding erlang from secure-profile matrix" >&2
+  fi
+else
+  echo "note: Erlang/OTP + rebar3 not available — excluding erlang from secure-profile matrix" >&2
 fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-secure-interop.XXXXXX")"
@@ -348,6 +385,8 @@ put_sdk() {
     python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     *) return 1 ;;
   esac
 }
@@ -360,6 +399,8 @@ expect_get() {
     python) got="$("$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     go) got="$("$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     perl) got="$("$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
+    ruby) got="$("$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
+    erlang) got="$(escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     *) return 1 ;;
   esac
   if [[ "$got" != "$want_hex" ]]; then
@@ -383,6 +424,12 @@ echo "daemon port=$port principal=$client_principal"
 sdks=(cpp python go)
 if [[ "$perl_ready" == "1" ]]; then
   sdks+=(perl)
+fi
+if [[ "$ruby_ready" == "1" ]]; then
+  sdks+=(ruby)
+fi
+if [[ "$erlang_ready" == "1" ]]; then
+  sdks+=(erlang)
 fi
 echo "== secure-profile interop routing=keyed workers=$workers sdks=${sdks[*]} =="
 
@@ -409,6 +456,14 @@ while IFS=: read -r owner route_key; do
   if [[ "$perl_ready" == "1" ]]; then
     echo "  perl GET (keyed owner $owner)"
     expect_get perl "$port" "$route_key" "$route_value"
+  fi
+  if [[ "$ruby_ready" == "1" ]]; then
+    echo "  ruby GET (keyed owner $owner)"
+    expect_get ruby "$port" "$route_key" "$route_value"
+  fi
+  if [[ "$erlang_ready" == "1" ]]; then
+    echo "  erlang GET (keyed owner $owner)"
+    expect_get erlang "$port" "$route_key" "$route_value"
   fi
 done < <("$python" - "$workers" "$hash_seed" <<'PY'
 import sys

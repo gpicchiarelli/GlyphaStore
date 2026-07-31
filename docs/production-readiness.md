@@ -164,8 +164,8 @@ below has automated evidence. A design document or implementation alone does not
   Keyed Worker routing INIT parse is implemented across official SDKs (ADR 0030); interop covers
   FNV plus a keyed SipHash cleartext matrix (`INTEROP_KEYED`). Secure-profile smoke
   (`scripts/test-secure-profile-interop.sh`, CI) covers mTLS + authz + keyed routing + prefix scope
-  + `--tls-crl` for cpp/python/go (+ perl when `IO::Socket::SSL` is installed). Residual: ruby/erlang
-  in that matrix, quotas, multi-tenant Phase 8 remainder (ADR 0028 deferred), and physical E3 honesty.
+  + `--tls-crl` for cpp/python/go (+ perl/ruby/erlang when toolchains are installed). Residual:
+  quotas, multi-tenant Phase 8 remainder (ADR 0028 deferred), and physical E3 honesty.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
   [SECURITY.md](../SECURITY.md). SBOM + checksum CI landed
