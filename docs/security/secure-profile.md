@@ -24,8 +24,10 @@ Trusted cleartext (default loopback) remains valid **without** this profile. The
 opt-in.
 
 > [!NOTE]
-> Official SDKs parse plain and extended keyed-routing `INIT` identities (ADR 0030). A combined
-> secure-profile interop matrix (mTLS + authz + keyed routing) remains the next evidence gate.
+> Official SDKs parse plain and extended keyed-routing `INIT` identities (ADR 0030). Secure-profile
+> smoke (`scripts/test-secure-profile-interop.sh`: mTLS + `--authz-map` + keyed seed + prefix deny +
+> `--tls-crl`, cpp/python/go) is in CI. Residual: perl/ruby/erlang in that matrix, quotas, and
+> claiming the complete SDK security train.
 
 ### Optional Unix-domain socket (Phase 8 / ADR 0029)
 

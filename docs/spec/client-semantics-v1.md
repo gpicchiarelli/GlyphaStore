@@ -221,7 +221,8 @@ client. Protocol v2 defines no online rebalance.
 An official SDK conforms when:
 
 1. It passes the shared wire golden fixtures and the cross-SDK interop matrix
-   (`scripts/test-sdk-interop.sh`).
+   (`scripts/test-sdk-interop.sh`). Secure-profile admission also requires the focused smoke
+   (`scripts/test-secure-profile-interop.sh`) once the language is in that matrix.
 2. Mutation and pipeline outcomes match §3 and §7 for disconnect, zero-byte send, non-empty
    mutation `OK`, and `INTERNAL_ERROR`.
 3. Request deadlines use a monotonic clock and reset the connection on expiry (§1, §6).

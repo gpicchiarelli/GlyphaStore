@@ -1,0 +1,66 @@
+name: Supply chain
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "[0-9]*"
+  workflow_dispatch:
+  schedule:
+    # Light weekly check that packaging + SBOM tooling still work.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-sbom:
+    name: SDK checksums + SPDX SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.3"
+      - name: Install Erlang / rebar3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erlang rebar3
+      - name: Install syft
+        env:
+          SYFT_VERSION: v1.20.0
+        run: |
+          curl -sSfL "https://raw.githubusercontent.com/anchore/syft/main/install.sh" \
+            | sh -s -- -b /usr/local/bin "$SYFT_VERSION"
+          syft version
+      - name: Lock SDK versions
+        run: ./scripts/check-sdk-versions.sh
+      - name: Package SDK clients
+        run: |
+          ./scripts/package-python-client.sh
+          ./scripts/package-perl-client.sh
+          ./scripts/package-go-client.sh
+          ./scripts/package-ruby-client.sh
+          ./scripts/package-erlang-client.sh
+      - name: Checksums + required SPDX SBOM
+        env:
+          SYFT_REQUIRED: "1"
+        run: ./scripts/checksum-sdk-artifacts.sh
+      - name: Upload SHA256SUMS and SPDX SBOMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: sdk-supply-chain-${{ github.sha }}
+          path: |
+            dist/sdk-artifacts/SHA256SUMS
+            dist/sdk-artifacts/*.spdx.json
+          if-no-files-found: error

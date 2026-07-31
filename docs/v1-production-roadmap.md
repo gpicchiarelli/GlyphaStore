@@ -449,9 +449,10 @@ Primary references:
   reviewed update process.
 - Upload CodeQL/SARIF to code scanning when repository settings permit it instead of preserving only
   an artifact. Fail or warn on unexpectedly low analyzed-source coverage.
-- Generate checksums, signed artifacts, SBOM, and build-provenance attestations. Add reproducible
-  build settings (`SOURCE_DATE_EPOCH`, normalized archives, path remapping) and compare independent
-  builds.
+- Checksums + SPDX SBOM for packaged SDK artifacts are gated in CI
+  (`.github/workflows/supply-chain.yml`, `SYFT_REQUIRED=1`). Still open: signed artifacts,
+  build-provenance attestations, and reproducible build settings (`SOURCE_DATE_EPOCH`, normalized
+  archives, path remapping) with independent build comparison.
 - Test installation/uninstallation, static/shared policy, symbol visibility, consumer exceptions/RTTI
   compatibility, and the declared compiler/standard-library matrix. Continue to avoid an ABI promise
   before 1.0.

@@ -38,10 +38,11 @@ Default interop remains FNV; a keyed daemon matrix (`--worker-hash-seed`) is sti
 
 ### 2. Secure-profile interoperability
 
-The existing TLS matrix proves encrypted PUT→GET but is not equivalent to a full secure-profile
-matrix. Add tests that start the daemon with mTLS, default-deny authz, keyed Worker routing,
-prefix scope, quotas and CRL configuration and exercise every SDK. Documentation must not call the
-SDK security train complete before that matrix passes.
+First-slice smoke exists: `scripts/test-secure-profile-interop.sh` (CI `sdk-clients`) proves mTLS +
+`--authz-map` + pinned `--worker-hash-seed` under `--secure-profile` for cpp/python/go. The broader
+TLS matrix in `test-sdk-interop.sh` is not equivalent to a full secure-profile matrix. Remaining:
+every SDK plus prefix scope, quotas and CRL. Documentation must not call the SDK security train
+complete before that matrix passes.
 
 ### 3. Released-artifact compatibility
 
@@ -77,9 +78,14 @@ bounded server retention and recovery semantics. It is not part of wire v2 today
 ## Implemented shared foundation
 
 - Golden request/response fixtures are verified across the official SDKs.
-- `scripts/test-sdk-interop.sh` covers default FNV routing, Workers 1/2/4/8, binary keys, empty
-  values, TTL, pipelines, structured `NOT_FOUND`, oversized local rejection and cross-client
-  PUT→GET; TLS is covered when dependencies are available.
+- `scripts/test-sdk-interop.sh` covers default FNV routing, Workers 1/2/4/8, plus keyed SipHash
+  cleartext for workers 2/4 when `INTEROP_KEYED=1` (default); binary keys, empty values, TTL,
+  pipelines, structured `NOT_FOUND`, oversized local rejection and cross-client PUT→GET; TLS
+  (FNV) is covered when dependencies are available.
+- `scripts/test-secure-profile-interop.sh` covers first-slice secure-profile (mTLS + authz + keyed
+  seed; cpp/python/go) and is wired into CI `sdk-clients`.
+- Supply-chain CI packages SDKs, writes `SHA256SUMS`, and requires syft SPDX JSON
+  (`.github/workflows/supply-chain.yml`). Signing remains operator-owned.
 - Pipeline APIs operate on one Worker and never auto-retry. Batch APIs group by Worker, overlap
   independent connections where supported and restore caller order; they are not transactions.
 - Per-call deadlines reuse one absolute monotonic deadline across any permitted retry.

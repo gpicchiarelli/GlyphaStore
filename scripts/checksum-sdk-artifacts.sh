@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Write SHA-256 checksums (and optional SBOM) for packaged SDK artifacts.
+# Set SYFT_REQUIRED=1 to fail closed when syft is missing (CI supply-chain gate).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -54,13 +55,29 @@ if [[ -s "$manifest" ]]; then
   sort -u "$manifest" -o "$manifest"
 fi
 
+syft_available=0
 if command -v syft >/dev/null 2>&1; then
+  syft_available=1
+fi
+
+if [[ "${SYFT_REQUIRED:-0}" == "1" && "$syft_available" != "1" ]]; then
+  echo "SYFT_REQUIRED=1 but syft is not on PATH" >&2
+  exit 1
+fi
+
+if [[ "$syft_available" == "1" ]]; then
+  sbom_count=0
   for f in "$outdir"/*; do
     [[ -f "$f" && "$(basename "$f")" != "SHA256SUMS" && "$f" != *.spdx.json && "$f" != SBOM.README ]] || continue
     base="$(basename "$f")"
-    syft "path:$f" -o "spdx-json=$outdir/${base}.spdx.json" 2>/dev/null || true
+    syft "path:$f" -o "spdx-json=$outdir/${base}.spdx.json"
+    sbom_count=$((sbom_count + 1))
   done
-  echo "SBOM: syft SPDX JSON written alongside artifacts (best-effort)"
+  if [[ "$sbom_count" -eq 0 && "${SYFT_REQUIRED:-0}" == "1" ]]; then
+    echo "SYFT_REQUIRED=1 but no packaged artifacts to SBOM under $outdir" >&2
+    exit 1
+  fi
+  echo "SBOM: syft SPDX JSON written for $sbom_count artifact(s)"
 else
   cat >"$outdir/SBOM.README" <<'EOF'
 No SBOM generator found on PATH.
@@ -69,6 +86,7 @@ For release perfection, generate SPDX/CycloneDX with one of:
   - syft path:./artifact -o spdx-json=artifact.spdx.json
   - cyclonedx-py / cyclonedx-gomod / etc.
 
+CI sets SYFT_REQUIRED=1 so this README path is not accepted on the supply-chain gate.
 Attach SBOM + SHA256SUMS to the GitHub Release. Sign with Sigstore (cosign)
 or project GPG once keys/OIDC are configured.
 EOF

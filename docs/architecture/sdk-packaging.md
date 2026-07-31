@@ -46,10 +46,11 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
 ## Artifact perfection (release day)
 
 1. Run `./scripts/package-all-sdk-clients.sh`
-2. Attach `dist/sdk-artifacts/SHA256SUMS` (+ SBOM files if `syft` is available) to the GitHub Release
+2. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
+   (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain
    distinct on case-insensitive filesystems)
-3. Sign with Sigstore/`cosign` or project GPG when keys/OIDC are configured
+3. Sign with Sigstore/`cosign` or project GPG when keys/OIDC are configured (not wired yet)
 4. Publish:
    - Python: `twine upload` (Trusted Publisher preferred)
    - Perl: PAUSE upload of `GlyphaStore-VERSION.tar.gz`

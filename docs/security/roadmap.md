@@ -228,7 +228,7 @@ revocation configuration on hostile binds.
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
 | 7.1 | Dependency + secret scanning in CI | Gate on main |
-| 7.2 | SBOM + checksums/signatures for release artifacts | Release checklist |
+| 7.2 | SBOM + checksums/signatures for release artifacts | **partial** — checksums + SPDX SBOM CI (`.github/workflows/supply-chain.yml`, `SYFT_REQUIRED=1`); Sigstore/GPG signing still open |
 | 7.3 | Fuzz regression intake for parsers (wire + persistence) | Documented owners |
 | 7.4 | Supported security maintenance window | Published policy |
 

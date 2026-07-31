@@ -4,9 +4,11 @@
 # daemon was built with TLS and openssl is available. Erlang is included in both
 # matrices when OTP/rebar3 are available. Ruby ships the same TLS train as peers.
 #
-# Default routing is FNV (plain GlyphaStore/2 INIT). Keyed SipHash INIT decode +
-# hash are covered by SDK unit tests; a --worker-hash-seed interop matrix is not
-# required here yet (optional follow-up once harness wiring is convenient).
+# Default routing is FNV (plain GlyphaStore/2 INIT). With INTEROP_KEYED=1 (default),
+# also runs a smaller SipHash matrix (--worker-hash-seed) so every official SDK
+# parses extended INIT and routes identically (ADR 0030).
+# With INTEROP_SECURE=1 (default), also runs a secure-profile matrix: mTLS +
+# --authz-map + pinned --worker-hash-seed (ADR 0020–0022 + 0030).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -75,17 +77,36 @@ if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
   go_helper="$root/sdk/go/bin/glyphastore-interop"
 fi
 ruby_bin="${RUBY:-}"
-if [[ -z "$ruby_bin" ]]; then
-  if [[ -x "$HOME/.local/bin/mise" ]]; then
-    ruby_bin="$("$HOME/.local/bin/mise" exec ruby@3.3 -- which ruby 2>/dev/null || true)"
+ruby_ready=0
+ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
+if [[ "${INTEROP_SKIP_RUBY:-0}" == "1" ]]; then
+  echo "note: Ruby SDK interop skipped (INTEROP_SKIP_RUBY=1)" >&2
+  ruby_bin=""
+else
+  if [[ -z "$ruby_bin" ]]; then
+    if [[ -x "$HOME/.local/bin/mise" ]]; then
+      ruby_bin="$("$HOME/.local/bin/mise" exec ruby@3.3 -- which ruby 2>/dev/null || true)"
+    fi
+    if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
+      ruby_bin="$(command -v ruby)"
+    fi
+  fi
+  if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
+    ruby_ready=1
+    export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+  else
+    if [[ "${INTEROP_REQUIRE_RUBY:-0}" == "1" ]]; then
+      echo "missing Ruby >= 3.2 for interop (set RUBY= or install via mise)" >&2
+      exit 1
+    fi
+    if [[ -n "${RUBY:-}" && ! -x "${RUBY}" ]]; then
+      echo "note: Ruby SDK interop skipped (RUBY points to missing binary: $RUBY)" >&2
+    else
+      echo "note: Ruby SDK interop skipped (need usable Ruby >= 3.2; set INTEROP_SKIP_RUBY=1 to silence)" >&2
+    fi
+    ruby_bin=""
   fi
 fi
-if [[ -z "$ruby_bin" ]]; then
-  echo "missing Ruby >= 3.2 for interop (set RUBY= or install via mise)" >&2
-  exit 1
-fi
-ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
-export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
 erlang_helper="${GLYPHASTORE_ERLANG_INTEROP:-}"
 erlang_ready=0
 if [[ -z "$erlang_helper" ]]; then
@@ -274,6 +295,33 @@ make_tls_material() {
     -subj "/CN=localhost" >/dev/null 2>&1
 }
 
+# CA + server + client PEMs and authz map for --secure-profile (principal CN=interop.writer).
+make_secure_material() {
+  local directory="$1"
+  if ! command -v openssl >/dev/null 2>&1; then
+    return 1
+  fi
+  openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$directory/ca.key" -out "$directory/ca.crt" -days 1 \
+    -subj "/CN=glyphastore-interop-ca" >/dev/null 2>&1 || return 1
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "$directory/server.key" -out "$directory/server.csr" \
+    -subj "/CN=localhost" >/dev/null 2>&1 || return 1
+  printf 'subjectAltName=DNS:localhost,IP:127.0.0.1\n' >"$directory/server.ext"
+  openssl x509 -req -in "$directory/server.csr" -CA "$directory/ca.crt" -CAkey "$directory/ca.key" \
+    -CAcreateserial -out "$directory/server.crt" -days 1 \
+    -extfile "$directory/server.ext" >/dev/null 2>&1 || return 1
+  # Client: CN only (no SAN) so principal id is exactly interop.writer.
+  openssl req -newkey rsa:2048 -nodes \
+    -keyout "$directory/client.key" -out "$directory/client.csr" \
+    -subj "/CN=interop.writer" >/dev/null 2>&1 || return 1
+  openssl x509 -req -in "$directory/client.csr" -CA "$directory/ca.crt" -CAkey "$directory/ca.key" \
+    -CAcreateserial -out "$directory/client.crt" -days 1 >/dev/null 2>&1 || return 1
+  cat >"$directory/authz.map" <<'EOF'
+interop.writer write
+EOF
+}
+
 daemon_supports_tls() {
   "$daemon" --help 2>&1 | grep -q -- '--tls-cert'
 }
@@ -285,7 +333,8 @@ start_server() {
   shift 3
   local resolved
   resolved="$("$daemon" --dump-config --workers "$workers" --max-connections 4096)"
-  if ! grep -qx "workers=$workers" <<<"$resolved" ||
+  if { ! grep -qx "workers=$workers" <<<"$resolved" &&
+      ! grep -qx "shard-pairs=$workers" <<<"$resolved"; } ||
       ! grep -qx "max-connections=4096" <<<"$resolved"; then
     echo "glyphastored configuration mismatch for workers=$workers" >&2
     echo "$resolved" >&2
@@ -339,7 +388,8 @@ trap cleanup_active_run EXIT
 
 run_matrix_for_workers() {
   local workers="$1"
-  local mode="${2:-cleartext}" # cleartext | tls
+  local mode="${2:-cleartext}" # cleartext | tls | secure
+  local routing="${3:-fnv}"    # fnv | keyed
   local work
   work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-interop.XXXXXX")"
   local port_file="$work/port"
@@ -349,15 +399,24 @@ run_matrix_for_workers() {
   local server_extra=()
   tls_args=()
 
-  local writers=(cpp python perl go ruby)
-  local readers=(cpp python perl go ruby)
+  local writers=(cpp python perl go)
+  local readers=(cpp python perl go)
+  if [[ "$ruby_ready" == "1" ]]; then
+    writers+=(ruby)
+    readers+=(ruby)
+  fi
   if [[ "$erlang_ready" == "1" ]]; then
     # Erlang ships TLS 1.3 (Phase 2); include in both cleartext and TLS matrices.
     writers+=(erlang)
     readers+=(erlang)
   fi
 
-  echo "== interop mode=$mode workers=$workers =="
+  if [[ "$mode" == "secure" ]]; then
+    # Secure profile always selects siphash24-v1; pin seed for deterministic owners.
+    routing=keyed
+  fi
+
+  echo "== interop mode=$mode routing=$routing workers=$workers =="
   if [[ "$mode" == "tls" ]]; then
     if ! make_tls_material "$work"; then
       echo "skipping TLS interop: openssl could not mint a test certificate" >&2
@@ -366,8 +425,31 @@ run_matrix_for_workers() {
     fi
     server_extra=(--tls-cert "$work/server.crt" --tls-key "$work/server.key")
     tls_args=(--tls --tls-ca "$work/server.crt" --server-name localhost)
+  elif [[ "$mode" == "secure" ]]; then
+    if ! make_secure_material "$work"; then
+      echo "skipping secure-profile interop: openssl could not mint mTLS material" >&2
+      rm -rf "$work"
+      return 0
+    fi
+    server_extra=(
+      --secure-profile
+      --tls-cert "$work/server.crt"
+      --tls-key "$work/server.key"
+      --tls-client-ca "$work/ca.crt"
+      --authz-map "$work/authz.map"
+    )
+    tls_args=(
+      --tls
+      --tls-ca "$work/ca.crt"
+      --tls-cert "$work/client.crt"
+      --tls-key "$work/client.key"
+      --server-name localhost
+    )
+  fi
+
+  if [[ "$mode" == "tls" || "$mode" == "secure" ]]; then
     if ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
-      echo "  note: Perl without IO::Socket::SSL — excluding perl from TLS matrix"
+      echo "  note: Perl without IO::Socket::SSL — excluding perl from TLS/secure matrix"
       local filtered_w=()
       local filtered_r=()
       local sdk
@@ -384,8 +466,18 @@ run_matrix_for_workers() {
     fi
   fi
 
+  if [[ "$routing" == "keyed" ]]; then
+    # Fixed seed so every SDK must agree on SipHash ownership (ADR 0030).
+    server_extra+=(--worker-hash-seed "${INTEROP_WORKER_HASH_SEED:-13957458623937596}")
+  fi
+
   if [[ ${#server_extra[@]} -gt 0 ]]; then
-    start_server "$workers" "$port_file" "$log_file" "${server_extra[@]}"
+    if ! start_server "$workers" "$port_file" "$log_file" "${server_extra[@]}"; then
+      echo "secure/tls server start failed; log:" >&2
+      cat "$log_file" >&2 || true
+      rm -rf "$work"
+      return 1
+    fi
   else
     start_server "$workers" "$port_file" "$log_file"
   fi
@@ -397,8 +489,8 @@ run_matrix_for_workers() {
     for reader in "${readers[@]}"; do
       case_id=$((case_id + 1))
       local key_hex value_hex
-      key_hex="$(printf 'interop-%s-%02d-w%d\x00\xff' "$mode" "$case_id" "$workers" | to_hex)"
-      value_hex="$(printf 'val-%s-%s-%s-\x00\xff' "$mode" "$writer" "$reader" | to_hex)"
+      key_hex="$(printf 'interop-%s-%s-%02d-w%d\x00\xff' "$mode" "$routing" "$case_id" "$workers" | to_hex)"
+      value_hex="$(printf 'val-%s-%s-%s-%s-\x00\xff' "$mode" "$routing" "$writer" "$reader" | to_hex)"
       echo "  $writer PUT → $reader GET (binary)"
       put_sdk "$writer" "$port" "$key_hex" "$value_hex"
       expect_get "$reader" "$port" "$key_hex" "$value_hex"
@@ -406,7 +498,7 @@ run_matrix_for_workers() {
   done
 
   local empty_key
-  empty_key="$(printf 'empty-%s-w%d' "$mode" "$workers" | to_hex)"
+  empty_key="$(printf 'empty-%s-%s-w%d' "$mode" "$routing" "$workers" | to_hex)"
   echo "  python PUT empty value → cross-SDK GET"
   put_sdk python "$port" "$empty_key" ""
   for sdk in "${readers[@]}"; do
@@ -414,24 +506,35 @@ run_matrix_for_workers() {
     expect_get "$sdk" "$port" "$empty_key" ""
   done
 
+  local hash_seed="${INTEROP_WORKER_HASH_SEED:-13957458623937596}"
   while IFS=: read -r owner route_key; do
     local route_value
-    route_value="$(printf 'owner-%s-of-%s' "$owner" "$workers" | to_hex)"
+    route_value="$(printf 'owner-%s-%s-of-%s' "$routing" "$owner" "$workers" | to_hex)"
     echo "  cpp PUT → python GET (deterministic owner $owner)"
     put_sdk cpp "$port" "$route_key" "$route_value"
     expect_get python "$port" "$route_key" "$route_value"
-  done < <("$python" - "$workers" <<'PY'
+  done < <("$python" - "$workers" "$routing" "$hash_seed" <<'PY'
 import sys
 
+from glyphastore.protocol import (
+    ROUTING_ALG_SIPHASH24_V1,
+    WorkerRouting,
+    hash_key_routing,
+)
+
 workers = int(sys.argv[1])
+routing = sys.argv[2]
+seed = int(sys.argv[3])
+state = (
+    WorkerRouting(algorithm=ROUTING_ALG_SIPHASH24_V1, seed=seed)
+    if routing == "keyed"
+    else WorkerRouting()
+)
 found = {}
 candidate = 0
 while len(found) < workers:
-    key = f"route-w{workers}-{candidate}".encode()
-    value = 14695981039346656037
-    for byte in key:
-        value = ((value ^ byte) * 1099511628211) & 0xFFFFFFFFFFFFFFFF
-    found.setdefault(value % workers, key.hex())
+    key = f"route-{routing}-w{workers}-{candidate}".encode()
+    found.setdefault(hash_key_routing(key, state) % workers, key.hex())
     candidate += 1
 for owner in range(workers):
     print(f"{owner}:{found[owner]}")
@@ -440,7 +543,7 @@ PY
 
   for sdk in "${writers[@]}"; do
     local pkey pval
-    pkey="$(printf 'pipe-%s-%s-w%d' "$mode" "$sdk" "$workers" | to_hex)"
+    pkey="$(printf 'pipe-%s-%s-%s-w%d' "$mode" "$routing" "$sdk" "$workers" | to_hex)"
     pval="$(printf 'pipe-val-\xff' | to_hex)"
     echo "  $sdk pipeline PUT/GET"
     local got
@@ -453,9 +556,9 @@ PY
     fi
   done
 
-  if [[ "$mode" == "cleartext" ]]; then
+  if [[ "$mode" == "cleartext" || "$mode" == "secure" ]]; then
     local missing_key exp_key exp_val expire_at
-    missing_key="$(printf 'missing-%s-w%d' "$mode" "$workers" | to_hex)"
+    missing_key="$(printf 'missing-%s-%s-w%d' "$mode" "$routing" "$workers" | to_hex)"
     for sdk in "${readers[@]}"; do
       echo "  $sdk structured NOT_FOUND"
       expect_not_found_sdk "$sdk" "$port" "$missing_key"
@@ -465,7 +568,7 @@ PY
       expect_frame_limit_sdk "$sdk" "$port"
     done
 
-    exp_key="$(printf 'exp-w%d' "$workers" | to_hex)"
+    exp_key="$(printf 'exp-%s-w%d' "$routing" "$workers" | to_hex)"
     exp_val="$(printf 'soon' | to_hex)"
     expire_at="$("$python" - <<'PY'
 import time
@@ -476,14 +579,18 @@ PY
     put_sdk cpp "$port" "$exp_key" "$exp_val" "$expire_at"
     expect_get go "$port" "$exp_key" "$exp_val"
     sleep 0.6
-    expect_not_found_sdk perl "$port" "$exp_key"
+    if [[ " ${readers[*]} " == *" perl "* ]]; then
+      expect_not_found_sdk perl "$port" "$exp_key"
+    else
+      expect_not_found_sdk python "$port" "$exp_key"
+    fi
   fi
 
   stop_server "$port_file"
   rm -rf "$work"
   active_port_file=""
   active_work=""
-  echo "mode=$mode workers=$workers OK"
+  echo "mode=$mode routing=$routing workers=$workers OK"
 }
 
 workers_list=(1 2 4 8)
@@ -492,9 +599,26 @@ if [[ "${INTEROP_WORKERS:-}" != "" ]]; then
   workers_list=(${INTEROP_WORKERS})
 fi
 
-for w in "${workers_list[@]}"; do
-  run_matrix_for_workers "$w" cleartext
-done
+if [[ "${INTEROP_SKIP_CLEARTEXT:-0}" == "1" ]]; then
+  echo "cleartext FNV interop skipped (INTEROP_SKIP_CLEARTEXT=1)"
+else
+  for w in "${workers_list[@]}"; do
+    run_matrix_for_workers "$w" cleartext fnv
+  done
+fi
+
+if [[ "${INTEROP_KEYED:-1}" == "1" ]]; then
+  keyed_workers=(2 4)
+  if [[ "${INTEROP_KEYED_WORKERS:-}" != "" ]]; then
+    # shellcheck disable=SC2206
+    keyed_workers=(${INTEROP_KEYED_WORKERS})
+  fi
+  for w in "${keyed_workers[@]}"; do
+    run_matrix_for_workers "$w" cleartext keyed
+  done
+else
+  echo "keyed SipHash interop skipped (INTEROP_KEYED=0)"
+fi
 
 if [[ "${INTEROP_SKIP_TLS:-0}" == "1" ]]; then
   echo "TLS interop skipped (INTEROP_SKIP_TLS=1)"
@@ -508,7 +632,22 @@ else
     tls_workers=(${INTEROP_TLS_WORKERS})
   fi
   for w in "${tls_workers[@]}"; do
-    run_matrix_for_workers "$w" tls
+    run_matrix_for_workers "$w" tls fnv
+  done
+fi
+
+if [[ "${INTEROP_SECURE:-1}" != "1" ]]; then
+  echo "secure-profile interop skipped (INTEROP_SECURE=0)"
+elif ! daemon_supports_tls; then
+  echo "secure-profile interop skipped (daemon built without --tls-cert)"
+else
+  secure_workers=(2)
+  if [[ "${INTEROP_SECURE_WORKERS:-}" != "" ]]; then
+    # shellcheck disable=SC2206
+    secure_workers=(${INTEROP_SECURE_WORKERS})
+  fi
+  for w in "${secure_workers[@]}"; do
+    run_matrix_for_workers "$w" secure keyed
   done
 fi
 

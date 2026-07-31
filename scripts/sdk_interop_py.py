@@ -45,6 +45,7 @@ def main() -> int:
             "erase",
             "pipeline-put-get",
             "expect-not-found",
+            "expect-permission-denied",
             "expect-frame-limit",
         ),
     )
@@ -101,6 +102,22 @@ def main() -> int:
                 print(f"unexpected GET error: {error.category}", file=sys.stderr)
                 return 1
             print("GET unexpectedly found the key", file=sys.stderr)
+            return 1
+        if args.command == "expect-permission-denied":
+            try:
+                result = client.put(key, value, expire_at_ns=args.expire_at_ns)
+            except GlyphaError as error:
+                if error.category == "permission_denied":
+                    return 0
+                print(f"unexpected PUT error: {error.category}", file=sys.stderr)
+                return 1
+            if (
+                result.outcome is MutationOutcome.REJECTED
+                and result.error is not None
+                and result.error.category == "permission_denied"
+            ):
+                return 0
+            print(f"PUT unexpectedly allowed: {result}", file=sys.stderr)
             return 1
         if args.command == "expect-frame-limit":
             result = client.put(b"limit", bytes([0xA5]) * config.maximum_frame_bytes)

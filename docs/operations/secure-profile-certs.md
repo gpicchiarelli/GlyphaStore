@@ -7,8 +7,9 @@ Last reviewed: 2026-07-28
 
 > [!NOTE]
 > Official SDKs parse the keyed SipHash Worker-routing `INIT` identity selected by
-> `--secure-profile` ([ADR 0030](../adr/0030-keyed-worker-routing.md)). A combined secure-profile
-> interop matrix (mTLS + authz + keyed routing) remains the next evidence gate; see the
+> `--secure-profile` ([ADR 0030](../adr/0030-keyed-worker-routing.md)). First-slice smoke:
+> `scripts/test-secure-profile-interop.sh` (cpp/python/go). Full secure-profile matrix
+> (perl/ruby/erlang, prefix/quotas/CRL) remains open; see the
 > [SDK roadmap](../architecture/sdk-roadmap.md).
 
 ## Rotate server or client CA material

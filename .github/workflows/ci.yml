@@ -91,7 +91,7 @@ jobs:
       - name: Install Perl::Critic and build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof erlang rebar3
+          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof erlang rebar3 libssl-dev openssl
           perl -MPerl::Critic -e 'print $Perl::Critic::VERSION, "\n"'
       - name: Verify wire golden fixtures
         run: |
@@ -138,7 +138,7 @@ jobs:
           CC: clang
           CXX: clang++
         run: |
-          cmake --preset unix-release
+          cmake --preset unix-release -DGLYPHASTORE_ENABLE_TLS=ON
           cmake --build --preset unix-release --target glyphastored glyphastore_interop_client
           mkdir -p sdk/go/bin
           (cd sdk/go && go build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
@@ -148,6 +148,14 @@ jobs:
           GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
           GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
         run: ./scripts/test-sdk-interop.sh
+      - name: Secure-profile interop smoke
+        timeout-minutes: 5
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
+          INTEROP_SECURE_WORKERS: "2"
+        run: ./scripts/test-secure-profile-interop.sh
 
   install-consumer:
     name: Release install / external consumer

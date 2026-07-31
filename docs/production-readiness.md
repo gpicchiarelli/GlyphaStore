@@ -161,12 +161,15 @@ below has automated evidence. A design document or implementation alone does not
   remains unsupported. Hostile public bind still wants operator CRL configuration, multi-tenant
   Phase 8, and physical E3 honesty. Runbook:
   [secure-profile-certs.md](operations/secure-profile-certs.md).
-  Keyed Worker routing INIT parse is implemented across official SDKs (ADR 0030). Residual
-  secure-profile evidence: combined mTLS + authz + keyed-routing interop matrix, multi-tenant
-  Phase 8 remainder (ADR 0028 deferred), and physical E3 honesty.
+  Keyed Worker routing INIT parse is implemented across official SDKs (ADR 0030); interop covers
+  FNV plus a keyed SipHash cleartext matrix (`INTEROP_KEYED`). Secure-profile smoke
+  (`scripts/test-secure-profile-interop.sh`, CI) covers mTLS + authz + keyed routing + prefix scope
+  + `--tls-crl` for cpp/python/go. Residual: perl/ruby/erlang in that matrix, quotas,
+  multi-tenant Phase 8 remainder (ADR 0028 deferred), and physical E3 honesty.
 - [ ] A threat model and security release process cover storage, protocol, build, and supply-chain boundaries.
   Threat model: [security/threat-model.md](security/threat-model.md). Reporting:
-  [SECURITY.md](../SECURITY.md). Supply-chain scanning / SBOM remain open.
+  [SECURITY.md](../SECURITY.md). SBOM + checksum CI landed
+  (`.github/workflows/supply-chain.yml`); dependency/secret scanning and signing remain open.
 
 ### Distribution and lifecycle
 
@@ -174,8 +177,10 @@ below has automated evidence. A design document or implementation alone does not
 - [x] CI builds and runs an external consumer exclusively from the installed prefix.
 - [ ] Release CI covers supported compilers, architectures, operating systems, and optimized builds.
   Tagged release-artifact CI (signed tarballs / provenance attach) remains deferred; current CI proves
-  build/test/install-consumer gates, not a full release-artifact pipeline.
+  build/test/install-consumer gates plus SDK checksum/SBOM upload, not a full signed release pipeline.
 - [ ] Artifacts are reproducible, signed, checksummed, and accompanied by provenance and an SBOM.
+  Checksums + SPDX SBOM generation are gated in CI (`SYFT_REQUIRED=1`); signing, reproducibility,
+  and provenance attestations remain open.
 - [x] Upgrade, downgrade, deprecation, support, and end-of-life policies are published for 0.x /
   persistence v1 (reopen rules, offline Worker migrate, no ABI before 1.0). Formal support windows
   for beta/RC/stable remain P3.

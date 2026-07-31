@@ -174,6 +174,7 @@ registry yet. Run the shared compatibility matrix with:
 
 ```bash
 ./scripts/test-sdk-interop.sh
+./scripts/test-secure-profile-interop.sh   # mTLS + authz + keyed seed; cpp/python/go
 ```
 
 The normative behavior is [client semantics v1](docs/spec/client-semantics-v1.md); packaging and
@@ -182,8 +183,9 @@ release state are tracked by the [SDK roadmap](docs/architecture/sdk-roadmap.md)
 > [!NOTE]
 > Keyed SipHash Worker routing ([ADR 0030](docs/adr/0030-keyed-worker-routing.md)) is implemented by
 > the daemon and every official SDK (C++ / Python / Perl / Go / Erlang / Ruby): plain `GlyphaStore/2`
-> keeps FNV-1a; the extended INIT identity selects SipHash-2-4. A full secure-profile interop matrix
-> (mTLS + authz + keyed routing together) remains the next evidence gate.
+> keeps FNV-1a; the extended INIT identity selects SipHash-2-4. A first-slice secure-profile smoke
+> (`scripts/test-secure-profile-interop.sh`, CI `sdk-clients`) covers mTLS + authz + keyed routing for
+> cpp/python/go. Full matrix (perl/ruby/erlang, prefix/quotas/CRL) remains open.
 
 ## Performance and engineering evidence
 

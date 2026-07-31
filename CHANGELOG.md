@@ -1,9 +1,19 @@
 ## [Unreleased]
 
+- Expand secure-profile interop smoke (`scripts/test-secure-profile-interop.sh`): authz deny for
+  unmapped mTLS principals, `prefix=` key-scope allow/deny, and `--tls-crl` rejection of revoked
+  client certs (cpp/python/go happy path unchanged). Residual: perl/ruby/erlang in that matrix.
+- Add first-slice secure-profile interop smoke (`scripts/test-secure-profile-interop.sh`): mTLS
+  client/server PEMs, `--authz-map` write principal, pinned `--worker-hash-seed` under
+  `--secure-profile`, cpp/python/go PUT→GET + keyed owner checks; wired into CI `sdk-clients`
+  (`timeout-minutes: 5`, TLS build forced `GLYPHASTORE_ENABLE_TLS=ON`).
+- Add supply-chain CI gate (`.github/workflows/supply-chain.yml`): package SDKs, require `syft`
+  SPDX JSON (`SYFT_REQUIRED=1`), upload `SHA256SUMS` + `*.spdx.json`. Artifact signing / Sigstore
+  and build provenance remain open.
 - Complete the ADR 0030 keyed Worker routing SDK train: Python / Perl / Go / Erlang / Ruby decode
   plain and extended INIT identities, implement SipHash-2-4 bit-for-bit with C++, and route with
-  the disclosed seed. Cleartext FNV default path unchanged. Interop harness remains FNV by default;
-  keyed decode+hash covered by SDK unit tests (daemon `--worker-hash-seed` matrix optional later).
+  the disclosed seed. Cleartext FNV default path unchanged. Interop harness runs FNV for the full
+  worker list and, when `INTEROP_KEYED=1` (default), a SipHash cleartext matrix for workers 2/4.
 - Add Phase 8 Unix-domain socket transport with optional peer-credential principals
   ([ADR 0029](docs/adr/0029-uds-peercred.md)): `--unix-socket PATH`, `--unix-peercred` →
   `unix:uid=N` for `--authz-map`; `--secure-profile` requires peercred when UDS is enabled.

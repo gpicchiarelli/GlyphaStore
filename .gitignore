@@ -23,6 +23,7 @@ xcuserdata/
 *~
 
 # Generated diagnostics
+.interop-*.txt
 Testing/
 coverage/
 *.profraw
