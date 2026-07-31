@@ -19,42 +19,27 @@ has been published to its language registry or that the server is production-cer
 | Client | Public surface | Concurrency model | TLS 1.3 | Worker routing |
 | --- | --- | --- | --- | --- |
 | C++ | sync CRUD, pipeline, batch | thread-safe connection per Worker | yes | FNV + keyed SipHash `INIT` extension |
-| Python | sync + `asyncio`, pipeline, batch | mutexed sync / native async | yes | FNV; extended identity rejected |
-| Perl | sync CRUD, pipeline, batch, Worker vectors | one select loop across Workers; one client per process/thread | optional `IO::Socket::SSL` | FNV; extended identity rejected |
-| Go | sync CRUD, pipeline, batch | mutex per Worker; goroutine batch fan-out | yes | FNV; extended identity rejected |
-| Erlang | sync OTP API, pipeline, batch, Worker vectors | shareable coordinator + per-Worker `gen_server` | yes | FNV; extended identity rejected |
-| Ruby | sync + optional `async`, pipeline, batch | MRI-thread-safe sync / Fiber async | yes | FNV; extended identity rejected |
+| Python | sync + `asyncio`, pipeline, batch | mutexed sync / native async | yes | FNV + keyed SipHash `INIT` extension |
+| Perl | sync CRUD, pipeline, batch, Worker vectors | one select loop across Workers; one client per process/thread | optional `IO::Socket::SSL` | FNV + keyed SipHash `INIT` extension |
+| Go | sync CRUD, pipeline, batch | mutex per Worker; goroutine batch fan-out | yes | FNV + keyed SipHash `INIT` extension |
+| Erlang | sync OTP API, pipeline, batch, Worker vectors | shareable coordinator + per-Worker `gen_server` | yes | FNV + keyed SipHash `INIT` extension |
+| Ruby | sync + optional `async`, pipeline, batch | MRI-thread-safe sync / Fiber async | yes | FNV + keyed SipHash `INIT` extension |
 
 All six use golden wire fixtures and participate in the default-routing interoperability harness.
-The C++ client is currently the only client that can connect when the daemon advertises
-`siphash24-v1`. Older/non-C++ clients fail closed rather than route a key to the wrong Worker.
+Every official client decodes plain `GlyphaStore/2` (FNV) and the extended SipHash INIT identity.
 
 ## Highest-priority gaps
 
-### 1. Keyed routing across the SDK train
+### 1. Keyed routing across the SDK train — done
 
-ADR 0030 and wire v2 define the successful `INIT` value:
-
-```text
-"GlyphaStore/2" || 0x00 || u32le(algorithm=2) || u64le(worker_hash_seed)
-```
-
-Python, Perl, Go, Erlang and Ruby still compare the value to plain `GlyphaStore/2`. Each must gain:
-
-1. strict parsing of plain and extended identities;
-2. SipHash-2-4 using `(seed, seed ^ 0x6a09e667f3bcc909)`;
-3. bootstrap/reconnect checks for the complete routing state;
-4. golden vectors shared with C++;
-5. default and keyed-routing interop matrices for Workers 1/2/4/8.
-
-This is a security-profile blocker: `--secure-profile` selects keyed Worker routing, so the complete
-profile currently works only with the C++ client. TLS/mTLS/authz without `--secure-profile` can
-retain FNV and remains usable by the other SDKs.
+ADR 0030 INIT decode + SipHash-2-4 routing landed in C++ / Python / Perl / Go / Erlang / Ruby.
+Unit tests cover paper vectors, plain/extended INIT, and FNV vs SipHash ownership divergence.
+Default interop remains FNV; a keyed daemon matrix (`--worker-hash-seed`) is still optional follow-up.
 
 ### 2. Secure-profile interoperability
 
 The existing TLS matrix proves encrypted PUT→GET but is not equivalent to a full secure-profile
-matrix. After keyed routing lands, add tests that start the daemon with mTLS, default-deny authz,
+matrix. Add tests that start the daemon with mTLS, default-deny authz, keyed Worker routing,
 prefix scope, quotas and CRL configuration and exercise every SDK. Documentation must not call the
 SDK security train complete before that matrix passes.
 

@@ -48,11 +48,11 @@ changes require ADRs and compatibility evidence first.
 | Audit | Phase 6: auth/authz/tls JSON audit events + `STATS` counters; lifecycle JSON logs |
 | At-rest crypto | None (permissions + CRC32C; CRC is not a MAC) |
 | Revocation | Optional `--tls-crl` fail-closed (+ `--tls-ocsp-fail-closed` requires CRL; no live OCSP HTTP) |
-| Safe deployment | Trusted loopback/private deployment; complete secure-profile SDK interop is currently C++ only because keyed routing has not landed in the other SDKs |
+| Safe deployment | Trusted loopback/private deployment; official SDKs decode keyed-routing `INIT` (ADR 0030) |
 
-**Beyond trusted boundary:** the daemon controls through Phase 6 are implemented, but the complete
-secure-profile client matrix is not: only C++ decodes the keyed-routing `INIT` extension. Internet /
-hostile multi-tenant exposure remains unsupported.
+**Beyond trusted boundary:** the daemon controls through Phase 6 are implemented, and official SDKs
+decode the keyed-routing `INIT` extension (ADR 0030). Internet / hostile multi-tenant exposure
+remains unsupported.
 
 ## Dependency graph (high level)
 
@@ -248,7 +248,7 @@ Do **not** schedule these as blockers for “leave loopback”:
 | Per-tenant data-dir / Store isolation | **Deferred** — [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) (proposed); use one process per trust domain |
 | Unix-domain socket transport | **Done (2026-07-25)** — [ADR 0029](../adr/0029-uds-peercred.md); `--unix-socket` + optional `--unix-peercred` (`unix:uid=N`); not a TLS replacement |
 | At-rest encryption / MAC for segments | Key management, rotation, compaction, backup — large design |
-| Keyed Worker routing (SipHash + wire seed) | **daemon + C++ client done (2026-07-25); SDK train open** — [ADR 0030](../adr/0030-keyed-worker-routing.md); Python/Perl/Go/Erlang/Ruby currently fail closed on the extended identity |
+| Keyed Worker routing (SipHash + wire seed) | **Done (2026-07-31)** — [ADR 0030](../adr/0030-keyed-worker-routing.md); daemon + C++ / Python / Perl / Go / Erlang / Ruby INIT decode + SipHash routing; default Stores stay FNV |
 | Protocol-level compression / multiplexing | Unrelated; separate ADRs |
 
 ---

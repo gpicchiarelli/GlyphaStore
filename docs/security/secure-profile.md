@@ -23,12 +23,9 @@ loopback/private perimeter. Protocol v2 framing is unchanged; TLS is an outer tr
 Trusted cleartext (default loopback) remains valid **without** this profile. The secure profile is
 opt-in.
 
-> [!WARNING]
-> The daemon and C++ client implement the keyed-routing `INIT` extension. Python, Perl, Go, Erlang
-> and Ruby currently accept only the plain FNV identity and therefore fail closed against
-> `--secure-profile`. TLS 1.3, mTLS and authorization remain available to those SDKs when configured
-> explicitly without `--secure-profile`, which retains default FNV routing. Do not describe the
-> complete secure profile as cross-SDK until the keyed-routing interop matrix passes.
+> [!NOTE]
+> Official SDKs parse plain and extended keyed-routing `INIT` identities (ADR 0030). A combined
+> secure-profile interop matrix (mTLS + authz + keyed routing) remains the next evidence gate.
 
 ### Optional Unix-domain socket (Phase 8 / ADR 0029)
 

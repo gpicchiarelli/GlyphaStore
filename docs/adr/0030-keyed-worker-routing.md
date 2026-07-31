@@ -50,8 +50,8 @@ routing seed **must** be durable authority.
 
 - Positive: Worker floods require knowing the Manifest seed; reopen is fail-closed.
 - Negative: keyed daemons need SDKs that understand extended INIT; no online seed rotation.
-- Residual: not full multi-tenant isolation (ADR 0028); non-C++ SDKs fail closed on keyed INIT
-  until updated.
+- Residual: not full multi-tenant isolation (ADR 0028). Official C++ / Python / Perl / Go /
+  Erlang / Ruby clients decode plain and extended INIT and route with the disclosed seed.
 
 ## Compatibility and migration
 

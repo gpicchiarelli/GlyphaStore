@@ -3,6 +3,10 @@
 # Runs cleartext by default, then an opt-in TLS 1.3 matrix (Phase 2.4) when the
 # daemon was built with TLS and openssl is available. Erlang is included in both
 # matrices when OTP/rebar3 are available. Ruby ships the same TLS train as peers.
+#
+# Default routing is FNV (plain GlyphaStore/2 INIT). Keyed SipHash INIT decode +
+# hash are covered by SDK unit tests; a --worker-hash-seed interop matrix is not
+# required here yet (optional follow-up once harness wiring is convenient).
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

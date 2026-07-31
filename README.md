@@ -180,11 +180,10 @@ The normative behavior is [client semantics v1](docs/spec/client-semantics-v1.md
 release state are tracked by the [SDK roadmap](docs/architecture/sdk-roadmap.md).
 
 > [!NOTE]
-> Keyed SipHash Worker routing is currently implemented by the daemon and C++ client only. Python,
-> Perl, Go, Erlang and Ruby intentionally fail closed on its extended `INIT` identity. Because
-> `--secure-profile` selects keyed routing, use the C++ client for that complete profile until the
-> extension lands across the SDK train. TLS/mTLS and authorization can still be configured without
-> `--secure-profile` while retaining default FNV routing.
+> Keyed SipHash Worker routing ([ADR 0030](docs/adr/0030-keyed-worker-routing.md)) is implemented by
+> the daemon and every official SDK (C++ / Python / Perl / Go / Erlang / Ruby): plain `GlyphaStore/2`
+> keeps FNV-1a; the extended INIT identity selects SipHash-2-4. A full secure-profile interop matrix
+> (mTLS + authz + keyed routing together) remains the next evidence gate.
 
 ## Performance and engineering evidence
 

@@ -5,11 +5,10 @@ Applies to: `glyphastored` secure profile (mTLS + `--authz-map`)
 Owner: security maintainers  
 Last reviewed: 2026-07-28
 
-> [!WARNING]
-> The complete `--secure-profile` currently interoperates only with the C++ client because it
-> advertises keyed SipHash Worker routing. Python, Perl, Go, Erlang and Ruby fail closed on that
-> extended `INIT` identity. They can use TLS/mTLS/authz configured without `--secure-profile` while
-> retaining default FNV routing. Track the missing SDK work in the
+> [!NOTE]
+> Official SDKs parse the keyed SipHash Worker-routing `INIT` identity selected by
+> `--secure-profile` ([ADR 0030](../adr/0030-keyed-worker-routing.md)). A combined secure-profile
+> interop matrix (mTLS + authz + keyed routing) remains the next evidence gate; see the
 > [SDK roadmap](../architecture/sdk-roadmap.md).
 
 ## Rotate server or client CA material

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Complete the ADR 0030 keyed Worker routing SDK train: Python / Perl / Go / Erlang / Ruby decode
+  plain and extended INIT identities, implement SipHash-2-4 bit-for-bit with C++, and route with
+  the disclosed seed. Cleartext FNV default path unchanged. Interop harness remains FNV by default;
+  keyed decode+hash covered by SDK unit tests (daemon `--worker-hash-seed` matrix optional later).
 - Add Phase 8 Unix-domain socket transport with optional peer-credential principals
   ([ADR 0029](docs/adr/0029-uds-peercred.md)): `--unix-socket PATH`, `--unix-peercred` →
   `unix:uid=N` for `--authz-map`; `--secure-profile` requires peercred when UDS is enabled.
@@ -16,8 +20,8 @@
     ([ADR 0028](docs/adr/0028-per-tenant-data-dir-deferred.md)).
 - Add Phase 8 first-slice key-prefix authz scope (`prefix=` in `--authz-map`, ADR 0025): deny
   cross-prefix `GET`/`PUT`/`ERASE` with wire `PERMISSION_DENIED`; omit prefix for whole-keyspace
-  principals. Document residual risks (shared data dir, keyed Worker routing still open) — not a
-  full multi-tenant product.
+  principals. Document residual risks (shared data dir; keyed routing now closed by ADR 0030 SDK
+  train) — not a full multi-tenant product.
 - Implement Phase 6 security audit + CRL fail-closed: JSON-lines `auth`/`authz`/`tls` events
   (`SecurityAudit`), `STATS` auth/tls/authz counters, `--tls-crl` / `--tls-ocsp-fail-closed`
   (CRL required; live AIA OCSP HTTP unsupported), OpenBSD unveil of CRL paths, and
