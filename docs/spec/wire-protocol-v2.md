@@ -102,7 +102,8 @@ material.
 daemon keeps the Store lock (`Server::backup_to` / `Store::backup_to`). It briefly pauses Store
 admissions during the copy window and is not a zero-impact hot snapshot. Under the secure profile it
 requires the `admin` capability. Failed backups return `INTERNAL_ERROR` (optional ASCII reason in
-value). Official SDKs may not expose `BACKUP` yet; wire clients can encode opcode `10` directly.
+value). C++ exposes typed `Client::backup`; other official SDKs may still omit a helper — wire
+clients can encode opcode `10` directly.
 
 Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
 decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode

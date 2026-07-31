@@ -3,9 +3,9 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
 
-#include <array>
 #include <cerrno>
 #include <fcntl.h>
+#include <memory>
 #include <string>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -50,12 +50,14 @@ namespace {
         return persistence_system_error("openat(backup destination file)");
     }
 
-    std::array<std::byte, 1U << 20> buffer{};
+    // Heap buffer: wire BACKUP runs on the reactor thread (smaller stack than main).
+    constexpr std::size_t kCopyBufferBytes = 1U << 20;
+    const auto buffer = std::make_unique<std::byte[]>(kCopyBufferBytes);
     std::uint64_t copied{};
     for (;;) {
         ssize_t read_count{};
         do {
-            read_count = ::read(source.get(), buffer.data(), buffer.size());
+            read_count = ::read(source.get(), buffer.get(), kCopyBufferBytes);
         } while (read_count < 0 && errno == EINTR);
         if (read_count < 0) {
             return persistence_system_error("read(backup source file)");
@@ -68,7 +70,7 @@ namespace {
         while (offset < total) {
             ssize_t written{};
             do {
-                written = ::write(destination.get(), buffer.data() + offset, total - offset);
+                written = ::write(destination.get(), buffer.get() + offset, total - offset);
             } while (written < 0 && errno == EINTR);
             if (written < 0) {
                 return persistence_system_error("write(backup destination file)");

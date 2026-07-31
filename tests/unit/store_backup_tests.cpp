@@ -269,3 +269,44 @@ GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("daemon-key")) == "daemon-value");
 }
+
+GLYPHA_TEST("Client::backup copies a live durable daemon catalog") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto dest = root.path() / "client-backup";
+    const auto restored = root.path() / "restored";
+
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = source,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto& client = *connected;
+    GLYPHA_REQUIRE(client.put("client-backup-key", "client-backup-value").committed());
+
+    auto backed = client.backup(dest.string());
+    GLYPHA_REQUIRE(backed.has_value());
+    const auto report = std::string_view{reinterpret_cast<const char*>(backed->data()), backed->size()};
+    GLYPHA_REQUIRE(report.find("status=ok") != std::string_view::npos);
+
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    const auto restored_copy = glyphastore::restore_durable_store(dest, restored);
+    GLYPHA_REQUIRE(restored_copy.has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("client-backup-key")) == "client-backup-value");
+}

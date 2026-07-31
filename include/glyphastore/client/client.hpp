@@ -112,6 +112,10 @@ class Client final {
         -> Result<std::vector<std::byte>>;
     [[nodiscard]] auto ping(std::span<const std::byte> payload = {}, RequestOptions options = {})
         -> Result<std::vector<std::byte>>;
+    // Online fenced durable backup (wire BACKUP). Destination path is UTF-8; must be empty.
+    // Not zero-impact hot I/O — briefly fences Store admissions. Admin-gated under secure authz.
+    [[nodiscard]] auto backup(std::string_view destination, RequestOptions options = {})
+        -> Result<std::vector<std::byte>>;
 
     [[nodiscard]] auto put(std::span<const std::byte> key, std::span<const std::byte> value,
                            PutOptions put_options = {}, RequestOptions options = {}) -> MutationResult;

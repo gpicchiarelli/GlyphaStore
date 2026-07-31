@@ -65,7 +65,7 @@ When an error is returned to the application, official clients **must** be able 
 | `worker` | when known | Bound Worker for the connection. |
 | `routing_epoch` | when known from session or response | |
 | `retryability` | yes (may be derived) | See §4. |
-| `operation` | recommended | e.g. `get`, `put`, `erase`, `ping`, `pipeline`. |
+| `operation` | recommended | e.g. `get`, `put`, `erase`, `ping`, `backup`, `pipeline`. |
 
 Perl 0.1.x exposes the full §2.1 field set on `GlyphaStore::Error` (category, message, wire status,
 mutation outcome, bytes sent, request id, Worker, routing epoch, retryability, operation). Richer
@@ -189,7 +189,7 @@ Rules:
 
 1. Omitted / unset → use the configured default.
 2. Explicit non-positive override → `invalid_argument` before send.
-3. Applies to `get` / `put` / `erase` / `ping` / `execute_pipeline` / `execute_batch` (and Perl
+3. Applies to `get` / `put` / `erase` / `ping` / `backup` / `execute_pipeline` / `execute_batch` (and Perl
    `execute_worker_pipelines`). Does **not** override connect timeout or bootstrap `INIT` /
    `BIND_WORKER`.
 4. Automatic retry (§5) reuses the **same absolute monotonic deadline**, not a fresh budget.

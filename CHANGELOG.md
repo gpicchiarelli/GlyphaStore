@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Expose typed C++ `Client::backup(destination)` for wire `BACKUP` (opcode 10): worker-0 routing,
+  fenced (not hot zero-impact) semantics; other official SDKs may still omit a typed helper.
 - Expose online fenced backup on the live daemon: wire opcode `BACKUP` (10) and `Server::backup_to`,
   admin-gated under secure authz; SDKs may still omit a typed helper.
 - Add online durable backup via `Store::backup_to`: fence admissions, flush, copy catalog under the

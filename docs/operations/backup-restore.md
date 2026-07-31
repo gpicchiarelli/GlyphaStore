@@ -85,11 +85,12 @@ validation is sufficient.
 
 ### Online (embedded Store / live daemon)
 
-Use `Store::backup_to(destination)` against an open durable Store, or wire opcode `BACKUP` (10) against
-a live `glyphastored` (key = UTF-8 destination path; requires `admin` under `--authz-map`). Expect a
-short admission fence (in-flight ops drain; new ops return `unavailable` until copy completes).
-External `glyphastore_backup_store` against the same path still fails with `io_error` while the Store
-holds the lock. Official SDKs may not wrap `BACKUP` yet.
+Use `Store::backup_to(destination)` against an open durable Store, wire opcode `BACKUP` (10) against
+a live `glyphastored` (key = UTF-8 destination path; requires `admin` under `--authz-map`), or C++
+`Client::backup(destination)`. Expect a short admission fence (in-flight ops drain; new ops return
+`unavailable` until copy completes). External `glyphastore_backup_store` against the same path still
+fails with `io_error` while the Store holds the lock. Other official SDKs may still omit a typed
+`BACKUP` helper.
 
 ## Restore procedure
 

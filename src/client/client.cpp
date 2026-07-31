@@ -685,6 +685,14 @@ class Client::Impl final {
         return read(server::RequestOpcode::ping, {}, payload, options);
     }
 
+    [[nodiscard]] auto backup(const std::string_view destination, const RequestOptions options)
+        -> Result<std::vector<std::byte>> {
+        if (destination.empty()) {
+            return fail(ErrorCode::invalid_argument, "backup destination must be non-empty");
+        }
+        return read(server::RequestOpcode::backup, as_bytes(destination), {}, options);
+    }
+
     [[nodiscard]] auto resolve_deadline(const RequestOptions options) const
         -> Result<Clock::time_point> {
         const auto timeout_ms = options.timeout.has_value()
@@ -1155,7 +1163,9 @@ class Client::Impl final {
         if (!deadline) {
             return unexpected(enrich_error(deadline.error(), operation, std::nullopt, std::nullopt, std::nullopt));
         }
-        const auto worker = opcode == server::RequestOpcode::ping ? 0U : worker_for(key);
+        const auto worker = opcode == server::RequestOpcode::ping || opcode == server::RequestOpcode::backup
+                                ? 0U
+                                : worker_for(key);
         auto& connection = *connections_[worker];
         const std::lock_guard lock{connection.mutex};
         if (!healthy_.load(std::memory_order_acquire)) {
@@ -1299,6 +1309,18 @@ auto Client::ping(const std::span<const std::byte> payload, const RequestOptions
             return fail(ErrorCode::unavailable, "client was moved from");
         }
         return implementation_->ping(payload, options);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, "client allocation failed");
+    }
+}
+
+auto Client::backup(const std::string_view destination, const RequestOptions options)
+    -> Result<std::vector<std::byte>> {
+    try {
+        if (!implementation_) {
+            return fail(ErrorCode::unavailable, "client was moved from");
+        }
+        return implementation_->backup(destination, options);
     } catch (const std::bad_alloc&) {
         return fail(ErrorCode::resource_exhausted, "client allocation failed");
     }
