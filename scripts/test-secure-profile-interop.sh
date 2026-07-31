@@ -2,7 +2,8 @@
 # Focused secure-profile interop smoke (ADR 0020–0022 + ADR 0030).
 # Proves: mTLS connect, --authz-map allows PUT/GET, keyed SipHash routing under
 # --worker-hash-seed with --secure-profile. Also covers authz deny, prefix scope,
-# and --tls-crl rejection. Matrix is cpp/python/go for the happy path.
+# and --tls-crl rejection. Happy path: cpp/python/go, plus perl when IO::Socket::SSL
+# is available.
 #
 # Usage:
 #   ./scripts/test-secure-profile-interop.sh
@@ -15,6 +16,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python="${PYTHON:-python3}"
+perl="${PERL:-perl}"
 daemon="${GLYPHASTORED:-}"
 cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
 hash_seed="${INTEROP_WORKER_HASH_SEED:-13957458623937596}"
@@ -70,7 +72,9 @@ if ! "$daemon" --help 2>&1 | grep -q -- '--tls-client-ca'; then
 fi
 
 export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
+export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 py_helper="$root/scripts/sdk_interop_py.py"
+pl_helper="$root/scripts/sdk_interop_perl.pl"
 go_helper="${GLYPHASTORE_GO_INTEROP:-}"
 if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
   mkdir -p "$root/sdk/go/bin"
@@ -78,6 +82,13 @@ if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
   go_helper="$root/sdk/go/bin/glyphastore-interop"
 fi
 chmod +x "$py_helper" 2>/dev/null || true
+
+perl_ready=0
+if "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
+  perl_ready=1
+else
+  echo "note: Perl without IO::Socket::SSL — excluding perl from secure-profile matrix" >&2
+fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-secure-interop.XXXXXX")"
 port_file="$work/port"
@@ -336,6 +347,7 @@ put_sdk() {
     cpp) "$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     *) return 1 ;;
   esac
 }
@@ -347,6 +359,7 @@ expect_get() {
     cpp) got="$("$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     python) got="$("$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     go) got="$("$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
+    perl) got="$("$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" get | tr -d '\n')" ;;
     *) return 1 ;;
   esac
   if [[ "$got" != "$want_hex" ]]; then
@@ -368,6 +381,9 @@ port="$(cat "$port_file")"
 echo "daemon port=$port principal=$client_principal"
 
 sdks=(cpp python go)
+if [[ "$perl_ready" == "1" ]]; then
+  sdks+=(perl)
+fi
 echo "== secure-profile interop routing=keyed workers=$workers sdks=${sdks[*]} =="
 
 case_id=0
@@ -390,6 +406,10 @@ while IFS=: read -r owner route_key; do
   expect_get python "$port" "$route_key" "$route_value"
   echo "  go GET (keyed owner $owner)"
   expect_get go "$port" "$route_key" "$route_value"
+  if [[ "$perl_ready" == "1" ]]; then
+    echo "  perl GET (keyed owner $owner)"
+    expect_get perl "$port" "$route_key" "$route_value"
+  fi
 done < <("$python" - "$workers" "$hash_seed" <<'PY'
 import sys
 
@@ -483,4 +503,4 @@ if [[ "$crl_rc" -eq 0 ]]; then
 fi
 echo "  revoked client rejected (exit=$crl_rc) OK"
 
-echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL; cpp/python/go)"
+echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL; ${sdks[*]})"

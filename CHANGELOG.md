@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Add GitHub SLSA provenance attestations for tagged SDK packages (`actions/attest` in
+  `supply-chain.yml`; public repos or private with `ENABLE_ARTIFACT_ATTESTATIONS=true` / GHEC).
+- Include Perl in secure-profile interop when `IO::Socket::SSL` is present (CI installs
+  `libio-socket-ssl-perl`). Residual: ruby/erlang in that matrix.
 - Wire Cosign/Sigstore keyless `sign-blob` for packaged SDK artifacts on tag pushes
   (`.github/workflows/supply-chain.yml`); verify bundles in-job. Project GPG remains optional.
 - Add gitleaks + Trivy filesystem scanning CI (`.github/workflows/supply-chain-scan.yml`) for

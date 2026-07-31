@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   id-token: write # Sigstore keyless (Fulcio) on tag pushes
+  attestations: write # GitHub artifact attestations (public or GHEC private)
 
 concurrency:
   group: supply-chain-${{ github.ref }}
@@ -95,3 +96,18 @@ jobs:
             dist/sdk-artifacts/*.spdx.json
             dist/sdk-artifacts/*.cosign.bundle
           if-no-files-found: error
+      - name: SLSA provenance attestation (GitHub)
+        # Artifact attestations on private repos require GitHub Enterprise Cloud.
+        # Public repos always; private repos opt-in via repository variable.
+        if: |
+          startsWith(github.ref, 'refs/tags/') &&
+          (github.event.repository.visibility == 'public' ||
+           vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
+        uses: actions/attest@v3
+        with:
+          subject-path: |
+            dist/sdk-artifacts/SHA256SUMS
+            dist/sdk-artifacts/*.whl
+            dist/sdk-artifacts/*.gem
+            dist/sdk-artifacts/*.tar.gz
+            dist/sdk-artifacts/*package-info.txt
