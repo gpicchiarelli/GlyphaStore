@@ -225,6 +225,11 @@ struct StoreConfig {
     // Deterministic filesystem seam used by crash, fault-injection, and
     // Reactor cold-I/O tests. Production configurations leave this empty.
     FilesystemHooks filesystem_hooks{};
+    // Optional close liveness bound for Writer drain and admission drain.
+    // nullopt waits unbounded (production default). A set value makes close
+    // return unavailable if drain has not finished when the deadline elapses.
+    std::optional<std::uint32_t> close_drain_deadline_ms{};
 };
+
 
 } // namespace glyphastore

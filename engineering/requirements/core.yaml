@@ -52,6 +52,7 @@ requirements:
   evidenze:
   - workflow: ci.yml
   rischio_residuo:
-  - Formal progress/liveness proofs for drain timeouts remain Phase B
+  - Optional close_drain_deadline_ms is opt-in; default close remains unbounded wait
   hazards:
   - HAZ-020
+  - HAZ-027

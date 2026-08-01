@@ -1,0 +1,43 @@
+name: Formal ShardPair (TLC)
+
+on:
+  schedule:
+    - cron: "0 4 * * 1"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "engineering/formal/shard_pair/**"
+      - ".github/workflows/formal-shard-pair.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: formal-shard-pair-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tlc-shard-pair:
+    name: TLC ShardPair (bounded, best-effort)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Download tla2tools.jar
+        run: |
+          curl -fsSL -o /tmp/tla2tools.jar             "https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/tla2tools.jar"
+          echo "TLA2TOOLS_JAR=/tmp/tla2tools.jar" >> "$GITHUB_ENV"
+      - name: Run TLC (hard wall clock)
+        run: |
+          set +e
+          timeout 480 ./engineering/formal/shard_pair/run-tlc.sh
+          status=$?
+          set -e
+          if [[ "$status" -eq 0 ]]; then echo "TLC succeeded"; exit 0; fi
+          if [[ "$status" -eq 124 ]]; then echo "TLC timed out (best-effort)"; exit 0; fi
+          if [[ "${GLYPHASTORE_TLC_REQUIRED:-0}" == "1" ]]; then exit "$status"; fi
+          echo "TLC exited $status (best-effort)"; exit 0

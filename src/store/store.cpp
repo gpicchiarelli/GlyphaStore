@@ -1,5 +1,6 @@
 #include "glyphastore/store/store.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
@@ -24,6 +25,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -270,18 +272,34 @@ struct Store::Impl {
         }
     }
 
-    void wait_for_active_operations() const noexcept {
+    // nullopt waits unbounded. A set deadline (milliseconds) is a liveness bound:
+    // if admitted work remains after the deadline, close surfaces unavailable
+    // rather than hanging forever (GS-CONCUR-LIVE-001).
+    [[nodiscard]] auto wait_for_active_operations(
+        const std::optional<std::uint32_t> deadline_ms = std::nullopt) const noexcept -> bool {
         // Waiting directly on each atomic closes the check-to-sleep race of a
         // condition variable whose predicate is not protected by its mutex.
         // finish_operation() notifies the transition of a closed shard to
         // zero, so no completion can be lost between load and wait.
+        const auto deadline_at =
+            deadline_ms.has_value()
+                ? std::optional{std::chrono::steady_clock::now() + std::chrono::milliseconds{*deadline_ms}}
+                : std::nullopt;
         for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
             auto observed = active_operations[shard].state.load(std::memory_order_acquire);
             while ((observed & kAdmissionCountMask) != 0) {
-                active_operations[shard].state.wait(observed, std::memory_order_acquire);
+                if (deadline_at.has_value()) {
+                    if (std::chrono::steady_clock::now() >= *deadline_at) {
+                        return false;
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                } else {
+                    active_operations[shard].state.wait(observed, std::memory_order_acquire);
+                }
                 observed = active_operations[shard].state.load(std::memory_order_acquire);
             }
         }
+        return true;
     }
 
     void mark_durable_fail_closed() noexcept {
@@ -346,8 +364,13 @@ struct Store::Impl {
         // Drain paired Writers while Store admission is still open so exclusive
         // StoreAccess mutations nested under the Writer can still admit.
         Status result;
+        GS_FAULT_SITE(close);
         if (pair_runtime) {
-            auto drained = pair_runtime->stop_and_drain();
+            std::optional<std::chrono::milliseconds> drain_deadline;
+            if (close_drain_deadline_ms.has_value()) {
+                drain_deadline = std::chrono::milliseconds{*close_drain_deadline_ms};
+            }
+            auto drained = pair_runtime->stop_and_drain(drain_deadline);
             if (!drained) {
                 result = std::move(drained);
             }
@@ -376,7 +399,11 @@ struct Store::Impl {
             // Release any strict-group producer even when posting the close flush itself failed.
             durable_runtime->mark_fail_closed();
         }
-        wait_for_active_operations();
+        if (!wait_for_active_operations(close_drain_deadline_ms)) {
+            if (result) {
+                result = fail(ErrorCode::unavailable, "close admission drain deadline exceeded");
+            }
+        }
         if (maintenance) {
             maintenance->join();
         }
@@ -443,6 +470,8 @@ struct Store::Impl {
     std::atomic<LifecycleState> lifecycle{LifecycleState::open};
     mutable std::mutex lifecycle_mutex;
     std::optional<Error> close_error;
+    // Optional close liveness bound (Writer drain + admission drain). nullopt = unbounded.
+    std::optional<std::uint32_t> close_drain_deadline_ms{};
 };
 
 struct detail::PreparedColdRead::State final {
@@ -571,6 +600,7 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
             });
         store->impl_->maintenance->start();
         store->impl_->concurrency = config.concurrency;
+        store->impl_->close_drain_deadline_ms = config.close_drain_deadline_ms;
         if (auto paired = start_paired_runtime(*store, config); !paired) {
             static_cast<void>(store->close());
             return unexpected(paired.error());
@@ -658,6 +688,7 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         });
     store->impl_->maintenance->start();
     store->impl_->concurrency = config.concurrency;
+    store->impl_->close_drain_deadline_ms = config.close_drain_deadline_ms;
     if (auto paired = start_paired_runtime(*store, config); !paired) {
         static_cast<void>(store->close());
         return unexpected(paired.error());
@@ -949,6 +980,9 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
     if (!operation) {
         return closed_store();
     }
+    GS_FAULT_SITE(compact);
+    // try_to_lock is the compact-admission progress bound: a second caller fails
+    // closed with sequence_conflict instead of waiting unbounded (GS-CONCUR-LIVE-001).
     std::unique_lock maintenance_lock{impl_->compaction_mutex, std::try_to_lock};
     if (!maintenance_lock.owns_lock()) {
         return fail(ErrorCode::sequence_conflict, "another Store compaction is already running");

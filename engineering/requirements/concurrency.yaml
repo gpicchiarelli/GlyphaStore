@@ -17,6 +17,7 @@ requirements:
   prove:
   - tests/integration/paired_store_tests.cpp
   - tests/integration/concurrency_tests.cpp
+  - tests/concurrency/linearizability_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -24,13 +25,160 @@ requirements:
   evidenze:
   - workflow: ci.yml
   rischio_residuo:
-  - Formal linearizability checker and TLA+ model are Phase B1; legacy_mutex governed by GS-CONCUR-LEGACY-001
+  - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
+    routing independence
   hazards:
   - HAZ-003
   - HAZ-008
   - HAZ-009
   - HAZ-027
   - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-LIN-001
+  titolo: Linearizability history checker for paired Store API
+  categoria: concurrency
+  criticita: critica
+  stato: provato
+  descrizione: Concurrent histories of GET/PUT/ERASE/TTL/RAW/close/compaction on the paired Store are
+    recorded with reproducible seeds and checked for linearizability against a sequential map model;
+    failures emit a minimized trace.
+  autorita:
+  - docs/spec/concurrency-memory-model.md
+  - docs/adr/0032-paired-concurrency-embedded-store.md
+  implementazione:
+  - tests/concurrency/linearizability.hpp
+  - tests/concurrency/linearizability_tests.cpp
+  prove:
+  - tests/concurrency/linearizability_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+  rischio_residuo:
+  - Checker state budget bounds history size; durable I/O schedules and multi-key atomicity are out of
+    scope
+  hazards:
+  - HAZ-003
+  - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-FAULT-001
+  titolo: Debug-only adverse scheduling fault injection
+  categoria: concurrency
+  criticita: alta
+  stato: implementato
+  descrizione: Adverse yield/sleep hooks at enqueue/mutate/publish/adopt/rotate/compact/close are compiled
+    only when GLYPHASTORE_FAULT_INJECTION is enabled; production builds keep hooks as no-ops.
+  autorita:
+  - docs/spec/concurrency-memory-model.md
+  implementazione:
+  - include/glyphastore/core/fault_injection.hpp
+  - src/core/fault_injection.cpp
+  - src/store/paired/shard_pair_runtime.cpp
+  - src/store/store.cpp
+  - src/persistence/runtime_catalog.cpp
+  prove:
+  - tests/concurrency/linearizability_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: unix-debug/macos-debug presets enable fault injection
+  rischio_residuo:
+  - Hooks perturb schedules but do not enumerate all interleavings
+  hazards:
+  - HAZ-003
+  - HAZ-008
+  - HAZ-027
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-MEM-001
+  titolo: Atomics memory-order inventory
+  categoria: concurrency
+  criticita: alta
+  stato: implementato
+  descrizione: Shared atomics with correctness roles are inventoried with writer/reader, memory order,
+    happens-before intent, and proof pointers.
+  autorita:
+  - docs/spec/concurrency-memory-model.md
+  - docs/assurance/memory-order-inventory.md
+  implementazione:
+  - src/store/paired
+  - src/store/store.cpp
+  - include/glyphastore/server/bounded_mpsc_queue.hpp
+  prove:
+  - docs/assurance/memory-order-inventory.md
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - path: docs/assurance/memory-order-inventory.md
+  rischio_residuo:
+  - Telemetry-only relaxed uses rely on review; no machine-checked classification
+  hazards:
+  - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-TLA-001
+  titolo: Reduced TLA+ ShardPair model
+  categoria: concurrency
+  criticita: media
+  stato: implementato
+  descrizione: A bounded TLA+ model of one shard pair covers publish/adopt and shutdown drain; TLC runs
+    best-effort in CI with a wall-clock timeout.
+  autorita:
+  - docs/adr/0032-paired-concurrency-embedded-store.md
+  - engineering/formal/shard_pair/README.md
+  implementazione:
+  - engineering/formal/shard_pair/ShardPair.tla
+  - engineering/formal/shard_pair/ShardPair.cfg
+  prove:
+  - engineering/formal/shard_pair/run-tlc.sh
+  piattaforme:
+  - linux-x86_64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: formal-shard-pair.yml
+  rischio_residuo:
+  - Model omits durable I/O, compaction leases, and multi-shard composition; TLC job is best-effort
+  hazards:
+  - HAZ-003
+  - HAZ-027
+  - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-LIVE-001
+  titolo: Progress and liveness bounds on drain close and compact admission
+  categoria: concurrency
+  criticita: alta
+  stato: implementato
+  descrizione: Writer drain and admission drain honor an optional close_drain_deadline_ms; compact
+    admission uses try_lock and fails with sequence_conflict instead of waiting unbounded.
+  autorita:
+  - docs/spec/concurrency-memory-model.md
+  implementazione:
+  - include/glyphastore/store/config.hpp
+  - src/store/store.cpp
+  - src/store/paired/shard_pair_runtime.cpp
+  prove:
+  - tests/concurrency/linearizability_tests.cpp
+  - tests/integration/paired_store_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+  rischio_residuo:
+  - Default close remains unbounded; deadline path is opt-in; no dedicated deadlock detector
+  hazards:
+  - HAZ-027
   gates:
   - GATE-CONCURRENCY-SPEC
 - id: GS-CONCUR-LEGACY-001

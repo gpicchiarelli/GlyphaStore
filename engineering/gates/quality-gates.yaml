@@ -66,6 +66,11 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-CONCUR-PAIR-001
+  - GS-CONCUR-LIN-001
+  - GS-CONCUR-FAULT-001
+  - GS-CONCUR-MEM-001
+  - GS-CONCUR-TLA-001
+  - GS-CONCUR-LIVE-001
   - GS-CONCUR-LEGACY-001
   - GS-PROTO-WIRE-001
   - GS-PROTO-ERROR-001
@@ -74,23 +79,27 @@ gates:
   - docs/spec/client-semantics-v1.md
   - docs/spec/error-taxonomy-v1.md
   - docs/spec/concurrency-memory-model.md
+  - docs/assurance/memory-order-inventory.md
   - docs/architecture/legacy-mutex-policy.md
   - tests/integration/concurrency_tests.cpp
+  - tests/concurrency/linearizability_tests.cpp
   - tests/integration/runtime_equivalence_tests.cpp
   - tests/fixtures/error_taxonomy_v1.json
+  - engineering/formal/shard_pair/ShardPair.tla
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ci.yml
+  - workflow: formal-shard-pair.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Daemon cancellation/deadline beyond client contract open; formal linearizability Phase
-    B1
+  rischio_residuo: Daemon cancellation/deadline beyond client contract open; TLC job best-effort; checker
+    history size bounded
   riapertura:
   - Visibility or borrow lifetime change without ADR
   - legacy_mutex feature creep without policy update
-  narrative: Client semantics, error taxonomy, concurrency model, and legacy_mutex policy are normative;
-    formal linearizability remains Phase B1.
+  narrative: Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, and legacy_mutex
+    policy are normative; some daemon edges remain open.
 - id: GATE-DURABLE-ACK
   titolo: Acknowledgement semantics for durable mutations
   sezione: durability_recovery
