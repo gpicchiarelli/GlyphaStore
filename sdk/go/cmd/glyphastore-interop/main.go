@@ -18,6 +18,7 @@ func main() {
 	port := flag.Int("port", 0, "server port")
 	keyHex := flag.String("key-hex", "", "key as hex")
 	valueHex := flag.String("value-hex", "", "value as hex")
+	dest := flag.String("dest", "", "UTF-8 destination path for backup")
 	expireAtNs := flag.Uint64("expire-at-ns", 0, "absolute expire_at_ns")
 	tlsEnable := flag.Bool("tls", false, "opt-in TLS 1.3")
 	tlsCA := flag.String("tls-ca", "", "PEM CA / trust anchor")
@@ -27,7 +28,7 @@ func main() {
 	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
 	flag.Parse()
 	if *port == 0 || flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]")
+		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|backup|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]")
 		os.Exit(2)
 	}
 	command := flag.Arg(0)
@@ -75,6 +76,15 @@ func main() {
 		if !result.Committed() {
 			fail(fmt.Errorf("erase not committed: %v", result.Err))
 		}
+	case "backup":
+		if *dest == "" {
+			fail(fmt.Errorf("backup requires --dest PATH"))
+		}
+		report, err := c.Backup(*dest)
+		if err != nil {
+			fail(err)
+		}
+		fmt.Print(string(report))
 	case "pipeline-put-get":
 		responses, err := c.ExecutePipeline([]client.PipelineRequest{
 			{Opcode: client.PipelinePut, Key: key, Value: value},

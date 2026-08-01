@@ -37,7 +37,8 @@ Open release gates (summary):
   `Client::backup`, and official SDK `backup` helpers are available (admission pause during flush +
   structural source check + catalog copy; destination CRC verify after resume; bounded parallel
   Segment copy; not fully hot concurrent I/O); CI greps the typed surface via
-  `scripts/assert-sdk-backup-helpers.sh`. Hot
+  `scripts/assert-sdk-backup-helpers.sh` and runs runtime smoke via
+  `scripts/test-sdk-backup-interop.sh`. Hot
   zero-fence backup remains open. SDK tag provenance (Cosign + GitHub attestations, public /
   `ENABLE_ARTIFACT_ATTESTATIONS`) is gated; full SLSA L3 / project GPG and physical E3 remain
   open. Secure-profile

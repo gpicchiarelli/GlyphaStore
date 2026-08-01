@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Runtime SDK online `BACKUP` interop smoke (`scripts/test-sdk-backup-interop.sh`): durable
+  `glyphastored` + typed `backup()` for Python/Go/Perl/Ruby/Erlang; wired into CI `sdk-clients`
+  (`BACKUP_INTEROP_REQUIRE_ALL=1`). Closes the symbol-only residual from
+  `assert-sdk-backup-helpers.sh` (still fenced, not zero-fence).
 - C++ `Error` carries portable `mutation_outcome` (`rejected` / `indeterminate`) on failed
   TCP-client mutations and pipeline mutation positions; `portable_mutation_outcome(wire_status)`
   matches the taxonomy fixture. Closes the last `GS-PROTO-ERROR-001` residual on C++ Error.
@@ -113,7 +117,8 @@
   ([paired-shards-linux-p1](docs/benchmarks/paired-shards-linux-p1.md)); macOS evidence stays advisory.
 - Add CI assert for typed SDK backup helpers (`scripts/assert-sdk-backup-helpers.sh`): fail closed
   if any official SDK (C++/Python/Go/Perl/Ruby/Erlang) lacks a typed `backup`/`Backup` surface for
-  wire `BACKUP`; wired into `sdk-clients`. Residual: runtime backup interop in every language job.
+  wire `BACKUP`; wired into `sdk-clients`. Runtime interop smoke:
+  `scripts/test-sdk-backup-interop.sh`.
 - Add SDK artifact attestation verification gate
   (`scripts/verify-sdk-artifact-attestations.sh`): fail-closed `gh attestation verify` on
   tagged supply-chain runs when attestations are produced (public or

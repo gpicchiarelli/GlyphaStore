@@ -78,3 +78,4 @@ if [[ "$fail" -ne 0 ]]; then
 fi
 
 echo "assert-sdk-backup-helpers: all official SDK typed backup helpers present"
+echo "note: runtime BACKUP smoke is scripts/test-sdk-backup-interop.sh"
