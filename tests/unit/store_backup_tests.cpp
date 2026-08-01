@@ -1,6 +1,6 @@
+#include "glyphastore/client/client.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/persistence/store_backup.hpp"
-#include "glyphastore/client/client.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/store/store.hpp"
@@ -186,12 +186,15 @@ GLYPHA_TEST("Store::backup_to copies while the Store remains open under writer f
             const auto key = "w" + std::to_string(i++);
             if (store.put(key, bytes("v")).has_value()) {
                 writes.fetch_add(1, std::memory_order_relaxed);
+                writes.notify_one();
             } else {
                 // Admission fence during backup: brief pause then retry.
                 std::this_thread::yield();
             }
         }
     }};
+
+    writes.wait(0, std::memory_order_relaxed);
 
     for (int round = 0; round < 3; ++round) {
         const auto dest = backup / ("round-" + std::to_string(round));
@@ -228,12 +231,12 @@ GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
     const auto backup = root.path() / "backup";
     const auto restored = root.path() / "restored";
 
-    auto opened = glyphastore::server::Server::create(
-        {.port = 0, .maximum_connections = 4},
-        {.worker_config = {.explicit_count = 1},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = source,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 4},
+                                            {.worker_config = {.explicit_count = 1},
+                                             .storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = source,
+                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
     GLYPHA_REQUIRE(server.start().has_value());
@@ -251,8 +254,7 @@ GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
     GLYPHA_REQUIRE(backed.has_value());
     GLYPHA_REQUIRE(backed->files_copied >= 2);
 
-    const auto contested =
-        glyphastore::backup_durable_store(source, backup / "offline-contested");
+    const auto contested = glyphastore::backup_durable_store(source, backup / "offline-contested");
     GLYPHA_REQUIRE(!contested.has_value());
 
     server.request_stop();
@@ -276,12 +278,12 @@ GLYPHA_TEST("Client::backup copies a live durable daemon catalog") {
     const auto dest = root.path() / "client-backup";
     const auto restored = root.path() / "restored";
 
-    auto opened = glyphastore::server::Server::create(
-        {.port = 0, .maximum_connections = 4},
-        {.worker_config = {.explicit_count = 1},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = source,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 4},
+                                            {.worker_config = {.explicit_count = 1},
+                                             .storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = source,
+                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
     GLYPHA_REQUIRE(server.start().has_value());

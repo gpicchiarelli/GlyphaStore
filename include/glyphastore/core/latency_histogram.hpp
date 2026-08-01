@@ -15,13 +15,13 @@ namespace glyphastore {
 // unlimited collection; observe() is lock-free only when the caller serializes.
 struct LatencyHistogram final {
     static constexpr std::array<std::uint64_t, 8> kBoundsNs{
-        1'000ULL,         // 1 µs
-        10'000ULL,        // 10 µs
-        100'000ULL,       // 100 µs
-        1'000'000ULL,     // 1 ms
-        10'000'000ULL,    // 10 ms
-        100'000'000ULL,   // 100 ms
-        1'000'000'000ULL, // 1 s
+        1'000ULL,                                  // 1 µs
+        10'000ULL,                                 // 10 µs
+        100'000ULL,                                // 100 µs
+        1'000'000ULL,                              // 1 ms
+        10'000'000ULL,                             // 10 ms
+        100'000'000ULL,                            // 100 ms
+        1'000'000'000ULL,                          // 1 s
         std::numeric_limits<std::uint64_t>::max(), // +Inf
     };
 
@@ -59,8 +59,7 @@ struct LatencyHistogram final {
         if (observations == 0 || !(percentile >= 0.0) || percentile > 1.0) {
             return 0;
         }
-        const auto target =
-            static_cast<std::uint64_t>(static_cast<long double>(observations) * percentile);
+        const auto target = static_cast<std::uint64_t>(static_cast<long double>(observations) * percentile);
         const auto rank = target == 0 ? 1U : std::min(target, observations);
         const auto cumulative = this->cumulative();
         std::uint64_t previous = 0;
@@ -68,9 +67,8 @@ struct LatencyHistogram final {
         for (std::size_t index = 0; index < kBoundsNs.size(); ++index) {
             if (cumulative[index] < rank) {
                 previous = cumulative[index];
-                lower = kBoundsNs[index] == std::numeric_limits<std::uint64_t>::max()
-                            ? lower
-                            : kBoundsNs[index];
+                lower =
+                    kBoundsNs[index] == std::numeric_limits<std::uint64_t>::max() ? lower : kBoundsNs[index];
                 continue;
             }
             const auto upper = kBoundsNs[index] == std::numeric_limits<std::uint64_t>::max()

@@ -496,7 +496,6 @@ detail::PreparedColdRead::~PreparedColdRead() {
     reset();
 }
 
-
 [[nodiscard]] auto start_paired_runtime(Store& store, StoreConfig config) -> Status {
     return detail::StoreAccess::attach_paired_runtime(store, config);
 }
@@ -698,8 +697,7 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
             if (!view) {
                 return unexpected(view.error());
             }
-            auto prepared =
-                detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
+            auto prepared = detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
             if (!prepared) {
                 return unexpected(prepared.error());
             }
@@ -749,8 +747,7 @@ auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue>
             if (!view) {
                 return unexpected(view.error());
             }
-            auto prepared =
-                detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
+            auto prepared = detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
             if (!prepared) {
                 return unexpected(prepared.error());
             }

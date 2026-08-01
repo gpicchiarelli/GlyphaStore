@@ -305,8 +305,8 @@ GLYPHA_TEST("C++ client bootstraps every worker and handles binary cache operati
     GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
     GLYPHA_REQUIRE(missing.error().category == "not_found");
     GLYPHA_REQUIRE(missing.error().wire_status.has_value());
-    GLYPHA_REQUIRE(*missing.error().wire_status
-                   == static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::not_found));
+    GLYPHA_REQUIRE(*missing.error().wire_status ==
+                   static_cast<std::uint16_t>(glyphastore::server::ResponseStatus::not_found));
     GLYPHA_REQUIRE(missing.error().retryability == "new_attempt");
     GLYPHA_REQUIRE(missing.error().operation == "get");
 
@@ -440,12 +440,10 @@ GLYPHA_TEST("C++ client batch groups Workers and restores caller order") {
     GLYPHA_REQUIRE(client.worker_for(key1) == 1);
 
     const std::array requests{
-        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::put,
-                                             .key = bytes(key1),
-                                             .value = bytes("v1")},
-        glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::put,
-                                             .key = bytes(key0),
-                                             .value = bytes("v0")},
+        glyphastore::client::PipelineRequest{
+            .opcode = glyphastore::client::PipelineOpcode::put, .key = bytes(key1), .value = bytes("v1")},
+        glyphastore::client::PipelineRequest{
+            .opcode = glyphastore::client::PipelineOpcode::put, .key = bytes(key0), .value = bytes("v0")},
         glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
                                              .key = bytes(key1)},
         glyphastore::client::PipelineRequest{.opcode = glyphastore::client::PipelineOpcode::get,
@@ -461,8 +459,8 @@ GLYPHA_TEST("C++ client batch groups Workers and restores caller order") {
     GLYPHA_REQUIRE(text((*executed)[3].value) == "v0");
     client.close();
 
-    auto limited = glyphastore::client::Client::connect(
-        {.port = server.port(), .maximum_pipeline_requests = 1});
+    auto limited =
+        glyphastore::client::Client::connect({.port = server.port(), .maximum_pipeline_requests = 1});
     GLYPHA_REQUIRE(limited.has_value());
     auto limited_client = std::move(*limited);
     const std::array oversized{

@@ -24,13 +24,13 @@ GLYPHA_TEST("paired Store read-after-write and close drain") {
     GLYPHA_REQUIRE(store.put("alpha", bytes("one")).has_value());
     const auto first = store.get("alpha");
     GLYPHA_REQUIRE(first.has_value());
-    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(first->bytes.data()),
-                                    first->bytes.size()) == "one");
+    GLYPHA_REQUIRE(
+        std::string_view(reinterpret_cast<const char*>(first->bytes.data()), first->bytes.size()) == "one");
     GLYPHA_REQUIRE(store.put("alpha", bytes("two")).has_value());
     const auto second = store.get("alpha");
     GLYPHA_REQUIRE(second.has_value());
-    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(second->bytes.data()),
-                                    second->bytes.size()) == "two");
+    GLYPHA_REQUIRE(
+        std::string_view(reinterpret_cast<const char*>(second->bytes.data()), second->bytes.size()) == "two");
     GLYPHA_REQUIRE(store.erase("alpha").has_value());
     GLYPHA_REQUIRE(!store.get("alpha").has_value());
     GLYPHA_REQUIRE(store.close().has_value());
@@ -73,5 +73,35 @@ GLYPHA_TEST("paired Store concurrent GET and PUT on one key stay linearized") {
     GLYPHA_REQUIRE(final_value.has_value());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(final_value->bytes.data()),
                                     final_value->bytes.size()) == "200");
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired Store concurrent read-after-write keeps adopted generations alive") {
+    constexpr std::size_t kThreadCount = 4;
+    constexpr std::size_t kWritesPerThread = 1'024;
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 4}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    std::atomic_bool failed{false};
+    std::vector<std::thread> threads;
+    threads.reserve(kThreadCount);
+    for (std::size_t thread = 0; thread < kThreadCount; ++thread) {
+        threads.emplace_back([&, thread] {
+            for (std::size_t write = 0; write < kWritesPerThread; ++write) {
+                const auto key = "lease-" + std::to_string(thread) + '-' + std::to_string(write);
+                const auto value = "value-" + std::to_string(write);
+                if (!store.put(key, bytes(value)).has_value() || !store.get(key).has_value()) {
+                    failed.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        });
+    }
+    for (auto& thread : threads) {
+        thread.join();
+    }
+
+    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
     GLYPHA_REQUIRE(store.close().has_value());
 }

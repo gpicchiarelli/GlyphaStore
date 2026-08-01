@@ -24,9 +24,7 @@ struct CompactionResourceEstimate final {
 [[nodiscard]] auto validate_compaction_resources(const CompactionResourceEstimate& estimate,
                                                  const DurableResourceLimits& limits) -> Status;
 
-[[nodiscard]] auto validate_compaction_write_amplification(std::size_t source_count,
-                                                           std::size_t output_count,
-                                                           const DurableResourceLimits& limits)
-    -> Status;
+[[nodiscard]] auto validate_compaction_write_amplification(std::size_t source_count, std::size_t output_count,
+                                                           const DurableResourceLimits& limits) -> Status;
 
 } // namespace glyphastore

@@ -199,13 +199,12 @@ class ShardPairRuntime final {
     // Asynchronous host lane (glyphastored). Copies the borrowed request bytes
     // into the lane's preallocated slot pool before returning; nullopt means
     // bounded admission rejected the request.
-    [[nodiscard]] auto try_submit(const AsyncMutationRequest& request) noexcept
-        -> std::optional<std::size_t>;
+    [[nodiscard]] auto try_submit(const AsyncMutationRequest& request) noexcept -> std::optional<std::size_t>;
     // Host-only after acquiring the matching completion. False is an internal
     // FIFO/lifetime violation and must fail the host closed.
     [[nodiscard]] auto release_payload(std::size_t shard, std::uint32_t payload_slot) noexcept -> bool;
     [[nodiscard]] static auto mutation_admission_bytes(std::size_t key_bytes,
-                                                      std::size_t value_bytes) noexcept
+                                                       std::size_t value_bytes) noexcept
         -> std::optional<std::size_t>;
     void note_rejected(std::size_t shard) noexcept;
     [[nodiscard]] auto stats() const -> std::vector<ShardPairStats>;

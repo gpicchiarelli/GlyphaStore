@@ -215,7 +215,8 @@ struct WorkerConnection {
                 return ExchangeFailure{written.error(), sent};
             }
             if (written->kind == server::TlsIoKind::would_block) {
-                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                auto ready =
+                    wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
                     continue;
                 }
@@ -263,7 +264,8 @@ struct WorkerConnection {
                 return unexpected(read.error());
             }
             if (read->kind == server::TlsIoKind::would_block) {
-                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                auto ready =
+                    wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
                     continue;
                 }
@@ -332,8 +334,7 @@ struct WorkerConnection {
 }
 
 [[nodiscard]] auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
-                            const ClientConfig& config, const Clock::time_point deadline)
-    -> ExchangeResult {
+                            const ClientConfig& config, const Clock::time_point deadline) -> ExchangeResult {
     auto sent = send_frame(connection, request, deadline);
     if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
         return *failure;
@@ -398,14 +399,11 @@ struct WorkerConnection {
     return mutation_sent ? "reconcile_first" : "new_attempt";
 }
 
-[[nodiscard]] auto enrich_error(Error error, const std::string_view operation,
-                                const std::optional<std::uint64_t> request_id,
-                                const std::optional<std::uint32_t> worker,
-                                const std::optional<std::uint64_t> routing_epoch,
-                                const std::size_t bytes_sent = 0,
-                                const std::optional<std::uint16_t> wire_status = std::nullopt,
-                                const bool mutation = false,
-                                const bool indeterminate = false) -> Error {
+[[nodiscard]] auto
+enrich_error(Error error, const std::string_view operation, const std::optional<std::uint64_t> request_id,
+             const std::optional<std::uint32_t> worker, const std::optional<std::uint64_t> routing_epoch,
+             const std::size_t bytes_sent = 0, const std::optional<std::uint16_t> wire_status = std::nullopt,
+             const bool mutation = false, const bool indeterminate = false) -> Error {
     if (error.category.empty()) {
         error.category = category_for(error.code);
     }
@@ -463,7 +461,8 @@ struct WorkerConnection {
     }
     error.category = category_for(error.code);
     error.wire_status = static_cast<std::uint16_t>(status);
-    error.retryability = retryability_for(error.category, false, status == server::ResponseStatus::internal_error);
+    error.retryability =
+        retryability_for(error.category, false, status == server::ResponseStatus::internal_error);
     return error;
 }
 
@@ -578,7 +577,8 @@ struct WorkerConnection {
                 return ExchangeFailure{read.error(), request_bytes_sent};
             }
             if (read->kind == server::TlsIoKind::would_block) {
-                auto ready = wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
+                auto ready =
+                    wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
                     continue;
                 }
@@ -693,8 +693,7 @@ class Client::Impl final {
         return read(server::RequestOpcode::backup, as_bytes(destination), {}, options);
     }
 
-    [[nodiscard]] auto resolve_deadline(const RequestOptions options) const
-        -> Result<Clock::time_point> {
+    [[nodiscard]] auto resolve_deadline(const RequestOptions options) const -> Result<Clock::time_point> {
         const auto timeout_ms = options.timeout.has_value()
                                     ? static_cast<std::uint32_t>(options.timeout->count())
                                     : config_.request_timeout_ms;
@@ -709,27 +708,27 @@ class Client::Impl final {
                               const RequestOptions options) -> MutationResult {
         const auto operation = opcode == server::RequestOpcode::put ? "put" : "erase";
         if (!healthy_.load(std::memory_order_acquire)) {
-            return rejected(enrich_error({ErrorCode::unavailable, "client is closed or routing metadata changed"},
-                                         operation, std::nullopt, std::nullopt, std::nullopt, 0, std::nullopt,
-                                         true, false));
+            return rejected(enrich_error(
+                {ErrorCode::unavailable, "client is closed or routing metadata changed"}, operation,
+                std::nullopt, std::nullopt, std::nullopt, 0, std::nullopt, true, false));
         }
         auto deadline = resolve_deadline(options);
         if (!deadline) {
-            return rejected(enrich_error(deadline.error(), operation, std::nullopt, std::nullopt, std::nullopt, 0,
-                                         std::nullopt, true, false));
+            return rejected(enrich_error(deadline.error(), operation, std::nullopt, std::nullopt,
+                                         std::nullopt, 0, std::nullopt, true, false));
         }
         const auto worker = worker_for(key);
         auto& connection = *connections_[worker];
         const std::lock_guard lock{connection.mutex};
         if (!healthy_.load(std::memory_order_acquire)) {
             return rejected(enrich_error({ErrorCode::unavailable, "client closed before mutation admission"},
-                                         operation, std::nullopt, worker, routing_epoch_, 0, std::nullopt, true,
-                                         false));
+                                         operation, std::nullopt, worker, routing_epoch_, 0, std::nullopt,
+                                         true, false));
         }
         for (int attempt = 0; attempt < 2; ++attempt) {
             if (auto connected = ensure_connected(connection); !connected) {
-                return rejected(enrich_error(connected.error(), operation, std::nullopt, worker, routing_epoch_,
-                                             0, std::nullopt, true, false));
+                return rejected(enrich_error(connected.error(), operation, std::nullopt, worker,
+                                             routing_epoch_, 0, std::nullopt, true, false));
             }
             const auto request_id = next_request_id();
             auto encoded = server::encode_request({.opcode = opcode,
@@ -738,8 +737,8 @@ class Client::Impl final {
                                                    .key = key,
                                                    .value = value});
             if (!encoded) {
-                return rejected(enrich_error(encoded.error(), operation, request_id, worker, routing_epoch_, 0,
-                                             std::nullopt, true, false));
+                return rejected(enrich_error(encoded.error(), operation, request_id, worker, routing_epoch_,
+                                             0, std::nullopt, true, false));
             }
             if (encoded->size() > config_.maximum_frame_bytes) {
                 return rejected(enrich_error(
@@ -753,17 +752,18 @@ class Client::Impl final {
                     if (attempt == 0) {
                         continue;
                     }
-                    return rejected(enrich_error(failure->error, operation, request_id, worker, routing_epoch_,
-                                                 0, std::nullopt, true, false));
+                    return rejected(enrich_error(failure->error, operation, request_id, worker,
+                                                 routing_epoch_, 0, std::nullopt, true, false));
                 }
-                return indeterminate(enrich_error(failure->error, operation, request_id, worker, routing_epoch_,
-                                                  failure->request_bytes_sent, std::nullopt, true, true));
+                return indeterminate(enrich_error(failure->error, operation, request_id, worker,
+                                                  routing_epoch_, failure->request_bytes_sent, std::nullopt,
+                                                  true, true));
             }
             auto& response = std::get<OwnedResponse>(result);
             if (auto valid = validate_response(response, request_id, worker); !valid) {
                 connection.reset();
-                return indeterminate(enrich_error(valid.error(), operation, request_id, worker, routing_epoch_,
-                                                  encoded->size(), std::nullopt, true, true));
+                return indeterminate(enrich_error(valid.error(), operation, request_id, worker,
+                                                  routing_epoch_, encoded->size(), std::nullopt, true, true));
             }
             if (response.status == server::ResponseStatus::ok) {
                 if (!response.value.empty()) {
@@ -774,10 +774,10 @@ class Client::Impl final {
                 }
                 return {.outcome = MutationOutcome::committed};
             }
-            auto error = enrich_error(response_error(response.status), operation, request_id, worker,
-                                      routing_epoch_, encoded->size(),
-                                      static_cast<std::uint16_t>(response.status), true,
-                                      response.status == server::ResponseStatus::internal_error);
+            auto error =
+                enrich_error(response_error(response.status), operation, request_id, worker, routing_epoch_,
+                             encoded->size(), static_cast<std::uint16_t>(response.status), true,
+                             response.status == server::ResponseStatus::internal_error);
             if (response.status == server::ResponseStatus::internal_error) {
                 return indeterminate(std::move(error));
             }
@@ -787,8 +787,8 @@ class Client::Impl final {
             }
             return rejected(std::move(error));
         }
-        return rejected(enrich_error({ErrorCode::unavailable, "could not send mutation"}, operation, std::nullopt,
-                                     worker, routing_epoch_, 0, std::nullopt, true, false));
+        return rejected(enrich_error({ErrorCode::unavailable, "could not send mutation"}, operation,
+                                     std::nullopt, worker, routing_epoch_, 0, std::nullopt, true, false));
     }
 
     [[nodiscard]] auto execute_pipeline(const std::span<const PipelineRequest> requests,
@@ -885,12 +885,11 @@ class Client::Impl final {
                     is_mutation(requests[index].opcode) && bytes_sent > metadata[index].begin;
                 responses[index].outcome =
                     mutation_may_have_arrived ? PipelineOutcome::indeterminate : PipelineOutcome::failed;
-                responses[index].error =
-                    enrich_error(error, operation_name(requests[index].opcode), metadata[index].request_id,
-                                 worker, routing_epoch_,
-                                 bytes_sent > metadata[index].begin ? bytes_sent - metadata[index].begin : 0,
-                                 error.wire_status, is_mutation(requests[index].opcode),
-                                 mutation_may_have_arrived);
+                responses[index].error = enrich_error(
+                    error, operation_name(requests[index].opcode), metadata[index].request_id, worker,
+                    routing_epoch_,
+                    bytes_sent > metadata[index].begin ? bytes_sent - metadata[index].begin : 0,
+                    error.wire_status, is_mutation(requests[index].opcode), mutation_may_have_arrived);
             }
         };
 
@@ -927,10 +926,9 @@ class Client::Impl final {
             if (response.status == server::ResponseStatus::ok) {
                 if (is_mutation(requests[index].opcode) && !response.value.empty()) {
                     connection.reset();
-                    mark_unresolved(
-                        index,
-                        {ErrorCode::corrupted_data, "mutation response value must be empty"},
-                        bytes_sent);
+                    mark_unresolved(index,
+                                    {ErrorCode::corrupted_data, "mutation response value must be empty"},
+                                    bytes_sent);
                     return responses;
                 }
                 responses[index].outcome = PipelineOutcome::succeeded;
@@ -941,11 +939,11 @@ class Client::Impl final {
                                        response.status == server::ResponseStatus::internal_error;
             responses[index].outcome =
                 indeterminate ? PipelineOutcome::indeterminate : PipelineOutcome::failed;
-            responses[index].error = enrich_error(
-                response_error(response.status), operation_name(requests[index].opcode),
-                metadata[index].request_id, worker, routing_epoch_, bytes_sent - metadata[index].begin,
-                static_cast<std::uint16_t>(response.status), is_mutation(requests[index].opcode),
-                indeterminate);
+            responses[index].error =
+                enrich_error(response_error(response.status), operation_name(requests[index].opcode),
+                             metadata[index].request_id, worker, routing_epoch_,
+                             bytes_sent - metadata[index].begin, static_cast<std::uint16_t>(response.status),
+                             is_mutation(requests[index].opcode), indeterminate);
             if (response.status == server::ResponseStatus::wrong_owner ||
                 response.status == server::ResponseStatus::not_bound) {
                 healthy_.store(false, std::memory_order_release);
@@ -955,8 +953,7 @@ class Client::Impl final {
     }
 
     [[nodiscard]] auto execute_batch(const std::span<const PipelineRequest> requests,
-                                     const RequestOptions options)
-        -> Result<std::vector<PipelineResponse>> {
+                                     const RequestOptions options) -> Result<std::vector<PipelineResponse>> {
         if (requests.empty()) {
             return std::vector<PipelineResponse>{};
         }
@@ -1006,8 +1003,8 @@ class Client::Impl final {
         active.reserve(worker_count_);
 
         const auto shared_deadline = *deadline;
-        const auto run_job = [this, shared_deadline](WorkerJob& job)
-            -> Result<std::vector<PipelineResponse>> {
+        const auto run_job = [this,
+                              shared_deadline](WorkerJob& job) -> Result<std::vector<PipelineResponse>> {
             return execute_pipeline(job.requests, shared_deadline);
         };
 
@@ -1015,8 +1012,7 @@ class Client::Impl final {
             if (job.requests.empty()) {
                 continue;
             }
-            if (active.empty() &&
-                std::none_of(jobs.begin(), jobs.end(), [&](const WorkerJob& other) {
+            if (active.empty() && std::none_of(jobs.begin(), jobs.end(), [&](const WorkerJob& other) {
                     return &other != &job && !other.requests.empty();
                 })) {
                 auto executed = run_job(job);
@@ -1110,9 +1106,9 @@ class Client::Impl final {
             return fail(ErrorCode::corrupted_data, "server INIT response is not valid protocol v2 metadata");
         }
         const Metadata metadata{response.worker_count, response.routing_epoch, *routing};
-        if (expected && (metadata.worker_count != expected->worker_count ||
-                         metadata.routing_epoch != expected->routing_epoch ||
-                         metadata.routing != expected->routing)) {
+        if (expected &&
+            (metadata.worker_count != expected->worker_count ||
+             metadata.routing_epoch != expected->routing_epoch || metadata.routing != expected->routing)) {
             connection.reset();
             return fail(ErrorCode::unavailable,
                         "server routing metadata changed during connection bootstrap");
@@ -1156,12 +1152,14 @@ class Client::Impl final {
         -> Result<std::vector<std::byte>> {
         const auto operation = operation_name(opcode);
         if (!healthy_.load(std::memory_order_acquire)) {
-            return unexpected(enrich_error({ErrorCode::unavailable, "client is closed or routing metadata changed"},
-                                           operation, std::nullopt, std::nullopt, std::nullopt));
+            return unexpected(
+                enrich_error({ErrorCode::unavailable, "client is closed or routing metadata changed"},
+                             operation, std::nullopt, std::nullopt, std::nullopt));
         }
         auto deadline = resolve_deadline(options);
         if (!deadline) {
-            return unexpected(enrich_error(deadline.error(), operation, std::nullopt, std::nullopt, std::nullopt));
+            return unexpected(
+                enrich_error(deadline.error(), operation, std::nullopt, std::nullopt, std::nullopt));
         }
         const auto worker = opcode == server::RequestOpcode::ping || opcode == server::RequestOpcode::backup
                                 ? 0U
@@ -1187,9 +1185,9 @@ class Client::Impl final {
                     enrich_error(encoded.error(), operation, request_id, worker, routing_epoch_));
             }
             if (encoded->size() > config_.maximum_frame_bytes) {
-                return unexpected(enrich_error(
-                    {ErrorCode::record_too_large, "request exceeds the configured frame limit"}, operation,
-                    request_id, worker, routing_epoch_));
+                return unexpected(
+                    enrich_error({ErrorCode::record_too_large, "request exceeds the configured frame limit"},
+                                 operation, request_id, worker, routing_epoch_));
             }
             auto result = exchange(connection, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
@@ -1297,8 +1295,7 @@ auto Client::get(const std::span<const std::byte> key, const RequestOptions opti
     }
 }
 
-auto Client::get(const std::string_view key, const RequestOptions options)
-    -> Result<std::vector<std::byte>> {
+auto Client::get(const std::string_view key, const RequestOptions options) -> Result<std::vector<std::byte>> {
     return get(as_bytes(key), options);
 }
 
@@ -1363,8 +1360,8 @@ auto Client::erase(const std::string_view key, const RequestOptions options) -> 
     return erase(as_bytes(key), options);
 }
 
-auto Client::execute_pipeline(const std::span<const PipelineRequest> requests,
-                              const RequestOptions options) -> Result<std::vector<PipelineResponse>> {
+auto Client::execute_pipeline(const std::span<const PipelineRequest> requests, const RequestOptions options)
+    -> Result<std::vector<PipelineResponse>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");
@@ -1375,8 +1372,8 @@ auto Client::execute_pipeline(const std::span<const PipelineRequest> requests,
     }
 }
 
-auto Client::execute_batch(const std::span<const PipelineRequest> requests,
-                           const RequestOptions options) -> Result<std::vector<PipelineResponse>> {
+auto Client::execute_batch(const std::span<const PipelineRequest> requests, const RequestOptions options)
+    -> Result<std::vector<PipelineResponse>> {
     try {
         if (!implementation_) {
             return fail(ErrorCode::unavailable, "client was moved from");

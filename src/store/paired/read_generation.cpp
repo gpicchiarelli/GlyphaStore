@@ -866,8 +866,7 @@ class DeltaState final {
             std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{}, std::move(arena));
     }
     const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
-    const auto chunk_count =
-        (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
+    const auto chunk_count = (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
     return std::make_shared<const DeltaState>(
         capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
         std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count), std::move(arena));
@@ -1024,9 +1023,10 @@ class DeltaBuilder final {
             auto found_block = std::find_if(mutable_blocks_.begin(), mutable_blocks_.end(),
                                             [&](const auto& entry) { return entry.first == block_index; });
             if (found_block == mutable_blocks_.end()) {
-                auto block = found_chunk->second->blocks[block_offset]
-                                 ? std::make_shared<DeltaDirectoryBlock>(*found_chunk->second->blocks[block_offset])
-                                 : std::make_shared<DeltaDirectoryBlock>();
+                auto block =
+                    found_chunk->second->blocks[block_offset]
+                        ? std::make_shared<DeltaDirectoryBlock>(*found_chunk->second->blocks[block_offset])
+                        : std::make_shared<DeltaDirectoryBlock>();
                 mutable_blocks_.emplace_back(block_index, block);
                 found_chunk->second->blocks[block_offset] = block;
                 found_block = std::prev(mutable_blocks_.end());

@@ -89,13 +89,12 @@ class AuthzPolicy final {
 [[nodiscard]] auto required_capability(RequestOpcode opcode, std::string_view key_prefix) noexcept
     -> Capability;
 [[nodiscard]] auto opcode_requires_key_prefix_check(RequestOpcode opcode) noexcept -> bool;
-[[nodiscard]] auto key_matches_prefix(std::string_view prefix,
-                                      std::span<const std::byte> key) noexcept -> bool;
+[[nodiscard]] auto key_matches_prefix(std::string_view prefix, std::span<const std::byte> key) noexcept
+    -> bool;
 [[nodiscard]] auto authorize_opcode(const AuthzPolicy& policy, Capability granted,
                                     RequestOpcode opcode) noexcept -> bool;
-[[nodiscard]] auto authorize_opcode(const AuthzPolicy& policy, Capability granted,
-                                    RequestOpcode opcode, std::string_view key_prefix) noexcept
-    -> bool;
+[[nodiscard]] auto authorize_opcode(const AuthzPolicy& policy, Capability granted, RequestOpcode opcode,
+                                    std::string_view key_prefix) noexcept -> bool;
 [[nodiscard]] auto authorize_request(const AuthzPolicy& policy, Capability granted,
                                      std::string_view key_prefix, RequestOpcode opcode,
                                      std::span<const std::byte> key) noexcept -> bool;

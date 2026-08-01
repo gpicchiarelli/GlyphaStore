@@ -177,21 +177,10 @@ class DaemonProcess final {
         }
         if (child == 0) {
             const auto port_text = std::to_string(port_);
-            const char* argv[] = {binary_.c_str(),
-                                  "--bind",
-                                  "127.0.0.1",
-                                  "--port",
-                                  port_text.c_str(),
-                                  "--workers",
-                                  "1",
-                                  "--storage-mode",
-                                  storage_.c_str(),
-                                  "--data-dir",
-                                  data_dir_.c_str(),
-                                  "--open-mode",
-                                  "open-or-create",
-                                  "--quiet",
-                                  nullptr};
+            const char* argv[] = {
+                binary_.c_str(),   "--bind",      "127.0.0.1",      "--port",         port_text.c_str(),
+                "--workers",       "1",           "--storage-mode", storage_.c_str(), "--data-dir",
+                data_dir_.c_str(), "--open-mode", "open-or-create", "--quiet",        nullptr};
             ::execv(binary_.c_str(), const_cast<char* const*>(argv));
             std::cerr << "execv failed: " << std::strerror(errno) << '\n';
             std::_Exit(127);

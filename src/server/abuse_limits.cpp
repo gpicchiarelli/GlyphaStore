@@ -39,17 +39,16 @@ auto AbuseController::try_admit_accept(const std::chrono::steady_clock::time_poi
 }
 
 auto AbuseController::try_admit_connection_request(std::uint64_t& window_start_ns, std::uint32_t& used,
-                                                   const std::chrono::steady_clock::time_point now)
-    -> bool {
+                                                   const std::chrono::steady_clock::time_point now) -> bool {
     if (limits_.connection_max_requests_per_sec == 0) {
         return true;
     }
     const auto now_ns = static_cast<std::uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count());
     if (window_start_ns == 0 ||
-        now_ns - window_start_ns >= static_cast<std::uint64_t>(
-                                         std::chrono::duration_cast<std::chrono::nanoseconds>(kWindow)
-                                             .count())) {
+        now_ns - window_start_ns >=
+            static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(kWindow).count())) {
         window_start_ns = now_ns;
         used = 0;
     }

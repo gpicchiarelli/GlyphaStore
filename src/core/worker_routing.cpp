@@ -72,8 +72,7 @@ auto get_u64(const std::span<const std::byte> in, const std::size_t at) -> std::
 auto validate_worker_routing_state(const WorkerRoutingState state) -> Status {
     if (state.algorithm == RoutingAlgorithm::fnv1a64_v1) {
         if (state.seed != kDefaultWorkerHashSeed) {
-            return fail(ErrorCode::invalid_argument,
-                        "fnv1a64-v1 Worker routing requires a zero hash seed");
+            return fail(ErrorCode::invalid_argument, "fnv1a64-v1 Worker routing requires a zero hash seed");
         }
         return {};
     }
@@ -88,15 +87,14 @@ void set_worker_routing(const RoutingAlgorithm algorithm, const std::uint64_t se
 }
 
 void set_worker_routing(const WorkerRoutingState state) noexcept {
-    g_worker_routing_algorithm.store(static_cast<std::uint32_t>(state.algorithm),
-                                     std::memory_order_relaxed);
+    g_worker_routing_algorithm.store(static_cast<std::uint32_t>(state.algorithm), std::memory_order_relaxed);
     g_worker_hash_seed.store(state.seed, std::memory_order_relaxed);
 }
 
 auto get_worker_routing() noexcept -> WorkerRoutingState {
     return WorkerRoutingState{
-        .algorithm = static_cast<RoutingAlgorithm>(
-            g_worker_routing_algorithm.load(std::memory_order_relaxed)),
+        .algorithm =
+            static_cast<RoutingAlgorithm>(g_worker_routing_algorithm.load(std::memory_order_relaxed)),
         .seed = g_worker_hash_seed.load(std::memory_order_relaxed),
     };
 }
@@ -119,8 +117,7 @@ auto hash_key_routing(const std::span<const std::byte> key, const WorkerRoutingS
     return hash_key(key);
 }
 
-auto hash_key_routing(const std::string_view key, const WorkerRoutingState state) noexcept
-    -> std::uint64_t {
+auto hash_key_routing(const std::string_view key, const WorkerRoutingState state) noexcept -> std::uint64_t {
     return hash_key_routing({reinterpret_cast<const std::byte*>(key.data()), key.size()}, state);
 }
 
@@ -166,8 +163,7 @@ auto decode_init_identity_value(const std::span<const std::byte> value) -> Resul
         return unexpected(valid.error());
     }
     if (!state.keyed()) {
-        return fail(ErrorCode::corrupted_data,
-                    "server INIT extended identity must use siphash24-v1 routing");
+        return fail(ErrorCode::corrupted_data, "server INIT extended identity must use siphash24-v1 routing");
     }
     return state;
 }

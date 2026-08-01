@@ -561,8 +561,7 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "durable_record_limit_closes=" << result.durable_record_limit_closes << ' '
         << "durable_byte_limit_closes=" << result.durable_byte_limit_closes << ' '
         << "durable_adaptive_target_closes=" << result.durable_adaptive_target_closes << ' '
-        << "durable_deadline_closes=" << result.durable_deadline_closes
-        << '\n';
+        << "durable_deadline_closes=" << result.durable_deadline_closes << '\n';
 }
 
 [[nodiscard]] inline auto parse_kind(std::string_view value) -> BenchmarkKind {

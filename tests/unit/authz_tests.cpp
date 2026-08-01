@@ -22,8 +22,8 @@ namespace {
 
 GLYPHA_TEST("authz write implies read and admin implies write") {
     using glyphastore::server::Capability;
-    using glyphastore::server::normalize_capabilities;
     using glyphastore::server::has_capability;
+    using glyphastore::server::normalize_capabilities;
 
     const auto write_only = normalize_capabilities(Capability::write);
     GLYPHA_REQUIRE(has_capability(write_only, Capability::write));
@@ -47,9 +47,9 @@ admin.example admin
     GLYPHA_REQUIRE(policy->enabled());
     GLYPHA_REQUIRE(policy->size() == 3);
 
+    using glyphastore::server::authorize_opcode;
     using glyphastore::server::Capability;
     using glyphastore::server::has_capability;
-    using glyphastore::server::authorize_opcode;
     using glyphastore::server::RequestOpcode;
 
     const auto reader = policy->capabilities_for("reader.example");
@@ -83,8 +83,8 @@ GLYPHA_TEST("authz map rejects unknown capability and duplicates") {
 GLYPHA_TEST("authz disabled policy allows all opcodes") {
     glyphastore::server::AuthzPolicy policy;
     GLYPHA_REQUIRE(!policy.enabled());
-    GLYPHA_REQUIRE(glyphastore::server::authorize_opcode(
-        policy, glyphastore::server::Capability::none, glyphastore::server::RequestOpcode::put));
+    GLYPHA_REQUIRE(glyphastore::server::authorize_opcode(policy, glyphastore::server::Capability::none,
+                                                         glyphastore::server::RequestOpcode::put));
 }
 
 GLYPHA_TEST("authz map parses optional key prefix and rejects empty prefix") {
@@ -105,9 +105,9 @@ GLYPHA_TEST("authz map parses optional key prefix and rejects empty prefix") {
 }
 
 GLYPHA_TEST("authz key prefix denies cross-tenant GET PUT ERASE and allows in-prefix") {
+    using glyphastore::server::authorize_request;
     using glyphastore::server::Capability;
     using glyphastore::server::RequestOpcode;
-    using glyphastore::server::authorize_request;
 
     auto policy = glyphastore::server::AuthzPolicy::parse(
         "tenant-a write prefix=tenant-a/\ntenant-b write prefix=tenant-b/\n");
@@ -118,27 +118,27 @@ GLYPHA_TEST("authz key prefix denies cross-tenant GET PUT ERASE and allows in-pr
     const auto in_b = key_bytes("tenant-b/orders/1");
     const auto bare = key_bytes("other");
 
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::get, in_a));
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::put, in_a));
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::erase, in_a));
+    GLYPHA_REQUIRE(
+        authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::get, in_a));
+    GLYPHA_REQUIRE(
+        authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::put, in_a));
+    GLYPHA_REQUIRE(
+        authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::erase, in_a));
 
-    GLYPHA_REQUIRE(!authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                      RequestOpcode::get, in_b));
-    GLYPHA_REQUIRE(!authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                      RequestOpcode::put, in_b));
-    GLYPHA_REQUIRE(!authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                      RequestOpcode::erase, bare));
+    GLYPHA_REQUIRE(
+        !authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::get, in_b));
+    GLYPHA_REQUIRE(
+        !authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::put, in_b));
+    GLYPHA_REQUIRE(
+        !authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::erase, bare));
 
     // Prefix does not gate lifecycle / ping; STATS requires admin for prefix tenants (ADR 0027).
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::ping, in_b));
-    GLYPHA_REQUIRE(!authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                      RequestOpcode::stats, bare));
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::health, std::span<const std::byte>{}));
+    GLYPHA_REQUIRE(
+        authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::ping, in_b));
+    GLYPHA_REQUIRE(
+        !authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::stats, bare));
+    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::health,
+                                     std::span<const std::byte>{}));
 
     glyphastore::server::AuthzPolicy admin_policy;
     admin_policy.bind("tenant-a", Capability::admin, "tenant-a/");
@@ -149,32 +149,32 @@ GLYPHA_TEST("authz key prefix denies cross-tenant GET PUT ERASE and allows in-pr
     // Exact-prefix boundary: prefix alone is allowed; shorter key denied.
     const auto exact = key_bytes("tenant-a/");
     const auto short_key = key_bytes("tenant-a");
-    GLYPHA_REQUIRE(authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                     RequestOpcode::get, exact));
-    GLYPHA_REQUIRE(!authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix,
-                                      RequestOpcode::get, short_key));
+    GLYPHA_REQUIRE(
+        authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::get, exact));
+    GLYPHA_REQUIRE(
+        !authorize_request(*policy, grant_a.capabilities, grant_a.key_prefix, RequestOpcode::get, short_key));
 }
 
 GLYPHA_TEST("authz unrestricted principal keeps whole-keyspace access") {
+    using glyphastore::server::authorize_request;
     using glyphastore::server::Capability;
     using glyphastore::server::RequestOpcode;
-    using glyphastore::server::authorize_request;
 
     glyphastore::server::AuthzPolicy policy;
     policy.bind("ops", Capability::write);
     const auto grant = policy.grant_for("ops");
     GLYPHA_REQUIRE(grant.key_prefix.empty());
     const auto foreign = key_bytes("anyone/key");
-    GLYPHA_REQUIRE(authorize_request(policy, grant.capabilities, grant.key_prefix, RequestOpcode::get,
-                                     foreign));
-    GLYPHA_REQUIRE(authorize_request(policy, grant.capabilities, grant.key_prefix, RequestOpcode::stats,
-                                     foreign));
+    GLYPHA_REQUIRE(
+        authorize_request(policy, grant.capabilities, grant.key_prefix, RequestOpcode::get, foreign));
+    GLYPHA_REQUIRE(
+        authorize_request(policy, grant.capabilities, grant.key_prefix, RequestOpcode::stats, foreign));
 }
 
 GLYPHA_TEST("authz prefix-scoped STATS requires admin capability") {
+    using glyphastore::server::authorize_opcode;
     using glyphastore::server::Capability;
     using glyphastore::server::RequestOpcode;
-    using glyphastore::server::authorize_opcode;
     using glyphastore::server::required_capability;
 
     GLYPHA_REQUIRE(required_capability(RequestOpcode::stats, {}) == Capability::read);

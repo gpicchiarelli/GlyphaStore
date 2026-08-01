@@ -78,11 +78,10 @@ GLYPHA_TEST("repair_durable_store quarantines unlisted Segment and opens a clean
     GLYPHA_REQUIRE(repaired.has_value());
     GLYPHA_REQUIRE(repaired->quarantined.size() == 2);
     GLYPHA_REQUIRE(std::filesystem::exists(repaired->quarantine_directory / "audit.txt"));
-    GLYPHA_REQUIRE(std::filesystem::exists(repaired->quarantine_directory /
-                                           "segment-00000000000000ff-0000000a.glypha"));
-    GLYPHA_REQUIRE(std::filesystem::exists(source / "operator-note.txt"));
     GLYPHA_REQUIRE(
-        std::filesystem::exists(source / "segment-00000000000000ff-0000000a.glypha"));
+        std::filesystem::exists(repaired->quarantine_directory / "segment-00000000000000ff-0000000a.glypha"));
+    GLYPHA_REQUIRE(std::filesystem::exists(source / "operator-note.txt"));
+    GLYPHA_REQUIRE(std::filesystem::exists(source / "segment-00000000000000ff-0000000a.glypha"));
 
     auto reopened = glyphastore::Store::open({
         .worker_config = {.explicit_count = 1},

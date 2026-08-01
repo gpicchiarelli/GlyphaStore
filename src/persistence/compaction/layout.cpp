@@ -1,5 +1,4 @@
 #include "glyphastore/persistence/compaction.hpp"
-
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment_header.hpp"
 

@@ -391,7 +391,8 @@ sub _bootstrap {
 sub _ensure_connected {
     my ($self, $connection) = @_;
     return if $connection->{socket};
-    $self->_bootstrap($connection, [$self->{worker_count}, $self->{routing_epoch}, $self->{routing}]);
+    $self->_bootstrap($connection,
+        [$self->{worker_count}, $self->{routing_epoch}, $self->{routing}]);
     return;
 }
 

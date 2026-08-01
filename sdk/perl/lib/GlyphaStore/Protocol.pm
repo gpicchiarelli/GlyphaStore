@@ -44,6 +44,12 @@ use constant SIP_C0                => 8_317_987_319_222_330_741; # 0x736f6d65707
 use constant SIP_C1                => 7_237_128_888_997_146_477; # 0x646f72616e646f6d
 use constant SIP_C2                => 7_816_392_313_619_706_465; # 0x6c7967656e657261
 use constant SIP_C3                => 8_387_220_255_154_660_723; # 0x7465646279746573
+use constant U32_MASK              => 4_294_967_295;
+use constant SIP_ROTATE_V1_FIRST   => 13;
+use constant SIP_ROTATE_V3_SECOND  => 21;
+use constant SIP_ROTATE_V1_SECOND  => 17;
+use constant SIP_LENGTH_SHIFT      => 56;
+use constant SIP_FINAL_XOR         => 255;
 
 use constant OP_INIT        => 1;
 use constant OP_PING        => 2;
@@ -155,7 +161,8 @@ sub _validate_control_request_fields {
     {
         die "lifecycle probe cannot carry key, value, expiry, or target_worker\n";
     }
-    if ($opcode == OP_BACKUP && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER)) {
+    if ($opcode == OP_BACKUP && (!$key_len || $value_len || $expire || $target_worker != NO_WORKER))
+    {
         die "BACKUP requires a destination path key and no value, expiry, or target_worker\n";
     }
     return;
@@ -311,25 +318,25 @@ sub _rotl64 {
         $shift -= 32;
         return unpack('Q<', pack('V2', $lo, $hi)) if $shift == 0;
     }
-    my $new_hi = (($hi << $shift) | ($lo >> (32 - $shift))) & 0xFFFFFFFF;
-    my $new_lo = (($lo << $shift) | ($hi >> (32 - $shift))) & 0xFFFFFFFF;
+    my $new_hi = (($hi << $shift) | ($lo >> (32 - $shift))) & U32_MASK;
+    my $new_lo = (($lo << $shift) | ($hi >> (32 - $shift))) & U32_MASK;
     return unpack('Q<', pack('V2', $new_lo, $new_hi));
 }
 
 sub _sipround {
     my ($v0, $v1, $v2, $v3) = @_;
     $v0 = _add64($v0, $v1);
-    $v1 = _rotl64($v1, 13);
+    $v1 = _rotl64($v1, SIP_ROTATE_V1_FIRST);
     $v1 = _xor64($v1, $v0);
     $v0 = _rotl64($v0, 32);
     $v2 = _add64($v2, $v3);
     $v3 = _rotl64($v3, 16);
     $v3 = _xor64($v3, $v2);
     $v0 = _add64($v0, $v3);
-    $v3 = _rotl64($v3, 21);
+    $v3 = _rotl64($v3, SIP_ROTATE_V3_SECOND);
     $v3 = _xor64($v3, $v0);
     $v2 = _add64($v2, $v1);
-    $v1 = _rotl64($v1, 17);
+    $v1 = _rotl64($v1, SIP_ROTATE_V1_SECOND);
     $v1 = _xor64($v1, $v2);
     $v2 = _rotl64($v2, 32);
     return ($v0, $v1, $v2, $v3);
@@ -346,6 +353,7 @@ sub siphash24 {
     my $v3 = _xor64($k1, SIP_C3);
     my $length = length($key);
     my $offset = 0;
+
     while ($offset + 8 <= $length) {
         my $message = unpack('Q<', substr($key, $offset, 8));
         $v3 = _xor64($v3, $message);
@@ -354,7 +362,7 @@ sub siphash24 {
         $v0 = _xor64($v0, $message);
         $offset += 8;
     }
-    my $message = _u64($length << 56);
+    my $message = _u64($length << SIP_LENGTH_SHIFT);
     my $i = 0;
     while ($offset + $i < $length) {
         $message = _xor64($message, _u64(ord(substr($key, $offset + $i, 1)) << (8 * $i)));
@@ -364,7 +372,7 @@ sub siphash24 {
     ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
     ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
     $v0 = _xor64($v0, $message);
-    $v2 = _xor64($v2, 0xFF);
+    $v2 = _xor64($v2, SIP_FINAL_XOR);
     for (1 .. 4) {
         ($v0, $v1, $v2, $v3) = _sipround($v0, $v1, $v2, $v3);
     }
@@ -411,7 +419,8 @@ sub decode_init_identity {
     die "server INIT identity value has unexpected length\n"
         if length($value) != INIT_IDENTITY_EXTENDED_BYTES;
     die "server INIT identity prefix is invalid\n"
-        if substr($value, 0, length(IDENTITY)) ne IDENTITY || substr($value, length(IDENTITY), 1) ne "\0";
+        if substr($value, 0, length(IDENTITY)) ne IDENTITY
+        || substr($value, length(IDENTITY), 1) ne "\0";
     my ($algorithm, $seed) = unpack('L<Q<', substr($value, length(IDENTITY) + 1));
     my $state = _normalize_routing({ algorithm => $algorithm, seed => $seed });
     die "server INIT extended identity must use siphash24-v1 routing\n"

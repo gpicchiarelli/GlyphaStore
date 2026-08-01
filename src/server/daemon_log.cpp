@@ -2,8 +2,8 @@
 
 #include "glyphastore/core/error.hpp"
 
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <iostream>
 #include <string>
 
@@ -210,8 +210,7 @@ auto classify_ready_loss(const Server& server) noexcept -> ReadyLossReason {
     return ReadyLossReason::none;
 }
 
-DaemonLog::DaemonLog(const DaemonLogFormat format, const std::string_view program,
-                     const bool quiet) noexcept
+DaemonLog::DaemonLog(const DaemonLogFormat format, const std::string_view program, const bool quiet) noexcept
     : format_{format}, program_{program}, quiet_{quiet} {}
 
 auto DaemonLog::suppress_quiet_lifecycle() const noexcept -> bool {

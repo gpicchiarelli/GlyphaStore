@@ -32,8 +32,7 @@ namespace {
 
 } // namespace
 
-auto validate_compaction_write_amplification(const std::size_t source_count,
-                                             const std::size_t output_count,
+auto validate_compaction_write_amplification(const std::size_t source_count, const std::size_t output_count,
                                              const DurableResourceLimits& limits) -> Status {
     const auto temporary = segment_bytes(output_count, "compaction temporary byte count overflow");
     if (!temporary) {
@@ -78,8 +77,7 @@ auto estimate_compaction_resources(const Manifest& current, const Manifest& next
         }
         return unexpected((!current_manifest ? current_manifest.error() : next_manifest.error()));
     }
-    auto peak =
-        checked_add(*current_segments, *temporary, "compaction peak Store byte count overflow");
+    auto peak = checked_add(*current_segments, *temporary, "compaction peak Store byte count overflow");
     if (peak) {
         peak = checked_add(*peak, *current_manifest, "compaction peak Store byte count overflow");
     }

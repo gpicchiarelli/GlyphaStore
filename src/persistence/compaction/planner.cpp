@@ -1,5 +1,4 @@
 #include "glyphastore/persistence/compaction.hpp"
-
 #include "glyphastore/persistence/resource_limits.hpp"
 #include "persistence/compaction/resource_estimator.hpp"
 
@@ -62,8 +61,8 @@ auto plan_durable_worker_compaction(const Manifest& current, const WorkerId work
     }
     ++plan.next_manifest.manifest_generation;
 
-    auto estimate = estimate_compaction_resources(current, plan.next_manifest, plan.sources.size(),
-                                                  output_segment_count);
+    auto estimate =
+        estimate_compaction_resources(current, plan.next_manifest, plan.sources.size(), output_segment_count);
     if (!estimate) {
         return unexpected(estimate.error());
     }

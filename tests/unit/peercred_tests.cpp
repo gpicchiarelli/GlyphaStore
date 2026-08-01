@@ -76,9 +76,8 @@ GLYPHA_TEST("unix listener accept yields peer credentials for local connector") 
     GLYPHA_REQUIRE(credentials->uid == static_cast<std::uint32_t>(::geteuid()));
     GLYPHA_REQUIRE(credentials->gid == static_cast<std::uint32_t>(::getegid()));
     const auto principal = glyphastore::server::peercred_principal(*credentials);
-    GLYPHA_REQUIRE(principal ==
-                   std::string{glyphastore::server::peercred_principal_prefix()} +
-                       std::to_string(::geteuid()));
+    GLYPHA_REQUIRE(principal == std::string{glyphastore::server::peercred_principal_prefix()} +
+                                    std::to_string(::geteuid()));
 #if defined(__linux__)
     GLYPHA_REQUIRE(credentials->pid == static_cast<std::uint32_t>(::getpid()));
 #endif

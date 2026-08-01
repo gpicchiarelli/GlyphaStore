@@ -26,7 +26,8 @@ namespace {
     if (name.find("compaction_intent") != std::string::npos) {
         return glyphastore::decode_compaction_intent(bytes).has_value();
     }
-    if (name.find("segment_header") != std::string::npos || name.find("segment_v1_header") != std::string::npos) {
+    if (name.find("segment_header") != std::string::npos ||
+        name.find("segment_v1_header") != std::string::npos) {
         std::array<std::byte, glyphastore::kSegmentHeaderReservedBytes> encoded{};
         if (bytes.size() > encoded.size()) {
             return false;

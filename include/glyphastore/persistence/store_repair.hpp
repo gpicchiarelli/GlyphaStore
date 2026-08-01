@@ -36,8 +36,7 @@ struct DurableStoreRepairReport {
 // Blocking catalog faults (missing Segment/required entry) and unsafe entries
 // (symlinks/hard-links/non-regular) fail closed without writing a usable store.
 [[nodiscard]] auto repair_durable_store(const std::filesystem::path& source,
-                                        const std::filesystem::path& workspace,
-                                        bool scan_records = true,
+                                        const std::filesystem::path& workspace, bool scan_records = true,
                                         const DurableResourceLimits& limits = {})
     -> Result<DurableStoreRepairReport>;
 

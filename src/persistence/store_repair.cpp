@@ -107,8 +107,8 @@ namespace {
            kind == NamespaceIssueKind::missing_required_entry || kind == NamespaceIssueKind::unsafe_entry;
 }
 
-[[nodiscard]] auto verify_catalog_only(DataDirectory& directory, const bool scan_records,
-                                       Manifest manifest) -> Result<DurableStoreVerifyReport> {
+[[nodiscard]] auto verify_catalog_only(DataDirectory& directory, const bool scan_records, Manifest manifest)
+    -> Result<DurableStoreVerifyReport> {
     DurableStoreVerifyReport report{.manifest = std::move(manifest)};
     report.segments.reserve(report.manifest.segments.size());
     for (const auto& entry : report.manifest.segments) {
@@ -236,13 +236,11 @@ auto repair_durable_store(const std::filesystem::path& source, const std::filesy
 
         std::error_code mkdir_error;
         if (!std::filesystem::create_directories(workspace, mkdir_error) && mkdir_error) {
-            return fail(ErrorCode::io_error,
-                        "cannot create repair workspace: " + mkdir_error.message());
+            return fail(ErrorCode::io_error, "cannot create repair workspace: " + mkdir_error.message());
         }
         if (!std::filesystem::is_empty(workspace, mkdir_error) || mkdir_error) {
             if (mkdir_error) {
-                return fail(ErrorCode::io_error,
-                            "cannot inspect repair workspace: " + mkdir_error.message());
+                return fail(ErrorCode::io_error, "cannot inspect repair workspace: " + mkdir_error.message());
             }
             return fail(ErrorCode::invalid_argument, "repair workspace must be empty");
         }
@@ -265,8 +263,8 @@ auto repair_durable_store(const std::filesystem::path& source, const std::filesy
 
         FileDescriptor source_root{
             interrupted_open(source.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
-        FileDescriptor destination_root{interrupted_open(report.repaired_store.c_str(),
-                                                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
+        FileDescriptor destination_root{
+            interrupted_open(report.repaired_store.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
         FileDescriptor quarantine_root{interrupted_open(report.quarantine_directory.c_str(),
                                                         O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)};
         if (!source_root.valid() || !destination_root.valid() || !quarantine_root.valid()) {
@@ -277,8 +275,7 @@ auto repair_durable_store(const std::filesystem::path& source, const std::filesy
             if (!quarantinable(issue.kind)) {
                 continue;
             }
-            auto copied =
-                copy_named_file(source_root.get(), quarantine_root.get(), issue.name.c_str());
+            auto copied = copy_named_file(source_root.get(), quarantine_root.get(), issue.name.c_str());
             if (!copied) {
                 return unexpected(copied.error());
             }
@@ -305,8 +302,7 @@ auto repair_durable_store(const std::filesystem::path& source, const std::filesy
             ++report.catalog_files_copied;
             report.catalog_bytes_copied += *copied;
         }
-        auto manifest_copied =
-            copy_named_file(source_root.get(), destination_root.get(), kManifestFilename);
+        auto manifest_copied = copy_named_file(source_root.get(), destination_root.get(), kManifestFilename);
         if (!manifest_copied) {
             return unexpected(manifest_copied.error());
         }
@@ -320,8 +316,7 @@ auto repair_durable_store(const std::filesystem::path& source, const std::filesy
             return unexpected(synced.error());
         }
 
-        if (auto audit = write_quarantine_audit(report.quarantine_directory / "audit.txt", report);
-            !audit) {
+        if (auto audit = write_quarantine_audit(report.quarantine_directory / "audit.txt", report); !audit) {
             return unexpected(audit.error());
         }
         if (auto synced = quarantine_root.sync(FileSyncMode::full); !synced) {

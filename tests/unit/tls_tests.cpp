@@ -53,9 +53,8 @@ class TemporaryDirectory final {
 auto write_self_signed_material(const std::filesystem::path& directory) -> bool {
     const auto key = directory / "server.key";
     const auto cert = directory / "server.crt";
-    const auto command = std::string{"openssl req -x509 -newkey rsa:2048 -nodes -keyout '"} +
-                         key.string() + "' -out '" + cert.string() +
-                         "' -days 1 -subj '/CN=localhost' >/dev/null 2>&1";
+    const auto command = std::string{"openssl req -x509 -newkey rsa:2048 -nodes -keyout '"} + key.string() +
+                         "' -out '" + cert.string() + "' -days 1 -subj '/CN=localhost' >/dev/null 2>&1";
     return std::system(command.c_str()) == 0 && std::filesystem::is_regular_file(key) &&
            std::filesystem::is_regular_file(cert);
 }
@@ -63,8 +62,8 @@ auto write_self_signed_material(const std::filesystem::path& directory) -> bool 
 auto send_all_ssl(SSL* ssl, const std::span<const std::byte> data) -> bool {
     std::size_t sent = 0;
     while (sent < data.size()) {
-        const auto written =
-            SSL_write(ssl, data.data() + static_cast<std::ptrdiff_t>(sent), static_cast<int>(data.size() - sent));
+        const auto written = SSL_write(ssl, data.data() + static_cast<std::ptrdiff_t>(sent),
+                                       static_cast<int>(data.size() - sent));
         if (written <= 0) {
             return false;
         }
@@ -306,15 +305,15 @@ GLYPHA_TEST("dual cleartext and TLS listeners serve protocol independently") {
         std::array<std::byte, glyphastore::server::kResponseHeaderBytes> header{};
         std::size_t received = 0;
         while (received < header.size()) {
-            const auto count =
-                ::recv(fd, header.data() + static_cast<std::ptrdiff_t>(received), header.size() - received, 0);
+            const auto count = ::recv(fd, header.data() + static_cast<std::ptrdiff_t>(received),
+                                      header.size() - received, 0);
             GLYPHA_REQUIRE(count > 0);
             received += static_cast<std::size_t>(count);
         }
         std::uint32_t frame_size = 0;
         for (std::size_t byte = 0; byte < 4; ++byte) {
-            frame_size |=
-                static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(header[byte])) << (byte * 8U);
+            frame_size |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(header[byte]))
+                          << (byte * 8U);
         }
         std::vector<std::byte> frame(frame_size);
         std::copy(header.begin(), header.end(), frame.begin());
@@ -474,16 +473,13 @@ GLYPHA_TEST("tls CRL rejects revoked mTLS client certificate") {
         out << "1000\n";
     }
 
-    const auto run = [](const std::string& command) -> bool {
-        return std::system(command.c_str()) == 0;
-    };
+    const auto run = [](const std::string& command) -> bool { return std::system(command.c_str()) == 0; };
     if (!run("openssl req -x509 -newkey rsa:2048 -nodes -keyout '" + ca_key.string() + "' -out '" +
              ca_crt.string() + "' -days 1 -subj '/CN=glyphastore-test-ca' >/dev/null 2>&1")) {
         return;
     }
     if (!run("openssl req -newkey rsa:2048 -nodes -keyout '" + server_key.string() + "' -out '" +
-             (root / "server.csr").string() +
-             "' -subj '/CN=localhost' >/dev/null 2>&1")) {
+             (root / "server.csr").string() + "' -subj '/CN=localhost' >/dev/null 2>&1")) {
         return;
     }
     if (!run("openssl x509 -req -in '" + (root / "server.csr").string() + "' -CA '" + ca_crt.string() +

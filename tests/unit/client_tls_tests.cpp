@@ -41,9 +41,8 @@ class TemporaryDirectory final {
 auto write_self_signed_material(const std::filesystem::path& directory) -> bool {
     const auto key = directory / "server.key";
     const auto cert = directory / "server.crt";
-    const auto command = std::string{"openssl req -x509 -newkey rsa:2048 -nodes -keyout '"} +
-                         key.string() + "' -out '" + cert.string() +
-                         "' -days 1 -subj '/CN=localhost' >/dev/null 2>&1";
+    const auto command = std::string{"openssl req -x509 -newkey rsa:2048 -nodes -keyout '"} + key.string() +
+                         "' -out '" + cert.string() + "' -days 1 -subj '/CN=localhost' >/dev/null 2>&1";
     return std::system(command.c_str()) == 0 && std::filesystem::is_regular_file(key) &&
            std::filesystem::is_regular_file(cert);
 }
@@ -100,12 +99,11 @@ GLYPHA_TEST("client connect over TLS can ping") {
     });
     GLYPHA_REQUIRE(client.has_value());
     const auto payload = std::string_view{"tls-ping"};
-    const auto echoed = client->ping(
-        {reinterpret_cast<const std::byte*>(payload.data()), payload.size()});
+    const auto echoed = client->ping({reinterpret_cast<const std::byte*>(payload.data()), payload.size()});
     GLYPHA_REQUIRE(echoed.has_value());
     GLYPHA_REQUIRE(echoed->size() == payload.size());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(echoed->data()), echoed->size()) ==
-                    payload);
+                   payload);
     client->close();
     (*server)->request_stop();
 }

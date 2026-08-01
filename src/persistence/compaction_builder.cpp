@@ -22,7 +22,7 @@ namespace {
 struct PackedRecord {
     IndexEntry source;
     DurableCompactionPlacement placement;
-    RecordRef output;
+    RecordRef output{};
     std::uint32_t encoded_crc{};
 };
 

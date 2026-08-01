@@ -49,8 +49,7 @@ auto write_temp_file(const std::filesystem::path& path, std::string_view content
 } // namespace
 
 GLYPHA_TEST("openbsd sandbox plan unveils data dir and tls paths when present") {
-    const auto root =
-        std::filesystem::temp_directory_path() / "glyphastore-openbsd-sandbox-plan";
+    const auto root = std::filesystem::temp_directory_path() / "glyphastore-openbsd-sandbox-plan";
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root);
     const auto data = root / "data";

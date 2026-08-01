@@ -40,12 +40,10 @@ void set_worker_routing(WorkerRoutingState state) noexcept;
 [[nodiscard]] auto hash_key_routing(std::string_view key) noexcept -> std::uint64_t;
 [[nodiscard]] auto hash_key_routing(std::span<const std::byte> key, WorkerRoutingState state) noexcept
     -> std::uint64_t;
-[[nodiscard]] auto hash_key_routing(std::string_view key, WorkerRoutingState state) noexcept
-    -> std::uint64_t;
+[[nodiscard]] auto hash_key_routing(std::string_view key, WorkerRoutingState state) noexcept -> std::uint64_t;
 
 [[nodiscard]] auto encode_init_identity_value(WorkerRoutingState state) -> std::vector<std::byte>;
-[[nodiscard]] auto decode_init_identity_value(std::span<const std::byte> value)
-    -> Result<WorkerRoutingState>;
+[[nodiscard]] auto decode_init_identity_value(std::span<const std::byte> value) -> Result<WorkerRoutingState>;
 [[nodiscard]] auto validate_worker_routing_state(WorkerRoutingState state) -> Status;
 
 } // namespace glyphastore

@@ -25,8 +25,7 @@ namespace {
         absolute = std::move(canonical);
     }
     if (!std::filesystem::exists(absolute)) {
-        return fail(ErrorCode::not_found,
-                    "openbsd sandbox path does not exist: " + absolute.string());
+        return fail(ErrorCode::not_found, "openbsd sandbox path does not exist: " + absolute.string());
     }
     return absolute;
 }
@@ -45,8 +44,8 @@ namespace {
             return {};
         }
     }
-    plan.unveils.push_back(OpenbsdUnveilEntry{.path = std::move(*resolved),
-                                              .permissions = std::string{permissions}});
+    plan.unveils.push_back(
+        OpenbsdUnveilEntry{.path = std::move(*resolved), .permissions = std::string{permissions}});
     return {};
 }
 
@@ -116,21 +115,18 @@ auto apply_openbsd_sandbox(const DaemonOptions& options) -> Status {
             const auto error_number = errno;
             return fail(ErrorCode::io_error,
                         "unveil(" + entry.path.string() + ", " + entry.permissions +
-                            ") failed: " +
-                            std::error_code{error_number, std::system_category()}.message());
+                            ") failed: " + std::error_code{error_number, std::system_category()}.message());
         }
     }
     if (::unveil(nullptr, nullptr) != 0) {
         const auto error_number = errno;
-        return fail(ErrorCode::io_error,
-                    std::string{"unveil lock failed: "} +
-                        std::error_code{error_number, std::system_category()}.message());
+        return fail(ErrorCode::io_error, std::string{"unveil lock failed: "} +
+                                             std::error_code{error_number, std::system_category()}.message());
     }
     if (::pledge(planned->promises.c_str(), nullptr) != 0) {
         const auto error_number = errno;
-        return fail(ErrorCode::io_error,
-                    std::string{"pledge("} + planned->promises + ") failed: " +
-                        std::error_code{error_number, std::system_category()}.message());
+        return fail(ErrorCode::io_error, std::string{"pledge("} + planned->promises + ") failed: " +
+                                             std::error_code{error_number, std::system_category()}.message());
     }
 #else
     (void)options;

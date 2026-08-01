@@ -76,7 +76,7 @@ void emit_human_listen(const std::string_view program, const glyphastore::server
 }
 
 void observe_lifecycle(const glyphastore::server::Server& server, glyphastore::server::DaemonLog& log,
-                     bool& was_ready, bool& was_emergency, bool& was_fault) {
+                       bool& was_ready, bool& was_emergency, bool& was_fault) {
     if (!log.structured()) {
         return;
     }
@@ -99,10 +99,10 @@ void observe_lifecycle(const glyphastore::server::Server& server, glyphastore::s
     const bool faulted =
         snapshot.state == glyphastore::MaintenanceState::faulted && snapshot.last_error.has_value();
     if (faulted && !was_fault) {
-        log.emit_maintenance_fault(snapshot.state,
-                                   std::string{glyphastore::server::daemon_error_code_name(
-                                       snapshot.last_error->code)},
-                                   snapshot.last_error->message);
+        log.emit_maintenance_fault(
+            snapshot.state,
+            std::string{glyphastore::server::daemon_error_code_name(snapshot.last_error->code)},
+            snapshot.last_error->message);
         was_fault = true;
     } else if (!faulted) {
         was_fault = false;
@@ -168,8 +168,7 @@ int main(const int argc, char** argv) try {
     }
     if (arguments->server.bind_address != "127.0.0.1" && !arguments->secure_profile &&
         ((*server)->cleartext_port() != 0 || !arguments->server.tls.requested())) {
-        std::cerr << program
-                  << ": warning: bind address " << arguments->server.bind_address
+        std::cerr << program << ": warning: bind address " << arguments->server.bind_address
                   << " exposes cleartext TCP with no authentication; restrict to a trusted network "
                      "or use --secure-profile (TLS-only + mTLS + --authz-map; OpenBSD uses LibreSSL; "
                      "docs/security/roadmap.md)\n";
@@ -200,8 +199,8 @@ int main(const int argc, char** argv) try {
     if (executor_failure) {
         if (const auto failure = (*server)->first_failure(); failure.has_value()) {
             if (log.structured()) {
-                log.emit_executor_failure(
-                    glyphastore::server::daemon_error_code_name(failure->code), failure->message);
+                log.emit_executor_failure(glyphastore::server::daemon_error_code_name(failure->code),
+                                          failure->message);
             }
         }
     }

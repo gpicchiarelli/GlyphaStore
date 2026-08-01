@@ -283,8 +283,7 @@ auto audit_data_directory(DataDirectory& directory, const Manifest& manifest)
             return unexpected(status.error());
         }
         if (!private_regular(*status)) {
-            if (auto added =
-                    append_issue(report, {.kind = NamespaceIssueKind::unsafe_entry, .name = name});
+            if (auto added = append_issue(report, {.kind = NamespaceIssueKind::unsafe_entry, .name = name});
                 !added) {
                 return unexpected(added.error());
             }

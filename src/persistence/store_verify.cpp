@@ -65,8 +65,8 @@ auto verify_durable_store(DataDirectory& directory, const bool scan_records,
         }
 
         bool active_requires_rotation{};
-        if (auto lifecycle = validate_lifecycle(entry, opened->selected_commit().commit,
-                                                active_requires_rotation);
+        if (auto lifecycle =
+                validate_lifecycle(entry, opened->selected_commit().commit, active_requires_rotation);
             !lifecycle) {
             return unexpected(lifecycle.error());
         }
@@ -99,8 +99,7 @@ auto verify_durable_store(DataDirectory& directory, const bool scan_records,
 }
 
 auto verify_durable_store_path(const std::filesystem::path& path, const bool scan_records,
-                               const DurableResourceLimits& limits)
-    -> Result<DurableStoreVerifyReport> {
+                               const DurableResourceLimits& limits) -> Result<DurableStoreVerifyReport> {
     auto directory = DataDirectory::open_and_lock(path, DataDirectoryOpenMode::existing);
     if (!directory) {
         return unexpected(directory.error());

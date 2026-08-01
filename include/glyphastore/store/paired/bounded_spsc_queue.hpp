@@ -20,8 +20,8 @@ template <typename T> class BoundedSpscQueue final {
 
   public:
     explicit BoundedSpscQueue(const std::size_t requested_capacity)
-        : capacity_(std::bit_ceil(std::max(std::size_t{2}, requested_capacity))),
-          mask_(capacity_ - 1U), cells_(std::make_unique<std::optional<T>[]>(capacity_)) {}
+        : capacity_(std::bit_ceil(std::max(std::size_t{2}, requested_capacity))), mask_(capacity_ - 1U),
+          cells_(std::make_unique<std::optional<T>[]>(capacity_)) {}
 
     BoundedSpscQueue(const BoundedSpscQueue&) = delete;
     auto operator=(const BoundedSpscQueue&) -> BoundedSpscQueue& = delete;

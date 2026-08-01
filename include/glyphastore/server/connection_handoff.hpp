@@ -1,7 +1,7 @@
 #pragma once
 
-#include "glyphastore/server/bounded_mpsc_queue.hpp"
 #include "glyphastore/server/authz.hpp"
+#include "glyphastore/server/bounded_mpsc_queue.hpp"
 #include "glyphastore/server/socket.hpp"
 #include "glyphastore/server/tls.hpp"
 #include "glyphastore/server/wakeup.hpp"

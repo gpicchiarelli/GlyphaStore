@@ -7,8 +7,8 @@
 namespace glyphastore::recovery {
 
 auto load_recovery_catalog(DataDirectory& directory, const DurableResourceLimits& limits,
-                           const DurableCompactionIntent* compaction_intent,
-                           RecoveryMemoryBudget& budget) -> Result<RecoveryCatalog> {
+                           const DurableCompactionIntent* compaction_intent, RecoveryMemoryBudget& budget)
+    -> Result<RecoveryCatalog> {
     if (auto valid = validate_durable_resource_limits(limits); !valid) {
         return unexpected(valid.error());
     }
@@ -26,8 +26,7 @@ auto load_recovery_catalog(DataDirectory& directory, const DurableResourceLimits
     if (auto memory = budget.retain(*manifest_memory); !memory) {
         return unexpected(memory.error());
     }
-    if (auto memory = budget.retain_repeated(kRecoveryBytesPerSegment, manifest->segments.size());
-        !memory) {
+    if (auto memory = budget.retain_repeated(kRecoveryBytesPerSegment, manifest->segments.size()); !memory) {
         return unexpected(memory.error());
     }
     if (auto memory = budget.retain_repeated(kRecoveryBytesPerWorker, manifest->worker_count); !memory) {

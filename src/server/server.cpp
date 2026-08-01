@@ -48,8 +48,8 @@ namespace {
               "\nfiles_copied=" + std::to_string(report->files_copied) +
               "\nbytes_copied=" + std::to_string(report->bytes_copied) +
               "\nsource_segments=" + std::to_string(report->source_verification.segments.size()) +
-              "\ndestination_segments=" +
-              std::to_string(report->destination_verification.segments.size()) + '\n';
+              "\ndestination_segments=" + std::to_string(report->destination_verification.segments.size()) +
+              '\n';
         return true;
     } catch (const std::exception& exception) {
         out = exception.what();

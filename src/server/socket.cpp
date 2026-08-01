@@ -219,8 +219,7 @@ auto UnixListener::bind(const std::filesystem::path& path, const int backlog) ->
     sockaddr_un endpoint{};
     endpoint.sun_family = AF_UNIX;
     std::memcpy(endpoint.sun_path, path_text.c_str(), path_text.size() + 1U);
-    const auto bind_length =
-        static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path_text.size() + 1U);
+    const auto bind_length = static_cast<socklen_t>(offsetof(sockaddr_un, sun_path) + path_text.size() + 1U);
     if (::bind(socket.descriptor(), reinterpret_cast<const sockaddr*>(&endpoint), bind_length) != 0) {
         return system_error("bind(AF_UNIX)");
     }

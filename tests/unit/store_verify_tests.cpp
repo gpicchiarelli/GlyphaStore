@@ -39,10 +39,10 @@ class VerifyTemporaryDirectory final {
 };
 
 auto store_id() -> glyphastore::StoreId {
-    return {std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24}, std::byte{0x25},
-            std::byte{0x26}, std::byte{0x27}, std::byte{0x28}, std::byte{0x29}, std::byte{0x2A},
-            std::byte{0x2B}, std::byte{0x2C}, std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F},
-            std::byte{0x30}};
+    return {std::byte{0x21}, std::byte{0x22}, std::byte{0x23}, std::byte{0x24},
+            std::byte{0x25}, std::byte{0x26}, std::byte{0x27}, std::byte{0x28},
+            std::byte{0x29}, std::byte{0x2A}, std::byte{0x2B}, std::byte{0x2C},
+            std::byte{0x2D}, std::byte{0x2E}, std::byte{0x2F}, std::byte{0x30}};
 }
 
 auto identity_for(const glyphastore::Manifest& manifest, const glyphastore::ManifestSegmentEntry& entry)
@@ -154,11 +154,11 @@ GLYPHA_TEST("verify_durable_store fails on unlisted Segment files") {
         auto created =
             glyphastore::DurableSegmentFile::create(*directory, identity_for(manifest, manifest.segments[0]));
         GLYPHA_REQUIRE(created.durable());
-        auto extra = glyphastore::DurableSegmentFile::create(
-            *directory, {.store_id = manifest.store_id,
-                         .segment_id = glyphastore::SegmentId{9},
-                         .generation = glyphastore::GenerationId{1},
-                         .owner_worker = glyphastore::WorkerId{0}});
+        auto extra =
+            glyphastore::DurableSegmentFile::create(*directory, {.store_id = manifest.store_id,
+                                                                 .segment_id = glyphastore::SegmentId{9},
+                                                                 .generation = glyphastore::GenerationId{1},
+                                                                 .owner_worker = glyphastore::WorkerId{0}});
         GLYPHA_REQUIRE(extra.durable());
     }
 

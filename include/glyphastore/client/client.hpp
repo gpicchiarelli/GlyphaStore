@@ -121,23 +121,20 @@ class Client final {
                            PutOptions put_options = {}, RequestOptions options = {}) -> MutationResult;
     [[nodiscard]] auto put(std::string_view key, std::string_view value, PutOptions put_options = {},
                            RequestOptions options = {}) -> MutationResult;
-    [[nodiscard]] auto erase(std::span<const std::byte> key, RequestOptions options = {})
-        -> MutationResult;
+    [[nodiscard]] auto erase(std::span<const std::byte> key, RequestOptions options = {}) -> MutationResult;
     [[nodiscard]] auto erase(std::string_view key, RequestOptions options = {}) -> MutationResult;
 
     // Executes an ordered pipeline on one Worker-bound connection. Every key
     // must route to the same Worker. Responses always correspond positionally
     // to requests, including partial transport failures.
     [[nodiscard]] auto execute_pipeline(std::span<const PipelineRequest> requests,
-                                        RequestOptions options = {})
-        -> Result<std::vector<PipelineResponse>>;
+                                        RequestOptions options = {}) -> Result<std::vector<PipelineResponse>>;
 
     // Groups requests by Worker, runs one pipeline per Worker (concurrently when
     // more than one Worker is involved), and restores caller order. Not atomic:
     // Workers succeed or fail independently after admission. One shared deadline
     // covers the whole batch call.
-    [[nodiscard]] auto execute_batch(std::span<const PipelineRequest> requests,
-                                     RequestOptions options = {})
+    [[nodiscard]] auto execute_batch(std::span<const PipelineRequest> requests, RequestOptions options = {})
         -> Result<std::vector<PipelineResponse>>;
 
     [[nodiscard]] auto worker_for(std::span<const std::byte> key) const noexcept -> std::uint32_t;

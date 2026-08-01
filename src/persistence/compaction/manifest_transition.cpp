@@ -13,8 +13,7 @@ auto validate_durable_compaction_transition(const Manifest& current, const Manif
     }
     if (worker_id.value >= current.worker_count || current.store_id != next.store_id ||
         current.worker_count != next.worker_count || current.routing_algorithm != next.routing_algorithm ||
-        current.routing_epoch != next.routing_epoch ||
-        current.worker_hash_seed != next.worker_hash_seed ||
+        current.routing_epoch != next.routing_epoch || current.worker_hash_seed != next.worker_hash_seed ||
         current.next_segment_id != next.next_segment_id ||
         current.next_segment_generation != next.next_segment_generation ||
         current.manifest_generation == std::numeric_limits<std::uint64_t>::max() ||

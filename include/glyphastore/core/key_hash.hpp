@@ -31,8 +31,7 @@ inline constexpr std::uint64_t kFnv1a64Prime = 1099511628211ULL;
     auto rotl = [](std::uint64_t value, unsigned shift) noexcept -> std::uint64_t {
         return (value << shift) | (value >> (64U - shift));
     };
-    auto sipround = [&](std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v2,
-                        std::uint64_t& v3) noexcept {
+    auto sipround = [&](std::uint64_t& v0, std::uint64_t& v1, std::uint64_t& v2, std::uint64_t& v3) noexcept {
         v0 += v1;
         v1 = rotl(v1, 13);
         v1 ^= v0;
@@ -91,8 +90,8 @@ inline constexpr std::uint64_t kFnv1a64Prime = 1099511628211ULL;
     return siphash24(key, k0, k1);
 }
 
-[[nodiscard]] inline auto hash_key_keyed(std::string_view key, std::uint64_t k0,
-                                         std::uint64_t k1) noexcept -> std::uint64_t {
+[[nodiscard]] inline auto hash_key_keyed(std::string_view key, std::uint64_t k0, std::uint64_t k1) noexcept
+    -> std::uint64_t {
     return hash_key_keyed({reinterpret_cast<const std::byte*>(key.data()), key.size()}, k0, k1);
 }
 

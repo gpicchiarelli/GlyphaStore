@@ -125,7 +125,6 @@ auto bootstrap_store_id() -> glyphastore::StoreId {
 }
 } // namespace
 
-
 namespace {
 [[nodiscard]] auto legacy_cfg(glyphastore::StoreConfig cfg = {}) -> glyphastore::StoreConfig {
     cfg.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex;
@@ -214,7 +213,8 @@ GLYPHA_TEST("store erase removes key and rejects subsequent reads") {
 
 GLYPHA_TEST("store get hides expired keys") {
     const auto clock = std::make_shared<ManualStoreClock>(99);
-    auto opened = glyphastore::Store::open(legacy_cfg({.worker_config = {.explicit_count = 1}, .clock = clock}));
+    auto opened =
+        glyphastore::Store::open(legacy_cfg({.worker_config = {.explicit_count = 1}, .clock = clock}));
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("expired", bytes("v"), 100).has_value());
@@ -511,12 +511,13 @@ GLYPHA_TEST("durable get lazily reclaims expired Index entries on hot and cold p
     limits.max_live_keys = 1;
 
     {
-        auto opened = glyphastore::Store::open(legacy_cfg({.worker_config = {.explicit_count = 1},
-                                                .storage_mode = glyphastore::StorageMode::durable_sync,
-                                                .data_directory = path,
-                                                .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-                                                .durable_limits = limits,
-                                                .clock = clock}));
+        auto opened = glyphastore::Store::open(
+            legacy_cfg({.worker_config = {.explicit_count = 1},
+                        .storage_mode = glyphastore::StorageMode::durable_sync,
+                        .data_directory = path,
+                        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                        .durable_limits = limits,
+                        .clock = clock}));
         GLYPHA_REQUIRE(opened.has_value());
         auto& store = **opened;
         GLYPHA_REQUIRE(store.put("expired-hot", bytes("v"), 100).has_value());
@@ -540,13 +541,13 @@ GLYPHA_TEST("durable get lazily reclaims expired Index entries on hot and cold p
         limits.max_hot_cache_staging_bytes_per_worker = 0;
         limits.max_hot_cache_entries_per_worker = 0;
         clock->set(199);
-        auto opened =
-            glyphastore::Store::open(legacy_cfg({.worker_config = {.explicit_count = 1},
-                                      .storage_mode = glyphastore::StorageMode::durable_sync,
-                                      .data_directory = path,
-                                      .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
-                                      .durable_limits = limits,
-                                      .clock = clock}));
+        auto opened = glyphastore::Store::open(
+            legacy_cfg({.worker_config = {.explicit_count = 1},
+                        .storage_mode = glyphastore::StorageMode::durable_sync,
+                        .data_directory = path,
+                        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                        .durable_limits = limits,
+                        .clock = clock}));
         GLYPHA_REQUIRE(opened.has_value());
         auto& store = **opened;
         GLYPHA_REQUIRE(store.put("expired-cold", bytes("cold"), 200).has_value());
@@ -873,10 +874,10 @@ GLYPHA_TEST("Store close forces a partial strict group and releases its producer
     StoreTemporaryDirectory temporary;
     auto opened = glyphastore::Store::open(
         legacy_cfg({.worker_config = {.explicit_count = 1},
-         .storage_mode = glyphastore::StorageMode::durable_group,
-         .data_directory = temporary.store_path(),
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 60'000}}));
+                    .storage_mode = glyphastore::StorageMode::durable_group,
+                    .data_directory = temporary.store_path(),
+                    .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                    .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 60'000}}));
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     std::mutex mutex;
@@ -994,8 +995,8 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
     const auto path = temporary.store_path();
     constexpr std::uint32_t kBatchSize = 32;
     {
-        auto opened = glyphastore::Store::open(
-            legacy_cfg({.worker_config = {.explicit_count = 1},
+        auto opened = glyphastore::Store::open(legacy_cfg(
+            {.worker_config = {.explicit_count = 1},
              .storage_mode = glyphastore::StorageMode::durable_group,
              .data_directory = path,
              .durable_open_mode = glyphastore::DurableOpenMode::create_new,
@@ -1038,11 +1039,11 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
         GLYPHA_REQUIRE(segment->selected_commit().commit.commit_generation == 2);
         GLYPHA_REQUIRE(segment->selected_commit().commit.record_count == kBatchSize);
     }
-    auto reopened =
-        glyphastore::Store::open(legacy_cfg({.worker_config = {.explicit_count = 1},
-                                  .storage_mode = glyphastore::StorageMode::durable_group,
-                                  .data_directory = path,
-                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing}));
+    auto reopened = glyphastore::Store::open(
+        legacy_cfg({.worker_config = {.explicit_count = 1},
+                    .storage_mode = glyphastore::StorageMode::durable_group,
+                    .data_directory = path,
+                    .durable_open_mode = glyphastore::DurableOpenMode::open_existing}));
     GLYPHA_REQUIRE(reopened.has_value());
     for (std::uint32_t index = 0; index < kBatchSize; ++index) {
         const std::string key = std::string(96, 'K') + '-' + std::to_string(index);

@@ -5,11 +5,11 @@
 
 GLYPHA_TEST("latency histogram buckets and approximate percentiles") {
     glyphastore::server::LatencyHistogram histogram{};
-    histogram.observe(500);          // <= 1 us
-    histogram.observe(5'000);        // <= 10 us
-    histogram.observe(50'000);       // <= 100 us
-    histogram.observe(5'000'000);    // <= 10 ms
-    histogram.observe(50'000'000);   // <= 100 ms
+    histogram.observe(500);        // <= 1 us
+    histogram.observe(5'000);      // <= 10 us
+    histogram.observe(50'000);     // <= 100 us
+    histogram.observe(5'000'000);  // <= 10 ms
+    histogram.observe(50'000'000); // <= 100 ms
 
     GLYPHA_REQUIRE(histogram.observations == 5);
     GLYPHA_REQUIRE(histogram.sum_ns == 55'055'500);

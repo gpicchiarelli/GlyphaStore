@@ -72,10 +72,8 @@ GLYPHA_TEST("format fixtures decode independently without encoder round-trip") {
     GLYPHA_REQUIRE(decoded_intent->old_manifest.segments.size() == 4);
     GLYPHA_REQUIRE(decoded_intent->next_manifest.manifest_generation == 10);
     GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.size() == 2);
-    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().segment_id ==
-                   glyphastore::SegmentId{1});
-    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().generation ==
-                   glyphastore::GenerationId{2});
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().segment_id == glyphastore::SegmentId{1});
+    GLYPHA_REQUIRE(decoded_intent->next_manifest.segments.front().generation == glyphastore::GenerationId{2});
 
     const auto header_bytes = glyphastore::test::read_hex_fixture(fixture_root() / "segment_header_v1.hex");
     GLYPHA_REQUIRE(header_bytes.size() ==

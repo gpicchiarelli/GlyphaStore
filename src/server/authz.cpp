@@ -53,8 +53,8 @@ namespace {
     if (!rest.starts_with(kPrefixToken)) {
         return fail(ErrorCode::invalid_argument,
                     std::string{where} + " line " + std::to_string(line_number) +
-                        ": expected optional 'prefix=<bytes>' after capabilities, got '" +
-                        std::string{rest} + "'");
+                        ": expected optional 'prefix=<bytes>' after capabilities, got '" + std::string{rest} +
+                        "'");
     }
     const auto value = rest.substr(kPrefixToken.size());
     if (value.empty()) {
@@ -63,9 +63,8 @@ namespace {
                         ": prefix= must not be empty (omit prefix for unrestricted keyspace)");
     }
     if (value.find_first_of(" \t") != std::string_view::npos) {
-        return fail(ErrorCode::invalid_argument,
-                    std::string{where} + " line " + std::to_string(line_number) +
-                        ": prefix value must not contain whitespace");
+        return fail(ErrorCode::invalid_argument, std::string{where} + " line " + std::to_string(line_number) +
+                                                     ": prefix value must not contain whitespace");
     }
     return std::string{value};
 }
@@ -107,7 +106,8 @@ auto AuthzPolicy::parse(const std::string_view text, const std::string_view wher
     std::size_t offset = 0;
     while (offset <= text.size()) {
         const auto end = text.find('\n', offset);
-        auto line = text.substr(offset, end == std::string_view::npos ? std::string_view::npos : end - offset);
+        auto line =
+            text.substr(offset, end == std::string_view::npos ? std::string_view::npos : end - offset);
         if (!line.empty() && line.back() == '\r') {
             line.remove_suffix(1);
         }
@@ -127,20 +127,19 @@ auto AuthzPolicy::parse(const std::string_view text, const std::string_view wher
         const auto principal = trim(trimmed.substr(0, space));
         auto rest = trim(trimmed.substr(space + 1));
         if (principal.empty()) {
-            return fail(ErrorCode::invalid_argument,
-                        std::string{where} + " line " + std::to_string(line_number) +
-                            ": principal must not be empty");
+            return fail(ErrorCode::invalid_argument, std::string{where} + " line " +
+                                                         std::to_string(line_number) +
+                                                         ": principal must not be empty");
         }
         const auto caps_end = rest.find_first_of(" \t");
-        const auto caps_text =
-            trim(caps_end == std::string_view::npos ? rest : rest.substr(0, caps_end));
+        const auto caps_text = trim(caps_end == std::string_view::npos ? rest : rest.substr(0, caps_end));
         const auto after_caps =
             caps_end == std::string_view::npos ? std::string_view{} : trim(rest.substr(caps_end));
         auto caps = split_capabilities(caps_text);
         if (!caps) {
-            return fail(ErrorCode::invalid_argument,
-                        std::string{where} + " line " + std::to_string(line_number) + ": " +
-                            caps.error().message);
+            return fail(ErrorCode::invalid_argument, std::string{where} + " line " +
+                                                         std::to_string(line_number) + ": " +
+                                                         caps.error().message);
         }
         auto prefix = parse_optional_prefix(after_caps, where, line_number);
         if (!prefix) {
@@ -210,20 +209,18 @@ auto AuthzPolicy::key_prefix_for(const std::string_view principal) const -> std:
     return grant_for(principal).key_prefix;
 }
 
-void AuthzPolicy::bind(std::string principal, const Capability capabilities,
-                       std::string key_prefix) {
+void AuthzPolicy::bind(std::string principal, const Capability capabilities, std::string key_prefix) {
     enabled_ = true;
     principals_[std::move(principal)] =
-        AuthzGrant{.capabilities = normalize_capabilities(capabilities),
-                   .key_prefix = std::move(key_prefix)};
+        AuthzGrant{.capabilities = normalize_capabilities(capabilities), .key_prefix = std::move(key_prefix)};
 }
 
 auto required_capability(const RequestOpcode opcode) noexcept -> Capability {
     return required_capability(opcode, {});
 }
 
-auto required_capability(const RequestOpcode opcode,
-                         const std::string_view key_prefix) noexcept -> Capability {
+auto required_capability(const RequestOpcode opcode, const std::string_view key_prefix) noexcept
+    -> Capability {
     switch (opcode) {
     case RequestOpcode::init:
     case RequestOpcode::bind_worker:
@@ -264,8 +261,8 @@ auto opcode_requires_key_prefix_check(const RequestOpcode opcode) noexcept -> bo
     return true;
 }
 
-auto key_matches_prefix(const std::string_view prefix,
-                        const std::span<const std::byte> key) noexcept -> bool {
+auto key_matches_prefix(const std::string_view prefix, const std::span<const std::byte> key) noexcept
+    -> bool {
     if (prefix.empty()) {
         return true;
     }
@@ -281,9 +278,8 @@ auto authorize_opcode(const AuthzPolicy& policy, const Capability granted,
     return authorize_opcode(policy, granted, opcode, {});
 }
 
-auto authorize_opcode(const AuthzPolicy& policy, const Capability granted,
-                      const RequestOpcode opcode, const std::string_view key_prefix) noexcept
-    -> bool {
+auto authorize_opcode(const AuthzPolicy& policy, const Capability granted, const RequestOpcode opcode,
+                      const std::string_view key_prefix) noexcept -> bool {
     if (!policy.enabled()) {
         return true;
     }
@@ -294,9 +290,8 @@ auto authorize_opcode(const AuthzPolicy& policy, const Capability granted,
     return has_capability(granted, needed);
 }
 
-auto authorize_request(const AuthzPolicy& policy, const Capability granted,
-                       const std::string_view key_prefix, const RequestOpcode opcode,
-                       const std::span<const std::byte> key) noexcept -> bool {
+auto authorize_request(const AuthzPolicy& policy, const Capability granted, const std::string_view key_prefix,
+                       const RequestOpcode opcode, const std::span<const std::byte> key) noexcept -> bool {
     if (!authorize_opcode(policy, granted, opcode, key_prefix)) {
         return false;
     }

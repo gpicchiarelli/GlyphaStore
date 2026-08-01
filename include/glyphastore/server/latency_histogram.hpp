@@ -6,8 +6,8 @@
 
 namespace glyphastore::server {
 
-using ::glyphastore::LatencyHistogram;
 using ::glyphastore::append_latency_histogram;
 using ::glyphastore::latency_histogram_bound_label;
+using ::glyphastore::LatencyHistogram;
 
 } // namespace glyphastore::server

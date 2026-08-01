@@ -46,8 +46,7 @@ struct DaemonOptions {
 };
 
 // Optional environment lookup for tests. Returning nullopt means unset.
-using DaemonEnvironmentLookup =
-    std::function<std::optional<std::string>(std::string_view name)>;
+using DaemonEnvironmentLookup = std::function<std::optional<std::string>(std::string_view name)>;
 
 [[nodiscard]] auto daemon_option_specs() noexcept -> std::span<const cli::OptionSpec>;
 
@@ -59,8 +58,7 @@ using DaemonEnvironmentLookup =
 // Precedence: defaults < deployment profile < config file < environment < CLI.
 // --config / GLYPHASTORE_CONFIG select the file; the file cannot set config=.
 // --profile / GLYPHASTORE_PROFILE / profile= select dev, embedded, or production.
-[[nodiscard]] auto parse_daemon_options(int argc, char* const argv[],
-                                        DaemonEnvironmentLookup getenv_fn = {})
+[[nodiscard]] auto parse_daemon_options(int argc, char* const argv[], DaemonEnvironmentLookup getenv_fn = {})
     -> Result<DaemonOptions>;
 
 [[nodiscard]] auto load_daemon_config_file(const std::filesystem::path& path)

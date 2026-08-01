@@ -1,7 +1,7 @@
 #pragma once
 
-#include "glyphastore/persistence/store_verify.hpp"
 #include "glyphastore/persistence/manifest.hpp"
+#include "glyphastore/persistence/store_verify.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -24,8 +24,7 @@ struct DurableStoreBackupReport {
 // verify the destination. Does not copy locks, intents, or crash temporaries.
 // Concurrent external use against a live data directory still fails on the Store lock.
 [[nodiscard]] auto backup_durable_store(const std::filesystem::path& source,
-                                        const std::filesystem::path& destination,
-                                        bool scan_records = true,
+                                        const std::filesystem::path& destination, bool scan_records = true,
                                         const DurableResourceLimits& limits = {})
     -> Result<DurableStoreBackupReport>;
 
@@ -37,10 +36,9 @@ struct DurableStoreBackupReport {
     bool scan_records = true, const DurableResourceLimits& limits = {}) -> Result<DurableStoreBackupReport>;
 
 // Restore is the same offline verified copy into an empty destination directory.
-[[nodiscard]] inline auto restore_durable_store(const std::filesystem::path& backup,
-                                                const std::filesystem::path& destination,
-                                                bool scan_records = true,
-                                                const DurableResourceLimits& limits = {})
+[[nodiscard]] inline auto
+restore_durable_store(const std::filesystem::path& backup, const std::filesystem::path& destination,
+                      bool scan_records = true, const DurableResourceLimits& limits = {})
     -> Result<DurableStoreBackupReport> {
     return backup_durable_store(backup, destination, scan_records, limits);
 }

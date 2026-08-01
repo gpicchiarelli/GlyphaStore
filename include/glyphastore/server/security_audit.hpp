@@ -24,8 +24,7 @@ class SecurityAudit final {
 
     void auth_accept(std::string_view principal) noexcept;
     void auth_deny(std::string_view reason, std::string_view principal = {}) noexcept;
-    void authz_deny(std::string_view principal, std::string_view opcode,
-                    std::string_view reason) noexcept;
+    void authz_deny(std::string_view principal, std::string_view opcode, std::string_view reason) noexcept;
     void tls_error(std::string_view reason) noexcept;
 
     [[nodiscard]] auto stats() const noexcept -> SecurityAuditStats;

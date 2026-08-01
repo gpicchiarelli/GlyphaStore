@@ -76,8 +76,8 @@ GLYPHA_TEST("compaction intent v1 matches its independent golden fixture") {
     GLYPHA_REQUIRE(next_size.has_value());
     GLYPHA_REQUIRE(encoded->size() == glyphastore::kCompactionIntentHeaderBytes + *old_size + *next_size);
 
-    const auto fixture = glyphastore::test::read_hex_fixture(
-        std::filesystem::path{GLYPHASTORE_SOURCE_DIR} / "tests/fixtures/compaction_intent_v1.hex");
+    const auto fixture = glyphastore::test::read_hex_fixture(std::filesystem::path{GLYPHASTORE_SOURCE_DIR} /
+                                                             "tests/fixtures/compaction_intent_v1.hex");
     GLYPHA_REQUIRE(*encoded == fixture);
 
     const auto decoded = glyphastore::decode_compaction_intent(fixture);

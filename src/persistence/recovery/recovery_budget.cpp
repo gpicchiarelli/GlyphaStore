@@ -6,8 +6,7 @@ RecoveryMemoryBudget::RecoveryMemoryBudget(const std::uint64_t maximum) : maximu
 
 auto RecoveryMemoryBudget::ensure_peak(const std::uint64_t additional) const -> Status {
     if (additional > maximum_ - retained_) {
-        return fail(ErrorCode::resource_exhausted,
-                    "durable recovery exceeds the configured memory budget");
+        return fail(ErrorCode::resource_exhausted, "durable recovery exceeds the configured memory budget");
     }
     return {};
 }

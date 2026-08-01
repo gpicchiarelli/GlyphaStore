@@ -1,6 +1,6 @@
-#include "glyphastore/server/server.hpp"
-
 #include "server/server_health.hpp"
+
+#include "glyphastore/server/server.hpp"
 #include "store/store_internal.hpp"
 
 namespace glyphastore::server {

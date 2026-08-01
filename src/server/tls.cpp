@@ -100,19 +100,16 @@ namespace {
         if (X509_STORE_add_crl(store, crl) != 1) {
             X509_CRL_free(crl);
             BIO_free(bio);
-            return fail(ErrorCode::invalid_argument,
-                        "cannot add TLS CRL entry: " + tls_error_string());
+            return fail(ErrorCode::invalid_argument, "cannot add TLS CRL entry: " + tls_error_string());
         }
         X509_CRL_free(crl);
         ++loaded;
     }
     BIO_free(bio);
     if (loaded == 0) {
-        return fail(ErrorCode::invalid_argument,
-                    "TLS CRL file contains no PEM CRL objects: " + path_string);
+        return fail(ErrorCode::invalid_argument, "TLS CRL file contains no PEM CRL objects: " + path_string);
     }
-    static_cast<void>(
-        X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL));
+    static_cast<void>(X509_STORE_set_flags(store, X509_V_FLAG_CRL_CHECK | X509_V_FLAG_CRL_CHECK_ALL));
     return {};
 }
 
@@ -121,8 +118,8 @@ namespace {
     if (certificate == nullptr) {
         return {};
     }
-    auto* sans = static_cast<GENERAL_NAMES*>(
-        X509_get_ext_d2i(certificate, NID_subject_alt_name, nullptr, nullptr));
+    auto* sans =
+        static_cast<GENERAL_NAMES*>(X509_get_ext_d2i(certificate, NID_subject_alt_name, nullptr, nullptr));
     if (sans != nullptr) {
         std::string uri;
         std::string dns;
@@ -176,25 +173,21 @@ auto validate_tls_config(const TlsConfig& config) -> Status {
                     "(GLYPHASTORE_ENABLE_TLS=OFF or no LibreSSL/OpenSSL found)");
     }
     if (config.certificate_file.empty() || config.private_key_file.empty()) {
-        return fail(ErrorCode::invalid_argument,
-                    "TLS requires both --tls-cert and --tls-key (fail closed)");
+        return fail(ErrorCode::invalid_argument, "TLS requires both --tls-cert and --tls-key (fail closed)");
     }
     std::error_code ec;
     if (!std::filesystem::is_regular_file(config.certificate_file, ec) || ec) {
-        return fail(ErrorCode::invalid_argument,
-                    "TLS certificate file is missing or not a regular file: " +
-                        config.certificate_file.string());
+        return fail(ErrorCode::invalid_argument, "TLS certificate file is missing or not a regular file: " +
+                                                     config.certificate_file.string());
     }
     if (!std::filesystem::is_regular_file(config.private_key_file, ec) || ec) {
-        return fail(ErrorCode::invalid_argument,
-                    "TLS private key file is missing or not a regular file: " +
-                        config.private_key_file.string());
+        return fail(ErrorCode::invalid_argument, "TLS private key file is missing or not a regular file: " +
+                                                     config.private_key_file.string());
     }
     if (!config.client_ca_file.empty() &&
         (!std::filesystem::is_regular_file(config.client_ca_file, ec) || ec)) {
         return fail(ErrorCode::invalid_argument,
-                    "TLS client CA file is missing or not a regular file: " +
-                        config.client_ca_file.string());
+                    "TLS client CA file is missing or not a regular file: " + config.client_ca_file.string());
     }
     if (!config.crl_file.empty()) {
         if (config.client_ca_file.empty()) {
@@ -208,8 +201,7 @@ auto validate_tls_config(const TlsConfig& config) -> Status {
     }
     if (config.ocsp_fail_closed) {
         if (config.client_ca_file.empty()) {
-            return fail(ErrorCode::invalid_argument,
-                        "--tls-ocsp-fail-closed requires --tls-client-ca");
+            return fail(ErrorCode::invalid_argument, "--tls-ocsp-fail-closed requires --tls-client-ca");
         }
         if (config.crl_file.empty()) {
             return fail(ErrorCode::invalid_argument,
@@ -302,8 +294,7 @@ auto TlsContext::create(const TlsConfig& config) -> Result<std::shared_ptr<TlsCo
     context->mtls_enabled_ = config.mtls_enabled();
     context->crl_enabled_ = config.crl_enabled();
     context->ocsp_fail_closed_ = config.ocsp_fail_closed;
-    context->handshake_timeout_ms_ =
-        config.handshake_timeout_ms == 0 ? 10'000U : config.handshake_timeout_ms;
+    context->handshake_timeout_ms_ = config.handshake_timeout_ms == 0 ? 10'000U : config.handshake_timeout_ms;
 
 #if defined(TLS1_3_VERSION)
     if (SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) != 1) {
@@ -329,8 +320,7 @@ auto TlsContext::create(const TlsConfig& config) -> Result<std::shared_ptr<TlsCo
     const auto cert = config.certificate_file.string();
     const auto key = config.private_key_file.string();
     if (SSL_CTX_use_certificate_chain_file(ctx, cert.c_str()) != 1) {
-        return fail(ErrorCode::invalid_argument,
-                    "cannot load TLS certificate chain: " + tls_error_string());
+        return fail(ErrorCode::invalid_argument, "cannot load TLS certificate chain: " + tls_error_string());
     }
     if (SSL_CTX_use_PrivateKey_file(ctx, key.c_str(), SSL_FILETYPE_PEM) != 1) {
         return fail(ErrorCode::invalid_argument, "cannot load TLS private key: " + tls_error_string());
@@ -343,8 +333,7 @@ auto TlsContext::create(const TlsConfig& config) -> Result<std::shared_ptr<TlsCo
     if (config.mtls_enabled()) {
         const auto ca = config.client_ca_file.string();
         if (SSL_CTX_load_verify_locations(ctx, ca.c_str(), nullptr) != 1) {
-            return fail(ErrorCode::invalid_argument,
-                        "cannot load TLS client CA: " + tls_error_string());
+            return fail(ErrorCode::invalid_argument, "cannot load TLS client CA: " + tls_error_string());
         }
         SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | SSL_VERIFY_FAIL_IF_NO_PEER_CERT, nullptr);
         SSL_CTX_set_verify_depth(ctx, 4);
@@ -377,8 +366,7 @@ auto TlsContext::create_client(const ClientTlsConfig& config) -> Result<std::sha
     context->impl_->ctx = ctx;
     context->client_mode_ = true;
     context->insecure_skip_verify_ = config.insecure_skip_verify;
-    context->handshake_timeout_ms_ =
-        config.handshake_timeout_ms == 0 ? 10'000U : config.handshake_timeout_ms;
+    context->handshake_timeout_ms_ = config.handshake_timeout_ms == 0 ? 10'000U : config.handshake_timeout_ms;
 
 #if defined(TLS1_3_VERSION)
     if (SSL_CTX_set_min_proto_version(ctx, TLS1_3_VERSION) != 1) {
@@ -409,8 +397,7 @@ auto TlsContext::create_client(const ClientTlsConfig& config) -> Result<std::sha
         if (!config.ca_file.empty()) {
             const auto ca = config.ca_file.string();
             if (SSL_CTX_load_verify_locations(ctx, ca.c_str(), nullptr) != 1) {
-                return fail(ErrorCode::invalid_argument,
-                            "cannot load TLS CA file: " + tls_error_string());
+                return fail(ErrorCode::invalid_argument, "cannot load TLS CA file: " + tls_error_string());
             }
         } else if (SSL_CTX_set_default_verify_paths(ctx) != 1) {
             return fail(ErrorCode::invalid_argument,
@@ -456,8 +443,7 @@ auto TlsContext::accept_socket(const int descriptor) const -> Result<std::unique
     }
     SSL_set_accept_state(ssl);
 
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{handshake_timeout_ms_};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{handshake_timeout_ms_};
     while (true) {
         const auto result = SSL_accept(ssl);
         if (result == 1) {
@@ -469,9 +455,9 @@ auto TlsContext::accept_socket(const int descriptor) const -> Result<std::unique
             SSL_free(ssl);
             return fail(ErrorCode::io_error, message);
         }
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   deadline - std::chrono::steady_clock::now())
-                                   .count();
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())
+                .count();
         if (remaining <= 0) {
             SSL_free(ssl);
             return fail(ErrorCode::unavailable, "TLS handshake timed out");
@@ -483,7 +469,7 @@ auto TlsContext::accept_socket(const int descriptor) const -> Result<std::unique
     }
 
     if (mtls_enabled_) {
-#if defined(LIBRESSL_VERSION_NUMBER) ||                                                        \
+#if defined(LIBRESSL_VERSION_NUMBER) ||                                                                      \
     (defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER < 0x30000000L)
         auto* peer = SSL_get_peer_certificate(ssl);
 #else
@@ -551,7 +537,7 @@ auto TlsContext::connect_socket(const int descriptor, const std::string_view ser
         return fail(ErrorCode::io_error, "TLS SNI configuration failed: " + tls_error_string());
     }
     if (!insecure_skip_verify_) {
-#if defined(LIBRESSL_VERSION_NUMBER) ||                                                        \
+#if defined(LIBRESSL_VERSION_NUMBER) ||                                                                      \
     (defined(OPENSSL_VERSION_NUMBER) && OPENSSL_VERSION_NUMBER >= 0x10100000L)
         if (SSL_set1_host(ssl, sni.c_str()) != 1) {
             SSL_free(ssl);
@@ -560,8 +546,7 @@ auto TlsContext::connect_socket(const int descriptor, const std::string_view ser
 #endif
     }
 
-    const auto deadline =
-        std::chrono::steady_clock::now() + std::chrono::milliseconds{handshake_timeout_ms_};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{handshake_timeout_ms_};
     while (true) {
         const auto result = SSL_connect(ssl);
         if (result == 1) {
@@ -573,9 +558,9 @@ auto TlsContext::connect_socket(const int descriptor, const std::string_view ser
             SSL_free(ssl);
             return fail(ErrorCode::io_error, message);
         }
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
-                                   deadline - std::chrono::steady_clock::now())
-                                   .count();
+        const auto remaining =
+            std::chrono::duration_cast<std::chrono::milliseconds>(deadline - std::chrono::steady_clock::now())
+                .count();
         if (remaining <= 0) {
             SSL_free(ssl);
             return fail(ErrorCode::unavailable, "TLS handshake timed out");
