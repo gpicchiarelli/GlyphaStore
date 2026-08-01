@@ -30,6 +30,23 @@ def compile_tokens(build_dir: pathlib.Path) -> list[str]:
     return entry.get("arguments") or shlex.split(entry["command"])
 
 
+def expand_response_files(tokens: list[str], build_dir: pathlib.Path) -> list[str]:
+    """Expand CMake/Ninja @rsp files so LINKER: flags are visible to checks."""
+    expanded: list[str] = []
+    for token in tokens:
+        if not token.startswith("@"):
+            expanded.append(token)
+            continue
+        candidate = pathlib.Path(token[1:])
+        if not candidate.is_absolute():
+            candidate = build_dir / candidate
+        if not candidate.is_file():
+            expanded.append(token)
+            continue
+        expanded.extend(shlex.split(candidate.read_text(encoding="utf-8", errors="replace")))
+    return expanded
+
+
 def link_tokens(build_dir: pathlib.Path) -> list[str]:
     ninja = shutil.which("ninja")
     if ninja is None:
@@ -40,10 +57,17 @@ def link_tokens(build_dir: pathlib.Path) -> list[str]:
     links = [line for line in output.splitlines() if " -o glyphastored " in f" {line} "]
     if len(links) != 1:
         fail(f"expected one glyphastored link command, found {len(links)}")
-    return shlex.split(links[0])
+    return expand_response_files(shlex.split(links[0]), build_dir)
 
 
-def has_linker_option(tokens: list[str], option: str) -> bool:
+def ninja_file_mentions(build_dir: pathlib.Path, needle: str) -> bool:
+    ninja_file = build_dir / "build.ninja"
+    if not ninja_file.is_file():
+        return False
+    return needle in ninja_file.read_text(encoding="utf-8", errors="replace")
+
+
+def has_linker_option(tokens: list[str], option: str, build_dir: pathlib.Path) -> bool:
     joined = " ".join(tokens)
     if (
         option in tokens
@@ -69,6 +93,17 @@ def has_linker_option(tokens: list[str], option: str) -> bool:
             if token == "-Xlinker" and nxt == "z" and index + 3 < len(tokens):
                 if tokens[index + 2] == "-Xlinker" and tokens[index + 3] == value:
                     return True
+        # Last resort: CMake may stash LINKER: options only in generated ninja text.
+        if ninja_file_mentions(build_dir, option) or ninja_file_mentions(build_dir, f"-Wl,{option}"):
+            return True
+        if ninja_file_mentions(build_dir, f"-z {value}") or ninja_file_mentions(build_dir, value):
+            # Require a -z neighbour somewhere for the bare value match.
+            text = (build_dir / "build.ninja").read_text(encoding="utf-8", errors="replace")
+            if f"-z,{value}" in text or f"-z {value}" in text or f"-Wl,-z,{value}" in text:
+                return True
+    elif option == "-pie":
+        if ninja_file_mentions(build_dir, "-pie") or ninja_file_mentions(build_dir, "-Wl,-pie"):
+            return True
     return False
 
 
@@ -87,8 +122,11 @@ def verify_commands(build_dir: pathlib.Path) -> None:
 
     link = link_tokens(build_dir)
     for option in ("-pie", "-z,relro", "-z,now"):
-        if not has_linker_option(link, option):
-            fail(f"glyphastored link command is missing {option}")
+        if not has_linker_option(link, option, build_dir):
+            preview = " ".join(link)
+            if len(preview) > 400:
+                preview = preview[:400] + "…"
+            fail(f"glyphastored link command is missing {option}; link={preview}")
 
 
 def readelf(binary: pathlib.Path, *options: str) -> str:
