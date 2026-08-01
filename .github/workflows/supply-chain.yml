@@ -116,7 +116,7 @@ jobs:
           startsWith(github.ref, 'refs/tags/') &&
           (github.event.repository.visibility == 'public' ||
            vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
-        uses: actions/attest@v3
+        uses: actions/attest@v4
         with:
           subject-path: |
             dist/sdk-artifacts/SHA256SUMS
