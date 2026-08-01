@@ -39,6 +39,7 @@ requirements:
   autorita:
   - docs/operations/backup-restore.md
   - docs/architecture/backup-restore.md
+  - docs/spec/backup-restore-v1.md
   implementazione:
   - src/persistence/store_backup.cpp
   - src/persistence/store_verify.cpp
@@ -53,9 +54,81 @@ requirements:
   evidenze:
   - workflow: ops-runbooks.yml
   rischio_residuo:
-  - Released-tag artifact consumption and incompatible restore matrices remain open
+  - Released-tag artifact consumption remains open; synthetic incompatible restore
+    matrices (future Manifest/Record versions, truncated Manifest, Worker mismatch) are
+    covered in store_backup_tests
+  - Zero-fence hot backup deferred (ADR 0034); online path remains admission-fenced
+  - Daemon wire BACKUP process-kill via real glyphastored exec still limited (in-process
+    Server/wire path covered by glyphastore_crash_backup_wire; Store path by
+    glyphastore_crash_backup)
   hazards:
   - HAZ-021
   - HAZ-022
   gates:
   - GATE-BACKUP-RESTORE
+- id: GS-OPS-MIGRATE-001
+  titolo: Offline Worker migrate resume and fail-closed checkpoints
+  categoria: operations
+  criticita: alta
+  stato: implementato
+  descrizione: Offline migrate_durable_store / glyphastore_migrate_store copies live keys into a new
+    Store with target Worker count, checkpoints after each put, and resumes from a matching sibling
+    checkpoint. Corrupt or mismatched checkpoints fail closed; source is never mutated. Live/hot
+    migrate remains unsupported (ADR 0024).
+  autorita:
+  - docs/adr/0024-offline-worker-migration.md
+  - docs/architecture/store-migration.md
+  - docs/operations/worker-resharding.md
+  implementazione:
+  - src/persistence/store_migrate.cpp
+  - tools/migrate_store.cpp
+  prove:
+  - tests/unit/store_migrate_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ops-runbooks.yml
+  rischio_residuo:
+  - Process-kill mid-migrate daemon/tool harness still limited relative to filesystem-hook interrupt
+  hazards:
+  - HAZ-022
+  gates:
+  - GATE-BACKUP-RESTORE
+- id: GS-OPS-SOAK-001
+  titolo: Soak and overload paths linked to quality gates
+  categoria: operations
+  criticita: media
+  stato: implementato
+  descrizione: Software soak profiles (smoke/long/1h/4h) and graceful-drain/overload runbooks are
+    linked to GATE-SOAK and GATE-OPS-RUNBOOKS via engineering/performance/budgets.yaml. Hardware
+    multi-hour soak with mandatory rotation evidence remains residual.
+  autorita:
+  - docs/operations/soak.md
+  - docs/operations/graceful-drain-and-overload.md
+  - docs/assurance/performance-budgets.md
+  - engineering/performance/budgets.yaml
+  implementazione:
+  - scripts/soak_daemon.sh
+  - scripts/exercise_ops_runbooks.sh
+  - engineering/performance/budgets.yaml
+  prove:
+  - scripts/soak_daemon.sh
+  - scripts/exercise_ops_runbooks.sh
+  - engineering/tools/validate_perf_budgets.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ops-runbooks.yml
+  - workflow: soak-extended.yml
+  - workflow: assurance.yml
+  rischio_residuo:
+  - Controlled multi-hour hardware soak with mandatory rotation evidence remains open
+  hazards:
+  - HAZ-025
+  gates:
+  - GATE-SOAK
+  - GATE-OPS-RUNBOOKS

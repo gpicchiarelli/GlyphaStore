@@ -238,8 +238,9 @@ glyphastore_backup_store [--json] [--no-scan] -- /path/to/source /path/to/destin
 Offline verified copy of a durable data directory. Stop writers first. Takes exclusive locks,
 verifies the source, creates an empty destination, copies catalog Segments then `manifest.glypha`,
 syncs, and verifies the destination. Restore uses the same command with backup as source and a new
-empty destination. See [backup-restore](architecture/backup-restore.md). Live/hot backup is not
-supported.
+empty destination. See [backup-restore](architecture/backup-restore.md). This offline tool cannot run
+against a live locked data directory; use online fenced `Store::backup_to` / wire `BACKUP` for that
+path (still not zero-fence hot I/O).
 
 ### `glyphastore_migrate_store`
 

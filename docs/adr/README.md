@@ -49,7 +49,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0021](0021-secure-profile-authentication.md) | mTLS authentication for secure profile | accepted | depends on 0020; enables 0022 |
 | [0022](0022-authorization-capabilities.md) | Coarse read/write/admin capabilities | accepted | depends on 0021; amended by 0025 |
 | [0023](0023-maintenance-controller.md) | Optional budgeted MaintenanceController | accepted | preserves 0015; schedules `Store::compact()` |
-| [0024](0024-offline-worker-migration.md) | Offline Worker reshard + 0.x compatibility | accepted | amends 0005, 0006, 0008 |
+| [0024](0024-offline-worker-migration.md) | Offline Worker reshard + 0.x compatibility | accepted | amends 0005, 0006, 0008; amended by 0033 (online design deferred) |
 | [0025](0025-key-prefix-tenant-scope.md) | Optional authz key-prefix scope (Phase 8 slice) | accepted | amends 0022; amended by 0027 (STATS) |
 | [0026](0026-keyed-index-hash-seed.md) | Keyed Index mix seed (hash-flood slice) | accepted | amends 0007; keyed Worker routing in 0030 |
 | [0027](0027-stats-isolation-prefix-principals.md) | STATS requires admin for prefix principals | accepted | amends 0022 and 0025 |
@@ -58,6 +58,8 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0030](0030-keyed-worker-routing.md) | Keyed Worker routing (SipHash + Manifest seed) | accepted | amends 0006, 0024, 0026 |
 | [0031](paired-reader-writer-shards.md) | Shard obbligatori a coppie Reader–Writer | accepted | modello obbligatorio per 0.1.0; amends 0005, 0012, 0016, 0018, 0023, 0030; amended by 0032 |
 | [0032](0032-paired-concurrency-embedded-store.md) | Paired concurrency for embedded Store | accepted | amends 0031, 0005, 0009 (concurrency notes); supersedes mutex default |
+| [0033](0033-online-rebalance-deferred.md) | Online rebalance design constraints (deferred) | accepted | amends 0024; not implemented in 0.1.x |
+| [0034](0034-zero-fence-hot-backup-deferred.md) | Zero-fence hot backup design constraints (deferred) | accepted | extends backup-restore v1 non-goal; not implemented in 0.1.x |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).

@@ -44,6 +44,9 @@ struct Error {
     std::optional<std::uint64_t> routing_epoch{};
     std::string retryability{};
     std::string operation{};
+    // Standalone PUT/ERASE (and pipeline mutation positions): "committed" / "rejected" /
+    // "indeterminate". Empty on non-mutation errors and Store-embedded paths.
+    std::string mutation_outcome{};
 };
 
 struct Unexpected {

@@ -393,6 +393,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
         error.wire_status = wire_status;
     }
     if (mutation) {
+        error.mutation_outcome = indeterminate ? "indeterminate" : "rejected";
         error.retryability = retryability_for(error.category, bytes_sent > 0, indeterminate);
         if (bytes_sent > 0 && error.category == "transport") {
             error.retryability = "reconcile_first";
@@ -1186,9 +1187,15 @@ class Client::Impl final {
     }
 
     [[nodiscard]] static auto rejected(Error error) -> MutationResult {
+        if (error.mutation_outcome.empty()) {
+            error.mutation_outcome = "rejected";
+        }
         return {.outcome = MutationOutcome::rejected, .error = std::move(error)};
     }
     [[nodiscard]] static auto indeterminate(Error error) -> MutationResult {
+        if (error.mutation_outcome.empty()) {
+            error.mutation_outcome = "indeterminate";
+        }
         return {.outcome = MutationOutcome::indeterminate, .error = std::move(error)};
     }
 
@@ -1269,13 +1276,17 @@ auto Client::put(const std::span<const std::byte> key, const std::span<const std
     try {
         if (!implementation_) {
             return {.outcome = MutationOutcome::rejected,
-                    .error = Error{ErrorCode::unavailable, "client was moved from"}};
+                    .error = Error{.code = ErrorCode::unavailable,
+                                   .message = "client was moved from",
+                                   .mutation_outcome = "rejected"}};
         }
         return implementation_->mutate(server::RequestOpcode::put, key, value, put_options.expire_at_ns,
                                        options);
     } catch (const std::bad_alloc&) {
         return {.outcome = MutationOutcome::rejected,
-                .error = Error{ErrorCode::resource_exhausted, "client allocation failed"}};
+                .error = Error{.code = ErrorCode::resource_exhausted,
+                               .message = "client allocation failed",
+                               .mutation_outcome = "rejected"}};
     }
 }
 
@@ -1288,12 +1299,16 @@ auto Client::erase(const std::span<const std::byte> key, const RequestOptions op
     try {
         if (!implementation_) {
             return {.outcome = MutationOutcome::rejected,
-                    .error = Error{ErrorCode::unavailable, "client was moved from"}};
+                    .error = Error{.code = ErrorCode::unavailable,
+                                   .message = "client was moved from",
+                                   .mutation_outcome = "rejected"}};
         }
         return implementation_->mutate(server::RequestOpcode::erase, key, {}, 0, options);
     } catch (const std::bad_alloc&) {
         return {.outcome = MutationOutcome::rejected,
-                .error = Error{ErrorCode::resource_exhausted, "client allocation failed"}};
+                .error = Error{.code = ErrorCode::resource_exhausted,
+                               .message = "client allocation failed",
+                               .mutation_outcome = "rejected"}};
     }
 }
 
@@ -1379,6 +1394,25 @@ auto portable_retryability(const std::string_view category, const bool mutation_
     return mutation_sent ? "reconcile_first" : "new_attempt";
 }
 
+auto portable_mutation_outcome(const std::uint16_t wire_status) -> std::string {
+    switch (static_cast<server::ResponseStatus>(wire_status)) {
+    case server::ResponseStatus::ok:
+        return "committed";
+    case server::ResponseStatus::internal_error:
+        return "indeterminate";
+    case server::ResponseStatus::invalid_request:
+    case server::ResponseStatus::unsupported:
+    case server::ResponseStatus::not_found:
+    case server::ResponseStatus::overloaded:
+    case server::ResponseStatus::wrong_owner:
+    case server::ResponseStatus::not_bound:
+    case server::ResponseStatus::permission_denied:
+        return "rejected";
+    }
+    // Unknown numeric statuses: prefer indeterminate for mutations (bytes may have been applied).
+    return "indeterminate";
+}
+
 auto error_from_wire_status(const std::uint16_t wire_status) -> Error {
     Error error;
     switch (static_cast<server::ResponseStatus>(wire_status)) {
@@ -1412,9 +1446,10 @@ auto error_from_wire_status(const std::uint16_t wire_status) -> Error {
     case server::ResponseStatus::ok:
         return {ErrorCode::internal_error, "unexpected successful response mapping"};
     }
-    // Unknown numeric statuses collapse to internal (codecs reject before structured error).
+    // Unknown numeric statuses: codecs reject after the frame is buffered; defensive helpers map to
+    // protocol (not INTERNAL_ERROR) and preserve the original wire_status.
     if (wire_status > static_cast<std::uint16_t>(server::ResponseStatus::permission_denied)) {
-        error = {ErrorCode::internal_error, "server reported an internal error"};
+        error = {ErrorCode::corrupted_data, "server returned an unknown status"};
     }
     if (error.category.empty()) {
         switch (error.code) {

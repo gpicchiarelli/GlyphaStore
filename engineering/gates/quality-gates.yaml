@@ -25,35 +25,44 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-COMPAT-FIXTURE-001
+  - GS-COMPAT-NN1-001
   prove:
   - docs/architecture/public-api-contract.md
   - docs/architecture/version-lifecycle.md
+  - docs/architecture/n-n1-compatibility.md
+  - engineering/compatibility/n-n1-matrix.yaml
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
-  - note: Tagged cross-release binary matrices remain open
-  stato: SPECIFICATA
-  rischio_residuo: Tagged cross-release binary matrices remain open
+  - workflow: assurance.yml
+  - path: engineering/compatibility/n-n1-matrix.yaml
+  stato: IMPLEMENTATA
+  rischio_residuo: Permanent tagged N−1 fixture trees remain a release-process step
   riapertura:
   - Policy change without evidence update
-  narrative: Target policy documented; tagged matrices open.
+  - Matrix row removed without ADR
+  narrative: N↔N-1 policy matrix + ABI not-promised row landed; tagged N−1 drops still residual.
 - id: GATE-DISK-WIRE-VERSIONS
   titolo: Disk and wire formats versioned with fixtures and matrices
   sezione: public_contract
   livello_rilascio: alpha
   requisiti:
   - GS-COMPAT-FIXTURE-001
+  - GS-COMPAT-NN1-001
   - GS-PROTO-WIRE-001
   prove:
   - tests/fixtures
   - scripts/package-release-compatibility-artifacts.sh
+  - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/tools/validate_compat_matrix.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: release-compat.yml
   - workflow: ci.yml
+  - workflow: assurance.yml
   stato: PROVATA_IN_CI
   rischio_residuo: Publishing trees into permanent fixture drop remains a release-process step
   riapertura:
@@ -183,19 +192,23 @@ gates:
   livello_rilascio: beta
   requisiti:
   - GS-OPS-BACKUP-001
+  - GS-OPS-MIGRATE-001
   prove:
   - scripts/exercise_ops_runbooks.sh
   - src/persistence/store_migrate.cpp
+  - tests/unit/store_migrate_tests.cpp
+  - docs/spec/backup-restore-v1.md
+  - docs/operations/backup-restore.md
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ops-runbooks.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Released-tag artifact consumption remains open
+  rischio_residuo: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; real glyphastored mid-BACKUP kill limited
   riapertura:
   - Backup format change without fixtures
-  narrative: Offline tools and online fenced backup implemented; tag consumption open.
+  narrative: Offline tools and online fenced backup implemented; normative snapshot boundary published.
 - id: GATE-TEST-SUITES
   titolo: Distinct unit integration property concurrency crash recovery suites
   sezione: verification
@@ -268,39 +281,49 @@ gates:
   livello_rilascio: beta
   requisiti:
   - GS-OPS-CONFIG-001
+  - GS-OPS-SOAK-001
   prove:
   - scripts/soak_daemon.sh
   - docs/operations/soak.md
+  - engineering/performance/budgets.yaml
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ops-runbooks.yml
   - workflow: soak-extended.yml
+  - workflow: assurance.yml
   stato: PROVATA_IN_CI
   rischio_residuo: Controlled multi-hour hardware soak with mandatory rotation evidence open
   riapertura:
   - Removing smoke soak from PR path without alternative
-  narrative: Smoke/long soaks exist; hardware soak remains release gate.
+  narrative: Smoke/long soaks exist and are budget-linked; hardware soak remains release residual.
 - id: GATE-PERFORMANCE
   titolo: Performance tests track latency throughput memory regressions
   sezione: verification
   livello_rilascio: beta
   requisiti:
   - GS-PERF-REGRESSION-001
+  - GS-PERF-BUDGET-001
   prove:
   - benchmarks
   - docs/spec/benchmark-standard.md
+  - docs/assurance/performance-budgets.md
+  - engineering/performance/budgets.yaml
+  - engineering/tools/validate_perf_budgets.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: benchmarks.yml
+  - workflow: assurance.yml
+  - workflow: paired-linux-performance.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Hosted CI is regression signal only; hardware budgets Phase E
+  rischio_residuo: Absolute hardware budgets wait for glyphastore-linux-perf pass-candidate
   riapertura:
   - Quietly raising regression thresholds
-  narrative: Median ops/s regression gate exists; absolute claims forbidden.
+  - Treating advisory snapshots as release gates
+  narrative: Median ops/s regression + budget catalog landed; absolute claims still hardware-gated.
 - id: GATE-CONFIG
   titolo: Configuration precedence validation safe defaults limits
   sezione: operations_security
@@ -328,6 +351,7 @@ gates:
   - GS-OPS-CONFIG-001
   prove:
   - docs/operations/durable-tcp-daemon.md
+  - docs/operations/observability.md
   - scripts/exercise_ops_runbooks.sh
   piattaforme:
   - linux-x86_64
@@ -335,10 +359,10 @@ gates:
   evidenze:
   - workflow: ops-runbooks.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Histogram approximations are not SLOs
+  rischio_residuo: Histogram approximations are not SLOs; no Prometheus exporter
   riapertura:
   - Removing HEALTH/READY/STATS fields without versioning
-  narrative: Wire HEALTH/READY/STATS and JSON lifecycle logging exist.
+  narrative: Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability catalog exist.
 - id: GATE-OPS-RUNBOOKS
   titolo: Graceful drain overload backup restore corruption runbooks
   sezione: operations_security
@@ -346,19 +370,23 @@ gates:
   requisiti:
   - GS-OPS-BACKUP-001
   - GS-OPS-CONFIG-001
+  - GS-OPS-SOAK-001
   prove:
   - docs/operations/README.md
+  - docs/operations/graceful-drain-and-overload.md
   - scripts/exercise_ops_runbooks.sh
+  - engineering/performance/budgets.yaml
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ops-runbooks.yml
+  - workflow: assurance.yml
   stato: PROVATA_IN_CI
   rischio_residuo: Staging/production rehearsal still operator-owned
   riapertura:
   - Runbook drift from scripts
-  narrative: Operator procedures exercised by ops-runbooks CI.
+  narrative: Operator procedures exercised by ops-runbooks CI and linked via perf/ops budgets.
 - id: GATE-AUTH-TRANSPORT
   titolo: Authentication authorization transport security rate limits audit
   sezione: operations_security
@@ -386,20 +414,25 @@ gates:
   livello_rilascio: beta
   requisiti:
   - GS-SEC-PROFILE-001
+  - GS-SUPPLY-ACTIONS-001
   prove:
   - docs/security/threat-model.md
+  - docs/security/actions-pinning.md
   - SECURITY.md
   - .github/workflows/supply-chain.yml
+  - engineering/tools/validate_actions_pins.py
   piattaforme:
   - linux-x86_64
   evidenze:
   - workflow: supply-chain.yml
   - workflow: supply-chain-scan.yml
+  - workflow: assurance.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Project GPG / full SLSA L3 optional; Actions SHA pin Phase D
+  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs
   riapertura:
   - Removing SBOM/checksum gates
-  narrative: Threat model + SBOM/checksum/Cosign/SLSA path present; residuals documented.
+  - Reintroducing mutable Action tags
+  narrative: Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions; residuals documented.
 - id: GATE-CMAKE-INSTALL
   titolo: CMake installs versioned package metadata and GlyphaStore::core
   sezione: distribution_lifecycle
@@ -421,11 +454,12 @@ gates:
   - workflow: ci.yml
   - workflow: assurance.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Oversized sources remain under WAV-001 until decomposed below line budget
+  rischio_residuo: None beyond prototype claim ceiling; WAV-001 size debt closed
   riapertura:
   - Breaking exported targets without alias
   - Removing add_subdirectory layout without matrix update
-  narrative: Installed targets exist; Phase C subdirectory split and dependency/structure gates landed.
+  - Reintroducing sources above structure line budget without waiver
+  narrative: Installed targets exist; Phase C subdirectory split and size-debt splits landed.
 - id: GATE-INSTALL-CONSUMER
   titolo: CI builds external consumer from installed prefix
   sezione: distribution_lifecycle
@@ -489,17 +523,24 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-COMPAT-FIXTURE-001
+  - GS-COMPAT-NN1-001
   prove:
   - docs/architecture/version-lifecycle.md
+  - docs/architecture/n-n1-compatibility.md
+  - docs/operations/compatibility-and-migration.md
+  - docs/assurance/release-checklist.md
   - docs/adr/0024-offline-worker-migration.md
+  - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/claims
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
-  - workflow: ci.yml
-    note: Lifecycle docs reviewed with install/compat gates; formal support windows remain P3
+  - workflow: assurance.yml
+  - workflow: release-compat.yml
+    note: Lifecycle docs + N↔N-1 matrix; formal support windows remain P3
   stato: PROVATA_IN_CI
-  rischio_residuo: Formal support windows for beta/RC/stable remain P3
+  rischio_residuo: Formal support windows for beta/RC/stable remain P3; tagged N−1 fixture drops residual
   riapertura:
   - Lifecycle policy change without ADR
-  narrative: 0.x / persistence v1 policies published; formal windows later.
+  narrative: 0.x / persistence v1 policies + N↔N-1 matrix published; formal windows later.

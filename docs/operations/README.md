@@ -3,7 +3,7 @@
 Status: descriptive
 Applies to: durable `glyphastored` deployments and offline maintenance tools
 Owner: persistence and platform maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-01
 
 Concise operator procedures for production incidents and planned maintenance. These runbooks
 describe **implemented** behavior; they do not redefine wire or disk contracts. Normative rules live
@@ -12,11 +12,14 @@ in [cli.md](../cli.md), [wire protocol v2](../spec/wire-protocol-v2.md), and
 
 | Runbook | When to use |
 |---|---|
+| [Operations handbook](handbook.md) | Day-1/day-2 index and incident playbooks (entry point) |
 | [Durable TCP daemon](durable-tcp-daemon.md) | End-to-end durable `glyphastored` setup: profile/mode, flags, probes, drain, offline ops |
 | [Graceful drain and overload](graceful-drain-and-overload.md) | Rolling restart, deploy, capacity pressure, `OVERLOADED` responses |
 | [Backup and restore](backup-restore.md) | Planned copy, migration to new host, disaster recovery from verified backup |
 | [Worker count change](worker-resharding.md) | Offline reshard / logical rewrite via `glyphastore_migrate_store` |
 | [Corruption detection and repair](corruption-repair.md) | Startup failure, verify errors, namespace anomalies, post-incident salvage |
+| [Observability reference](observability.md) | HEALTH/READY/STATS needles, JSON logs, dump-config, units |
+| [Compatibility and migration](compatibility-and-migration.md) | Upgrade/downgrade, Worker migrate, fixture drops, wire N↔N-1 |
 | [Soak profiles](soak.md) | Smoke / 30m / 1h / 4h durable soak; CI vs multi-hour honesty |
 | [E3 pinned-row campaign](e3-campaign.md) | Operator E0→E2→E3 campaign-prep tarball; promotion gate (no false E3 cert) |
 | [Secure profile certs](secure-profile-certs.md) | Rotate TLS/mTLS material; revoke via authz map and/or CRL |
@@ -30,8 +33,9 @@ All maintenance tools share the CLI contract in [cli.md](../cli.md):
 - exit `2` — usage error
 
 Stop every writer (`glyphastored` or embedded `Store`) that holds the data-directory lock before
-offline verify, backup, repair, or Worker migrate. Live/hot backup, in-place rewrite, and online
-reshard are **not** supported.
+offline verify, backup, repair, or Worker migrate. Online **fenced** backup (`Store::backup_to` /
+wire `BACKUP`) is supported and briefly pauses admissions; fully concurrent zero-fence hot backup,
+in-place rewrite, and online reshard are **not** supported.
 
 ## CI / staging exercise
 

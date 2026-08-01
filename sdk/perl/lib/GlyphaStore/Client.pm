@@ -424,7 +424,9 @@ sub _status_error {
     $error = _error('protocol', 'server rejected Worker routing') if $status == STATUS_WRONG_OWNER;
     $error = _error('invalid_argument', 'server rejected the request')
         if $status == STATUS_INVALID_REQUEST || $status == STATUS_UNSUPPORTED;
-    $error //= _error('internal', 'server reported an internal error');
+    $error = _error('internal', 'server reported an internal error')
+        if $status == STATUS_INTERNAL_ERROR || $status == STATUS_OK;
+    $error //= _error('protocol', 'server returned an unknown status');
     return $error->enrich(wire_status => $status);
 }
 

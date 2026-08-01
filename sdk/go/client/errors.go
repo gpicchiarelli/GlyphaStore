@@ -227,8 +227,10 @@ func statusError(status protocol.Status) *Error {
 		err = protocolErr("server rejected Worker routing")
 	case protocol.StatusInvalidRequest, protocol.StatusUnsupported:
 		err = invalidArgument("server rejected the request")
-	default:
+	case protocol.StatusInternalError, protocol.StatusOK:
 		err = internalErr("server reported an internal error")
+	default:
+		err = protocolErr("server returned an unknown status")
 	}
 	s := status
 	err.WireStatus = &s

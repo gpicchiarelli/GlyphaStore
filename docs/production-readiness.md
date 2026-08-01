@@ -39,10 +39,10 @@ The volatile engine under `src/experimental/` is lab-only.
 ### Public contract
 
 - [ ] **GATE-API-ABI-POLICY** — API and ABI compatibility policies for patch/minor/major  
-  State: `SPECIFICATA` · Release target: `alpha`  
-  Requirements: `GS-COMPAT-FIXTURE-001`  
-  Residual risk: Tagged cross-release binary matrices remain open
-  Target policy documented; tagged matrices open.
+  State: `IMPLEMENTATA` · Release target: `alpha`  
+  Requirements: `GS-COMPAT-FIXTURE-001`, `GS-COMPAT-NN1-001`  
+  Residual risk: Permanent tagged N−1 fixture trees remain a release-process step
+  N↔N-1 policy matrix + ABI not-promised row landed; tagged N−1 drops still residual.
 
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified  
   State: `IMPLEMENTATA` · Release target: `alpha`  
@@ -52,7 +52,7 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
-  Requirements: `GS-COMPAT-FIXTURE-001`, `GS-PROTO-WIRE-001`  
+  Requirements: `GS-COMPAT-FIXTURE-001`, `GS-COMPAT-NN1-001`, `GS-PROTO-WIRE-001`  
   Residual risk: Publishing trees into permanent fixture drop remains a release-process step
   Golden fixtures and released-artifact harness exist; permanent drop process open.
 
@@ -66,9 +66,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [ ] **GATE-BACKUP-RESTORE** — Backup restore verification and version migration  
   State: `IMPLEMENTATA` · Release target: `beta`  
-  Requirements: `GS-OPS-BACKUP-001`  
-  Residual risk: Released-tag artifact consumption remains open
-  Offline tools and online fenced backup implemented; tag consumption open.
+  Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-MIGRATE-001`  
+  Residual risk: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; real glyphastored mid-BACKUP kill limited
+  Offline tools and online fenced backup implemented; normative snapshot boundary published.
 
 - [x] **GATE-DURABLE-ACK** — Acknowledgement semantics for durable mutations  
   State: `PROVATA_IN_CI` · Release target: `beta`  
@@ -110,15 +110,15 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-PERFORMANCE** — Performance tests track latency throughput memory regressions  
   State: `PROVATA_IN_CI` · Release target: `beta`  
-  Requirements: `GS-PERF-REGRESSION-001`  
-  Residual risk: Hosted CI is regression signal only; hardware budgets Phase E
-  Median ops/s regression gate exists; absolute claims forbidden.
+  Requirements: `GS-PERF-REGRESSION-001`, `GS-PERF-BUDGET-001`  
+  Residual risk: Absolute hardware budgets wait for glyphastore-linux-perf pass-candidate
+  Median ops/s regression + budget catalog landed; absolute claims still hardware-gated.
 
 - [x] **GATE-SOAK** — Long-running stress and soak coverage  
   State: `PROVATA_IN_CI` · Release target: `beta`  
-  Requirements: `GS-OPS-CONFIG-001`  
+  Requirements: `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`  
   Residual risk: Controlled multi-hour hardware soak with mandatory rotation evidence open
-  Smoke/long soaks exist; hardware soak remains release gate.
+  Smoke/long soaks exist and are budget-linked; hardware soak remains release residual.
 
 - [x] **GATE-TEST-SUITES** — Distinct unit integration property concurrency crash recovery suites  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
@@ -142,29 +142,29 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-OPS-RUNBOOKS** — Graceful drain overload backup restore corruption runbooks  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
-  Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-CONFIG-001`  
+  Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`  
   Residual risk: Staging/production rehearsal still operator-owned
-  Operator procedures exercised by ops-runbooks CI.
+  Operator procedures exercised by ops-runbooks CI and linked via perf/ops budgets.
 
 - [x] **GATE-TELEMETRY** — Structured logs metrics health readiness diagnostics  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
   Requirements: `GS-OPS-CONFIG-001`  
-  Residual risk: Histogram approximations are not SLOs
-  Wire HEALTH/READY/STATS and JSON lifecycle logging exist.
+  Residual risk: Histogram approximations are not SLOs; no Prometheus exporter
+  Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability catalog exist.
 
 - [ ] **GATE-THREAT-SUPPLY** — Threat model and security release process including supply chain  
   State: `IMPLEMENTATA` · Release target: `beta`  
-  Requirements: `GS-SEC-PROFILE-001`  
-  Residual risk: Project GPG / full SLSA L3 optional; Actions SHA pin Phase D
-  Threat model + SBOM/checksum/Cosign/SLSA path present; residuals documented.
+  Requirements: `GS-SEC-PROFILE-001`, `GS-SUPPLY-ACTIONS-001`  
+  Residual risk: Project GPG / full SLSA L3 optional; Dependabot must update SHAs
+  Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions; residuals documented.
 
 ### Distribution and lifecycle
 
 - [x] **GATE-CMAKE-INSTALL** — CMake installs versioned package metadata and GlyphaStore::core  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
   Requirements: `GS-CORE-API-001`, `GS-CORE-BUILD-001`  
-  Residual risk: Oversized sources remain under WAV-001 until decomposed below line budget
-  Installed targets exist; Phase C subdirectory split and dependency/structure gates landed.
+  Residual risk: None beyond prototype claim ceiling; WAV-001 size debt closed
+  Installed targets exist; Phase C subdirectory split and size-debt splits landed.
 
 - [x] **GATE-INSTALL-CONSUMER** — CI builds external consumer from installed prefix  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
@@ -186,9 +186,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-VERSION-LIFECYCLE** — Upgrade downgrade deprecation support EOL policies published  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
-  Requirements: `GS-COMPAT-FIXTURE-001`  
-  Residual risk: Formal support windows for beta/RC/stable remain P3
-  0.x / persistence v1 policies published; formal windows later.
+  Requirements: `GS-COMPAT-FIXTURE-001`, `GS-COMPAT-NN1-001`  
+  Residual risk: Formal support windows for beta/RC/stable remain P3; tagged N−1 fixture drops residual
+  0.x / persistence v1 policies + N↔N-1 matrix published; formal windows later.
 
 ## Change discipline
 

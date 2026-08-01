@@ -73,9 +73,11 @@ TCP client failures populate portable fields on `glyphastore::Error` (see
 | `request_id` / `worker` / `routing_epoch` | When known for that attempt |
 | `retryability` | Derived hint (`same_request`, `new_attempt`, `reconcile_first`, `never`) |
 | `operation` | e.g. `get`, `put`, `pipeline` |
+| `mutation_outcome` | On failed `PUT`/`ERASE` (and pipeline mutation positions): `rejected` / `indeterminate` (success uses `MutationResult::committed` / pipeline `succeeded`) |
 
-Applications that need portability should key off `category` and mutation outcome, not only
-`ErrorCode`.
+Applications that need portability should key off `category` and `mutation_outcome`, not only
+`ErrorCode`. Standalone mutations also expose the outcome on `MutationResult`; when an error is
+present the two agree.
 
 ## Ordered pipelines
 

@@ -19,7 +19,8 @@ cases() ->
         {overloaded, 5, overloaded, never, rejected, never, false},
         {wrong_owner, 6, protocol, new_attempt, rejected, reconcile_first, true},
         {not_bound, 7, unavailable, never, rejected, never, true},
-        {permission_denied, 8, permission_denied, never, rejected, never, false}
+        {permission_denied, 8, permission_denied, never, rejected, never, false},
+        {unknown_wire_status, 99, protocol, new_attempt, indeterminate, reconcile_first, false}
     ].
 
 check_case({Id, Status, Category, ReadRetry, MutOutcome, MutRetry, Unhealthy}) ->

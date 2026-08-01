@@ -106,6 +106,12 @@ class FileDescriptor final {
         return "remove_compaction_intent";
     case FilesystemOperation::remove_compaction_segment:
         return "remove_compaction_segment";
+    case FilesystemOperation::copy_backup_segment:
+        return "copy_backup_segment";
+    case FilesystemOperation::copy_backup_manifest:
+        return "copy_backup_manifest";
+    case FilesystemOperation::sync_backup_destination:
+        return "sync_backup_destination";
     }
     return "unknown";
 }
@@ -134,7 +140,10 @@ class FileDescriptor final {
                                  FilesystemOperation::sync_compaction_intent,
                                  FilesystemOperation::rename_compaction_intent,
                                  FilesystemOperation::remove_compaction_intent,
-                                 FilesystemOperation::remove_compaction_segment}) {
+                                 FilesystemOperation::remove_compaction_segment,
+                                 FilesystemOperation::copy_backup_segment,
+                                 FilesystemOperation::copy_backup_manifest,
+                                 FilesystemOperation::sync_backup_destination}) {
         if (name == filesystem_operation_name(operation)) {
             return operation;
         }
@@ -244,6 +253,9 @@ class DataDirectory final {
     // Descriptor-relative openat for catalog backup/copy while the Store lock is held.
     [[nodiscard]] auto directory_descriptor() const noexcept -> int {
         return directory_.get();
+    }
+    [[nodiscard]] auto hooks() const noexcept -> const FilesystemHooks& {
+        return hooks_;
     }
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return health_ && health_->load(std::memory_order_acquire);

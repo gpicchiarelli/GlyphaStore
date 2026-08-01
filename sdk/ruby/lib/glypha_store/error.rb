@@ -121,8 +121,10 @@ module GlyphaStore
           protocol("server rejected Worker routing")
         when Protocol::Status::INVALID_REQUEST, Protocol::Status::UNSUPPORTED
           invalid_argument("server rejected the request")
-        else
+        when Protocol::Status::INTERNAL_ERROR, Protocol::Status::OK
           internal("server reported an internal error")
+        else
+          protocol("server returned an unknown status")
         end
       err.enrich(wire_status: status)
       err

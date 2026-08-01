@@ -10,6 +10,7 @@ requirements:
   - docs/spec/wire-protocol-v2.md
   - docs/spec/client-semantics-v1.md
   - docs/spec/error-taxonomy-v1.md
+  - docs/spec/tcp-client-conformance-v1.md
   implementazione:
   - src/server
   - src/client
@@ -36,13 +37,15 @@ requirements:
   titolo: Unified portable error taxonomy across wire embedded and SDKs
   categoria: protocol
   criticita: alta
-  stato: implementato
+  stato: provato
   descrizione: Wire ResponseStatus, C++ ErrorCode collapses used by the TCP client, and official
     SDK structured errors share one status→category→retryability contract defined by
-    error-taxonomy-v1 and proven by the shared fixture matrix.
+    error-taxonomy-v1 and proven by the shared fixture matrix (including unknown wire status →
+    protocol).
   autorita:
   - docs/spec/error-taxonomy-v1.md
   - docs/spec/client-semantics-v1.md
+  - docs/spec/tcp-client-conformance-v1.md
   - docs/spec/wire-protocol-v2.md
   implementazione:
   - include/glyphastore/client/client.hpp
@@ -64,8 +67,8 @@ requirements:
   - workflow: ci.yml
     note: sdk-clients job runs taxonomy conformance
   rischio_residuo:
-  - Unknown wire status exposure before codec reject is not uniform across SDKs
-  - C++ Error omits mutation_outcome (carried by MutationResult)
+  - Transport / deadline / local-validation vectors beyond the shared fixture remain
+    client-semantics narrative coverage
   hazards:
   - HAZ-005
   - HAZ-010

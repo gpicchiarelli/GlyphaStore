@@ -20,7 +20,7 @@ struct CheckpointState {
     std::filesystem::path checkpoint_dir;
     std::string kill_at;
     bool signaled{false};
-    std::array<std::size_t, static_cast<std::size_t>(FilesystemOperation::remove_compaction_segment) + 1U>
+    std::array<std::size_t, static_cast<std::size_t>(FilesystemOperation::sync_backup_destination) + 1U>
         occurrences{};
 
     static void after(void* context, const FilesystemOperation operation) {

@@ -47,8 +47,8 @@ jobs:
     name: E2 durability collector
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install build tools
@@ -96,7 +96,7 @@ jobs:
           grep -q 'Physical power loss exercised: `no`' "$out/summary.md"
           grep -q 'Release-certification eligible: `no`' "$out/summary.md"
       - name: Upload E2 artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: durability-e2-${{ github.run_id }}
           path: durability-evidence/e2-${{ github.run_id }}
@@ -108,8 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     needs: e2-collector
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install build and block-device tools
@@ -151,7 +151,7 @@ jobs:
           ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind harness
       - name: Upload E3 harness artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: durability-e3-linux-ext4-${{ github.run_id }}
           path: durability-evidence/e3-linux-ext4-${{ github.run_id }}
@@ -164,8 +164,8 @@ jobs:
     # Keep macOS smoke on schedule/dispatch so PR CI stays lean; Linux loopback covers PR rehearsal.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install build tools
@@ -203,7 +203,7 @@ jobs:
           ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind harness
       - name: Upload E3 macOS harness artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: durability-e3-macos-apfs-${{ github.run_id }}
           path: durability-evidence/e3-macos-apfs-${{ github.run_id }}
@@ -220,8 +220,8 @@ jobs:
     needs: e2-collector
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install build and block-device tools
@@ -273,7 +273,7 @@ jobs:
           grep -q 'promotion_candidate=no' "$out/campaign-provenance.txt"
       - name: Upload campaign orchestrator artifact
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: durability-e3-campaign-${{ github.run_id }}
           path: |

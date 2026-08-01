@@ -760,22 +760,25 @@ class Client:
             raise ProtocolError("server response came from the wrong Worker")
 
     @staticmethod
-    def _status_error(status: Status) -> GlyphaError:
-        if status is Status.NOT_FOUND:
+    def _status_error(status: Status | int) -> GlyphaError:
+        code = int(status)
+        if code == Status.NOT_FOUND:
             error: GlyphaError = NotFound("key was not found")
-        elif status is Status.OVERLOADED:
+        elif code == Status.OVERLOADED:
             error = Overloaded("server is overloaded")
-        elif status is Status.NOT_BOUND:
+        elif code == Status.NOT_BOUND:
             error = Unavailable("server connection is not bound")
-        elif status is Status.PERMISSION_DENIED:
+        elif code == Status.PERMISSION_DENIED:
             error = PermissionDenied("server denied the request")
-        elif status is Status.WRONG_OWNER:
+        elif code == Status.WRONG_OWNER:
             error = ProtocolError("server rejected Worker routing")
-        elif status in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
+        elif code in (Status.INVALID_REQUEST, Status.UNSUPPORTED):
             error = InvalidArgument("server rejected the request")
-        else:
+        elif code in (Status.INTERNAL_ERROR, Status.OK):
             error = InternalError("server reported an internal error")
-        error.wire_status = int(status)
+        else:
+            error = ProtocolError("server returned an unknown status")
+        error.wire_status = code
         return error
 
     def _request_deadline(self, timeout: float | None) -> float:

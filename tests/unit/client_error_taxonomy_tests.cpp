@@ -25,6 +25,7 @@ constexpr TaxonomyCase kCases[] = {
     {6, "protocol", "new_attempt", "rejected", "reconcile_first", true},
     {7, "unavailable", "never", "rejected", "never", true},
     {8, "permission_denied", "never", "rejected", "never", false},
+    {99, "protocol", "new_attempt", "indeterminate", "reconcile_first", false},
 };
 
 } // namespace
@@ -36,6 +37,10 @@ GLYPHA_TEST("error taxonomy maps wire status to category and retryability") {
         GLYPHA_REQUIRE(error.wire_status.has_value());
         GLYPHA_REQUIRE(*error.wire_status == expected.wire_status);
         GLYPHA_REQUIRE(error.retryability == expected.read_retryability);
+        // Read-path mapping leaves mutation_outcome empty; fixture outcome is via helper.
+        GLYPHA_REQUIRE(error.mutation_outcome.empty());
+        GLYPHA_REQUIRE(glyphastore::client::portable_mutation_outcome(expected.wire_status) ==
+                       expected.mutation_outcome);
 
         const bool indeterminate = expected.mutation_outcome == "indeterminate";
         const auto mutation_retry = glyphastore::client::portable_retryability(

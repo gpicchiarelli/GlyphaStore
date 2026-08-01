@@ -47,6 +47,10 @@ enum class FilesystemOperation {
     rename_compaction_intent,
     remove_compaction_intent,
     remove_compaction_segment,
+    // Online/offline catalog backup copy seams (crash/fault injection).
+    copy_backup_segment,
+    copy_backup_manifest,
+    sync_backup_destination,
 };
 
 struct FilesystemHooks {

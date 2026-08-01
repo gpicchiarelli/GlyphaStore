@@ -5,7 +5,8 @@ Applies to: durable data directories (`manifest.glypha` + catalog Segments)
 Owner: persistence maintainers
 Last reviewed: 2026-07-31
 
-Architecture contract: [backup-restore](../architecture/backup-restore.md). CLI reference:
+Architecture contract: [backup-restore](../architecture/backup-restore.md). Normative boundary:
+[backup-restore v1](../spec/backup-restore-v1.md). CLI reference:
 [cli.md § glyphastore_backup_store](../cli.md#glyphastore_backup_store).
 
 ## Purpose
@@ -88,7 +89,8 @@ validation is sufficient.
 Use `Store::backup_to(destination)` against an open durable Store, wire opcode `BACKUP` (10) against
 a live `glyphastored` (key = UTF-8 destination path; requires `admin` under `--authz-map`), or a
 typed client `backup(destination)` (C++ and official SDKs). Expect a short admission fence
-(in-flight ops drain; new ops return `unavailable` until copy completes). External
+(in-flight ops drain; new ops return `unavailable` during flush + structural source check + catalog
+Segment/Manifest copy). Writers resume before destination verify (optional CRC). External
 `glyphastore_backup_store` against the same path still fails with `io_error` while the Store holds
 the lock. Online backup remains fenced, not zero-impact hot I/O.
 
@@ -136,5 +138,7 @@ update), start the daemon, re-verify `READY`.
 
 - Do **not** run `glyphastore_backup_store` against a live data directory “for convenience”.
 - Do **not** treat online fenced backup as zero-impact under load; schedule it or use offline CLI.
+  Zero-fence in-process backup is deferred ([ADR 0034](../adr/0034-zero-fence-hot-backup-deferred.md));
+  volume snapshots remain an external operator option.
 - Do **not** restore by copying files manually without verify/sync ordering; use the tool so catalog
   Segments and Manifest publication order match the implementation contract.

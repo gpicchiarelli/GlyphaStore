@@ -24,14 +24,14 @@ jobs:
     name: SDK checksums + SPDX SBOM
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
-      - uses: actions/setup-go@v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version: "1.23"
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "3.3"
       - name: Install Erlang / rebar3
@@ -73,7 +73,7 @@ jobs:
         run: ./scripts/verify-sdk-artifact-reproducibility.sh
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
-        uses: sigstore/cosign-installer@v3.8.2
+        uses: sigstore/cosign-installer@3454372f43399081ed03b604cb2d021dabca52bb # v3.8.2
       - name: Keyless-sign SDK artifacts (Sigstore)
         if: startsWith(github.ref, 'refs/tags/')
         working-directory: dist/sdk-artifacts
@@ -101,7 +101,7 @@ jobs:
               "$artifact"
           done < <(find . -maxdepth 1 -type f -name '*.cosign.bundle' -print0)
       - name: Upload SHA256SUMS, SPDX, and cosign bundles
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sdk-supply-chain-${{ github.sha }}
           path: |
@@ -116,7 +116,7 @@ jobs:
           startsWith(github.ref, 'refs/tags/') &&
           (github.event.repository.visibility == 'public' ||
            vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
-        uses: actions/attest@v4
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
         with:
           subject-path: |
             dist/sdk-artifacts/SHA256SUMS
@@ -143,11 +143,11 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule'
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "3.3"
       - name: Export reproducible build env
@@ -167,7 +167,7 @@ jobs:
           ./scripts/package-ruby-client.sh
           ./scripts/checksum-sdk-artifacts.sh dist/sdk-artifacts-cross
       - name: Download reference sums from primary builder
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: sdk-supply-chain-${{ github.sha }}
           path: dist/sdk-artifacts-ref

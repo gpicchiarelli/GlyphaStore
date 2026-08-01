@@ -1,5 +1,75 @@
 ## [Unreleased]
 
+- C++ `Error` carries portable `mutation_outcome` (`rejected` / `indeterminate`) on failed
+  TCP-client mutations and pipeline mutation positions; `portable_mutation_outcome(wire_status)`
+  matches the taxonomy fixture. Closes the last `GS-PROTO-ERROR-001` residual on C++ Error.
+- HAZ-022: synthetic incompatible restore/open matrices — checksum-valid future Manifest
+  format and future pinned Record version refuse verify/restore/`Store::open`; truncated
+  Manifest and Worker-count mismatch after restore also fail closed
+  (`tests/unit/store_backup_tests.cpp`). `STORE-FUTURE-REQUIRED` evidence updated; tagged
+  N−1 permanent fixture drops remain a release residual.
+- `GS-PROTO-ERROR-001`: unknown wire status maps uniformly to category `protocol` (preserve numeric
+  `wire_status`; mutation `indeterminate`) across C++ and official SDKs; fixture case
+  `unknown_wire_status` (99). Codecs still reject unknown statuses after buffering the frame.
+- Offline migrate resume hardening (ADR 0024 / `GS-OPS-MIGRATE-001`): real mid-copy interrupt via
+  destination `FilesystemHooks` then resume; fail-closed corrupt/mismatched/orphan checkpoints;
+  N↔N-1 `STORE-WORKER-RESHARD` evidence points at unit tests.
+- HAZ-021: wire/reactor BACKUP process-kill via in-process Server + `Client::backup`
+  (`glyphastore_crash_backup_wire`). Incomplete dest fails verify; source reopen + wire GET after
+  Server restart. Real `glyphastored` exec mid-BACKUP kill still limited.
+- HAZ-021: Store process-kill mid-backup via `FilesystemHooks`
+  (`copy_backup_segment` / `copy_backup_manifest` / `sync_backup_destination`) and
+  `glyphastore_crash_backup`. Incomplete dest fails verify; source reopens healthy. Daemon wire
+  BACKUP kill matrix still limited.
+- Surface `source_crc_scanned` / `destination_crc_scanned` on wire `BACKUP` ASCII and
+  `glyphastore_backup_store` text/JSON reports. Clarify ops docs: online fenced backup is supported;
+  zero-fence hot backup is not.
+- HAZ-021: incomplete backup destinations fail verify/restore; failed online backup leaves the live
+  Store usable (`tests/unit/store_backup_tests.cpp`). Process-kill mid-copy daemon matrix remains
+  limited.
+- Online fenced backup: keep only **structural** source verify under the admission fence; run
+  committed CRC scan on the destination after admissions resume (promotion gate). Offline backup
+  still CRC-scans the source once before copy. Report `source_crc_scanned` /
+  `destination_crc_scanned`.
+- Parallelize catalog Segment file copy during offline/online backup (bounded workers, Manifest
+  last). Report `segment_copy_workers`. Completes ADR 0034 fenced-path incremental (shorter fence +
+  copy parallelism); still not zero-fence.
+- Shorten online `Store::backup_to` admission fence: resume writers after catalog copy; run
+  destination verify outside the fence. Report `admission_fence_ns` / `catalog_copy_ns` /
+  `destination_verify_ns` on backup reports and wire `BACKUP` ASCII output (still not zero-fence;
+  ADR 0034).
+- ADR [0034](docs/adr/0034-zero-fence-hot-backup-deferred.md): freeze design requirements for
+  zero-fence hot backup; 0.1.x keeps offline + online fenced paths only.
+- Docs P1: [operations handbook](docs/operations/handbook.md) and
+  [ADR 0033](docs/adr/0033-online-rebalance-deferred.md) (online rebalance design frozen,
+  implementation deferred past 0.1.x).
+- Docs P1: normative [backup-restore-v1](docs/spec/backup-restore-v1.md) and
+  [tcp-client-conformance-v1](docs/spec/tcp-client-conformance-v1.md).
+- Docs P1: [observability reference](docs/operations/observability.md) for HEALTH/READY/STATS
+  needles, JSON lifecycle logs, and `--dump-config` (no metrics exporter claimed).
+- Docs P1: operator [compatibility-and-migration](docs/operations/compatibility-and-migration.md)
+  manual and [release-checklist](docs/assurance/release-checklist.md); WAV-001 size waiver revoked
+  after production and test suite splits under the structure line budget.
+- Close WAV-001: split remaining oversized test suites
+  (`maintenance_controller_*`, `server_reactor_*`, `persistence_recovery_*`) under the
+  structure line budget; revoke the size waiver.
+- Reduce WAV-001 surface: split `src/persistence/runtime_catalog.cpp` into
+  `runtime_catalog_detail.hpp`/`.cpp`, `runtime_catalog_ops.cpp`, and
+  `runtime_catalog_maintenance.cpp` (each under the structure line budget).
+- Reduce WAV-001 surface: split `src/server/reactor.cpp` into `reactor_detail.hpp` +
+  `reactor_dispatch.cpp` (I/O/lifecycle vs frame/dispatch path).
+- Reduce WAV-001 surface: split `src/store/store.cpp` into `store_impl.hpp`,
+  `store_access.cpp`, and `prepared_cold_read.cpp` (each under the structure line budget).
+- Assurance Phase E: performance/soak/overload budgets
+  (`engineering/performance/budgets.yaml`, `validate_perf_budgets.py`) linked to
+  `GATE-PERFORMANCE` / `GATE-SOAK` / `GATE-OPS-RUNBOOKS` (`GS-PERF-BUDGET-001`,
+  `GS-OPS-SOAK-001`). Absolute hardware thresholds remain `specified_waiting_for_runner`.
+  Final honest summary: `docs/assurance/final-engineering-report.md` (claim ceiling stays
+  architectural prototype).
+- Assurance Phase D: N↔N-1 compatibility matrix (`engineering/compatibility/n-n1-matrix.yaml`),
+  SHA-pinned GitHub Actions (`validate_actions_pins.py`), release claim schema/packaging
+  (`engineering/claims/`, `scripts/package-release-claim.sh`), and requirements
+  `GS-COMPAT-NN1-001` / `GS-SUPPLY-ACTIONS-001`. Residual: permanent tagged N−1 fixture drops.
 - Assurance Phase C: split root `CMakeLists.txt` via `add_subdirectory` for
   `src`/`tools`/`tests`/`benchmarks`/`fuzz` (installed `GlyphaStore::*` aliases unchanged);
   add `engineering/build/dependency-matrix.yaml`, structure debt thresholds, waivers (`WAV-001`),

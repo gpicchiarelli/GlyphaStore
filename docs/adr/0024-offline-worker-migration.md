@@ -5,6 +5,7 @@
 - Deciders: persistence maintainers
 - Applies to: durable persistence v1; Worker routing; 0.x release lifecycle
 - Amends: [0005](0005-worker-auto-sizing.md), [0006](0006-key-routing-hash.md), [0008](0008-alpha-persistence-contract.md)
+- Amended by: [0033](0033-online-rebalance-deferred.md) (online path design constraints; still deferred)
 - Supersedes: none
 
 ## Context

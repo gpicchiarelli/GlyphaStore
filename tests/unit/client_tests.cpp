@@ -335,6 +335,7 @@ GLYPHA_TEST("C++ client maps OVERLOADED mutations to rejected with retryability 
     GLYPHA_REQUIRE(put.error.has_value());
     GLYPHA_REQUIRE(put.error->code == glyphastore::ErrorCode::resource_exhausted);
     GLYPHA_REQUIRE(put.error->category == "overloaded");
+    GLYPHA_REQUIRE(put.error->mutation_outcome == "rejected");
     GLYPHA_REQUIRE(put.error->retryability == "never");
     GLYPHA_REQUIRE(put.error->wire_status.has_value());
     GLYPHA_REQUIRE(*put.error->wire_status ==

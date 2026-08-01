@@ -102,8 +102,14 @@ from_status(1) ->
     from_status_with(1, invalid_argument(<<"server rejected the request">>));
 from_status(2) ->
     from_status_with(2, invalid_argument(<<"server rejected the request">>));
-from_status(_) ->
-    from_status_with(3, internal(<<"server reported an internal error">>)).
+from_status(3) ->
+    from_status_with(3, internal(<<"server reported an internal error">>));
+from_status(0) ->
+    from_status_with(0, internal(<<"unexpected successful response mapping">>));
+from_status(Status) when is_integer(Status), Status > 8 ->
+    from_status_with(Status, protocol(<<"server returned an unknown status">>));
+from_status(Status) ->
+    from_status_with(Status, protocol(<<"server returned an unknown status">>)).
 
 from_status_with(Status, Err) ->
     Err#{wire_status => Status}.

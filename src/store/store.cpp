@@ -7,12 +7,14 @@
 #include "glyphastore/persistence/bootstrap.hpp"
 #include "glyphastore/persistence/resource_limits.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
+#include "glyphastore/persistence/store_verify.hpp"
 #include "glyphastore/segment/global_manager.hpp"
 #include "glyphastore/store/maintenance.hpp"
 #include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
+#include "store/store_impl.hpp"
 #include "store/store_internal.hpp"
 
 #include <algorithm>
@@ -31,501 +33,6 @@
 #include <vector>
 
 namespace glyphastore {
-namespace {
-
-[[nodiscard]] auto as_string_view(const std::span<const std::byte> bytes) noexcept -> std::string_view {
-    if (bytes.empty()) {
-        return {};
-    }
-    return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-}
-
-[[nodiscard]] auto copy_value(const RecordView& record) -> OwnedValue {
-    return OwnedValue{
-        .bytes = std::vector<std::byte>{record.value.begin(), record.value.end()},
-        .sequence = record.sequence.value,
-        .expire_at_ns = record.expire_at_ns,
-    };
-}
-
-auto durable_status(DurableMutationResult result) -> Status {
-    if (result.committed() && !result.error) {
-        return {};
-    }
-    auto error =
-        result.error ? std::move(*result.error) : Error{ErrorCode::io_error, "durable mutation failed"};
-    if (result.committed()) {
-        error.code = ErrorCode::unavailable;
-    }
-    return unexpected(std::move(error));
-}
-
-auto public_compaction_result(const std::size_t worker_index, DurableCompactionResult result)
-    -> Result<CompactionResult> {
-    if (result.outcome == DurableCompactionOutcome::not_beneficial) {
-        return CompactionResult{
-            .compacted = false,
-            .worker_index = worker_index,
-            .source_records_verified = result.stats.source_index_records_verified,
-            .source_bytes_verified = result.stats.source_bytes_verified,
-            .records_copied = 0,
-            .bytes_copied = 0,
-            .expired_records_dropped = result.stats.expired_records_dropped,
-        };
-    }
-    if (!result.compacted()) {
-        auto error =
-            result.error ? std::move(*result.error) : Error{ErrorCode::io_error, "durable compaction failed"};
-        if (result.outcome == DurableCompactionOutcome::recovery_required) {
-            error.code = ErrorCode::unavailable;
-        }
-        return unexpected(std::move(error));
-    }
-    return CompactionResult{
-        .compacted = true,
-        .worker_index = worker_index,
-        .source_records_verified = result.stats.source_index_records_verified,
-        .source_bytes_verified = result.stats.source_bytes_verified,
-        .records_copied = result.stats.records_copied,
-        .bytes_copied = result.stats.bytes_copied,
-        .expired_records_dropped = result.stats.expired_records_dropped,
-    };
-}
-
-auto public_compaction_result(const std::size_t worker_index, const VacuumStats& stats) -> CompactionResult {
-    return CompactionResult{
-        .compacted = true,
-        .worker_index = worker_index,
-        .source_records_verified = stats.source_records_verified,
-        .source_bytes_verified = stats.source_bytes_verified,
-        .records_copied = stats.records_copied,
-        .bytes_copied = stats.bytes_copied,
-        .expired_records_dropped = stats.expired_records_dropped,
-    };
-}
-
-[[nodiscard]] auto resource_exhausted() -> Unexpected {
-    return unexpected(Error{ErrorCode::resource_exhausted, {}});
-}
-
-[[nodiscard]] auto internal_failure() -> Unexpected {
-    return unexpected(Error{ErrorCode::internal_error, {}});
-}
-
-[[nodiscard]] auto closed_store() -> Unexpected {
-    return unexpected(Error{ErrorCode::unavailable, {}});
-}
-
-[[nodiscard]] auto reject_if_maintenance_emergency(MaintenanceController* controller) -> Status {
-    if (controller != nullptr && controller->mutations_rejected()) {
-        return fail(ErrorCode::storage_exhausted, std::string{kMaintenanceEmergencyMutationMessage});
-    }
-    return {};
-}
-
-auto data_directory_mode(const DurableOpenMode mode) noexcept -> DataDirectoryOpenMode {
-    switch (mode) {
-    case DurableOpenMode::open_existing:
-        return DataDirectoryOpenMode::existing;
-    case DurableOpenMode::create_new:
-        return DataDirectoryOpenMode::create_new;
-    case DurableOpenMode::open_or_create:
-        return DataDirectoryOpenMode::open_or_create;
-    }
-    return DataDirectoryOpenMode::existing;
-}
-
-[[nodiscard]] auto validate_batch_config(const DurableGroupConfig& batch) -> Status {
-    if (batch.max_records == 0 || batch.max_bytes == 0 || batch.max_wait_ms == 0 || batch.min_records == 0) {
-        return fail(ErrorCode::invalid_argument,
-                    "durable batching requires record, byte, and wait limits greater than zero");
-    }
-    if (batch.min_records > batch.max_records) {
-        return fail(ErrorCode::invalid_argument,
-                    "durable batching requires min_records no greater than max_records");
-    }
-    return {};
-}
-
-[[nodiscard]] auto system_time_ns() noexcept -> std::uint64_t {
-    using namespace std::chrono;
-    const auto elapsed = system_clock::now().time_since_epoch();
-    if (elapsed <= system_clock::duration::zero()) {
-        return 0;
-    }
-
-    const auto whole_seconds = duration_cast<seconds>(elapsed);
-    const auto fractional_ns = duration_cast<nanoseconds>(elapsed - whole_seconds);
-    constexpr auto kNanosecondsPerSecond = std::uint64_t{1'000'000'000};
-    constexpr auto kMaximumSeconds = std::numeric_limits<std::uint64_t>::max() / kNanosecondsPerSecond;
-    const auto seconds_count = static_cast<std::uint64_t>(whole_seconds.count());
-    if (seconds_count > kMaximumSeconds) {
-        return std::numeric_limits<std::uint64_t>::max();
-    }
-    const auto base = seconds_count * kNanosecondsPerSecond;
-    const auto fraction = static_cast<std::uint64_t>(fractional_ns.count());
-    if (fraction > std::numeric_limits<std::uint64_t>::max() - base) {
-        return std::numeric_limits<std::uint64_t>::max();
-    }
-    return base + fraction;
-}
-
-[[nodiscard]] auto sample_clock(const std::shared_ptr<const StoreClock>& clock) noexcept -> std::uint64_t {
-    return clock ? clock->now_ns() : system_time_ns();
-}
-
-} // namespace
-
-struct VolatileStoreRuntime {
-    VolatileStoreRuntime(const SegmentId first_segment_id, const std::size_t worker_count,
-                         const WorkerRoutingState routing)
-        : segment_manager(first_segment_id), workers(segment_manager, worker_count, routing) {}
-
-    GlobalSegmentManager segment_manager;
-    WorkerPool workers;
-};
-
-struct Store::Impl {
-    enum class LifecycleState : std::uint8_t { open, closing, closed };
-
-    // 128 bytes covers the widest cache line of the currently supported desktop/server targets.
-    // Keeping admission counters on separate lines prevents unrelated Workers from contending on
-    // Store lifecycle bookkeeping in the steady-state data path.
-    struct alignas(128) ActiveOperationCounter {
-        std::atomic<std::size_t> state{};
-    };
-
-    static constexpr auto kAdmissionClosed = std::size_t{1}
-                                             << (std::numeric_limits<std::size_t>::digits - 1U);
-    static constexpr auto kAdmissionCountMask = kAdmissionClosed - 1U;
-
-    class OperationGuard final {
-      public:
-        OperationGuard(Impl& impl, const std::size_t shard) noexcept
-            : impl_(impl.begin_operation(shard) ? &impl : nullptr), shard_(shard) {}
-        ~OperationGuard() {
-            if (impl_ != nullptr) {
-                impl_->finish_operation(shard_);
-            }
-        }
-
-        OperationGuard(const OperationGuard&) = delete;
-        auto operator=(const OperationGuard&) -> OperationGuard& = delete;
-
-        explicit operator bool() const noexcept {
-            return impl_ != nullptr;
-        }
-
-      private:
-        Impl* impl_{};
-        std::size_t shard_{};
-    };
-
-    explicit Impl(std::unique_ptr<VolatileStoreRuntime> runtime, const WorkerRoutingState routing_state,
-                  std::shared_ptr<const StoreClock> store_clock, const std::uint64_t initial_now_ns)
-        : worker_count_value(runtime->workers.size()), routing(routing_state),
-          active_operations(std::make_unique<ActiveOperationCounter[]>(worker_count_value + 1)),
-          volatile_runtime(std::move(runtime)), clock(std::move(store_clock)), latest_now_ns(initial_now_ns) {
-    }
-    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime,
-                  std::shared_ptr<const StoreClock> store_clock, const std::uint64_t initial_now_ns)
-        : worker_count_value(runtime->worker_count()), routing(runtime->worker_routing()),
-          active_operations(std::make_unique<ActiveOperationCounter[]>(worker_count_value + 1)),
-          durable_runtime(std::move(runtime)), clock(std::move(store_clock)), latest_now_ns(initial_now_ns) {}
-
-    [[nodiscard]] auto control_shard() const noexcept -> std::size_t {
-        return worker_count_value;
-    }
-
-    [[nodiscard]] auto begin_operation(const std::size_t shard) noexcept -> bool {
-        // The RMW reads its immediate predecessor in this shard's modification order. It therefore
-        // either precedes close_admission() and is counted, or follows it and observes the closed bit.
-        const auto previous = active_operations[shard].state.fetch_add(1, std::memory_order_relaxed);
-        if ((previous & kAdmissionClosed) == 0) {
-            return true;
-        }
-        finish_operation(shard);
-        return false;
-    }
-
-    void finish_operation(const std::size_t shard) noexcept {
-        const auto previous = active_operations[shard].state.fetch_sub(1, std::memory_order_acq_rel);
-        if ((previous & kAdmissionClosed) != 0 && (previous & kAdmissionCountMask) == 1U) {
-            active_operations[shard].state.notify_all();
-        }
-    }
-
-    void close_admission() noexcept {
-        // Each RMW is totally ordered with admission on that shard. Completion of this loop is the
-        // close linearization point: every later attempt observes its shard's closed bit.
-        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
-            active_operations[shard].state.fetch_or(kAdmissionClosed, std::memory_order_relaxed);
-        }
-    }
-
-    void resume_admission_if_open() noexcept {
-        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
-            return;
-        }
-        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
-            active_operations[shard].state.fetch_and(~kAdmissionClosed, std::memory_order_release);
-        }
-    }
-
-    // nullopt waits unbounded. A set deadline (milliseconds) is a liveness bound:
-    // if admitted work remains after the deadline, close surfaces unavailable
-    // rather than hanging forever (GS-CONCUR-LIVE-001).
-    [[nodiscard]] auto wait_for_active_operations(
-        const std::optional<std::uint32_t> deadline_ms = std::nullopt) const noexcept -> bool {
-        // Waiting directly on each atomic closes the check-to-sleep race of a
-        // condition variable whose predicate is not protected by its mutex.
-        // finish_operation() notifies the transition of a closed shard to
-        // zero, so no completion can be lost between load and wait.
-        const auto deadline_at =
-            deadline_ms.has_value()
-                ? std::optional{std::chrono::steady_clock::now() + std::chrono::milliseconds{*deadline_ms}}
-                : std::nullopt;
-        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
-            auto observed = active_operations[shard].state.load(std::memory_order_acquire);
-            while ((observed & kAdmissionCountMask) != 0) {
-                if (deadline_at.has_value()) {
-                    if (std::chrono::steady_clock::now() >= *deadline_at) {
-                        return false;
-                    }
-                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
-                } else {
-                    active_operations[shard].state.wait(observed, std::memory_order_acquire);
-                }
-                observed = active_operations[shard].state.load(std::memory_order_acquire);
-            }
-        }
-        return true;
-    }
-
-    void mark_durable_fail_closed() noexcept {
-        OperationGuard operation{*this, control_shard()};
-        if (operation && durable_runtime) {
-            durable_runtime->mark_fail_closed();
-        }
-    }
-
-    [[nodiscard]] auto close_status_locked() const -> Status {
-        if (!close_error) {
-            return {};
-        }
-        try {
-            return unexpected(*close_error);
-        } catch (const std::bad_alloc&) {
-            return resource_exhausted();
-        } catch (...) {
-            return internal_failure();
-        }
-    }
-
-    [[nodiscard]] auto operational() const noexcept -> bool {
-        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
-            return false;
-        }
-        return !durable_runtime || durable_runtime->healthy();
-    }
-
-    [[nodiscard]] auto close() -> Status {
-        auto expected = LifecycleState::open;
-        if (!lifecycle.compare_exchange_strong(expected, LifecycleState::closing, std::memory_order_acq_rel,
-                                               std::memory_order_acquire)) {
-            while (expected != LifecycleState::closed) {
-                lifecycle.wait(expected, std::memory_order_acquire);
-                expected = lifecycle.load(std::memory_order_acquire);
-            }
-            const std::lock_guard lock{lifecycle_mutex};
-            return close_status_locked();
-        }
-
-        struct CloseFinalizer {
-            Impl* impl;
-
-            ~CloseFinalizer() {
-                if (impl == nullptr) {
-                    return;
-                }
-                try {
-                    const std::lock_guard lock{impl->lifecycle_mutex};
-                    if (!impl->close_error) {
-                        impl->close_error.emplace(Error{ErrorCode::internal_error, {}});
-                    }
-                    impl->lifecycle.store(LifecycleState::closed, std::memory_order_release);
-                } catch (...) {
-                    impl->lifecycle.store(LifecycleState::closed, std::memory_order_release);
-                }
-                impl->lifecycle.notify_all();
-            }
-        } finalizer{this};
-
-        // Drain paired Writers while Store admission is still open so exclusive
-        // StoreAccess mutations nested under the Writer can still admit.
-        Status result;
-        GS_FAULT_SITE(close);
-        if (pair_runtime) {
-            std::optional<std::chrono::milliseconds> drain_deadline;
-            if (close_drain_deadline_ms.has_value()) {
-                drain_deadline = std::chrono::milliseconds{*close_drain_deadline_ms};
-            }
-            auto drained = pair_runtime->stop_and_drain(drain_deadline);
-            if (!drained) {
-                result = std::move(drained);
-            }
-        }
-
-        close_admission();
-        // Stop new maintenance evaluations, then drain admitted ops (including compact),
-        // then join the controller — matching DurableFlushCoordinator shutdown ordering.
-        if (maintenance) {
-            maintenance->request_stop();
-        }
-        try {
-            if (durable_runtime) {
-                durable_runtime->request_close_flush();
-            }
-        } catch (const std::bad_alloc&) {
-            if (result) {
-                result = resource_exhausted();
-            }
-        } catch (...) {
-            if (result) {
-                result = internal_failure();
-            }
-        }
-        if (!result && durable_runtime) {
-            // Release any strict-group producer even when posting the close flush itself failed.
-            durable_runtime->mark_fail_closed();
-        }
-        if (!wait_for_active_operations(close_drain_deadline_ms)) {
-            if (result) {
-                result = fail(ErrorCode::unavailable, "close admission drain deadline exceeded");
-            }
-        }
-        if (maintenance) {
-            maintenance->join();
-        }
-        // Keep pair_runtime until Store destruction so thin daemon adapters can
-        // still read stats after stop_and_drain / close.
-
-        try {
-            if (durable_runtime) {
-                auto closed = durable_runtime->close();
-                if (result && !closed) {
-                    result = std::move(closed);
-                }
-            }
-        } catch (const std::bad_alloc&) {
-            if (result) {
-                result = resource_exhausted();
-            }
-        } catch (...) {
-            if (result) {
-                result = internal_failure();
-            }
-        }
-        durable_runtime.reset();
-        volatile_runtime.reset();
-        maintenance.reset();
-        clock.reset();
-
-        Status final_status;
-        {
-            const std::lock_guard lock{lifecycle_mutex};
-            if (!result) {
-                close_error.emplace(std::move(result.error()));
-            }
-            lifecycle.store(LifecycleState::closed, std::memory_order_release);
-            final_status = close_status_locked();
-        }
-        finalizer.impl = nullptr;
-        lifecycle.notify_all();
-        return final_status;
-    }
-
-    [[nodiscard]] auto now_ns() noexcept -> std::uint64_t {
-        const auto sampled = sample_clock(clock);
-        auto observed = latest_now_ns.load(std::memory_order_relaxed);
-        while (observed < sampled &&
-               !latest_now_ns.compare_exchange_weak(observed, sampled, std::memory_order_relaxed,
-                                                    std::memory_order_relaxed)) {
-        }
-        return std::max(observed, sampled);
-    }
-
-    std::size_t worker_count_value{};
-    WorkerRoutingState routing{};
-    StoreConcurrencyMode concurrency{StoreConcurrencyMode::paired};
-    std::unique_ptr<ActiveOperationCounter[]> active_operations;
-    std::unique_ptr<VolatileStoreRuntime> volatile_runtime;
-    std::unique_ptr<DurableRuntimeCatalog> durable_runtime;
-    std::unique_ptr<store::paired::ShardPairRuntime> pair_runtime;
-    std::shared_ptr<const StoreClock> clock;
-    std::atomic<std::uint64_t> latest_now_ns{};
-    std::mutex compaction_mutex;
-    std::atomic_size_t next_compaction_worker{};
-    std::unique_ptr<MaintenanceController> maintenance;
-    std::atomic<LifecycleState> lifecycle{LifecycleState::open};
-    mutable std::mutex lifecycle_mutex;
-    std::optional<Error> close_error;
-    // Optional close liveness bound (Writer drain + admission drain). nullopt = unbounded.
-    std::optional<std::uint32_t> close_drain_deadline_ms{};
-};
-
-struct detail::PreparedColdRead::State final {
-    explicit State(DurableRuntimeCatalog::PinnedRead prepared_read) : prepared(std::move(prepared_read)) {}
-    explicit State(DurableRuntimeCatalog::BorrowedPinnedRead prepared_read)
-        : prepared(std::move(prepared_read)) {}
-    std::variant<DurableRuntimeCatalog::PinnedRead, DurableRuntimeCatalog::BorrowedPinnedRead> prepared;
-};
-
-detail::PreparedColdRead::PreparedColdRead(State&& value) noexcept {
-    static_assert(sizeof(State) <= kStateBytes);
-    static_assert(alignof(State) <= alignof(std::max_align_t));
-    std::construct_at(state(), std::move(value));
-    engaged_ = true;
-}
-
-auto detail::PreparedColdRead::state() noexcept -> State* {
-    return std::launder(reinterpret_cast<State*>(storage_.data()));
-}
-
-auto detail::PreparedColdRead::state() const noexcept -> const State* {
-    return std::launder(reinterpret_cast<const State*>(storage_.data()));
-}
-
-void detail::PreparedColdRead::reset() noexcept {
-    if (engaged_) {
-        std::destroy_at(state());
-        engaged_ = false;
-    }
-}
-
-detail::PreparedColdRead::PreparedColdRead(PreparedColdRead&& other) noexcept {
-    if (other.engaged_) {
-        std::construct_at(state(), std::move(*other.state()));
-        engaged_ = true;
-        other.reset();
-    }
-}
-
-auto detail::PreparedColdRead::operator=(PreparedColdRead&& other) noexcept -> PreparedColdRead& {
-    if (this != &other) {
-        reset();
-        if (other.engaged_) {
-            std::construct_at(state(), std::move(*other.state()));
-            engaged_ = true;
-            other.reset();
-        }
-    }
-    return *this;
-}
-
-detail::PreparedColdRead::~PreparedColdRead() {
-    reset();
-}
 
 [[nodiscard]] auto start_paired_runtime(Store& store, StoreConfig config) -> Status {
     return detail::StoreAccess::attach_paired_runtime(store, config);
@@ -582,7 +89,7 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         if (auto routing = validate_worker_routing_state(config.worker_routing.state()); !routing) {
             return unexpected(routing.error());
         }
-        const auto initial_now_ns = sample_clock(config.clock);
+        const auto initial_now_ns = store_detail::sample_clock(config.clock);
         auto impl = std::make_unique<Impl>(
             std::make_unique<VolatileStoreRuntime>(SegmentId{1}, count, config.worker_routing.state()),
             config.worker_routing.state(), config.clock, initial_now_ns);
@@ -619,17 +126,17 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
                     "durable_periodic requires sync_interval_ms greater than zero");
     }
     if (config.storage_mode == StorageMode::durable_group) {
-        if (auto valid = validate_batch_config(config.durable_group); !valid) {
+        if (auto valid = store_detail::validate_batch_config(config.durable_group); !valid) {
             return unexpected(valid.error());
         }
     }
     if (config.storage_mode == StorageMode::durable_periodic && config.durable_periodic.batch) {
-        if (auto valid = validate_batch_config(*config.durable_periodic.batch); !valid) {
+        if (auto valid = store_detail::validate_batch_config(*config.durable_periodic.batch); !valid) {
             return unexpected(valid.error());
         }
     }
     auto directory = DataDirectory::open_and_lock(
-        *config.data_directory, data_directory_mode(config.durable_open_mode), config.filesystem_hooks);
+        *config.data_directory, store_detail::data_directory_mode(config.durable_open_mode), config.filesystem_hooks);
     if (!directory) {
         return unexpected(directory.error());
     }
@@ -656,7 +163,7 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
         runtime_options.strict_ack = true;
         runtime_options.sync_interval_ms = config.durable_group.max_wait_ms;
     }
-    const auto recovery_now_ns = sample_clock(config.clock);
+    const auto recovery_now_ns = store_detail::sample_clock(config.clock);
     auto runtime =
         DurableRuntimeCatalog::open_locked(std::move(*directory), recovery_now_ns, runtime_options);
     if (!runtime) {
@@ -695,9 +202,9 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
     }
     return store;
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::worker_count() const noexcept -> std::size_t {
@@ -717,7 +224,7 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     const auto now_ns = impl_->now_ns();
     if (impl_->pair_runtime) {
@@ -753,21 +260,21 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
     if (!record) {
         return unexpected(record.error());
     }
-    return copy_value(*record);
+    return store_detail::copy_value(*record);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue> try {
-    const auto key_view = as_string_view(key);
+    const auto key_view = store_detail::as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     const auto now_ns = impl_->now_ns();
     if (impl_->pair_runtime) {
@@ -803,12 +310,12 @@ auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue>
     if (!record) {
         return unexpected(record.error());
     }
-    return copy_value(*record);
+    return store_detail::copy_value(*record);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::put(const std::string_view key, const std::span<const std::byte> value,
@@ -817,9 +324,9 @@ auto Store::put(const std::string_view key, const std::span<const std::byte> val
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
-    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
     }
     if (impl_->pair_runtime) {
@@ -827,26 +334,26 @@ auto Store::put(const std::string_view key, const std::span<const std::byte> val
                                            expire_at_ns);
     }
     if (impl_->durable_runtime) {
-        return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
+        return store_detail::durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
     }
     return impl_->volatile_runtime->workers.route(hashed).put(hashed, value, expire_at_ns);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status try {
-    const auto key_view = as_string_view(key);
+    const auto key_view = store_detail::as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
-    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
     }
     if (impl_->pair_runtime) {
@@ -854,14 +361,14 @@ auto Store::put(const std::span<const std::byte> key, const std::span<const std:
                                            expire_at_ns);
     }
     if (impl_->durable_runtime) {
-        return durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
+        return store_detail::durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
     }
     return impl_->volatile_runtime->workers.route(hashed).put(hashed, value, expire_at_ns);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::erase(const std::string_view key) -> Status try {
@@ -869,75 +376,76 @@ auto Store::erase(const std::string_view key) -> Status try {
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
-    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
     }
     if (impl_->pair_runtime) {
         return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::erase, hashed, {}, 0);
     }
     if (impl_->durable_runtime) {
-        return durable_status(impl_->durable_runtime->erase(hashed));
+        return store_detail::durable_status(impl_->durable_runtime->erase(hashed));
     }
     return impl_->volatile_runtime->workers.route(hashed).erase(hashed);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::erase(const std::span<const std::byte> key) -> Status try {
-    const auto key_view = as_string_view(key);
+    const auto key_view = store_detail::as_string_view(key);
     const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
-    if (auto rejected = reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
     }
     if (impl_->pair_runtime) {
         return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::erase, hashed, {}, 0);
     }
     if (impl_->durable_runtime) {
-        return durable_status(impl_->durable_runtime->erase(hashed));
+        return store_detail::durable_status(impl_->durable_runtime->erase(hashed));
     }
     return impl_->volatile_runtime->workers.route(hashed).erase(hashed);
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::flush() -> Status try {
     Impl::OperationGuard operation{*impl_, impl_->control_shard()};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->flush();
     }
     return {};
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::backup_to(const std::filesystem::path& destination, const bool scan_records)
     -> Result<DurableStoreBackupReport> try {
     if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     if (!impl_->durable_runtime) {
         return fail(ErrorCode::invalid_argument, "online backup requires a durable Store");
     }
 
+    const auto fence_started = std::chrono::steady_clock::now();
     // Fence admissions before taking compaction_mutex so a compact that already holds the mutex
     // (and an OperationGuard) cannot deadlock against wait_for_active_operations.
     impl_->close_admission();
@@ -948,6 +456,12 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
                 impl->resume_admission_if_open();
             }
         }
+        void release() noexcept {
+            if (impl != nullptr) {
+                impl->resume_admission_if_open();
+                impl = nullptr;
+            }
+        }
     } resume{impl_.get()};
 
     if (!impl_->wait_for_active_operations()) {
@@ -955,21 +469,48 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
     }
 
     if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
-        return closed_store();
+        return store_detail::closed_store();
     }
 
-    std::unique_lock compaction_lock{impl_->compaction_mutex};
+    auto copied = [&]() -> Result<DurableStoreBackupReport> {
+        std::unique_lock compaction_lock{impl_->compaction_mutex};
 
-    if (!impl_->durable_runtime || !impl_->durable_runtime->healthy()) {
-        return fail(ErrorCode::unavailable, "durable runtime is unavailable");
+        if (!impl_->durable_runtime || !impl_->durable_runtime->healthy()) {
+            return fail(ErrorCode::unavailable, "durable runtime is unavailable");
+        }
+
+        return impl_->durable_runtime->backup_to(destination, scan_records);
+    }();
+    // Resume writers before destination verify: the destination is a private empty directory and
+    // does not share catalog locks with the live Store. Source CRC is not re-run on the live catalog
+    // after resume (writers may mutate); destination CRC (when scan_records) is the promotion gate
+    // (ADR 0034 shorter-fence incremental).
+    const auto fence_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - fence_started)
+            .count());
+    resume.release();
+
+    if (!copied) {
+        return unexpected(copied.error());
     }
+    copied->admission_fence_ns = fence_ns;
 
-    return impl_->durable_runtime->backup_to(destination, scan_records);
+    const auto verify_started = std::chrono::steady_clock::now();
+    auto destination_verification = verify_durable_store_path(destination, scan_records);
+    if (!destination_verification) {
+        return unexpected(destination_verification.error());
+    }
+    copied->destination_verification = std::move(*destination_verification);
+    copied->destination_crc_scanned = scan_records;
+    copied->destination_verify_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - verify_started)
+            .count());
+    return copied;
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::compact() -> Result<CompactionResult> {
@@ -980,7 +521,7 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
                                     const std::uint64_t max_copy_bytes) -> Result<CompactionResult> try {
     Impl::OperationGuard operation{*impl_, impl_->control_shard()};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     GS_FAULT_SITE(compact);
     // try_to_lock is the compact-admission progress bound: a second caller fails
@@ -1000,7 +541,7 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
                 return unexpected(result.error());
             }
             if (*result) {
-                return public_compaction_result(worker_index, **result);
+                return store_detail::public_compaction_result(worker_index, **result);
             }
         }
         return CompactionResult{};
@@ -1018,7 +559,7 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
             result.error->code == ErrorCode::not_found) {
             return CompactionResult{};
         }
-        return public_compaction_result(*preferred_worker, std::move(result));
+        return store_detail::public_compaction_result(*preferred_worker, std::move(result));
     }
 
     std::optional<std::size_t> first_candidate;
@@ -1043,20 +584,20 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
                                             std::memory_order_relaxed);
         auto result = impl_->durable_runtime->compact_worker(worker_index, impl_->now_ns(), 0);
         if (result.outcome == DurableCompactionOutcome::not_beneficial) {
-            auto mapped = public_compaction_result(worker_index, std::move(result));
+            auto mapped = store_detail::public_compaction_result(worker_index, std::move(result));
             if (!mapped) {
                 return unexpected(mapped.error());
             }
             last_no_gain = *mapped;
             continue;
         }
-        return public_compaction_result(worker_index, std::move(result));
+        return store_detail::public_compaction_result(worker_index, std::move(result));
     }
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::maintenance_snapshot() const -> MaintenanceSnapshot {
@@ -1071,15 +612,15 @@ auto Store::maintenance_snapshot() const -> MaintenanceSnapshot {
 }
 
 auto Store::close() -> Status try { return impl_->close(); } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
 auto Store::verify_index() const -> Status try {
     Impl::OperationGuard operation{*impl_, impl_->control_shard()};
     if (!operation) {
-        return closed_store();
+        return store_detail::closed_store();
     }
     if (impl_->durable_runtime) {
         return impl_->durable_runtime->verify_index();
@@ -1129,480 +670,11 @@ auto Store::verify_index() const -> Status try {
     }
     return {};
 } catch (const std::bad_alloc&) {
-    return resource_exhausted();
+    return store_detail::resource_exhausted();
 } catch (...) {
     impl_->mark_durable_fail_closed();
-    return internal_failure();
+    return store_detail::internal_failure();
 }
 
-auto detail::StoreAccess::get_owned(Store& store, const std::size_t worker_index, const HashedKey& key,
-                                    const std::uint64_t now_ns) -> Result<OwnedValue> {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "exclusive get targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (store.impl_->durable_runtime) {
-        return store.impl_->durable_runtime->get(key, now_ns);
-    }
-    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
-    if (!record) {
-        return unexpected(record.error());
-    }
-    return copy_value(*record);
-}
-
-auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t worker_index,
-                                            const HashedKey& key, const std::uint64_t now_ns)
-    -> Result<PreparedGet> try {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "exclusive get targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (store.impl_->durable_runtime) {
-        auto prepared = store.impl_->durable_runtime->prepare_get(key, now_ns);
-        if (!prepared) {
-            return unexpected(prepared.error());
-        }
-        if (prepared->value) {
-            return PreparedGet{.value = std::move(prepared->value)};
-        }
-        if (!prepared->cold) {
-            return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
-        }
-        return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
-    }
-    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
-    if (!record) {
-        return unexpected(record.error());
-    }
-    return PreparedGet{.value = copy_value(*record)};
-} catch (const std::bad_alloc&) {
-    return resource_exhausted();
-} catch (...) {
-    return internal_failure();
-}
-
-auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t worker_index,
-                                             PreparedColdRead read, const ColdReadCancellation* cancellation,
-                                             std::vector<std::byte>* scratch) -> Result<OwnedValue> {
-    if (worker_index >= store.worker_count()) {
-        return fail(ErrorCode::invalid_argument, "cold get targets an invalid Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (!store.impl_->durable_runtime || !read.engaged_) {
-        return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
-    }
-    return std::visit(
-        [&](auto& prepared) -> Result<OwnedValue> {
-            if (prepared.worker_index_ != worker_index) {
-                return fail(ErrorCode::invalid_argument, "cold get has no matching durable Worker owner");
-            }
-            return store.impl_->durable_runtime->complete_get(std::move(prepared), cancellation, scratch);
-        },
-        read.state()->prepared);
-}
-
-auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index)
-    -> Result<DurableReadSnapshot> {
-    if (worker_index >= store.worker_count()) {
-        return fail(ErrorCode::invalid_argument,
-                    "durable read-generation snapshot targets an invalid Worker");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (!store.impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "durable read-generation snapshot requires a durable Store");
-    }
-    return store.impl_->durable_runtime->snapshot_published_reads(worker_index);
-}
-
-auto detail::StoreAccess::durable_read_catalog_revision(const Store& store,
-                                                        const std::size_t worker_index) noexcept
-    -> std::uint64_t {
-    return store.impl_ && store.impl_->durable_runtime
-               ? store.impl_->durable_runtime->read_catalog_revision(worker_index)
-               : 0U;
-}
-
-auto detail::StoreAccess::capture_durable_read(Store& store, const std::size_t worker_index,
-                                               const HashedKey& key) -> Result<DurablePublishedRead> {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "durable read publication targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (!store.impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "durable read publication requires a durable Store");
-    }
-    return store.impl_->durable_runtime->capture_published_read(worker_index, key);
-}
-
-auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std::size_t worker_index,
-                                                        DurablePublishedReadView read,
-                                                        const std::uint64_t now_ns)
-    -> Result<PreparedGet> try {
-    if (worker_index >= store.worker_count() || read.worker_index() != worker_index) {
-        return fail(ErrorCode::invalid_argument, "immutable durable GET targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (!store.impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "immutable durable GET requires a durable Store");
-    }
-    auto prepared = store.impl_->durable_runtime->prepare_published_get(read, now_ns);
-    if (!prepared) {
-        return unexpected(prepared.error());
-    }
-    if (prepared->value) {
-        return PreparedGet{.value = std::move(prepared->value)};
-    }
-    if (!prepared->borrowed_cold) {
-        return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
-    }
-    return PreparedGet{.cold =
-                           PreparedColdRead{PreparedColdRead::State{std::move(*prepared->borrowed_cold)}}};
-} catch (const std::bad_alloc&) {
-    return resource_exhausted();
-} catch (...) {
-    return internal_failure();
-}
-
-auto detail::StoreAccess::put(Store& store, const std::size_t worker_index, const HashedKey& key,
-                              const std::span<const std::byte> value, const std::uint64_t expire_at_ns)
-    -> Status {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "exclusive put targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
-        return rejected;
-    }
-    if (store.impl_->durable_runtime) {
-        return durable_status(store.impl_->durable_runtime->put(key, value, expire_at_ns));
-    }
-    return store.impl_->volatile_runtime->workers.worker(worker_index).put_locked(key, value, expire_at_ns);
-}
-
-auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, const HashedKey& key)
-    -> Status {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "exclusive erase targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
-        return rejected;
-    }
-    if (store.impl_->durable_runtime) {
-        return durable_status(store.impl_->durable_runtime->erase(key));
-    }
-    return store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked(key);
-}
-
-auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t worker_index,
-                                                 const HashedKey& key, const std::span<const std::byte> value,
-                                                 const std::uint64_t expire_at_ns)
-    -> Result<VolatileMutationPublication> {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "published put targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
-        return unexpected(rejected.error());
-    }
-    if (!store.impl_->volatile_runtime) {
-        return fail(ErrorCode::invalid_argument, "published volatile put requires a volatile Store");
-    }
-    auto published = store.impl_->volatile_runtime->workers.worker(worker_index)
-                         .put_locked_published(key, value, expire_at_ns);
-    if (!published) {
-        return unexpected(published.error());
-    }
-    return VolatileMutationPublication{
-        .record = published->record, .segment = std::move(published->segment), .opcode = published->opcode};
-}
-
-auto detail::StoreAccess::erase_volatile_published(Store& store, const std::size_t worker_index,
-                                                   const HashedKey& key)
-    -> Result<VolatileMutationPublication> {
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return fail(ErrorCode::invalid_argument, "published erase targets the wrong Worker owner");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return closed_store();
-    }
-    if (auto rejected = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !rejected) {
-        return unexpected(rejected.error());
-    }
-    if (!store.impl_->volatile_runtime) {
-        return fail(ErrorCode::invalid_argument, "published volatile erase requires a volatile Store");
-    }
-    auto published = store.impl_->volatile_runtime->workers.worker(worker_index).erase_locked_published(key);
-    if (!published) {
-        return unexpected(published.error());
-    }
-    return VolatileMutationPublication{
-        .record = published->record, .segment = std::move(published->segment), .opcode = published->opcode};
-}
-
-auto detail::StoreAccess::put_durable(Store& store, const std::size_t worker_index, const HashedKey& key,
-                                      const std::span<const std::byte> value,
-                                      const std::uint64_t expire_at_ns) -> DurableMutationResult {
-    const auto rejected = [](Error error) {
-        return DurableMutationResult{.outcome = DurableMutationOutcome::not_committed,
-                                     .sequence = std::nullopt,
-                                     .error = std::move(error)};
-    };
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return rejected(Error{ErrorCode::invalid_argument, "exclusive put targets the wrong Worker owner"});
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return rejected(Error{ErrorCode::unavailable, "Store is closed"});
-    }
-    if (auto allowed = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !allowed) {
-        return rejected(allowed.error());
-    }
-    if (!store.impl_->durable_runtime) {
-        return rejected(Error{ErrorCode::invalid_argument, "durable put requires a durable Store"});
-    }
-    return store.impl_->durable_runtime->put(key, value, expire_at_ns);
-}
-
-auto detail::StoreAccess::erase_durable(Store& store, const std::size_t worker_index, const HashedKey& key)
-    -> DurableMutationResult {
-    const auto rejected = [](Error error) {
-        return DurableMutationResult{.outcome = DurableMutationOutcome::not_committed,
-                                     .sequence = std::nullopt,
-                                     .error = std::move(error)};
-    };
-    if (worker_index >= store.worker_count() ||
-        route_worker(key.hash, store.worker_count()) != worker_index) {
-        return rejected(Error{ErrorCode::invalid_argument, "exclusive erase targets the wrong Worker owner"});
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return rejected(Error{ErrorCode::unavailable, "Store is closed"});
-    }
-    if (auto allowed = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !allowed) {
-        return rejected(allowed.error());
-    }
-    if (!store.impl_->durable_runtime) {
-        return rejected(Error{ErrorCode::invalid_argument, "durable erase requires a durable Store"});
-    }
-    return store.impl_->durable_runtime->erase(key);
-}
-
-auto detail::StoreAccess::durable_writer_batch_config(const Store& store) noexcept
-    -> std::optional<DurableGroupConfig> {
-    if (!store.impl_->durable_runtime) {
-        return std::nullopt;
-    }
-    return store.impl_->durable_runtime->writer_batch_config();
-}
-
-auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t worker_index,
-                                               const std::span<const DurableMutationView> mutations)
-    -> std::vector<DurableWriterBatchResult> {
-    std::vector<DurableWriterBatchResult> results;
-    results.reserve(mutations.size());
-    const auto reject_remaining = [&](const Error& error) {
-        while (results.size() < mutations.size()) {
-            results.push_back({.mutation = {.outcome = DurableMutationOutcome::not_committed,
-                                            .sequence = std::nullopt,
-                                            .error = error}});
-        }
-    };
-    if (mutations.empty()) {
-        return results;
-    }
-    if (worker_index >= store.worker_count()) {
-        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batch targets an invalid Worker"});
-        return results;
-    }
-    for (const auto& mutation : mutations) {
-        if (route_worker(mutation.key.hash, store.worker_count()) != worker_index) {
-            reject_remaining(
-                Error{ErrorCode::invalid_argument, "Writer batch contains a key owned by another Worker"});
-            return results;
-        }
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        reject_remaining(Error{ErrorCode::unavailable, "Store is closed"});
-        return results;
-    }
-    if (auto allowed = reject_if_maintenance_emergency(store.impl_->maintenance.get()); !allowed) {
-        reject_remaining(allowed.error());
-        return results;
-    }
-    if (!store.impl_->durable_runtime || !store.impl_->durable_runtime->writer_batch_config().has_value()) {
-        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batching requires durable-group mode"});
-        return results;
-    }
-
-    for (const auto& mutation : mutations) {
-        const auto key_bytes = std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
-        DurableWriterBatchResult result;
-        for (unsigned attempt = 0; attempt < 2; ++attempt) {
-            result.mutation = store.impl_->durable_runtime->mutate(
-                key_bytes, mutation.value,
-                mutation.operation == MutationOperation::put ? Opcode::put : Opcode::erase, mutation.key.hash,
-                mutation.expire_at_ns, ValueType::bytes, 0, true);
-            if (!should_retry_durable_mutation(result.mutation, attempt)) {
-                break;
-            }
-            result.conflict_retried = true;
-        }
-        results.push_back(std::move(result));
-        if (!store.impl_->durable_runtime->healthy()) {
-            reject_remaining(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
-            break;
-        }
-    }
-
-    const auto committed = store.impl_->durable_runtime->commit_writer_batch(worker_index);
-    if (!committed) {
-        for (auto& result : results) {
-            if (result.mutation.committed() && !result.mutation.error) {
-                result.mutation.outcome = DurableMutationOutcome::indeterminate;
-                result.mutation.error = committed.error();
-            }
-        }
-    }
-    return results;
-}
-
-auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
-    return store.impl_->durable_runtime != nullptr;
-}
-
-auto detail::StoreAccess::worker_routing(const Store& store) noexcept -> WorkerRoutingState {
-    return store.impl_->routing;
-}
-
-auto detail::StoreAccess::batch_stats(const Store& store) -> std::vector<DurableBatchWorkerStats> {
-    return store.impl_->durable_runtime ? store.impl_->durable_runtime->batch_stats()
-                                        : std::vector<DurableBatchWorkerStats>{};
-}
-
-auto detail::StoreAccess::maintenance_controller(Store& store) noexcept -> MaintenanceController* {
-    return store.impl_->maintenance.get();
-}
-
-void detail::StoreAccess::report_foreground_latency(Store& store, const std::uint64_t latency_ns) noexcept {
-    if (store.impl_->maintenance) {
-        store.impl_->maintenance->report_foreground_latency(latency_ns);
-    }
-}
-
-auto detail::StoreAccess::maintenance_mutations_rejected(const Store& store) noexcept -> bool {
-    return store.impl_->maintenance != nullptr && store.impl_->maintenance->mutations_rejected();
-}
-
-auto detail::StoreAccess::operational(const Store& store) noexcept -> bool {
-    return store.impl_ != nullptr && store.impl_->operational();
-}
-
-void detail::StoreAccess::mark_fail_closed(Store& store) noexcept {
-    if (store.impl_ != nullptr) {
-        store.impl_->mark_durable_fail_closed();
-    }
-}
-
-auto detail::StoreAccess::worker(const Store& store, const std::size_t index) noexcept -> const Worker& {
-    if (!store.impl_->volatile_runtime) {
-        std::terminate();
-    }
-    return store.impl_->volatile_runtime->workers.worker(index);
-}
-
-auto detail::StoreAccess::segments(const Store& store) -> std::vector<SegmentPtr> {
-    if (!store.impl_->volatile_runtime) {
-        return {};
-    }
-    return store.impl_->volatile_runtime->segment_manager.segments();
-}
-
-auto detail::StoreAccess::snapshot_live_keys(Store& store) -> Result<std::vector<std::string>> {
-    if (!store.impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "live-key snapshot requires a durable Store");
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, store.impl_->control_shard()};
-    if (!operation) {
-        return closed_store();
-    }
-    return store.impl_->durable_runtime->snapshot_live_keys();
-}
-
-auto detail::StoreAccess::durable_manifest(const Store& store) -> Result<Manifest> {
-    if (!store.impl_->durable_runtime) {
-        return fail(ErrorCode::invalid_argument, "durable manifest requires a durable Store");
-    }
-    return store.impl_->durable_runtime->manifest();
-}
-
-[[nodiscard]] auto detail::StoreAccess::attach_paired_runtime(Store& store, const StoreConfig& config)
-    -> Status {
-    if (config.concurrency != StoreConcurrencyMode::paired) {
-        store.impl_->concurrency = config.concurrency;
-        return {};
-    }
-    if (store.impl_->volatile_runtime) {
-        for (std::size_t index = 0; index < store.impl_->worker_count_value; ++index) {
-            store.impl_->volatile_runtime->workers.worker(index).set_exclusive_writer(true);
-        }
-    }
-    auto runtime = store::paired::ShardPairRuntime::create(store, config.paired);
-    if (!runtime) {
-        return unexpected(runtime.error());
-    }
-    if (auto started = (*runtime)->start(); !started) {
-        return started;
-    }
-    store.impl_->concurrency = StoreConcurrencyMode::paired;
-    store.impl_->pair_runtime = std::move(*runtime);
-    return {};
-}
-
-auto detail::StoreAccess::shard_pair_runtime(Store& store) noexcept -> store::paired::ShardPairRuntime* {
-    return store.impl_->pair_runtime.get();
-}
-
-auto detail::StoreAccess::concurrency(const Store& store) noexcept -> StoreConcurrencyMode {
-    return store.impl_->concurrency;
-}
 
 } // namespace glyphastore

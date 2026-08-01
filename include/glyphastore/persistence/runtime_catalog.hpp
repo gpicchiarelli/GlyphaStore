@@ -402,6 +402,7 @@ class DurableRuntimeCatalog final {
     [[nodiscard]] auto flush() -> Status;
     // Online catalog backup: caller must fence Store admissions. Copies Manifest + Segments into an
     // empty destination while holding the catalog exclusive lock (writers already paused).
+    // Destination verify is performed by Store::backup_to after admissions resume.
     [[nodiscard]] auto backup_to(const std::filesystem::path& destination, bool scan_records = true,
                                  const DurableResourceLimits& limits = {})
         -> Result<DurableStoreBackupReport>;

@@ -3,7 +3,10 @@
 Status: offline implemented; online fenced backup implemented for open Stores  
 Applies to: durable data directories (`manifest.glypha` + catalog Segments)  
 Owner: persistence maintainers  
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-01
+
+Normative consistency boundary: [backup-restore v1](../spec/backup-restore-v1.md). This page is the
+architecture narrative; prefer the spec on conflict.
 
 ## Contract
 
@@ -30,14 +33,17 @@ Restore is the same verified copy from a backup directory into a new empty desti
 An open durable Store may copy its catalog into an empty destination without releasing the
 data-directory lock:
 
-1. Fence new Store admissions (in-flight ops drain; concurrent `put`/`get` see `unavailable` briefly).
+1. Fence new Store admissions (in-flight ops drain; concurrent `put`/`get` see `unavailable` briefly
+   during flush + catalog copy only).
 2. Flush durable state.
-3. Hold the catalog exclusive lock; verify + copy Manifest catalog Segments then `manifest.glypha`.
-4. Resume admissions; verify the destination independently.
+3. Hold the catalog exclusive lock; structurally verify + copy Manifest catalog Segments (bounded
+   parallel) then `manifest.glypha` last (no source CRC under the fence).
+4. Resume admissions; verify the destination independently (optional CRC; promotion gate).
 
 This is **online** (daemon/Store process stays up) with a **writer fence** during the copy window.
 It is not a fully concurrent hot copy of active Segment tails under unpaced writers, and it is not
-filesystem freeze / COW snapshot orchestration.
+filesystem freeze / COW snapshot orchestration. Future zero-fence requirements:
+[ADR 0034](../adr/0034-zero-fence-hot-backup-deferred.md).
 
 ## Explicit non-goals
 

@@ -282,6 +282,8 @@ struct WriteBoundaryObserver {
         case glyphastore::FilesystemOperation::rename_compaction_intent:
         case glyphastore::FilesystemOperation::remove_compaction_intent:
         case glyphastore::FilesystemOperation::remove_compaction_segment:
+        case glyphastore::FilesystemOperation::copy_backup_segment:
+        case glyphastore::FilesystemOperation::copy_backup_manifest:
             return true;
         case glyphastore::FilesystemOperation::sync_parent_directory:
         case glyphastore::FilesystemOperation::sync_manifest:
@@ -291,6 +293,7 @@ struct WriteBoundaryObserver {
         case glyphastore::FilesystemOperation::sync_commit_slot:
         case glyphastore::FilesystemOperation::sync_bootstrap:
         case glyphastore::FilesystemOperation::sync_compaction_intent:
+        case glyphastore::FilesystemOperation::sync_backup_destination:
             return false;
         }
         return false;

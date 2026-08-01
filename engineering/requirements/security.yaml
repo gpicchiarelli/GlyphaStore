@@ -31,3 +31,27 @@ requirements:
   - HAZ-024
   gates:
   - GATE-AUTH-TRANSPORT
+- id: GS-SUPPLY-ACTIONS-001
+  titolo: GitHub Actions pinned to immutable commit SHAs
+  categoria: security
+  criticita: media
+  stato: implementato
+  descrizione: Every third-party `uses:` in `.github/workflows/*.yml` pins a 40-character commit
+    SHA (tag comment optional). Mutable tags/branches are rejected by CI.
+  autorita:
+  - docs/security/actions-pinning.md
+  - docs/security/threat-model.md
+  implementazione:
+  - .github/workflows
+  - engineering/tools/validate_actions_pins.py
+  prove:
+  - engineering/tools/validate_actions_pins.py
+  piattaforme:
+  - linux-x86_64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: assurance.yml
+  rischio_residuo:
+  - Dependabot must update SHAs rather than floating tags
+  gates:
+  - GATE-THREAT-SUPPLY

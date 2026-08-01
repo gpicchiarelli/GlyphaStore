@@ -1,6 +1,7 @@
 #include "glyphastore/persistence/store_migrate.hpp"
 
 #include "glyphastore/core/worker_routing.hpp"
+#include "glyphastore/persistence/filesystem_hooks.hpp"
 #include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
 
@@ -199,7 +200,8 @@ struct MigrateCheckpoint {
 
 auto migrate_durable_store(const std::filesystem::path& source, const std::filesystem::path& destination,
                            const std::size_t target_worker_count, const bool scan_records,
-                           const DurableResourceLimits& limits) -> Result<DurableStoreMigrateReport> {
+                           const DurableResourceLimits& limits, const FilesystemHooks destination_hooks)
+    -> Result<DurableStoreMigrateReport> {
     if (source.empty() || destination.empty()) {
         return fail(ErrorCode::invalid_argument, "migrate source and destination paths are required");
     }
@@ -287,6 +289,7 @@ auto migrate_durable_store(const std::filesystem::path& source, const std::files
         .durable_open_mode = destination_mode,
         .durable_limits = limits,
         .maintenance = {.mode = MaintenanceMode::disabled},
+        .filesystem_hooks = destination_hooks,
     });
     if (!destination_store) {
         (void)(*source_store)->close();

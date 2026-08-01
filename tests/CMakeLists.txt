@@ -16,6 +16,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/unit/manifest_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_slot_pool_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_pressure_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/namespace_audit_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/persistence_filesystem_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/segment_file_tests.cpp
@@ -57,9 +58,14 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/integration/optimization_regression_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_crash_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_test_support.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_reactor_prototype_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/rebuild_vacuum_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_durable_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_security_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/store_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/property/history_property_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/concurrency/linearizability_tests.cpp
@@ -147,6 +153,26 @@ if(BUILD_TESTING)
         glyphastore_crash_daemon_erase
         PROPERTIES TIMEOUT 120 LABELS "crash"
     )
+
+    add_executable(glyphastore_crash_backup ${CMAKE_SOURCE_DIR}/tests/crash/crash_backup.cpp)
+    target_link_libraries(glyphastore_crash_backup PRIVATE GlyphaStore::core glyphastore_project_options)
+    target_include_directories(glyphastore_crash_backup PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+    glyphastore_set_warnings(glyphastore_crash_backup)
+    glyphastore_enable_hardening(glyphastore_crash_backup)
+    set_target_properties(glyphastore_crash_backup PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_crash_backup COMMAND glyphastore_crash_backup)
+    set_tests_properties(glyphastore_crash_backup PROPERTIES TIMEOUT 120 LABELS "crash")
+
+    add_executable(glyphastore_crash_backup_wire ${CMAKE_SOURCE_DIR}/tests/crash/crash_backup_wire.cpp)
+    target_link_libraries(glyphastore_crash_backup_wire
+        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
+    )
+    target_include_directories(glyphastore_crash_backup_wire PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+    glyphastore_set_warnings(glyphastore_crash_backup_wire)
+    glyphastore_enable_hardening(glyphastore_crash_backup_wire)
+    set_target_properties(glyphastore_crash_backup_wire PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_crash_backup_wire COMMAND glyphastore_crash_backup_wire)
+    set_tests_properties(glyphastore_crash_backup_wire PROPERTIES TIMEOUT 180 LABELS "crash")
 endif()
 
 if(BUILD_TESTING)
@@ -251,6 +277,8 @@ if(BUILD_TESTING)
         glyphastore_tests
         glyphastore_crash_persistence
         glyphastore_crash_daemon
+        glyphastore_crash_backup
+        glyphastore_crash_backup_wire
         glyphastored
         glyphastore_inspect_segment
         glyphastore_verify_store

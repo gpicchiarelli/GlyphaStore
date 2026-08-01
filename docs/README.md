@@ -68,6 +68,9 @@ format, acknowledgement point, ownership rule, or compatibility guarantee.
 | [Index v1](spec/index-v1.md) | Exact-key Index algorithm and storage invariants |
 | [Native wire protocol v2](spec/wire-protocol-v2.md) | Client/server framing and session semantics |
 | [Client semantics v1](spec/client-semantics-v1.md) | Portable errors, retry, timeouts, late responses |
+| [TCP client conformance v1](spec/tcp-client-conformance-v1.md) | Official SDK checklist, bootstrap/retry pseudocode, fixtures |
+| [Error taxonomy v1](spec/error-taxonomy-v1.md) | Cross-language status → category vectors |
+| [Backup and restore v1](spec/backup-restore-v1.md) | Catalog snapshot boundary; offline and online fenced copy |
 | [Persistence v1](spec/persistence-v1.md) | Complete durable namespace, binary formats, checksums, authority |
 | [Recovery state-transition matrix v1](spec/recovery-state-matrix-v1.md) | Exact restart outcomes for bootstrap, commit/flush, rotation, and compaction |
 | [Benchmark standard](spec/benchmark-standard.md) | Workload and result semantics |
@@ -94,7 +97,8 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 
 ## Official client implementations
 
-The normative cross-language behavior is [client semantics v1](spec/client-semantics-v1.md). Each
+The normative cross-language behavior is [client semantics v1](spec/client-semantics-v1.md);
+conformance checklist: [tcp-client-conformance v1](spec/tcp-client-conformance-v1.md). Each
 source package documents its language-specific API and concurrency contract:
 
 | Client | Documentation |
@@ -108,6 +112,7 @@ source package documents its language-specific API and concurrency contract:
 
 ## Decisions, development, and operations
 
+- [Operations handbook](operations/handbook.md) — day-1/day-2 index and incident playbooks
 - [Operations runbooks](operations/README.md) — graceful drain, overload, offline backup/restore, Worker reshard, corruption repair
 - [Version lifecycle and compatibility](architecture/version-lifecycle.md) — 0.x upgrade/downgrade, ABI, Worker migrate
 - [ADR index and lifecycle](adr/README.md)

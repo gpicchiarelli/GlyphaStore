@@ -21,6 +21,38 @@ requirements:
   evidenze:
   - workflow: benchmarks.yml
   rischio_residuo:
-  - Controlled-hardware CI evidence and enforced tail-latency release budgets remain open (Phase E)
+  - Controlled-hardware CI evidence and enforced tail-latency release budgets remain open until
+    GS-PERF-BUDGET-001 hardware runner publishes pass-candidate
+  gates:
+  - GATE-PERFORMANCE
+- id: GS-PERF-BUDGET-001
+  titolo: Hardware-gated performance budgets and advisory snapshots
+  categoria: performance
+  criticita: media
+  stato: implementato
+  descrizione: Absolute / hard-pinned release budgets are machine-readable and linked to
+    GATE-PERFORMANCE. Hosted CI must not treat absolute numbers as product claims. Hardware
+    A/B remains specified_waiting_for_runner until glyphastore-linux-perf publishes pass-candidate.
+  autorita:
+  - docs/assurance/performance-budgets.md
+  - docs/spec/benchmark-standard.md
+  - docs/benchmarks/paired-shards-linux-p1.md
+  - engineering/performance/budgets.yaml
+  implementazione:
+  - engineering/performance/budgets.yaml
+  - engineering/tools/validate_perf_budgets.py
+  - scripts/benchmark_paired_linux_ab.sh
+  prove:
+  - engineering/performance/budgets.yaml
+  - engineering/tools/validate_perf_budgets.py
+  piattaforme:
+  - linux-x86_64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: assurance.yml
+  - workflow: paired-linux-performance.yml
+  - note: Hardware absolute thresholds wait for labeled self-hosted runner
+  rischio_residuo:
+  - No pass-candidate hardware evidence published yet; advisory macOS snapshots are not release gates
   gates:
   - GATE-PERFORMANCE

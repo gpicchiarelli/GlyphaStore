@@ -20,8 +20,8 @@ jobs:
     name: Released artifact compatibility
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install build tools
@@ -53,12 +53,15 @@ jobs:
           raw="${GITHUB_REF_NAME}"
           label="${raw#v}"
           ./scripts/package-release-compatibility-artifacts.sh "$label"
+          ./scripts/package-release-claim.sh "$label" "$GITHUB_SHA"
           ctest --test-dir build/unix-debug --output-on-failure -R "released artifact harness"
           echo "RELEASE_COMPAT_LABEL=${label}" >>"$GITHUB_ENV"
       - name: Upload tagged compatibility artifacts
         if: startsWith(github.ref, 'refs/tags/')
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: released-compat-${{ env.RELEASE_COMPAT_LABEL }}
-          path: tests/fixtures/released/${{ env.RELEASE_COMPAT_LABEL }}/
+          path: |
+            tests/fixtures/released/${{ env.RELEASE_COMPAT_LABEL }}/
+            engineering/claims/${{ env.RELEASE_COMPAT_LABEL }}.yaml
           if-no-files-found: error

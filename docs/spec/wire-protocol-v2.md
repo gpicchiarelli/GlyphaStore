@@ -100,10 +100,14 @@ material.
 
 `BACKUP` performs an **online fenced** durable catalog copy into an empty destination path while the
 daemon keeps the Store lock (`Server::backup_to` / `Store::backup_to`). It briefly pauses Store
-admissions during the copy window and is not a zero-impact hot snapshot. Under the secure profile it
-requires the `admin` capability. Failed backups return `INTERNAL_ERROR` (optional ASCII reason in
-value). Official clients expose typed `backup` helpers (C++ and the Python/Go/Perl/Ruby/Erlang
-SDKs); the copy remains online fenced, not zero-impact hot I/O.
+admissions for flush + structural source check + catalog copy (Segment files may copy concurrently;
+Manifest last), then resumes admissions before destination verify (optional CRC; promotion gate). It
+is not a zero-impact hot snapshot. Under the secure profile it requires the `admin` capability.
+Success value is a bounded ASCII report including `files_copied`, `bytes_copied`, timing needles
+(`admission_fence_ns`, `catalog_copy_ns`, `destination_verify_ns`), and `segment_copy_workers`.
+Failed backups return `INTERNAL_ERROR` (optional ASCII reason in value). Official clients expose
+typed `backup` helpers (C++ and the Python/Go/Perl/Ruby/Erlang SDKs); the copy remains online
+fenced, not zero-impact hot I/O.
 
 Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
 decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode

@@ -218,7 +218,8 @@ mount, or config), not by overwriting the live path in place.
 
 | Claim or shortcut | Status |
 |---|---|
-| Live / hot backup while `glyphastored` holds the lock | **Not supported** — backup tools fail closed if the directory is locked |
+| Offline `glyphastore_backup_store` while `glyphastored` holds the lock | **Not supported** — offline tool fails closed on the exclusive Store lock |
+| Online fenced backup (`BACKUP` / `Server::backup_to`) | **Supported** — admission pause for flush + structural check + catalog copy; destination verify after resume; not zero-fence hot I/O |
 | In-place restore over production data | **Forbidden** — copy into a new path, verify, then swap |
 | Filesystem snapshot without stopped writers | **Insufficient** — freeze writers and run `glyphastore_verify_store` on the image |
 | `glyphastore_rebuild_index` for durable v1 | **Permanently refused** — Indexes rebuild via Store recovery or `glyphastore_repair_store` |

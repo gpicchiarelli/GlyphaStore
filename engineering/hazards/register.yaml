@@ -439,6 +439,7 @@ hazards:
   evento_pericoloso: Arresto durante il backup
   cause:
   - Kill during online backup fence
+  - Incomplete destination tree (Manifest missing / partial Segment copy)
   conseguenze:
   - Incomplete backup tree / inconsistent snapshot
   severita: media
@@ -446,13 +447,18 @@ hazards:
   rilevabilita: media
   prevenzione:
   - Normative specs + fail-closed implementation paths linked via requirements
+  - Destination must verify before promotion; Manifest copied last
   contenimento:
   - Stop serving affected ops; operator repair/salvage modes are explicit
+  - Incomplete destinations fail verify/restore; live source remains usable after failed online backup
   prove:
   - scripts/exercise_ops_runbooks.sh
-  rischio_residuo: Crash-during-backup dedicated matrix limited
-  stato: aperto
-  accettazione_rischio: Online backup is fenced not zero-impact; operator verify required
+  - tests/unit/store_backup_tests.cpp
+  - tests/crash/crash_backup.cpp
+  - tests/crash/crash_backup_wire.cpp
+  rischio_residuo: Real glyphastored exec mid-BACKUP kill still limited (no production hook injection); Store + in-process Server/wire BACKUP mid-copy covered
+  stato: mitigato
+  accettazione_rischio: Online backup is fenced not zero-impact; operator verify required before promotion
   requisiti:
   - GS-OPS-BACKUP-001
 - id: HAZ-022
@@ -472,12 +478,17 @@ hazards:
   prove:
   - docs/architecture/version-lifecycle.md
   - tests/fixtures
-  rischio_residuo: Tagged N/N-1 matrices incomplete
-  stato: aperto
-  accettazione_rischio: Fail-closed open; permanent released fixture drop open
+  - tests/unit/store_backup_tests.cpp
+  rischio_residuo: Tagged N/N-1 permanent fixture drops remain a release-process step
+  stato: mitigato
+  accettazione_rischio: >
+    Fail-closed verify/restore/open for synthetic future Manifest/Record versions,
+    truncated Manifests, and Worker-count mismatch after restore; permanent released
+    fixture drop still open
   requisiti:
   - GS-OPS-BACKUP-001
   - GS-COMPAT-FIXTURE-001
+  - GS-COMPAT-NN1-001
 - id: HAZ-023
   evento_pericoloso: Errore di autorizzazione
   cause:
@@ -543,6 +554,7 @@ hazards:
   accettazione_rischio: Bounded queues + overload runbooks
   requisiti:
   - GS-OPS-CONFIG-001
+  - GS-OPS-SOAK-001
   - GS-CONCUR-PAIR-001
 - id: HAZ-026
   evento_pericoloso: Starvation

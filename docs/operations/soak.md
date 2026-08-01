@@ -3,12 +3,16 @@
 Status: descriptive  
 Applies to: `scripts/soak_daemon.sh` and GitHub Actions soak jobs  
 Owner: platform / ops maintainers  
-Last reviewed: 2026-07-25
+Last reviewed: 2026-08-01
 
 CI-friendly and multi-hour soak entry points for `glyphastored`. These runs are **software
 path evidence** (PUT/GET, reconnect, overwrite churn, graceful drain, optional RSS/STATS
 sampling). They are **not** E3/E4 power-loss certification and not a substitute for a
 controlled multi-hour hardware matrix on release hardware.
+
+Assurance linkage: requirement `GS-OPS-SOAK-001`, gate `GATE-SOAK`, budget classes
+`SOAK-SOFTWARE-SMOKE` / `SOAK-SOFTWARE-EXTENDED` in
+[`engineering/performance/budgets.yaml`](../../engineering/performance/budgets.yaml).
 
 ## Profiles
 

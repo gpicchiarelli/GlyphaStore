@@ -28,13 +28,13 @@ release level.
 | No machine-readable requirement IDs (`GS-*`) | High | P0 (Phase A) | schemas + validator | Silent drift; checklist theatre |
 | No formal hazard register | High | P0 (Phase A) | requirements linkage | Untracked integrity failures |
 | Gates not multi-state / not CI-enforced | High | P0 (Phase A) | evidence paths | Closed boxes without proofs |
-| Monolithic `CMakeLists.txt` (Phase C: split via `add_subdirectory`) | Medium | P2 (Phase C) | dependency matrix | Done baseline; oversized sources under WAV-001 |
+| Monolithic oversized sources (Phase C + WAV-001 splits) | Medium | P2 (Phase C) | dependency matrix | Done; WAV-001 revoked |
 | No formal linearizability checker | High | P1 (Phase B) | history recorder | Concurrency regressions undetected |
-| Actions not pinned to commit SHA | Medium | P2 (Phase D) | supply-chain policy | Tag mutability |
+| Actions not pinned to commit SHA (Phase D: SHA pin + validator) | Medium | P2 (Phase D) | supply-chain policy | Done baseline; Dependabot must update SHAs |
 | Physical E3/E4 durability unset | High (claim honesty) | Keep open | hardware campaign | False durability confirmation |
-| Unified error taxonomy across wire/embedded/SDK | Medium | P1 (Phase B) | `docs/spec/error-taxonomy-v1.md` + fixture | Residual unknown-status / mutation_outcome gaps |
+| Unified error taxonomy across wire/embedded/SDK | Medium | P1 (Phase B) | `docs/spec/error-taxonomy-v1.md` + fixture | Transport/deadline narrative vectors beyond fixture |
 | `legacy_mutex` policy not yet formalized | Medium | P1 (Phase B) | `docs/architecture/legacy-mutex-policy.md` | Removal still pending 0.2 |
-| Performance budgets not gate-linked | Medium | P2 (Phase E) | hardware CI | Hosted-CI noise as product claim |
+| Performance budgets not gate-linked (Phase E: budget catalog) | Medium | P2 (Phase E) | hardware CI | Done baseline; absolute claims wait for `glyphastore-linux-perf` |
 
 ## Strategy
 

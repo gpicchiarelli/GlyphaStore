@@ -98,6 +98,8 @@ struct PipelineResponse {
 [[nodiscard]] auto error_from_wire_status(std::uint16_t wire_status) -> Error;
 [[nodiscard]] auto portable_retryability(std::string_view category, bool mutation_sent,
                                          bool indeterminate) -> std::string;
+// Standalone PUT/ERASE outcome implied by a decoded wire status (fixture matrix).
+[[nodiscard]] auto portable_mutation_outcome(std::uint16_t wire_status) -> std::string;
 
 // A synchronous, thread-safe TCP client for wire protocol v2. It keeps one
 // connection bound to each server worker, preserving per-key routing while

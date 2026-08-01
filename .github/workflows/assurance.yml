@@ -18,8 +18,8 @@ jobs:
     name: Validate requirements hazards gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
       - name: Install validator dependencies
@@ -32,3 +32,11 @@ jobs:
         run: python engineering/tools/validate_cmake_deps.py
       - name: Validate structure debt and waivers
         run: python engineering/tools/validate_structure_debt.py
+      - name: Validate Actions SHA pins
+        run: python engineering/tools/validate_actions_pins.py
+      - name: Validate N/N-1 compatibility matrix
+        run: python engineering/tools/validate_compat_matrix.py
+      - name: Validate release claims
+        run: python engineering/tools/validate_claims.py
+      - name: Validate performance / soak budgets
+        run: python engineering/tools/validate_perf_budgets.py

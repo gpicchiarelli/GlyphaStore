@@ -15,7 +15,6 @@ from glyphastore.client import (  # noqa: E402
     _enrich,
     _retryability_for,
 )
-from glyphastore.protocol import Status  # noqa: E402
 
 
 def load_cases() -> list[dict]:
@@ -30,7 +29,7 @@ class ErrorTaxonomyTests(unittest.TestCase):
     def test_wire_status_category_retryability_matrix(self) -> None:
         for case in load_cases():
             with self.subTest(case["id"]):
-                status = Status(case["wire_status"])
+                status = case["wire_status"]
                 error = Client._status_error(status)
                 self.assertEqual(error.category, case["category"])
                 self.assertEqual(error.wire_status, case["wire_status"])
@@ -54,7 +53,7 @@ class ErrorTaxonomyTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     case["unhealthy"],
-                    case["wire_status"] in (Status.WRONG_OWNER, Status.NOT_BOUND),
+                    case["wire_status"] in (6, 7),
                 )
 
 

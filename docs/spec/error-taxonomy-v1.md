@@ -55,8 +55,10 @@ Notes:
 - Mutation retryability in the table assumes a response was decoded after `bytes_sent > 0`.
 - `OVERLOADED` collapses admission pressure and durable capacity exhaustion; clients must not infer
   which cause applied ([client semantics §3](client-semantics-v1.md)).
-- Unknown numeric statuses: preserve framing sync; category `protocol` or `internal`; mutations with
-  any bytes written are `indeterminate`. Shared fixture vectors cover only statuses 1–8.
+- Unknown numeric statuses (outside 0–8): response codecs reject after the full frame is buffered
+  (stream stays synced). Defensive `from_status` / `error_from_wire_status` helpers map them to
+  category `protocol`, read retryability `new_attempt`, mutation outcome `indeterminate`, and keep
+  the original numeric `wire_status`. Shared fixture includes `unknown_wire_status` (99).
 
 ## 3. Embedded `ErrorCode` → portable category (C++ TCP client)
 
@@ -95,7 +97,5 @@ Fixture copies under `sdk/*/…/fixtures/` (or Go `testdata/`) are synced from
 
 ## 5. Residual gaps
 
-- Unknown wire status exposure (decoded integer before reject) is not yet uniform across codecs.
-- C++ `Error` does not carry `mutation_outcome`; standalone mutation APIs use `MutationResult`.
-- Transport / deadline / local-validation vectors beyond wire statuses 1–8 remain covered by
+- Transport / deadline / local-validation vectors beyond the shared fixture remain covered by
   client-semantics narrative tests, not this fixture.

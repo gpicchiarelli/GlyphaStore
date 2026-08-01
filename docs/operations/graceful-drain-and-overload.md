@@ -3,12 +3,16 @@
 Status: descriptive
 Applies to: `glyphastored` wire protocol v2
 Owner: platform maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-01
 
 ## Purpose
 
 Stop or restart a daemon without abandoning admitted durable work, and recognize overload before it
 becomes unbounded memory growth or silent data loss.
+
+Assurance linkage: requirement `GS-OPS-SOAK-001`, gate `GATE-OPS-RUNBOOKS`, budget class
+`OVERLOAD-RUNBOOK` in
+[`engineering/performance/budgets.yaml`](../../engineering/performance/budgets.yaml).
 
 ## Preconditions
 

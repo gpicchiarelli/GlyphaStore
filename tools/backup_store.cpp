@@ -122,6 +122,12 @@ void write_text_ok(std::ostream& out, const glyphastore::DurableStoreBackupRepor
         << "destination=" << report.destination.string() << '\n'
         << "files_copied=" << report.files_copied << '\n'
         << "bytes_copied=" << report.bytes_copied << '\n'
+        << "admission_fence_ns=" << report.admission_fence_ns << '\n'
+        << "catalog_copy_ns=" << report.catalog_copy_ns << '\n'
+        << "destination_verify_ns=" << report.destination_verify_ns << '\n'
+        << "segment_copy_workers=" << report.segment_copy_workers << '\n'
+        << "source_crc_scanned=" << (report.source_crc_scanned ? 1 : 0) << '\n'
+        << "destination_crc_scanned=" << (report.destination_crc_scanned ? 1 : 0) << '\n'
         << "source_segments=" << report.source_verification.segments.size() << '\n'
         << "destination_segments=" << report.destination_verification.segments.size() << '\n';
 }
@@ -133,6 +139,12 @@ void write_json_ok(std::ostream& out, const glyphastore::DurableStoreBackupRepor
         << "\"destination\":\"" << json_escape(report.destination.string()) << "\","
         << "\"files_copied\":" << report.files_copied << ','
         << "\"bytes_copied\":" << report.bytes_copied << ','
+        << "\"admission_fence_ns\":" << report.admission_fence_ns << ','
+        << "\"catalog_copy_ns\":" << report.catalog_copy_ns << ','
+        << "\"destination_verify_ns\":" << report.destination_verify_ns << ','
+        << "\"segment_copy_workers\":" << report.segment_copy_workers << ','
+        << "\"source_crc_scanned\":" << (report.source_crc_scanned ? "true" : "false") << ','
+        << "\"destination_crc_scanned\":" << (report.destination_crc_scanned ? "true" : "false") << ','
         << "\"source_segments\":" << report.source_verification.segments.size() << ','
         << "\"destination_segments\":" << report.destination_verification.segments.size() << "}\n";
 }

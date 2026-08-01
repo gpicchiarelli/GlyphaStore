@@ -37,6 +37,9 @@ add_library(glyphastore_core
     ${CMAKE_SOURCE_DIR}/src/persistence/recovery/recovery_scanner.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/resource_limits.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_detail.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_ops.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_maintenance.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_verify.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_backup.cpp
@@ -52,6 +55,8 @@ add_library(glyphastore_core
     ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/store_access.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/prepared_cold_read.cpp
     ${CMAKE_SOURCE_DIR}/src/vacuum/vacuum.cpp
     ${CMAKE_SOURCE_DIR}/src/worker/pool.cpp
     ${CMAKE_SOURCE_DIR}/src/worker/topology.cpp
@@ -176,6 +181,7 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/openbsd_sandbox.cpp
     ${CMAKE_SOURCE_DIR}/src/server/peercred.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/reactor_dispatch.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/server/security_audit.cpp
     ${CMAKE_SOURCE_DIR}/src/server/server.cpp

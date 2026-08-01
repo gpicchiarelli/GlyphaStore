@@ -86,6 +86,16 @@
       "mutation_retryability": "never",
       "pipeline_outcome": "failed",
       "unhealthy": false
+    },
+    {
+      "id": "unknown_wire_status",
+      "wire_status": 99,
+      "category": "protocol",
+      "read_retryability": "new_attempt",
+      "mutation_outcome": "indeterminate",
+      "mutation_retryability": "reconcile_first",
+      "pipeline_outcome": "indeterminate",
+      "unhealthy": false
     }
   ]
 }

@@ -47,6 +47,12 @@ namespace {
         out = "status=ok\ndestination=" + report->destination.string() +
               "\nfiles_copied=" + std::to_string(report->files_copied) +
               "\nbytes_copied=" + std::to_string(report->bytes_copied) +
+              "\nadmission_fence_ns=" + std::to_string(report->admission_fence_ns) +
+              "\ncatalog_copy_ns=" + std::to_string(report->catalog_copy_ns) +
+              "\ndestination_verify_ns=" + std::to_string(report->destination_verify_ns) +
+              "\nsegment_copy_workers=" + std::to_string(report->segment_copy_workers) +
+              "\nsource_crc_scanned=" + std::string{report->source_crc_scanned ? "1" : "0"} +
+              "\ndestination_crc_scanned=" + std::string{report->destination_crc_scanned ? "1" : "0"} +
               "\nsource_segments=" + std::to_string(report->source_verification.segments.size()) +
               "\ndestination_segments=" + std::to_string(report->destination_verification.segments.size()) +
               '\n';
