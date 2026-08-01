@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- Paired sync Writer: skip nested `OperationGuard` / maintenance re-check on
+  `put_volatile_published` when the embedded caller already holds admission
+  (`PublishedAdmission::caller_holds_guard`). Async path unchanged. No early ACK;
+  lab `store_put` remains publish-bound (~400 k ops/s on Apple M4). Rejected for
+  now: sync coalesce without batch API, Delta COW freelist (measured regressions).
 - Hot-path performance program (lab, macOS Apple Silicon): disableable phase
   attribution (`GLYPHASTORE_HOT_PATH_PHASES`), GET path consolidation + ReadLease
   without Writer wake + 64 B `OwnedValue` SSO, bounded adaptive spin / proportional

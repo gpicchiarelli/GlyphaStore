@@ -211,19 +211,23 @@ auto detail::StoreAccess::erase(Store& store, const std::size_t worker_index, co
 
 auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t worker_index,
                                                  const HashedKey& key, const std::span<const std::byte> value,
-                                                 const std::uint64_t expire_at_ns)
+                                                 const std::uint64_t expire_at_ns,
+                                                 const PublishedAdmission admission)
     -> Result<VolatileMutationPublication> {
     if (worker_index >= store.worker_count() ||
         route_worker(key.hash, store.worker_count()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "published put targets the wrong Worker owner");
     }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return store_detail::closed_store();
-    }
-    if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
-        !rejected) {
-        return unexpected(rejected.error());
+    std::optional<Store::Impl::OperationGuard> operation;
+    if (admission == PublishedAdmission::check_admission) {
+        operation.emplace(*store.impl_, worker_index);
+        if (!*operation) {
+            return store_detail::closed_store();
+        }
+        if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+            !rejected) {
+            return unexpected(rejected.error());
+        }
     }
     if (!store.impl_->volatile_runtime) {
         return fail(ErrorCode::invalid_argument, "published volatile put requires a volatile Store");
@@ -238,19 +242,23 @@ auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t
 }
 
 auto detail::StoreAccess::erase_volatile_published(Store& store, const std::size_t worker_index,
-                                                   const HashedKey& key)
+                                                   const HashedKey& key,
+                                                   const PublishedAdmission admission)
     -> Result<VolatileMutationPublication> {
     if (worker_index >= store.worker_count() ||
         route_worker(key.hash, store.worker_count()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "published erase targets the wrong Worker owner");
     }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        return store_detail::closed_store();
-    }
-    if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
-        !rejected) {
-        return unexpected(rejected.error());
+    std::optional<Store::Impl::OperationGuard> operation;
+    if (admission == PublishedAdmission::check_admission) {
+        operation.emplace(*store.impl_, worker_index);
+        if (!*operation) {
+            return store_detail::closed_store();
+        }
+        if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+            !rejected) {
+            return unexpected(rejected.error());
+        }
     }
     if (!store.impl_->volatile_runtime) {
         return fail(ErrorCode::invalid_argument, "published volatile erase requires a volatile Store");

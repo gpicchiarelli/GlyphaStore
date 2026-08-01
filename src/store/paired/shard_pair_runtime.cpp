@@ -1078,11 +1078,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             admit_mutation = false;
                         }
                         if (admit_mutation) {
+                            // Embedded Store::put already holds OperationGuard while
+                            // parked on done; skip the nested Writer admission RMW.
                             auto published =
                                 node->kind == MutationKind::put
                                     ? detail::StoreAccess::put_volatile_published(
-                                          store_, shard, key, node->value, node->expire_at_ns)
-                                    : detail::StoreAccess::erase_volatile_published(store_, shard, key);
+                                          store_, shard, key, node->value, node->expire_at_ns,
+                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard)
+                                    : detail::StoreAccess::erase_volatile_published(
+                                          store_, shard, key,
+                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard);
                             if (!published) {
                                 status = Status{unexpected(published.error())};
                             } else {

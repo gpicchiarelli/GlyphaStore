@@ -78,12 +78,19 @@ class StoreAccess final {
     [[nodiscard]] static auto put(Store& store, std::size_t worker_index, const HashedKey& key,
                                   std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
     [[nodiscard]] static auto erase(Store& store, std::size_t worker_index, const HashedKey& key) -> Status;
-    [[nodiscard]] static auto put_volatile_published(Store& store, std::size_t worker_index,
-                                                     const HashedKey& key, std::span<const std::byte> value,
-                                                     std::uint64_t expire_at_ns)
+    // PublishedAdmission::caller_holds_guard: Writer-only fast path when the submitting
+    // thread already owns Store::Impl::OperationGuard for this shard (embedded sync
+    // mutate). Skips a nested admission RMW; close() still waits on the caller's guard.
+    // Async submissions must use check_admission — they have no outer OperationGuard.
+    enum class PublishedAdmission : std::uint8_t { check_admission, caller_holds_guard };
+
+    [[nodiscard]] static auto put_volatile_published(
+        Store& store, std::size_t worker_index, const HashedKey& key, std::span<const std::byte> value,
+        std::uint64_t expire_at_ns, PublishedAdmission admission = PublishedAdmission::check_admission)
         -> Result<VolatileMutationPublication>;
-    [[nodiscard]] static auto erase_volatile_published(Store& store, std::size_t worker_index,
-                                                       const HashedKey& key)
+    [[nodiscard]] static auto
+    erase_volatile_published(Store& store, std::size_t worker_index, const HashedKey& key,
+                             PublishedAdmission admission = PublishedAdmission::check_admission)
         -> Result<VolatileMutationPublication>;
     // Durable daemon path retaining the kernel's committed/not-committed/
     // indeterminate classification. This is required for a bounded internal
