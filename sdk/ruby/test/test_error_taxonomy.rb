@@ -1,0 +1,37 @@
+# frozen_string_literal: true
+
+require "json"
+require "pathname"
+require "test/unit"
+require "glypha_store"
+
+class TestErrorTaxonomy < Test::Unit::TestCase
+  FIXTURES = Pathname.new(__dir__).join("fixtures")
+  REPO_FIXTURES = Pathname.new(__dir__).join("../../../tests/fixtures")
+
+  def fixture(name)
+    path = FIXTURES.join(name)
+    path = REPO_FIXTURES.join(name) unless path.file?
+    JSON.parse(path.read)
+  end
+
+  def test_wire_status_category_retryability_matrix
+    fixture("error_taxonomy_v1.json").fetch("cases").each do |case_item|
+      error = GlyphaStore::Error.from_status(case_item.fetch("wire_status"))
+      assert_equal case_item.fetch("category"), error.category, case_item["id"]
+      assert_equal case_item.fetch("wire_status"), error.wire_status, case_item["id"]
+      assert_equal case_item.fetch("read_retryability"), error.retryability, case_item["id"]
+
+      enriched = GlyphaStore::Error.from_status(case_item.fetch("wire_status")).enrich(
+        bytes_sent: 1,
+        mutation_outcome: case_item.fetch("mutation_outcome")
+      )
+      assert_equal case_item.fetch("mutation_retryability"), enriched.retryability, case_item["id"]
+
+      want_unhealthy =
+        case_item.fetch("wire_status") == GlyphaStore::Protocol::Status::WRONG_OWNER ||
+        case_item.fetch("wire_status") == GlyphaStore::Protocol::Status::NOT_BOUND
+      assert_equal want_unhealthy, case_item.fetch("unhealthy"), case_item["id"]
+    end
+  end
+end

@@ -23,4 +23,4 @@ echo "Perl::Critic (brutal / severity 1) on $sdk/lib"
 )
 
 PERL5LIB="$sdk/lib${PERL5LIB:+:$PERL5LIB}" "$perl" -MTest::Harness -e \
-  'runtests(@ARGV)' "$sdk/t/01-protocol.t" "$sdk/t/02-client.t"
+  'runtests(@ARGV)' "$sdk/t/01-protocol.t" "$sdk/t/02-client.t" "$sdk/t/03-error-taxonomy.t"

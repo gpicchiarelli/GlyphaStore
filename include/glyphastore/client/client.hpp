@@ -93,6 +93,12 @@ struct PipelineResponse {
     }
 };
 
+// Portable error-taxonomy-v1 helpers (docs/spec/error-taxonomy-v1.md). Used by Client
+// and cross-SDK conformance tests; not a general application API beyond category mapping.
+[[nodiscard]] auto error_from_wire_status(std::uint16_t wire_status) -> Error;
+[[nodiscard]] auto portable_retryability(std::string_view category, bool mutation_sent,
+                                         bool indeterminate) -> std::string;
+
 // A synchronous, thread-safe TCP client for wire protocol v2. It keeps one
 // connection bound to each server worker, preserving per-key routing while
 // allowing independent workers to make progress concurrently.
