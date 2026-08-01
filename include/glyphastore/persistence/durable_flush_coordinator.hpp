@@ -8,7 +8,6 @@
 #include <functional>
 #include <mutex>
 #include <optional>
-#include <stop_token>
 #include <thread>
 
 namespace glyphastore {
@@ -37,7 +36,7 @@ class DurableFlushCoordinator final {
     void stop();
 
   private:
-    void run(std::stop_token stop_token);
+    void run();
 
     std::uint32_t sync_interval_ms_;
     std::uint32_t batch_max_wait_ms_;
@@ -57,7 +56,7 @@ class DurableFlushCoordinator final {
     std::uint64_t flush_all_generation_{};
     std::uint64_t completed_generation_{};
     std::optional<Error> background_error_;
-    std::jthread worker_;
+    std::thread worker_;
 
     friend class detail::DurableFlushCoordinatorAccess;
 };

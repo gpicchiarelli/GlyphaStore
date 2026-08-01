@@ -2164,6 +2164,60 @@ GLYPHA_TEST("paired Writer closes strict durable groups without concurrent shard
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("paired Writer preserves same-key order across strict durable group boundaries") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .durable_mutation_queue_capacity = 4},
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'000, .min_records = 2}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto put = glyphastore::server::encode_request({.opcode = glyphastore::server::RequestOpcode::put,
+                                                          .request_id = 92,
+                                                          .key = bytes("same-key-group"),
+                                                          .value = bytes("value")});
+    const auto erase = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::erase,
+        .request_id = 93,
+        .key = bytes("same-key-group"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(erase.has_value());
+    std::vector<std::byte> pipeline;
+    pipeline.reserve(put->size() + erase->size());
+    pipeline.insert(pipeline.end(), put->begin(), put->end());
+    pipeline.insert(pipeline.end(), erase->begin(), erase->end());
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+
+    const auto put_response = glyphastore::server::decode_response(receive_response(socket));
+    const auto erase_response = glyphastore::server::decode_response(receive_response(socket));
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(erase_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(erase_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+    auto recovered =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing});
+    GLYPHA_REQUIRE(recovered.has_value());
+    const auto missing = (*recovered)->get("same-key-group");
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+}
+
 GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies bounded admission") {
     ServerTemporaryDirectory temporary;
     const auto path = temporary.store_path();

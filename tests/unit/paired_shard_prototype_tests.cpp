@@ -42,7 +42,7 @@ GLYPHA_TEST("paired SPSC ring preserves order through concurrent wraparound") {
     glyphastore::experimental::SpscRing<std::uint64_t, 64> ring;
     constexpr std::uint64_t kCount = 100'000;
     std::atomic_bool failed{};
-    std::jthread consumer([&] {
+    std::thread consumer([&] {
         for (std::uint64_t expected = 0; expected < kCount; ++expected) {
             std::uint64_t value = 0;
             while (!ring.try_pop(value)) {

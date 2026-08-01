@@ -3,6 +3,7 @@
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
+-include("glyphastore_client_internal.hrl").
 
 all() ->
     [
@@ -187,7 +188,7 @@ request_id_wrap(_Config) ->
     try
         {ok, Client} = connect(Server),
         sys:replace_state(Client, fun(State) ->
-            setelement(5, State, 16#FFFFFFFFFFFFFFFF)
+            State#state{request_id = 16#FFFFFFFFFFFFFFFF}
         end),
         #{outcome := committed} = glyphastore_client:put(Client, <<"wrap">>, <<"v">>),
         #{outcome := committed} = glyphastore_client:put(Client, <<"wrap2">>, <<"v">>),
@@ -588,10 +589,9 @@ tls_unavailable_fail_closed(_Config) ->
 connect(Server) ->
     glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}).
 
-%% workers map is record field #state.workers (element 7 with current record layout).
 worker_conn(Client, Worker) ->
     State = sys:get_state(Client),
-    maps:get(Worker, element(7, State)).
+    maps:get(Worker, State#state.workers).
 
 receive_n(_Tag, 0) ->
     ok;

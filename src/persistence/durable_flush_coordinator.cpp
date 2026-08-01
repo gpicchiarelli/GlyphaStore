@@ -12,8 +12,7 @@ DurableFlushCoordinator::DurableFlushCoordinator(const std::uint32_t sync_interv
                                                  const bool batch_timer_enabled, FlushCallback flush_callback)
     : sync_interval_ms_(sync_interval_ms), batch_max_wait_ms_(batch_max_wait_ms),
       periodic_sync_enabled_(periodic_sync_enabled), batch_timer_enabled_(batch_timer_enabled),
-      flush_callback_(std::move(flush_callback)),
-      worker_([this](const std::stop_token stop_token) { run(stop_token); }) {}
+      flush_callback_(std::move(flush_callback)), worker_([this] { run(); }) {}
 
 DurableFlushCoordinator::~DurableFlushCoordinator() {
     stop();
@@ -98,14 +97,13 @@ void DurableFlushCoordinator::stop() {
             std::lock_guard lock{mutex_};
             stopped_ = true;
         }
-        worker_.request_stop();
         wake_.notify_all();
         completed_.notify_all();
         worker_.join();
     }
 }
 
-void DurableFlushCoordinator::run(const std::stop_token stop_token) {
+void DurableFlushCoordinator::run() {
     using clock = std::chrono::steady_clock;
     using duration = std::chrono::milliseconds;
     const auto batch_wait = batch_timer_enabled_ ? duration{batch_max_wait_ms_} : duration::max();
@@ -113,7 +111,7 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
     const auto interval = std::min(batch_wait, sync_wait);
     auto next_deadline = clock::now() + interval;
 
-    while (!stop_token.stop_requested()) {
+    for (;;) {
         bool periodic_timed_out = false;
         bool requested_deadline_timed_out = false;
         bool forced = false;
@@ -124,9 +122,11 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
             const auto wait_deadline =
                 requested_deadline_ ? std::min(next_deadline, *requested_deadline_) : next_deadline;
             wake_.wait_until(lock, wait_deadline, [&] {
-                return stop_token.stop_requested() || flush_requested_ || flush_all_requested_ ||
-                       deadline_changed_;
+                return stopped_ || flush_requested_ || flush_all_requested_ || deadline_changed_;
             });
+            if (stopped_) {
+                break;
+            }
             if (deadline_changed_) {
                 deadline_changed_ = false;
                 continue;
@@ -145,9 +145,6 @@ void DurableFlushCoordinator::run(const std::stop_token stop_token) {
             if (forced || force_all) {
                 requested_deadline_.reset();
             }
-        }
-        if (stop_token.stop_requested()) {
-            break;
         }
         if (!periodic_timed_out && !requested_deadline_timed_out && !forced && !force_all) {
             continue;

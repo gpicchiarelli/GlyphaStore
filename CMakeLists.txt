@@ -138,9 +138,8 @@ target_link_libraries(glyphastore_core
     PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
 )
 if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
-    # Their libc++ exposes C++20 stop_token/jthread only when the translation
-    # unit is compiled in pthread mode. FindThreads may legitimately resolve
-    # pthread symbols from libc and otherwise leave this flag empty.
+    # FindThreads may legitimately resolve pthread symbols from libc and leave
+    # the compiler/linker flag empty, while BSD still requires explicit mode.
     target_compile_options(glyphastore_core PUBLIC -pthread)
     target_link_options(glyphastore_core PUBLIC -pthread)
 endif()

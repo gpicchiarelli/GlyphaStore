@@ -1053,7 +1053,7 @@ GLYPHA_TEST("durable_group concurrent puts batch and survive reopen") {
     }
 }
 
-GLYPHA_TEST("durable_group orders same-key put and erase within one batch") {
+GLYPHA_TEST("durable_group preserves explicitly ordered same-key put and erase") {
     StoreTemporaryDirectory temporary;
     const auto path = temporary.store_path();
     {
@@ -1072,6 +1072,15 @@ GLYPHA_TEST("durable_group orders same-key put and erase within one batch") {
             put_completed.store(true);
         });
 
+        auto* paired = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+        GLYPHA_REQUIRE(paired != nullptr);
+        const auto admitted_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (paired->stats()[0].sync_admitted == 0 &&
+               std::chrono::steady_clock::now() < admitted_deadline) {
+            std::this_thread::yield();
+        }
+        const bool put_admitted = paired->stats()[0].sync_admitted == 1;
+
         glyphastore::Status erased = glyphastore::fail(glyphastore::ErrorCode::not_found, "not tried");
         while (!put_completed.load()) {
             erased = store.erase("same-key");
@@ -1081,6 +1090,7 @@ GLYPHA_TEST("durable_group orders same-key put and erase within one batch") {
             std::this_thread::yield();
         }
         putter.join();
+        GLYPHA_REQUIRE(put_admitted);
         GLYPHA_REQUIRE(!put_failed.load());
         GLYPHA_REQUIRE(erased.has_value());
         const auto missing = store.get("same-key");

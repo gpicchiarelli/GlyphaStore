@@ -27,7 +27,7 @@ GLYPHA_TEST("bounded MPSC queue serializes concurrent producers") {
     constexpr std::size_t values_per_producer = 1000;
     constexpr std::size_t value_count = producer_count * values_per_producer;
     glyphastore::server::BoundedMpscQueue<std::size_t> queue{64};
-    std::vector<std::jthread> producers;
+    std::vector<std::thread> producers;
     producers.reserve(producer_count);
     for (std::size_t producer = 0; producer < producer_count; ++producer) {
         producers.emplace_back([&, producer] {
@@ -53,6 +53,9 @@ GLYPHA_TEST("bounded MPSC queue serializes concurrent producers") {
         observed[*value] = true;
         ++received;
     }
+    for (auto& producer : producers) {
+        producer.join();
+    }
     GLYPHA_REQUIRE(received == value_count);
 }
 
@@ -61,7 +64,7 @@ GLYPHA_TEST("bounded SPSC queue preserves FIFO order across concurrent wraparoun
     glyphastore::server::BoundedSpscQueue<std::size_t> queue{17};
     GLYPHA_REQUIRE(queue.capacity() == 32);
 
-    std::jthread producer{[&] {
+    std::thread producer{[&] {
         for (std::size_t value = 0; value < value_count; ++value) {
             while (!queue.try_push(std::size_t{value})) {
                 std::this_thread::yield();
@@ -76,5 +79,6 @@ GLYPHA_TEST("bounded SPSC queue preserves FIFO order across concurrent wraparoun
         }
         GLYPHA_REQUIRE(*value == expected);
     }
+    producer.join();
     GLYPHA_REQUIRE(queue.empty());
 }

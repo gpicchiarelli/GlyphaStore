@@ -36,7 +36,7 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
 
 1. Add `MaintenanceMode`: `cooperative` (default for embedded), `background`, `disabled`.
 2. `glyphastored` defaults to `background`; CLI can override.
-3. `MaintenanceController` is Store-owned. In `background` it runs one `std::jthread` with stop/join
+3. `MaintenanceController` is Store-owned. In `background` it runs one `std::thread` with explicit stop/join
    semantics aligned to `DurableFlushCoordinator`. Cooperative and disabled start no thread.
 4. The controller never mutates Worker Index or Segments directly. Future policy may only observe
    published snapshots/stats and invoke `Store::compact()`, which already serializes on

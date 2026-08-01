@@ -11,7 +11,7 @@ ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md)
 
 Il prototipo esegue una sola coppia con:
 
-- un caller Reader-owner e un `std::jthread` Writer persistente;
+- un caller Reader-owner e un `std::thread` Writer persistente con stop/join espliciti;
 - mutation e completion ring SPSC da 256 elementi;
 - indici producer/consumer separati su allineamento 128 byte;
 - pool di 256 mutation slot e value arena contigua allocati allo startup;

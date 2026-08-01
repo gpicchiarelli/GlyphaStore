@@ -16,7 +16,7 @@ sole compaction primitives (ADR 0015).
 | Mode | Embedded default | Daemon default | Thread |
 | --- | --- | --- | --- |
 | `cooperative` | yes | no | none; caller invokes `compact()` |
-| `background` | no | yes | one Store-owned `std::jthread` |
+| `background` | no | yes | one Store-owned `std::thread` with explicit stop/join |
 | `disabled` | no | no | none; `compact()` still available |
 
 ## Phase 5 behavior (current)

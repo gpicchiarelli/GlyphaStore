@@ -220,15 +220,16 @@ struct Store::Impl {
     };
 
     explicit Impl(std::unique_ptr<VolatileStoreRuntime> runtime, const WorkerRoutingState routing_state,
-                  std::shared_ptr<const StoreClock> clock, const std::uint64_t initial_now_ns)
+                  std::shared_ptr<const StoreClock> store_clock, const std::uint64_t initial_now_ns)
         : worker_count_value(runtime->workers.size()), routing(routing_state),
           active_operations(std::make_unique<ActiveOperationCounter[]>(worker_count_value + 1)),
-          volatile_runtime(std::move(runtime)), clock(std::move(clock)), latest_now_ns(initial_now_ns) {}
-    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime, std::shared_ptr<const StoreClock> clock,
-                  const std::uint64_t initial_now_ns)
+          volatile_runtime(std::move(runtime)), clock(std::move(store_clock)), latest_now_ns(initial_now_ns) {
+    }
+    explicit Impl(std::unique_ptr<DurableRuntimeCatalog> runtime,
+                  std::shared_ptr<const StoreClock> store_clock, const std::uint64_t initial_now_ns)
         : worker_count_value(runtime->worker_count()), routing(runtime->worker_routing()),
           active_operations(std::make_unique<ActiveOperationCounter[]>(worker_count_value + 1)),
-          durable_runtime(std::move(runtime)), clock(std::move(clock)), latest_now_ns(initial_now_ns) {}
+          durable_runtime(std::move(runtime)), clock(std::move(store_clock)), latest_now_ns(initial_now_ns) {}
 
     [[nodiscard]] auto control_shard() const noexcept -> std::size_t {
         return worker_count_value;
@@ -445,8 +446,9 @@ struct Store::Impl {
 };
 
 struct detail::PreparedColdRead::State final {
-    explicit State(DurableRuntimeCatalog::PinnedRead prepared) : prepared(std::move(prepared)) {}
-    explicit State(DurableRuntimeCatalog::BorrowedPinnedRead prepared) : prepared(std::move(prepared)) {}
+    explicit State(DurableRuntimeCatalog::PinnedRead prepared_read) : prepared(std::move(prepared_read)) {}
+    explicit State(DurableRuntimeCatalog::BorrowedPinnedRead prepared_read)
+        : prepared(std::move(prepared_read)) {}
     std::variant<DurableRuntimeCatalog::PinnedRead, DurableRuntimeCatalog::BorrowedPinnedRead> prepared;
 };
 

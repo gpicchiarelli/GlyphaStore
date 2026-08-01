@@ -2,6 +2,7 @@
 -behaviour(gen_server).
 
 -include("glyphastore_protocol.hrl").
+-include("glyphastore_client_internal.hrl").
 
 -export([
     connect/1,
@@ -76,23 +77,6 @@
     value => binary(),
     error => glyphastore_error:error()
 }.
-
--record(state, {
-    config :: config(),
-    worker_count = 0 :: non_neg_integer(),
-    routing_epoch = 0 :: non_neg_integer(),
-    routing = #{algorithm => 1, seed => 0} :: map(),
-    request_id = 1 :: non_neg_integer(),
-    healthy = true :: boolean(),
-    workers = #{} :: #{non_neg_integer() => pid()},
-    pending = #{} :: #{reference() => map()},
-    mon_index = #{} :: #{reference() => reference()},
-    closing = false :: boolean(),
-    close_from :: gen_server:from() | undefined,
-    %% Conn supervisor + monitor index (Worker process death ≠ auto-reconnect).
-    sup :: pid() | undefined,
-    conn_mons = #{} :: #{reference() => non_neg_integer()}
-}).
 
 connect(Config0) ->
     Config = glyphastore_util:merge_config(Config0),

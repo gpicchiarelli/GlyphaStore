@@ -22,8 +22,8 @@ class RunningPairedReactor final {
             throw std::runtime_error{created.error().message};
         }
         reactor_ = std::move(*created);
-        thread_ = std::jthread([this](const std::stop_token stop) {
-            while (!stop.stop_requested()) {
+        thread_ = std::thread([this] {
+            while (!stop_requested_.load(std::memory_order_acquire)) {
                 if (auto status = reactor_->run_once(10); !status) {
                     failed_.store(true, std::memory_order_release);
                     return;
@@ -33,7 +33,7 @@ class RunningPairedReactor final {
     }
 
     ~RunningPairedReactor() {
-        thread_.request_stop();
+        stop_requested_.store(true, std::memory_order_release);
         thread_.join();
         reactor_->stop_accepting();
         reactor_->close_all_connections();
@@ -58,7 +58,8 @@ class RunningPairedReactor final {
 
   private:
     std::unique_ptr<glyphastore::experimental::PairedReactorPrototype> reactor_;
-    std::jthread thread_;
+    std::thread thread_;
+    std::atomic_bool stop_requested_{};
     std::atomic_bool failed_{};
 };
 

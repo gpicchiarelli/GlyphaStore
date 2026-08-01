@@ -560,7 +560,7 @@ struct VolatileShardPairPrototype::Impl final {
     }
 
     void start() {
-        writer = std::jthread([this] { writer_loop(); });
+        writer = std::thread([this] { writer_loop(); });
     }
 
     [[nodiscard]] auto value_span(const std::uint32_t slot) noexcept -> std::span<std::byte> {
@@ -849,7 +849,7 @@ struct VolatileShardPairPrototype::Impl final {
     std::shared_ptr<const ImmutableReadIndex> base;
     std::shared_ptr<const DeltaState> mutable_delta;
     std::uint64_t visible_through{};
-    std::jthread writer;
+    std::thread writer;
     std::atomic_bool accepting{true};
     std::atomic_bool writer_done{};
     std::atomic_bool invariant_failed{};

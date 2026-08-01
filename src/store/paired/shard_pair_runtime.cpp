@@ -25,14 +25,8 @@ namespace {
     return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
 }
 
-void atomic_max(std::atomic<std::uint64_t>& destination, const std::uint64_t value) noexcept {
-    auto observed = destination.load(std::memory_order_relaxed);
-    while (observed < value && !destination.compare_exchange_weak(observed, value, std::memory_order_relaxed,
-                                                                  std::memory_order_relaxed)) {
-    }
-}
-
-void atomic_max(std::atomic<std::size_t>& destination, const std::size_t value) noexcept {
+template <typename T> void atomic_max(std::atomic<T>& destination, const T value) noexcept {
+    static_assert(std::is_unsigned_v<T>);
     auto observed = destination.load(std::memory_order_relaxed);
     while (observed < value && !destination.compare_exchange_weak(observed, value, std::memory_order_relaxed,
                                                                   std::memory_order_relaxed)) {
@@ -828,6 +822,119 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 rev = sync_batch;
                 sync_batch = next;
             }
+            if (batch_config && detail::StoreAccess::is_durable(store_)) {
+                std::vector<SyncMutation*> nodes;
+                std::vector<detail::StoreAccess::DurableMutationView> views;
+                bool publication_required = false;
+                try {
+                    for (auto* node = rev; node != nullptr; node = node->next) {
+                        nodes.push_back(node);
+                    }
+                    views.reserve(nodes.size());
+                    std::size_t begin = 0;
+                    while (begin < nodes.size()) {
+                        std::size_t end = begin;
+                        for (; end < nodes.size(); ++end) {
+                            bool duplicate = false;
+                            for (std::size_t previous = begin; previous < end; ++previous) {
+                                duplicate = nodes[previous]->key->hash == nodes[end]->key->hash &&
+                                            nodes[previous]->key->key == nodes[end]->key->key;
+                                if (duplicate) {
+                                    break;
+                                }
+                            }
+                            if (duplicate) {
+                                break;
+                            }
+                        }
+                        views.clear();
+                        for (std::size_t index = begin; index < end; ++index) {
+                            auto* node = nodes[index];
+                            views.push_back({.operation = node->kind == MutationKind::put
+                                                              ? detail::StoreAccess::MutationOperation::put
+                                                              : detail::StoreAccess::MutationOperation::erase,
+                                             .key = *node->key,
+                                             .value = node->value,
+                                             .expire_at_ns = node->expire_at_ns});
+                        }
+                        auto results = detail::StoreAccess::mutate_durable_batch(store_, shard, views);
+                        if (results.size() != views.size()) {
+                            std::terminate();
+                        }
+                        for (std::size_t offset = 0; offset < results.size(); ++offset) {
+                            auto& result = results[offset].mutation;
+                            publication_required = publication_required || result.committed();
+                            if (!result.committed() || result.error) {
+                                auto error = result.error ? std::move(*result.error)
+                                                          : Error{ErrorCode::io_error,
+                                                                  "durable mutation failed without an error"};
+                                if (result.committed()) {
+                                    error.code = ErrorCode::unavailable;
+                                }
+                                nodes[begin + offset]->status = Status{unexpected(std::move(error))};
+                            }
+                        }
+                        begin = end;
+                    }
+                    if (publication_required) {
+                        auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, shard);
+                        auto next = snapshot ? PairReadGeneration::replace_durable_snapshot(
+                                                   lane.writer_generation, snapshot->records)
+                                             : Result<std::shared_ptr<const PairReadGeneration>>{
+                                                   unexpected(snapshot.error())};
+                        if (!next) {
+                            publish_fail_closed();
+                            for (auto* node : nodes) {
+                                if (node->status) {
+                                    node->status =
+                                        Status{fail(ErrorCode::unavailable,
+                                                    "read publication failed after durable Writer batch")};
+                                }
+                            }
+                        } else {
+                            lane.retired_generations.push_back(lane.writer_generation);
+                            lane.retired_generation_count.store(lane.retired_generations.size(),
+                                                                std::memory_order_relaxed);
+                            lane.writer_generation = std::move(*next);
+                            update_delta_stats();
+                            lane.writer_epoch.store(lane.writer_generation->epoch(),
+                                                    std::memory_order_relaxed);
+                            lane.published_generation.store(lane.writer_generation.get(),
+                                                            std::memory_order_release);
+                            lane.published_catalog_revision.store(snapshot->catalog_revision,
+                                                                  std::memory_order_release);
+                            lane.read_merge.reset();
+                            lane.read_merge_active.store(false, std::memory_order_relaxed);
+                            lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+                            merge_retry_blocked = false;
+                            reclaim_quiescent();
+                        }
+                    }
+                } catch (const std::bad_alloc&) {
+                    if (publication_required) {
+                        publish_fail_closed();
+                    }
+                    for (auto* node = rev; node != nullptr; node = node->next) {
+                        node->status = Status{fail(publication_required ? ErrorCode::unavailable
+                                                                        : ErrorCode::resource_exhausted,
+                                                   "paired mutation allocation failed")};
+                    }
+                } catch (...) {
+                    if (publication_required) {
+                        publish_fail_closed();
+                    }
+                    for (auto* node = rev; node != nullptr; node = node->next) {
+                        node->status = Status{
+                            fail(publication_required ? ErrorCode::unavailable : ErrorCode::internal_error,
+                                 "paired Writer failure")};
+                    }
+                }
+                for (auto* node = rev; node != nullptr; node = node->next) {
+                    node->done.store(true, std::memory_order_release);
+                    node->done.notify_one();
+                }
+                continue;
+            }
             while (rev != nullptr) {
                 auto* node = rev;
                 rev = rev->next;
@@ -1105,31 +1212,51 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
 
         if (batch_config && !durable_views.empty()) {
             try {
-                auto results = detail::StoreAccess::mutate_durable_batch(store_, shard, durable_views);
-                if (results.size() != durable_views.size()) {
-                    std::terminate();
-                }
-                for (std::size_t result_index = 0; result_index < results.size(); ++result_index) {
-                    auto& result = results[result_index];
-                    auto& completion = completions[durable_indices[result_index]];
-                    if (result.conflict_retried) {
-                        lane.conflict_retries.fetch_add(1U, std::memory_order_relaxed);
-                        if (result.mutation.committed() && !result.mutation.error) {
-                            lane.conflict_retry_commits.fetch_add(1U, std::memory_order_relaxed);
+                std::size_t begin = 0;
+                while (begin < durable_views.size()) {
+                    std::size_t end = begin;
+                    for (; end < durable_views.size(); ++end) {
+                        bool duplicate = false;
+                        for (std::size_t previous = begin; previous < end; ++previous) {
+                            duplicate = durable_views[previous].key.hash == durable_views[end].key.hash &&
+                                        durable_views[previous].key.key == durable_views[end].key.key;
+                            if (duplicate) {
+                                break;
+                            }
+                        }
+                        if (duplicate) {
+                            break;
                         }
                     }
-                    if (!result.mutation.committed() || result.mutation.error) {
-                        auto error =
-                            result.mutation.error
-                                ? std::move(*result.mutation.error)
-                                : Error{ErrorCode::io_error, "durable mutation failed without an error"};
-                        if (result.mutation.committed()) {
-                            error.code = ErrorCode::unavailable;
-                        }
-                        completion.error.emplace(std::move(error));
-                    } else {
-                        stage_durable_publication(durable_indices[result_index], result.mutation);
+                    auto results = detail::StoreAccess::mutate_durable_batch(
+                        store_, shard, std::span{durable_views}.subspan(begin, end - begin));
+                    if (results.size() != end - begin) {
+                        std::terminate();
                     }
+                    for (std::size_t offset = 0; offset < results.size(); ++offset) {
+                        auto& result = results[offset];
+                        const auto batch_index = durable_indices[begin + offset];
+                        auto& completion = completions[batch_index];
+                        if (result.conflict_retried) {
+                            lane.conflict_retries.fetch_add(1U, std::memory_order_relaxed);
+                            if (result.mutation.committed() && !result.mutation.error) {
+                                lane.conflict_retry_commits.fetch_add(1U, std::memory_order_relaxed);
+                            }
+                        }
+                        if (!result.mutation.committed() || result.mutation.error) {
+                            auto error =
+                                result.mutation.error
+                                    ? std::move(*result.mutation.error)
+                                    : Error{ErrorCode::io_error, "durable mutation failed without an error"};
+                            if (result.mutation.committed()) {
+                                error.code = ErrorCode::unavailable;
+                            }
+                            completion.error.emplace(std::move(error));
+                        } else {
+                            stage_durable_publication(batch_index, result.mutation);
+                        }
+                    }
+                    begin = end;
                 }
             } catch (const std::bad_alloc&) {
                 for (const auto index : durable_indices) {

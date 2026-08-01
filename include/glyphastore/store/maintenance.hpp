@@ -12,7 +12,6 @@
 #include <limits>
 #include <mutex>
 #include <optional>
-#include <stop_token>
 #include <thread>
 #include <utility>
 
@@ -50,7 +49,7 @@ class MaintenanceController final {
     [[nodiscard]] auto mutations_rejected() const noexcept -> bool;
 
   private:
-    void run(std::stop_token stop_token);
+    void run();
     [[nodiscard]] auto eval_interval_locked() const -> std::chrono::milliseconds;
     void evaluate_once();
     void record_skip(MaintenanceSkipReason reason, MaintenanceState next,
@@ -115,7 +114,7 @@ class MaintenanceController final {
     MaintenanceSkipReason last_skip_reason_{MaintenanceSkipReason::none};
     MaintenanceObservation last_observation_{};
     std::optional<Error> last_error_{};
-    std::jthread worker_;
+    std::thread worker_;
 };
 
 } // namespace glyphastore

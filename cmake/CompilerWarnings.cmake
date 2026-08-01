@@ -1,5 +1,18 @@
 include_guard(GLOBAL)
 
+include(CheckCXXCompilerFlag)
+include(CMakePushCheckState)
+
+if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    cmake_push_check_state(RESET)
+    set(CMAKE_REQUIRED_FLAGS "-Werror=unknown-warning-option")
+    check_cxx_compiler_flag(
+        "-Wmissing-designated-field-initializers"
+        GLYPHASTORE_HAS_MISSING_DESIGNATED_FIELD_INITIALIZERS
+    )
+    cmake_pop_check_state()
+endif()
+
 function(glyphastore_set_warnings target)
     if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
         target_compile_options(${target} PRIVATE
@@ -11,7 +24,7 @@ function(glyphastore_set_warnings target)
         # Apple Clang does not include partial designated aggregates in
         # -Wmissing-field-initializers, unlike GCC and upstream Clang. Keep the
         # developer build aligned with the Linux and BSD CI gates.
-        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        if(GLYPHASTORE_HAS_MISSING_DESIGNATED_FIELD_INITIALIZERS)
             target_compile_options(${target} PRIVATE -Wmissing-designated-field-initializers)
         endif()
         if(GLYPHASTORE_WARNINGS_AS_ERRORS OR DEFINED ENV{CI})

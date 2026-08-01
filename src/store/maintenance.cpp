@@ -169,16 +169,21 @@ void MaintenanceController::start() {
         evaluate_requested_ = true; // first observation must not wait a mid-interval
         state_ = MaintenanceState::idle;
     }
-    auto thread = std::jthread([this](const std::stop_token stop_token) { run(stop_token); });
+    auto thread = std::thread([this] { run(); });
+    bool stopped_during_start = false;
     {
         const std::lock_guard lock{mutex_};
         if (stop_requested_) {
-            thread.request_stop();
-            thread.join();
             state_ = MaintenanceState::stopped;
-            return;
+            stopped_during_start = true;
+        } else {
+            worker_ = std::move(thread);
         }
-        worker_ = std::move(thread);
+    }
+    if (stopped_during_start) {
+        wake_.notify_all();
+        thread.join();
+        return;
     }
     wake_.notify_one();
 }
@@ -199,13 +204,10 @@ void MaintenanceController::request_stop() noexcept {
         publish_mutations_rejected_locked(false);
     }
     wake_.notify_all();
-    if (worker_.joinable()) {
-        worker_.request_stop();
-    }
 }
 
 void MaintenanceController::join() {
-    std::jthread local;
+    std::thread local;
     {
         const std::lock_guard lock{mutex_};
         local = std::move(worker_);
@@ -741,8 +743,8 @@ void MaintenanceController::evaluate_once() {
     }
 }
 
-void MaintenanceController::run(const std::stop_token stop_token) {
-    while (!stop_token.stop_requested()) {
+void MaintenanceController::run() {
+    for (;;) {
         {
             std::unique_lock lock{mutex_};
             if (stop_requested_) {
@@ -752,11 +754,9 @@ void MaintenanceController::run(const std::stop_token stop_token) {
                 state_ = MaintenanceState::idle;
             }
             const auto deadline = std::chrono::steady_clock::now() + eval_interval_locked();
-            wake_.wait_until(lock, deadline, [&] {
-                return stop_requested_ || evaluate_requested_ || stop_token.stop_requested();
-            });
+            wake_.wait_until(lock, deadline, [&] { return stop_requested_ || evaluate_requested_; });
             evaluate_requested_ = false;
-            if (stop_requested_ || stop_token.stop_requested()) {
+            if (stop_requested_) {
                 break;
             }
         }
