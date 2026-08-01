@@ -24,8 +24,8 @@ auto value_string(const glyphastore::OwnedValue& value) -> std::string_view {
 GLYPHA_TEST("concurrent store puts on distinct routed keys preserve all values") {
     constexpr std::size_t worker_total = 8;
     constexpr std::size_t keys_per_thread = 250;
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = worker_total}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = worker_total},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -63,8 +63,8 @@ GLYPHA_TEST("concurrent store puts on distinct routed keys preserve all values")
 }
 
 GLYPHA_TEST("concurrent store read after write on one key serializes updates") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 4}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 4},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     constexpr std::size_t thread_total = 8;
@@ -112,8 +112,8 @@ GLYPHA_TEST("concurrent store read after write on one key serializes updates") {
 }
 
 GLYPHA_TEST("concurrent store verify index succeeds under mixed traffic") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 4}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 4},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     std::atomic<bool> verify_failed{false};

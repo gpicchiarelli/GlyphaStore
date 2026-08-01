@@ -28,11 +28,11 @@ py_ver="$(
 )"
 check "python/glyphastore.__version__" "$py_ver"
 
-if ! command -v rg >/dev/null 2>&1; then
-  echo "rg (ripgrep) is required for Perl VERSION checks" >&2
-  exit 1
-fi
-perl_versions="$(rg -o "our \\\$VERSION = '([^']+)'" -r '$1' "$root/sdk/perl/lib" --no-filename | sort -u)"
+perl_versions="$(
+  { grep -RhoE "our \\\$VERSION = '[^']+'" "$root/sdk/perl/lib" || true; } |
+    sed -E "s/.*our \\\$VERSION = '([^']+)'.*/\\1/" |
+    sort -u
+)"
 perl_count="$(printf '%s\n' "$perl_versions" | grep -c . || true)"
 if [[ "$perl_count" -ne 1 ]]; then
   echo "perl VERSION drift across modules: ${perl_versions:-<none>}" >&2

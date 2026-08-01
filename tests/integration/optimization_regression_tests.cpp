@@ -152,8 +152,8 @@ GLYPHA_TEST("hashed key path preserves single hash lookup") {
 }
 
 GLYPHA_TEST("store get verifies checksum after mutable segment corruption") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 1}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("integrity", bytes("payload")).has_value());
@@ -171,8 +171,8 @@ GLYPHA_TEST("store get verifies checksum after mutable segment corruption") {
 }
 
 GLYPHA_TEST("worker local segment catalog resolves records across rotation") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 1}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     const std::string value(900U * 1024U, 'v');
@@ -190,8 +190,8 @@ GLYPHA_TEST("worker local segment catalog resolves records across rotation") {
 }
 
 GLYPHA_TEST("volatile overwrite churn releases fully dead segment storage") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 1}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     const std::string value(900U * 1024U, 'r');
@@ -217,8 +217,8 @@ GLYPHA_TEST("volatile overwrite churn releases fully dead segment storage") {
 }
 
 GLYPHA_TEST("volatile vacuum consolidates sparse sealed segments and preserves visibility") {
-    auto opened = glyphastore::Store::open({.concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-                                            .worker_config = {.explicit_count = 1}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     const std::string churn_value(900U * 1024U, 'c');

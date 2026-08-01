@@ -17,8 +17,8 @@ namespace glyphastore {
 struct DurableCompactionPlan {
     WorkerId worker_id{};
     Manifest next_manifest;
-    std::vector<ManifestSegmentEntry> sources;
-    std::vector<ManifestSegmentEntry> replacements;
+    std::vector<ManifestSegmentEntry> sources{};
+    std::vector<ManifestSegmentEntry> replacements{};
     std::uint64_t temporary_bytes{};
     std::uint64_t reclaimed_bytes{};
 };
