@@ -219,6 +219,7 @@
     { "name": "unix-strict", "configurePreset": "unix-strict", "output": { "outputOnFailure": true } },
     { "name": "unix-asan", "configurePreset": "unix-asan", "output": { "outputOnFailure": true } },
     { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } },
+    { "name": "unix-release", "configurePreset": "unix-release", "output": { "outputOnFailure": true } },
     { "name": "unix-release-lto", "configurePreset": "unix-release-lto", "output": { "outputOnFailure": true } }
   ]
 }

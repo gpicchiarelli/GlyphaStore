@@ -46,7 +46,7 @@ auto configure_executor_thread(const std::size_t executor_id, const bool affinit
     }
     std::size_t available_index{};
     for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) {
-        if (!CPU_ISSET(cpu, &allowed)) {
+        if (!CPU_ISSET(static_cast<unsigned>(cpu), &allowed)) {
             continue;
         }
         if (available_index++ != executor_id) {
@@ -54,7 +54,7 @@ auto configure_executor_thread(const std::size_t executor_id, const bool affinit
         }
         cpu_set_t selected{};
         CPU_ZERO(&selected);
-        CPU_SET(cpu, &selected);
+        CPU_SET(static_cast<unsigned>(cpu), &selected);
         if (::pthread_setaffinity_np(pthread_self(), sizeof(selected), &selected) != 0) {
             return {.mode = ExecutorAffinityMode::unavailable};
         }

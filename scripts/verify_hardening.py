@@ -45,12 +45,31 @@ def link_tokens(build_dir: pathlib.Path) -> list[str]:
 
 def has_linker_option(tokens: list[str], option: str) -> bool:
     joined = " ".join(tokens)
-    return (
+    if (
         option in tokens
         or f"-Wl,{option}" in tokens
         or f"-Xlinker {option}" in joined
         or f"LINKER:{option}" in tokens
-    )
+    ):
+        return True
+    # CMake/Ninja may emit `-Wl,-z -Wl,relro` or `-Xlinker -z -Xlinker relro`.
+    if option.startswith("-z,"):
+        value = option.split(",", 1)[1]
+        compact = joined.replace(" ", "")
+        if f"-z,{value}" in joined or f"-z{value}" in compact:
+            return True
+        if f"-Wl,-z,-Wl,{value}" in compact or f"-Wl,-z,{value}" in joined:
+            return True
+        if f"-Xlinker-z-Xlinker{value}" in compact:
+            return True
+        for index, token in enumerate(tokens[:-1]):
+            nxt = tokens[index + 1]
+            if token in ("-z", f"-Wl,-z") and nxt in (value, f"-Wl,{value}"):
+                return True
+            if token == "-Xlinker" and nxt == "z" and index + 3 < len(tokens):
+                if tokens[index + 2] == "-Xlinker" and tokens[index + 3] == value:
+                    return True
+    return False
 
 
 def verify_commands(build_dir: pathlib.Path) -> None:

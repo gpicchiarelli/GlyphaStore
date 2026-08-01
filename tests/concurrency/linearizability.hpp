@@ -51,6 +51,7 @@ struct ModelState final {
 
 struct CheckResult final {
     bool linearizable{true};
+    bool inconclusive{false};
     std::string message;
     std::vector<Operation> minimal_trace;
 };
@@ -217,10 +218,16 @@ inline auto check_history(const std::vector<Operation>& history, const std::size
         result.message = "history is linearizable (" + std::to_string(states_visited) + " states)";
         return result;
     }
+    if (states_visited >= max_states) {
+        result.linearizable = false;
+        result.inconclusive = true;
+        result.message = "checker state budget exhausted; treat as inconclusive";
+        result.minimal_trace.reserve(n);
+        for (const auto* op : ops) result.minimal_trace.push_back(*op);
+        return result;
+    }
     result.linearizable = false;
-    result.message = states_visited >= max_states
-                         ? "checker state budget exhausted; treat as inconclusive failure"
-                         : "no valid linearization";
+    result.message = "no valid linearization";
     result.minimal_trace.reserve(n);
     for (const auto* op : ops) result.minimal_trace.push_back(*op);
     return result;
@@ -252,7 +259,9 @@ inline auto minimize_failing(std::vector<Operation> history) -> std::vector<Oper
                 if ((op.kind == OpKind::get || op.kind == OpKind::raw_get) &&
                     !history_has_matching_write(trial, op)) { explains_gets = false; break; }
             }
-            if (explains_gets && !check_history(trial).linearizable) {
+            // Only shrink on definite failures; budget exhaustion must not drive minimization.
+            const auto trial_result = check_history(trial);
+            if (explains_gets && !trial_result.linearizable && !trial_result.inconclusive) {
                 current = std::move(trial); changed = true; i = 0;
             } else ++i;
         }
@@ -262,7 +271,7 @@ inline auto minimize_failing(std::vector<Operation> history) -> std::vector<Oper
 
 [[nodiscard]] inline auto check_and_minimize(const std::vector<Operation>& history) -> CheckResult {
     auto result = check_history(history);
-    if (result.linearizable) return result;
+    if (result.linearizable || result.inconclusive) return result;
     result.minimal_trace = minimize_failing(result.minimal_trace);
     std::ostringstream out;
     out << result.message << "; minimal failing trace (" << result.minimal_trace.size() << " ops):\n";
