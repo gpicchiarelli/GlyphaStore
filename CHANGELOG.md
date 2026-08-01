@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Paired adoption Fase 0 honesty: dual-path inventory on the production roadmap
+  (`docs/v1-production-roadmap.md` — public owning `Store::get` vs daemon `ReadGeneration`,
+  `pair_writer_stats`, `--shard-pairs` / `--workers` alias, lab-only `experimental/`). Complements
+  the earlier CHANGELOG inventory under the sole-runtime docs cutover.
 - Daemon request/idle timeout vs client contract: prove `--request-timeout-ms` closes
   stalled partial frames and in-flight cold-read waits (`abuse_request_timeout_closed`,
   cancel-on-close) without cancelling admitted durable Store mutations

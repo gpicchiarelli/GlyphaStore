@@ -1,13 +1,31 @@
 # Persistence v1 production roadmap
 
 Ordered backlog and acceptance criteria for persistence v1, the durable runtime, the TCP daemon,
-tests, operations, security, and release evidence. Last reviewed 2026-07-23.
+tests, operations, security, and release evidence. Last reviewed 2026-08-01.
 
 Persistence stays on the existing **v1** Manifest, Segment header, alternating commit slots, and
 Record format. Storage modes differ only in acknowledgement and batching policy. The native wire
 protocol has its own independent version.
 
 ## Current status
+
+### Paired runtime honesty (0.1.0)
+
+`glyphastored` has a **single** daemon runtime: Reader–Writer shard pairs (ADR 0031/0032). There is
+no dual-select switch and no “legacy until migration” daemon path.
+
+| Surface | Path | Notes |
+|---|---|---|
+| Public embedded `Store::get` | Owning pin (`OwnedValue`) | ADR 0009; unchanged |
+| Daemon GET | Borrowed Reader-local `ReadGeneration` | Adopted once per Reactor turn |
+| Mutations | Bounded SPSC → serial Writer per shard pair | `Server::pair_writer_stats()` |
+| CLI | `--shard-pairs` canonical; `--workers` alias | Same count as Manifest/wire `worker_count` |
+| Lab | `src/experimental/paired_*` | Not installed; not reachable from `glyphastored` |
+
+Residual P1 performance/evidence (not a second runtime): Delta mixed magnitude on Linux
+hard-pinned A/B, get-into/multi-extent **rejected** pending proof, Linux 1/2/4/8 harness waiting
+on `glyphastore-linux-perf`, optional Linux I/O backend **deferred** without ordering change. See
+[paired-shards-plan](benchmarks/paired-shards-plan.md).
 
 Implemented foundation: little-endian codecs, checksums, immutable Records, exact-key indexing,
 descriptor-relative storage access, exclusive Store locking, preallocated fixed-size Segments,
