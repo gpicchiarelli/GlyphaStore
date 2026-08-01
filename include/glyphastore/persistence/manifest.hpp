@@ -41,7 +41,7 @@ struct Manifest {
     std::uint64_t worker_hash_seed{kDefaultWorkerHashSeed};
     SegmentId next_segment_id{};
     GenerationId next_segment_generation{GenerationId{1}};
-    std::vector<ManifestSegmentEntry> segments;
+    std::vector<ManifestSegmentEntry> segments{};
 
     [[nodiscard]] auto worker_routing() const noexcept -> WorkerRoutingState {
         return WorkerRoutingState{.algorithm = routing_algorithm, .seed = worker_hash_seed};
