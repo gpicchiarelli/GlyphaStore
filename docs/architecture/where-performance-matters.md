@@ -1,7 +1,7 @@
 Status: descriptive
 Applies to: product positioning and benchmark interpretation (not a wire or disk contract)
 Owner: maintainer
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-01
 
 # Where GlyphaStore performance matters
 
@@ -83,6 +83,14 @@ single-digit details.
 
 The performance mindset is empirical: preserve semantics, change one cost centre, and rerun the same
 validated workload. XS is one possible outcome of that process, not the starting assumption.
+
+## Lab hot-path evidence
+
+Same-machine macOS Apple Silicon measurements and cost maps for Store GET/PUT and TCP are recorded
+in [hot-path-performance-2026-08-01.md](hot-path-performance-2026-08-01.md). Those figures are
+architectural-prototype lab evidence, not production capacity claims. Daemon clients should keep
+one connection per Worker (`BIND_WORKER` / owner-bound); embedded uniform multi-thread PUT still
+crosses shard Writers and is not equivalent to that model.
 
 ## Product claim
 

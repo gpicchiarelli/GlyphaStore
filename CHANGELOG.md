@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- Hot-path performance program (lab, macOS Apple Silicon): disableable phase
+  attribution (`GLYPHASTORE_HOT_PATH_PHASES`), GET path consolidation + ReadLease
+  without Writer wake + 64 B `OwnedValue` SSO, bounded adaptive spin / proportional
+  reclaim on paired sync PUT, TCP phase scopes. Lab results under
+  `benchmarks/results/local-macos-2026-08-01-perf/` and
+  `docs/architecture/hot-path-performance-2026-08-01.md`. get_copy ~3.5 M ops/s
+  (286 ns median); TCP w4 p128 no longer regresses vs p32 in this run. PUT still
+  Writer-ack bound (~370 k ops/s). Prototype claim ceiling unchanged.
 - Record full local macOS release benchmark suite at
   `benchmarks/results/local-macos-2026-08-01/` (`629bc68`, Apple M4, `macos-release`,
   CI-equivalent matrix). Absolute numbers are prototype/lab evidence, not production
