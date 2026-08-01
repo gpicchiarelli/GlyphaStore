@@ -74,3 +74,8 @@ Il P0 refresh è chiuso dal protocollo per-shard documentato nell'ADR e dal rela
 Aggiornamento 2026-07-29: i punti 1 e 2 sono stati chiusi rispettivamente dai gate
 `paired-borrowed-cold-read-2026-07-29.md` e `paired-scatter-output-2026-07-29.md`; scatter è adattivo,
 mentre TLS e connessioni pipelined restano contigui per contratto e benchmark.
+
+Aggiornamento 2026-08-01 (adozione paired): il punto 3 resta **deferred** per 0.1.0 — nessun A/B che
+dimostri coda/syscall migliori senza rischio su ordering/ack
+([`paired-shards-plan.md`](paired-shards-plan.md)). Il punto 4 è coperto dal harness Linux hard-pinned
+in attesa di `glyphastore-linux-perf` ([`paired-shards-linux-p1.md`](paired-shards-linux-p1.md)).

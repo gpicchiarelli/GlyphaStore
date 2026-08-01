@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- Paired adoption P1 residual honesty: optional Linux I/O backend (`io_uring` / batched
+  completion) **deferred** for 0.1.0 without a measured queue/syscall win that preserves write
+  ordering; refresh Delta COW / get-into reject / Linux harness residual status in
+  `paired-shards-plan`, lab prototype “Prossimo gate”, and durable cold-read follow-ups. No
+  fabricated `glyphastore-linux-perf` evidence; no `e3_certified=yes`.
 - Paired adoption Fase 0 honesty: dual-path inventory on the production roadmap
   (`docs/v1-production-roadmap.md` — public owning `Store::get` vs daemon `ReadGeneration`,
   `pair_writer_stats`, `--shard-pairs` / `--workers` alias, lab-only `experimental/`). Complements

@@ -36,8 +36,12 @@ Ordine operativo residuo (P1 — non riapre un dual-runtime):
 2. P1 — `get-into` / scatter multi-extent: **rejected pending proof**
    ([`paired-get-into-multi-extent-reject-2026-07-31.md`](paired-get-into-multi-extent-reject-2026-07-31.md));
 3. P1 — A/B 1/2/4/8 pair Linux hard-pinned: harness ready, gate **not closed on macOS**
-   ([`paired-shards-linux-p1.md`](paired-shards-linux-p1.md));
-4. P1 — backend I/O Linux opzionale soltanto se riduce coda e syscall senza cambiare ordering.
+   ([`paired-shards-linux-p1.md`](paired-shards-linux-p1.md)); runner label
+   `glyphastore-linux-perf` required — no fabricated pass-candidate;
+4. P1 — backend I/O Linux opzionale (`io_uring` / batched completion): **deferred / skipped for
+   0.1.0 adoption**. No measured queue/syscall win that preserves persistence write ordering and
+   acknowledgement points; re-open only with a versioned A/B under the Linux hard-pinned harness
+   and an ADR if ordering/ack semantics would change (they must not silently).
 
 Il gate cold-read più recente è
 [`paired-scatter-output-2026-07-29.md`](paired-scatter-output-2026-07-29.md). I risultati macOS non

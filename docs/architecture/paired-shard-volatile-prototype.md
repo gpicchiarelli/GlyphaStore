@@ -131,13 +131,15 @@ non verrà promosso in `glyphastored`. Il daemon di produzione è già il modell
 ([ADR 0031](../adr/paired-reader-writer-shards.md), [server model](server-model.md)).
 
 I residuali di adozione e performance sono i gate P1 del piano di produzione, non un cutover del
-prototipo volatile:
+prototipo volatile ([paired-shards-plan](../benchmarks/paired-shards-plan.md)):
 
-1. P1 — profilare e recuperare il circa 1,8% mixed del Delta arena senza indebolirne lifetime e
-   capacità per versioni ([paired-shards-plan](../benchmarks/paired-shards-plan.md));
-2. P1 — `get-into` o scatter multi-extent solo con prova bounded e vantaggio sul path adattivo;
-3. P1 — A/B 1/2/4/8 pair Linux hard-pinned (`perf`, NUMA, working set > LLC);
-4. P1 — backend I/O Linux opzionale solo se riduce coda/syscall senza cambiare ordering.
+1. P1 — Delta mixed magnitude: directory-chunk COW landed; conferma −1,8% solo su Linux
+   hard-pinned ([paired-delta-directory-chunks-2026-07-31](../benchmarks/paired-delta-directory-chunks-2026-07-31.md));
+2. P1 — `get-into` / scatter multi-extent: **rejected** pending bounded+win proof
+   ([paired-get-into-multi-extent-reject-2026-07-31](../benchmarks/paired-get-into-multi-extent-reject-2026-07-31.md));
+3. P1 — A/B 1/2/4/8 pair Linux hard-pinned: harness ready, waiting on `glyphastore-linux-perf`
+   ([paired-shards-linux-p1](../benchmarks/paired-shards-linux-p1.md));
+4. P1 — backend I/O Linux opzionale: **deferred** for 0.1.0 (no proven win without ordering risk).
 
 Il lavoro lab sul prototipo TCP volatile (istogrammi GET/PUT distinti, affinity sperimentale,
 allocator a classi di size) può continuare nei target dedicati, ma non è un gate di integrazione
