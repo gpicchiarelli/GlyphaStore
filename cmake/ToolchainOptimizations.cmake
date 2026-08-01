@@ -1,0 +1,83 @@
+include_guard(GLOBAL)
+
+include(CheckIPOSupported)
+
+function(glyphastore_apply_toolchain_optimizations target)
+    if(GLYPHASTORE_ENABLE_ASAN OR GLYPHASTORE_ENABLE_TSAN OR GLYPHASTORE_ENABLE_UBSAN)
+        if(GLYPHASTORE_ENABLE_LTO OR NOT GLYPHASTORE_PGO STREQUAL "OFF")
+            message(WARNING "LTO/PGO are disabled because sanitizers are enabled")
+        endif()
+        return()
+    endif()
+
+    if(GLYPHASTORE_NATIVE_CPU)
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU")
+            target_compile_options(${target} INTERFACE -mcpu=native)
+        endif()
+    endif()
+
+    if(GLYPHASTORE_PGO STREQUAL "OFF")
+        return()
+    endif()
+
+    if(NOT (CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang|GNU"))
+        message(FATAL_ERROR "PGO requires Clang or GCC")
+    endif()
+
+    if(GLYPHASTORE_PGO STREQUAL "GENERATE")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+            target_compile_options(${target} INTERFACE "-fprofile-instr-generate=${GLYPHASTORE_PGO_PROFILE_DIR}")
+            target_link_options(${target} INTERFACE "-fprofile-instr-generate=${GLYPHASTORE_PGO_PROFILE_DIR}")
+        else()
+            target_compile_options(${target} INTERFACE "-fprofile-generate=${GLYPHASTORE_PGO_PROFILE_DIR}")
+            target_link_options(${target} INTERFACE "-fprofile-generate=${GLYPHASTORE_PGO_PROFILE_DIR}")
+        endif()
+        return()
+    endif()
+
+    if(GLYPHASTORE_PGO STREQUAL "USE")
+        if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|AppleClang")
+            if(NOT EXISTS "${GLYPHASTORE_PGO_PROFILE_FILE}")
+                message(FATAL_ERROR
+                    "PGO profile data not found at ${GLYPHASTORE_PGO_PROFILE_FILE}. "
+                    "Build with macos-pgo-generate, run ./scripts/pgo-train.sh, then configure macos-pgo-use.")
+            endif()
+            target_compile_options(${target} INTERFACE "-fprofile-instr-use=${GLYPHASTORE_PGO_PROFILE_FILE}")
+            target_link_options(${target} INTERFACE "-fprofile-instr-use=${GLYPHASTORE_PGO_PROFILE_FILE}")
+        else()
+            if(NOT IS_DIRECTORY "${GLYPHASTORE_PGO_PROFILE_DIR}")
+                message(FATAL_ERROR
+                    "PGO profile directory not found at ${GLYPHASTORE_PGO_PROFILE_DIR}. "
+                    "Build with unix-pgo-generate, run training, then configure unix-pgo-use.")
+            endif()
+            target_compile_options(${target} INTERFACE "-fprofile-use=${GLYPHASTORE_PGO_PROFILE_DIR}")
+            target_link_options(${target} INTERFACE "-fprofile-use=${GLYPHASTORE_PGO_PROFILE_DIR}")
+        endif()
+        return()
+    endif()
+
+    message(FATAL_ERROR "GLYPHASTORE_PGO must be OFF, GENERATE, or USE")
+endfunction()
+
+function(glyphastore_enable_ipo target)
+    if(NOT GLYPHASTORE_ENABLE_LTO)
+        return()
+    endif()
+    if(GLYPHASTORE_ENABLE_ASAN OR GLYPHASTORE_ENABLE_TSAN OR GLYPHASTORE_ENABLE_UBSAN)
+        return()
+    endif()
+
+    if(NOT DEFINED GLYPHASTORE_IPO_CHECKED)
+        set(_glyphastore_ipo_supported FALSE)
+        check_ipo_supported(RESULT _glyphastore_ipo_supported OUTPUT _glyphastore_ipo_error)
+        set(GLYPHASTORE_IPO_SUPPORTED ${_glyphastore_ipo_supported} CACHE INTERNAL "IPO availability")
+        set(GLYPHASTORE_IPO_CHECKED TRUE CACHE INTERNAL "IPO check completed")
+        if(NOT _glyphastore_ipo_supported)
+            message(WARNING "LTO requested but unsupported: ${_glyphastore_ipo_error}")
+        endif()
+    endif()
+
+    if(GLYPHASTORE_IPO_SUPPORTED)
+        set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    endif()
+endfunction()

@@ -1,0 +1,279 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  manpages:
+    name: Manual pages (mdoc)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Install mandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mandoc
+      - name: Validate man pages
+        run: ./scripts/validate-manpages.sh
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install CMake and configure man install layout
+        run: |
+          python -m pip install --disable-pip-version-check cmake ninja
+          cmake -S . -B build/man-ci \
+            -DGLYPHASTORE_ENABLE_TLS=OFF \
+            -DGLYPHASTORE_BUILD_BENCHMARKS=OFF \
+            -DGLYPHASTORE_BUILD_FUZZERS=OFF \
+            -DGLYPHASTORE_MAN_DATE="August 1, 2026"
+          cmake --build build/man-ci --target glyphastore_manpages
+          ./scripts/validate-manpages.sh build/man-ci/man
+          dest="$(mktemp -d)"
+          cmake --install build/man-ci --prefix "${dest}" --component ManPages
+          test -f "${dest}/share/man/man8/glyphastored.8"
+          test -f "${dest}/share/man/man7/glyphastore.7"
+          test -f "${dest}/share/man/man1/glyphastore_verify_store.1"
+          test -f "${dest}/share/man/man1/glyphastore_demo.1"
+          mandoc -T ascii "${dest}/share/man/man8/glyphastored.8" >/dev/null
+          mandoc -T ascii "${dest}/share/man/man7/glyphastore.7" >/dev/null
+          mandoc -T ascii "${dest}/share/man/man1/glyphastore_verify_store.1" >/dev/null
+
+  strict-iso-hardening:
+    name: ISO C++23 / Linux hardening evidence
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build and ELF inspection tools
+        run: |
+          python -m pip install --disable-pip-version-check cmake ninja
+          sudo apt-get update
+          sudo apt-get install -y binutils
+      - name: Configure strict release
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-strict
+      - name: Build strict release
+        run: cmake --build --preset unix-strict
+      - name: Verify emitted flags and ELF protections
+        run: python scripts/verify_hardening.py build/unix-strict
+      - name: Test strict release
+        run: ctest --preset unix-strict
+
+  build-test:
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: ubuntu-latest
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-24.04-arm
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-24.04-arm
+            compiler: gcc
+            cc: gcc
+            cxx: g++
+          - os: macos-latest
+            compiler: apple-clang
+            cc: clang
+            cxx: clang++
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure
+        env:
+          CC: ${{ matrix.cc }}
+          CXX: ${{ matrix.cxx }}
+        run: cmake --preset unix-debug
+      - name: Build
+        run: cmake --build --preset unix-debug
+      - name: Test
+        run: ctest --preset unix-debug
+      - name: Verify format fixtures
+        run: python scripts/generate_format_fixtures.py --verify tests/fixtures
+
+  sdk-clients:
+    name: Native SDK clients
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.23.x"
+          cache-dependency-path: sdk/go/go.mod
+      - name: Install Perl::Critic and build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libperl-critic-perl perltidy cmake ninja-build clang lsof erlang rebar3 libssl-dev openssl libio-socket-ssl-perl
+          perl -MPerl::Critic -e 'print $Perl::Critic::VERSION, "\n"'
+      - name: Verify wire golden fixtures
+        run: |
+          python scripts/generate_wire_fixtures.py --verify tests/fixtures
+          for fixture in wire_requests_v2.hex wire_responses_v2.hex error_taxonomy_v1.json; do
+            cmp -s "tests/fixtures/$fixture" "sdk/python/tests/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/go/testdata/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/ruby/test/fixtures/$fixture"
+            cmp -s "tests/fixtures/$fixture" "sdk/erlang/test/fixtures/$fixture"
+          done
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3"
+      - name: Lock SDK versions
+        run: ./scripts/check-sdk-versions.sh
+      - name: Assert typed SDK backup helpers
+        run: ./scripts/assert-sdk-backup-helpers.sh
+      - name: Test Python client
+        run: ./scripts/test-python-client.sh
+      - name: Test Perl client
+        run: ./scripts/test-perl-client.sh
+      - name: Test Go client
+        run: ./scripts/test-go-client.sh
+      - name: Test Ruby client
+        run: |
+          gem install async --no-document
+          ./scripts/test-ruby-client.sh
+      - name: Test Erlang client
+        run: ./scripts/test-erlang-client.sh
+      - name: Package and verify Python client
+        run: ./scripts/package-python-client.sh
+      - name: Package and verify Perl client
+        run: ./scripts/package-perl-client.sh
+      - name: Package and verify Go client
+        run: ./scripts/package-go-client.sh
+      - name: Package and verify Ruby client
+        run: ./scripts/package-ruby-client.sh
+      - name: Package and verify Erlang client
+        run: ./scripts/package-erlang-client.sh
+      - name: Checksum packaged SDK artifacts
+        run: ./scripts/checksum-sdk-artifacts.sh
+      - name: Build daemon and interop client
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake --preset unix-release -DGLYPHASTORE_ENABLE_TLS=ON
+          cmake --build --preset unix-release --target glyphastored glyphastore_interop_client
+          mkdir -p sdk/go/bin
+          (cd sdk/go && go build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
+      - name: Cross-SDK interoperability matrix
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
+        run: ./scripts/test-sdk-interop.sh
+      - name: SDK online BACKUP interop smoke
+        timeout-minutes: 5
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
+          BACKUP_INTEROP_REQUIRE_ALL: "1"
+        run: ./scripts/test-sdk-backup-interop.sh
+      - name: Secure-profile interop smoke
+        timeout-minutes: 5
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
+          INTEROP_SECURE_WORKERS: "2"
+        run: ./scripts/test-secure-profile-interop.sh
+
+  install-consumer:
+    name: Release install / external consumer
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release
+        env:
+          CC: clang
+          CXX: clang++
+        run: >-
+          cmake --preset unix-release
+          -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/install-prefix
+      - name: Build and install
+        run: |
+          cmake --build --preset unix-release
+          cmake --install build/unix-release
+      - name: Configure external consumer
+        run: >-
+          cmake -S tests/consumer -B build/consumer -G Ninja
+          -DCMAKE_PREFIX_PATH=${{ github.workspace }}/build/install-prefix
+      - name: Build and test external consumer
+        run: |
+          cmake --build build/consumer
+          ctest --test-dir build/consumer --output-on-failure
+
+  release-optimized:
+    name: Release optimized / unix-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-release
+      - name: Build release
+        run: cmake --build --preset unix-release
+      - name: Test release
+        run: ctest --preset unix-release
+
+  release-lto-smoke:
+    name: Release LTO smoke / unix-release-lto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release LTO
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-release-lto
+      - name: Build release LTO
+        run: cmake --build --preset unix-release-lto
+      - name: Test release LTO
+        run: ctest --preset unix-release-lto

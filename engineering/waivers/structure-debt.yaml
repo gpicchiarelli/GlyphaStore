@@ -1,0 +1,15 @@
+waivers:
+  - id: WAV-001
+    titolo: Oversized hot-path and suite sources pending Phase C decomposition
+    ambito: size
+    motivo: >
+      Closed: store.cpp, reactor.cpp, runtime_catalog.cpp, and the three oversized
+      test suites were split under the Phase C line budget. Kept for audit trail.
+    scadenza: "2026-12-31"
+    approvatore: maintainers
+    stato: revocata
+    requisiti:
+      - GS-CORE-BUILD-001
+    gates:
+      - GATE-CMAKE-INSTALL
+    paths: []

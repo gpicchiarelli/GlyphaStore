@@ -1,0 +1,102 @@
+requirements:
+- id: GS-PERSIST-ACK-001
+  titolo: Synchronous durable mutation acknowledgement
+  categoria: persistence
+  criticita: critica
+  stato: provato
+  descrizione: A durable_sync mutation may be acknowledged only after the persistent sequence defined
+    by persistence v1 completes for that mutation.
+  autorita:
+  - docs/spec/persistence-v1.md
+  - docs/architecture/durability-recovery.md
+  implementazione:
+  - src/persistence/durable_flush_coordinator.cpp
+  - src/persistence/segment_file.cpp
+  prove:
+  - tests/integration/persistence_recovery_tests.cpp
+  - tests/crash/crash_persistence.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: E2
+  evidenze:
+  - workflow: durability-evidence.yml
+    note: E2 process-kill; e3_certified must remain no without pinned campaign
+  rischio_residuo:
+  - Sudden power loss on physical hardware is not certified (E3/E4 open)
+  hazards:
+  - HAZ-001
+  - HAZ-007
+  gates:
+  - GATE-DURABLE-ACK
+- id: GS-PERSIST-ORDER-001
+  titolo: Write ordering and manifest publication
+  categoria: persistence
+  criticita: critica
+  stato: provato
+  descrizione: Write ordering, synchronization, Manifest publication, and directory synchronization follow
+    the persistence v1 and durability-recovery contracts.
+  autorita:
+  - docs/spec/persistence-v1.md
+  - docs/architecture/durability-recovery.md
+  implementazione:
+  - src/persistence/manifest.cpp
+  - src/persistence/filesystem.cpp
+  - src/persistence/segment_file.cpp
+  prove:
+  - tests/integration/persistence_recovery_tests.cpp
+  - tests/crash/crash_persistence.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: E2
+  evidenze:
+  - workflow: durability-evidence.yml
+  rischio_residuo:
+  - Filesystem/power-loss certification matrices remain open
+  hazards:
+  - HAZ-014
+  - HAZ-015
+  - HAZ-019
+  gates:
+  - GATE-WRITE-ORDER
+- id: GS-PERSIST-FAULT-001
+  titolo: Deterministic persistence fault matrix with honest E0-E2 labeling
+  categoria: persistence
+  criticita: alta
+  stato: implementato
+  descrizione: Where filesystem fault-injection seams exist, cover EINTR, short I/O, ENOSPC,
+    EDQUOT (when available), and EIO on write/sync paths. CI and evidence must hard-fail any
+    e3_certified=yes claim without a retained pinned campaign. Maximum hosted claim remains E2.
+  autorita:
+  - docs/architecture/platform-durability-evidence.md
+  - docs/architecture/durability-recovery.md
+  - docs/spec/persistence-v1.md
+  implementazione:
+  - include/glyphastore/persistence/filesystem_hooks.hpp
+  - src/persistence/filesystem.cpp
+  - engineering/tools/validate_durability_claims.py
+  prove:
+  - tests/unit/persistence_filesystem_tests.cpp
+  - tests/integration/persistence_recovery_tests.cpp
+  - scripts/assert-e3-rehearsal-honesty.sh
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: E2-fault-injection
+  evidenze:
+  - workflow: assurance.yml
+    note: validate_durability_claims.py rejects unpinned e3_certified=yes
+  - workflow: durability-evidence.yml
+    note: E0 metadata / E2 process-kill; rehearsal keeps e3_certified=no
+  rischio_residuo:
+  - Native disk-full, quota, and delayed-writeback campaigns remain open
+  - No platform row is E3/E4 certified
+  hazards:
+  - HAZ-001
+  - HAZ-016
+  - HAZ-017
+  - HAZ-018
+  gates:
+  - GATE-FAULT-INJECTION
+  - GATE-DURABLE-ACK

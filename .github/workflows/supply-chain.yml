@@ -1,0 +1,212 @@
+name: Supply chain
+
+on:
+  push:
+    tags:
+      - "v*"
+      - "[0-9]*"
+  workflow_dispatch:
+  schedule:
+    # Light weekly check that packaging + SBOM tooling still work.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+  id-token: write # Sigstore keyless (Fulcio) on tag pushes
+  attestations: write # GitHub artifact attestations (public or GHEC private)
+
+concurrency:
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sdk-sbom:
+    name: SDK checksums + SPDX SBOM
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.23"
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3"
+      - name: Install Erlang / rebar3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erlang rebar3
+      - name: Install syft
+        run: |
+          sudo ./scripts/install-syft.sh
+          syft version
+      - name: Lock SDK versions
+        run: ./scripts/check-sdk-versions.sh
+      - name: Export reproducible build env
+        run: |
+          {
+            echo "GLYPHASTORE_ROOT=${{ github.workspace }}"
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)"
+            echo "TZ=UTC"
+            echo "PYTHONHASHSEED=0"
+            echo "PERL_HASH_SEED=0"
+            echo "DETERMINISTIC_BUILD=1"
+          } >>"$GITHUB_ENV"
+      - name: Package SDK clients
+        run: |
+          ./scripts/package-python-client.sh
+          ./scripts/package-perl-client.sh
+          ./scripts/package-go-client.sh
+          ./scripts/package-ruby-client.sh
+          ./scripts/package-erlang-client.sh
+      - name: Checksums + required SPDX SBOM
+        env:
+          SYFT_REQUIRED: "1"
+        run: ./scripts/checksum-sdk-artifacts.sh
+      - name: Verify wheel/sdist/gem reproducibility
+        if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+        run: ./scripts/verify-sdk-artifact-reproducibility.sh
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - name: Keyless-sign SDK artifacts (Sigstore)
+        if: startsWith(github.ref, 'refs/tags/')
+        working-directory: dist/sdk-artifacts
+        run: |
+          set -euo pipefail
+          # Sign each packaged blob + the checksums manifest. Bundles attach Fulcio cert + Rekor entry.
+          while IFS= read -r -d '' f; do
+            base="$(basename "$f")"
+            case "$base" in
+              *.spdx.json|*.cosign.bundle|SHA256SUMS) continue ;;
+            esac
+            echo "cosign sign-blob $base"
+            cosign sign-blob --yes --bundle "${base}.cosign.bundle" "$base"
+          done < <(find . -maxdepth 1 -type f -print0)
+          cosign sign-blob --yes --bundle SHA256SUMS.cosign.bundle SHA256SUMS
+          identity="https://github.com/${{ github.repository }}/.github/workflows/supply-chain.yml@${{ github.ref }}"
+          issuer="https://token.actions.githubusercontent.com"
+          echo "verify identity=$identity"
+          while IFS= read -r -d '' bundle; do
+            artifact="${bundle%.cosign.bundle}"
+            cosign verify-blob \
+              --bundle "$bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" \
+              "$artifact"
+          done < <(find . -maxdepth 1 -type f -name '*.cosign.bundle' -print0)
+      - name: Upload SHA256SUMS, SPDX, and cosign bundles
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sdk-supply-chain-${{ github.sha }}
+          path: |
+            dist/sdk-artifacts/SHA256SUMS
+            dist/sdk-artifacts/*.spdx.json
+            dist/sdk-artifacts/*.cosign.bundle
+          if-no-files-found: error
+      - name: SLSA provenance attestation (GitHub)
+        # Artifact attestations on private repos require GitHub Enterprise Cloud.
+        # Public repos always; private repos opt-in via repository variable.
+        if: |
+          startsWith(github.ref, 'refs/tags/') &&
+          (github.event.repository.visibility == 'public' ||
+           vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4
+        with:
+          subject-path: |
+            dist/sdk-artifacts/SHA256SUMS
+            dist/sdk-artifacts/*.whl
+            dist/sdk-artifacts/*.gem
+            dist/sdk-artifacts/*.tar.gz
+            dist/sdk-artifacts/*package-info.txt
+      - name: Verify SDK artifact attestations
+        # Same gate as actions/attest: tags + public (or private opt-in). Fail-closed.
+        if: |
+          startsWith(github.ref, 'refs/tags/') &&
+          (github.event.repository.visibility == 'public' ||
+           vars.ENABLE_ARTIFACT_ATTESTATIONS == 'true')
+        env:
+          ATTESTATIONS_REQUIRED: "1"
+          ENABLE_ARTIFACT_ATTESTATIONS: ${{ vars.ENABLE_ARTIFACT_ATTESTATIONS }}
+          GITHUB_REPOSITORY_VISIBILITY: ${{ github.event.repository.visibility }}
+        run: ./scripts/verify-sdk-artifact-attestations.sh dist/sdk-artifacts
+
+  # Second Linux image rebuilds archives with the same SOURCE_DATE_EPOCH and must match digests.
+  sdk-repro-cross:
+    name: Cross-builder archive digests
+    needs: sdk-sbom
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/') || github.event_name == 'schedule'
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
+        with:
+          ruby-version: "3.3"
+      - name: Export reproducible build env
+        run: |
+          {
+            echo "GLYPHASTORE_ROOT=${{ github.workspace }}"
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)"
+            echo "TZ=UTC"
+            echo "PYTHONHASHSEED=0"
+            echo "PERL_HASH_SEED=0"
+            echo "DETERMINISTIC_BUILD=1"
+          } >>"$GITHUB_ENV"
+      - name: Package Python / Perl / Ruby archives
+        run: |
+          ./scripts/package-python-client.sh
+          ./scripts/package-perl-client.sh
+          ./scripts/package-ruby-client.sh
+          ./scripts/checksum-sdk-artifacts.sh dist/sdk-artifacts-cross
+      - name: Download reference sums from primary builder
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: sdk-supply-chain-${{ github.sha }}
+          path: dist/sdk-artifacts-ref
+      - name: Compare archive digests across builders
+        run: |
+          ./scripts/compare-sdk-artifact-sums.sh \
+            dist/sdk-artifacts-ref/SHA256SUMS \
+            dist/sdk-artifacts-cross/SHA256SUMS
+
+  cpp-sbom:
+    name: C++ install-prefix SBOM
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Install syft
+        run: sudo ./scripts/install-syft.sh
+      - name: Configure and install release
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake --preset unix-release \
+            -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/build/install-prefix
+          cmake --build --preset unix-release
+          cmake --install build/unix-release
+      - name: Generate SPDX SBOM for install prefix
+        run: |
+          mkdir -p dist/cpp-sbom
+          prefix="${{ github.workspace }}/build/install-prefix"
+          syft "dir:${prefix}" -o spdx-json=dist/cpp-sbom/glyphastore-install.spdx.json
+          daemon="$(find "$prefix" -type f -name glyphastored | head -1)"
+          test -n "$daemon"
+          syft "file:${daemon}" -o spdx-json=dist/cpp-sbom/glyphastored.spdx.json
+      - name: Upload C++ SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: cpp-sbom-${{ github.sha }}
+          path: dist/cpp-sbom/*.spdx.json
+          if-no-files-found: error

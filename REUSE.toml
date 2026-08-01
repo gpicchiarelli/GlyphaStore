@@ -1,0 +1,57 @@
+# REUSE annotations (path-based)
+# https://reuse.software/
+# Authoritative human license text: LICENSE / NOTICE / THIRD_PARTY_NOTICES.md
+# SPDX license text: LICENSES/BSD-3-Clause.txt
+
+version = 1
+
+[[annotations]]
+path = [
+  "src/**",
+  "include/**",
+  "tools/**",
+  "tests/**",
+  "benchmarks/**",
+  "benchmark-results/**",
+  "fuzz/**",
+  "cmake/**",
+  "scripts/**",
+  "man/**",
+  "engineering/**",
+  "docs/**",
+  "artwork/**",
+  "sdk/**",
+  ".github/**",
+  "LICENSES/**",
+]
+SPDX-FileCopyrightText = "2026 Giacomo Picchiarelli"
+SPDX-License-Identifier = "BSD-3-Clause"
+precedence = "aggregate"
+
+[[annotations]]
+path = [
+  "LICENSE",
+  "NOTICE",
+  "THIRD_PARTY_NOTICES.md",
+  "VERSION",
+  "README.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "SECURITY.md",
+  "AGENTS.md",
+  "CMakeLists.txt",
+  "CMakePresets.json",
+  "REUSE.toml",
+  ".lychee.toml",
+  ".clang-format",
+  ".clang-tidy",
+  ".cmake-format.yaml",
+  ".editorconfig",
+  ".gitattributes",
+  ".gitignore",
+  ".xcode-version",
+  "Makefile",
+]
+SPDX-FileCopyrightText = "2026 Giacomo Picchiarelli"
+SPDX-License-Identifier = "BSD-3-Clause"
+precedence = "aggregate"

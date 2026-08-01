@@ -1,0 +1,24 @@
+.\" SPDX-License-Identifier: BSD-3-Clause
+.\" Copyright (c) 2026 Giacomo Picchiarelli and GlyphaStore contributors
+.Dd @MAN_DATE@
+.Dt GLYPHASTORE_DEMO 1
+.Os
+.Sh NAME
+.Nm glyphastore_demo
+.Nd GlyphaStore topology bootstrap sample
+.Sh SYNOPSIS
+.Nm
+.Sh DESCRIPTION
+.Nm
+prints a short architecture bootstrap report: Segment size, detected CPU
+topology, and the Worker count selected by the default policy.
+It is a sample/diagnostic binary for version
+.Sy @PROJECT_VERSION@ ,
+not an operator maintenance tool and not a network client.
+.Sh EXIT STATUS
+Always 0 on successful print.
+.Sh SEE ALSO
+.Xr glyphastore 7 ,
+.Xr glyphastored 8
+.Sh AUTHORS
+GlyphaStore contributors.

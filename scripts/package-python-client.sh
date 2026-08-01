@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export GLYPHASTORE_ROOT="$root"
+# shellcheck disable=SC1091
+source "$root/scripts/export-reproducible-build-env.sh"
+python="${PYTHON:-python3}"
+sdk="$root/sdk/python"
+
+for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
+  if ! cmp -s "$root/tests/fixtures/$fixture" "$sdk/tests/fixtures/$fixture"; then
+    echo "vendored fixture drift: $fixture" >&2
+    echo "copy repository fixtures into sdk/python/tests/fixtures/ before packaging" >&2
+    exit 1
+  fi
+done
+
+expected="$(tr -d '[:space:]' <"$root/VERSION")"
+got="$(PYTHONPATH="$sdk/src${PYTHONPATH:+:$PYTHONPATH}" "$python" -c 'import glyphastore; print(glyphastore.__version__)')"
+if [[ "$got" != "$expected" ]]; then
+  echo "glyphastore.__version__='$got' does not match VERSION='$expected'" >&2
+  exit 1
+fi
+
+rm -rf "$sdk/dist" "$sdk/build"
+find "$sdk" -maxdepth 2 -type d -name '*.egg-info' -exec rm -rf {} +
+
+work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-python-pack.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+
+"$python" -m pip install --disable-pip-version-check -q build twine
+rm -rf "$sdk/dist"
+mkdir -p "$sdk/dist"
+(
+  cd "$sdk"
+  "$python" -m build --outdir "$sdk/dist"
+  "$python" -m twine check "$sdk/dist"/*
+)
+# Normalize sdist tar metadata (wheels are already bit-stable under SOURCE_DATE_EPOCH).
+shopt -s nullglob
+for sdist in "$sdk/dist"/*.tar.gz; do
+  "$root/scripts/normalize-tar-gz.sh" "$sdist"
+done
+shopt -u nullglob
+
+"$python" -m venv "$work/venv"
+# shellcheck disable=SC1091
+source "$work/venv/bin/activate"
+python -m pip install --disable-pip-version-check -q --upgrade pip
+python -m pip install --disable-pip-version-check -q "$sdk/dist"/glyphastore-*.whl
+python - <<'PY'
+import glyphastore
+from importlib.metadata import metadata, version
+
+assert glyphastore.__version__ == version("glyphastore")
+meta = metadata("glyphastore")
+license_files = {p for p in (meta.get_all("License-File") or [])}
+# setuptools may list basenames or package-relative paths
+names = {p.split("/")[-1] for p in license_files} | license_files
+for required in ("LICENSE", "NOTICE"):
+    if required not in names and not any(required in p for p in license_files):
+        raise SystemExit(f"missing license file in wheel metadata: {required}")
+print(f"installed glyphastore {glyphastore.__version__} (LICENSE/NOTICE present)")
+PY
+
+cp -R "$sdk/tests" "$work/tests"
+cd "$work"
+PYTHONPATH= python -m unittest discover -s "$work/tests" -v
+echo "Python packaging verification OK ($sdk/dist)"

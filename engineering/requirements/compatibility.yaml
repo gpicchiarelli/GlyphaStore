@@ -1,0 +1,69 @@
+requirements:
+- id: GS-COMPAT-FIXTURE-001
+  titolo: Disk and wire golden fixtures and released-artifact harness
+  categoria: compatibility
+  criticita: alta
+  stato: provato
+  descrizione: Manifest/Segment/commit/Record layouts and wire v2 fixtures are golden-tested; released-artifact
+    harness packages per-SHA self artifacts. Permanent fixture drop of tagged trees remains a release
+    process step.
+  autorita:
+  - docs/spec/persistence-v1.md
+  - docs/spec/wire-protocol-v2.md
+  - docs/architecture/version-lifecycle.md
+  implementazione:
+  - scripts/generate_format_fixtures.py
+  - scripts/package-release-compatibility-artifacts.sh
+  - tests/fixtures
+  prove:
+  - tests/fixtures
+  - scripts/generate_format_fixtures.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: release-compat.yml
+  - workflow: ci.yml
+  rischio_residuo:
+  - Tagged cross-release binary matrices remain open
+  hazards:
+  - HAZ-022
+  gates:
+  - GATE-DISK-WIRE-VERSIONS
+  - GATE-API-ABI-POLICY
+- id: GS-COMPAT-NN1-001
+  titolo: Machine-readable N↔N-1 compatibility matrix
+  categoria: compatibility
+  criticita: alta
+  stato: implementato
+  descrizione: Store-open, wire, and ABI N↔N-1 combinations are recorded as supported,
+    supported_offline_only, intentionally_rejected, unsupported, or not_promised with a CI
+    validator. Permanent tagged N−1 fixture drops remain a release-process residual.
+  autorita:
+  - docs/architecture/n-n1-compatibility.md
+  - docs/architecture/version-lifecycle.md
+  - engineering/compatibility/n-n1-matrix.yaml
+  implementazione:
+  - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/tools/validate_compat_matrix.py
+  - scripts/package-release-claim.sh
+  prove:
+  - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/tools/validate_compat_matrix.py
+  - engineering/claims
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: assurance.yml
+  - workflow: release-compat.yml
+  rischio_residuo:
+  - Prior tagged N−1 trees are not yet committed under tests/fixtures/released/
+  hazards:
+  - HAZ-022
+  gates:
+  - GATE-DISK-WIRE-VERSIONS
+  - GATE-VERSION-LIFECYCLE
+  - GATE-API-ABI-POLICY

@@ -1,0 +1,97 @@
+# Performance budgets (Phase E).
+# Hosted CI may enforce relative regression only. Absolute / p99 release
+# thresholds require a labeled hardware runner and remain not_enforced until then.
+
+version: 1
+
+honesty:
+  claim_ceiling: architectural-prototype
+  hosted_ci: regression_signal_only
+  absolute_product_claims: forbidden_without_hardware_evidence
+
+classes:
+  - id: HOSTED-MEDIAN-REGRESSION
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-REGRESSION-001
+    enforcement: hosted_ci
+    metric: median_ops_per_second
+    rule:
+      type: max_regression_percent_vs_previous_baseline
+      value: 10
+    workflows:
+      - benchmarks.yml
+    notes: Fail when matched median ops/s regresses more than 10% vs prior baseline artifact.
+
+  - id: HARDWARE-PAIRED-LINUX-AB
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-BUDGET-001
+    enforcement: hardware_self_hosted
+    runner_label: glyphastore-linux-perf
+    status: specified_waiting_for_runner
+    metric: pass_candidate_manifest
+    rule:
+      type: manifest_status_equals
+      value: pass-candidate
+    workflows:
+      - paired-linux-performance.yml
+    harness: scripts/benchmark_paired_linux_ab.sh
+    authority:
+      - docs/benchmarks/paired-shards-linux-p1.md
+      - docs/benchmarks/paired-shards-plan.md
+    notes: >
+      Absolute A/B and scale claims require hard CPU pins, NUMA binding, and working-set
+      evidence. Hosted Ubuntu and macOS advisory affinity must not close this budget.
+
+  - id: ADVISORY-EMBEDDED-DURABLE-GET-P99
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-BUDGET-001
+    enforcement: advisory_snapshot_only
+    status: advisory_not_release_gate
+    metric: p99_latency
+    snapshot:
+      path: docs/benchmarks/paired-embedded-store-gates-2026-08-01.md
+      platform: macos-arm64
+      workload: store-durable-parallel-get
+      observed_p99: "~40 µs"
+      observed_median_ops_s: "~372k"
+    notes: Snapshot for trend awareness only; not a release threshold.
+
+  - id: SOAK-SOFTWARE-SMOKE
+    gate: GATE-SOAK
+    requirement: GS-OPS-SOAK-001
+    enforcement: hosted_ci
+    status: enforced
+    metric: soak_profile_complete
+    rule:
+      type: profile_equals
+      value: smoke
+    workflows:
+      - ops-runbooks.yml
+    harness: scripts/soak_daemon.sh
+    notes: PR/push smoke soak (~45s). Not E3/E4 and not hardware soak.
+
+  - id: SOAK-SOFTWARE-EXTENDED
+    gate: GATE-SOAK
+    requirement: GS-OPS-SOAK-001
+    enforcement: scheduled_or_manual
+    status: enforced_path_exists
+    metric: soak_profile_complete
+    profiles: [long, 1h, 4h]
+    workflows:
+      - ops-runbooks.yml
+      - soak-extended.yml
+    notes: >
+      Multi-hour software path evidence. Controlled hardware soak with mandatory
+      rotation evidence remains open (residual on GATE-SOAK).
+
+  - id: OVERLOAD-RUNBOOK
+    gate: GATE-OPS-RUNBOOKS
+    requirement: GS-OPS-SOAK-001
+    enforcement: hosted_ci
+    status: enforced
+    metric: runbook_exercise
+    workflows:
+      - ops-runbooks.yml
+    authority:
+      - docs/operations/graceful-drain-and-overload.md
+    notes: HEALTH/READY/STATS drain and overload procedures exercised by ops-runbooks CI.

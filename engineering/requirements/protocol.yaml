@@ -1,0 +1,81 @@
+requirements:
+- id: GS-PROTO-WIRE-001
+  titolo: Wire protocol v2 framing and session semantics
+  categoria: protocol
+  criticita: alta
+  stato: provato
+  descrizione: Wire protocol v2 request/response framing, session INIT/BIND, and status codes are normative
+    and covered by golden fixtures across official codecs.
+  autorita:
+  - docs/spec/wire-protocol-v2.md
+  - docs/spec/client-semantics-v1.md
+  - docs/spec/error-taxonomy-v1.md
+  - docs/spec/tcp-client-conformance-v1.md
+  implementazione:
+  - src/server
+  - src/client
+  - sdk
+  prove:
+  - tests/fixtures
+  - scripts/test-sdk-interop.sh
+  - tests/fixtures/error_taxonomy_v1.json
+  - tests/integration/server_reactor_security_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: sdk-clients / interop
+  rischio_residuo:
+  - None for daemon request/idle timeout vs client contract (proven by reactor
+    timeout tests); cold-read cancel epochs and no-cancel admitted mutations remain
+    the normative server model
+  hazards:
+  - HAZ-010
+  - HAZ-011
+  gates:
+  - GATE-DISK-WIRE-VERSIONS
+- id: GS-PROTO-ERROR-001
+  titolo: Unified portable error taxonomy across wire embedded and SDKs
+  categoria: protocol
+  criticita: alta
+  stato: provato
+  descrizione: Wire ResponseStatus, C++ ErrorCode collapses used by the TCP client, and official
+    SDK structured errors share one status→category→retryability contract defined by
+    error-taxonomy-v1 and proven by the shared fixture matrix (including unknown wire status →
+    protocol).
+  autorita:
+  - docs/spec/error-taxonomy-v1.md
+  - docs/spec/client-semantics-v1.md
+  - docs/spec/tcp-client-conformance-v1.md
+  - docs/spec/wire-protocol-v2.md
+  implementazione:
+  - include/glyphastore/client/client.hpp
+  - src/client/client.cpp
+  - sdk
+  prove:
+  - tests/fixtures/error_taxonomy_v1.json
+  - tests/unit/client_error_taxonomy_tests.cpp
+  - sdk/python/tests/test_error_taxonomy.py
+  - sdk/go/client/error_taxonomy_test.go
+  - sdk/perl/t/03-error-taxonomy.t
+  - sdk/ruby/test/test_error_taxonomy.rb
+  - sdk/erlang/test/glyphastore_error_taxonomy_SUITE.erl
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: sdk-clients job runs taxonomy conformance
+  rischio_residuo:
+  - Transport / deadline / local-validation vectors beyond the shared fixture remain
+    client-semantics narrative coverage
+  hazards:
+  - HAZ-005
+  - HAZ-010
+  gates:
+  - GATE-CONCURRENCY-SPEC
+  - GATE-DISK-WIRE-VERSIONS

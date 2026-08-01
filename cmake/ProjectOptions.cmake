@@ -1,0 +1,38 @@
+include_guard(GLOBAL)
+
+option(GLYPHASTORE_BUILD_BENCHMARKS "Build microbenchmarks" ON)
+option(GLYPHASTORE_BUILD_FUZZERS "Build libFuzzer targets" OFF)
+option(GLYPHASTORE_FAULT_INJECTION
+       "Enable debug-only adverse scheduling hooks (GLYPHASTORE_FAULT_INJECTION); OFF for production"
+       OFF)
+option(GLYPHASTORE_ENABLE_ASAN "Enable AddressSanitizer" OFF)
+option(GLYPHASTORE_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
+option(GLYPHASTORE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)
+option(GLYPHASTORE_ENABLE_HARDENING "Enable supported hardening flags" ON)
+option(GLYPHASTORE_WARNINGS_AS_ERRORS "Treat supported compiler warnings as errors" OFF)
+option(GLYPHASTORE_ENABLE_CLANG_TIDY "Run clang-tidy while compiling" OFF)
+option(GLYPHASTORE_ENABLE_LTO "Enable link-time optimization on release-style builds" OFF)
+option(GLYPHASTORE_NATIVE_CPU "Tune code generation for the host CPU (-mcpu=native)" OFF)
+# AUTO: ON when LibreSSL/OpenSSL is found, OFF otherwise. Explicit ON fails configure if missing.
+set(GLYPHASTORE_ENABLE_TLS "AUTO" CACHE STRING "Enable daemon TLS (ON, OFF, or AUTO)")
+set_property(CACHE GLYPHASTORE_ENABLE_TLS PROPERTY STRINGS AUTO ON OFF)
+set(GLYPHASTORE_PGO "OFF" CACHE STRING "PGO mode: OFF, GENERATE, or USE")
+set_property(CACHE GLYPHASTORE_PGO PROPERTY STRINGS OFF GENERATE USE)
+set(GLYPHASTORE_PGO_PROFILE_DIR "${CMAKE_SOURCE_DIR}/build/pgo-profiles" CACHE PATH "Directory for raw PGO profile data")
+set(GLYPHASTORE_PGO_PROFILE_FILE "${CMAKE_SOURCE_DIR}/build/pgo-profiles/merged.profdata" CACHE FILEPATH "Merged Clang PGO profile")
+
+function(glyphastore_project_options)
+    add_library(glyphastore_project_options INTERFACE)
+    target_compile_features(glyphastore_project_options INTERFACE cxx_std_23)
+    set(CMAKE_EXPORT_COMPILE_COMMANDS ON PARENT_SCOPE)
+    glyphastore_enable_sanitizers(glyphastore_project_options)
+    include(ToolchainOptimizations)
+    glyphastore_apply_toolchain_optimizations(glyphastore_project_options)
+    if(GLYPHASTORE_ENABLE_CLANG_TIDY)
+        find_program(GLYPHASTORE_CLANG_TIDY_EXECUTABLE NAMES clang-tidy REQUIRED)
+        set(CMAKE_CXX_CLANG_TIDY
+            "${GLYPHASTORE_CLANG_TIDY_EXECUTABLE};--config-file=${PROJECT_SOURCE_DIR}/.clang-tidy"
+            PARENT_SCOPE
+        )
+    endif()
+endfunction()
