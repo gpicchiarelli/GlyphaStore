@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+- Daemon request/idle timeout vs client contract: prove `--request-timeout-ms` closes
+  stalled partial frames and in-flight cold-read waits (`abuse_request_timeout_closed`,
+  cancel-on-close) without cancelling admitted durable Store mutations
+  (`server_reactor_security_tests` / `server_reactor_durable_tests`); document in
+  client-semantics §6.2 and durable-tcp-daemon. Closes GATE-CONCURRENCY-SPEC /
+  `GS-PROTO-WIRE-001` residual on daemon cancellation/deadline beyond client contract.
+  TLC/checker history residuals unchanged; not N−1 fixtures; not E3.
 - HAZ-021: real `glyphastored` exec mid-BACKUP kill matrix via env-gated crash hooks
   (`GLYPHASTORE_CRASH_TEST` / `GLYPHASTORE_CRASH_KILL_AT` / `GLYPHASTORE_CRASH_CHECKPOINT_DIR`)
   and `glyphastore_crash_backup_daemon` (`copy_backup_segment` / `copy_backup_manifest` /

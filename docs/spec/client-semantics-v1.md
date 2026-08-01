@@ -158,8 +158,13 @@ deadline:
   or application idempotency).
 
 Daemon policy for work already admitted on the server is defined by the server model (admitted
-durable mutations are not cancelled by client disconnect); clients cannot observe cancellation
-acknowledgements in v2.
+durable mutations are not cancelled by client disconnect **or** by daemon
+`--request-timeout-ms` / `--idle-timeout-ms` connection reset); clients cannot observe
+cancellation acknowledgements in v2. The daemon may still close the TCP connection when a
+partial frame or in-flight request exceeds `--request-timeout-ms` (abuse counter
+`abuse_request_timeout_closed`); Store execution already underway continues to a classified
+completion. Cold reads in flight are cancelled via the connection’s read-cancellation epoch
+when the socket is closed. See [durable TCP daemon](../operations/durable-tcp-daemon.md).
 
 ### 6.3 Application cancellation (async runtimes)
 

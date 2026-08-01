@@ -161,6 +161,21 @@ principals; prefix-scoped principals need `admin` ([ADR 0027](../adr/0027-stats-
 an unauthenticated admin surface — restrict network access accordingly. Phase 5 exports `abuse_*`
 reject/close counters when limits are enabled.
 
+### Idle and request deadlines (daemon-side)
+
+`--idle-timeout-ms` and `--request-timeout-ms` (secure-profile defaults apply non-zero values;
+cleartext defaults are `0` = off) bound quiet connections and stalled partial / in-flight
+requests. These are **orthogonal** to client monotonic request deadlines
+([client semantics §6](../spec/client-semantics-v1.md)):
+
+| Event | Daemon action | Admitted durable Store mutation | Cold read |
+|---|---|---|---|
+| Idle quiet connection | Close TCP; `abuse_idle_closed` | n/a (no in-flight request) | n/a |
+| Partial frame or in-flight request exceeds `--request-timeout-ms` | Close TCP; `abuse_request_timeout_closed` | **Not cancelled** — completes; client must reconcile (`indeterminate` if bytes were sent) | Cancelled via connection read-cancellation epoch |
+
+Wire v2 has no cancel frame. Closing the socket is the only server signal; it must not roll
+back linearized mutations.
+
 Structured lifecycle logs (`--log-format json`) emit `ready`, `maintenance_emergency`,
 `maintenance_fault`, and shutdown drain events on stderr for log aggregation.
 

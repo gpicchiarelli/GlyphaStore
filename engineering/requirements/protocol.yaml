@@ -19,6 +19,8 @@ requirements:
   - tests/fixtures
   - scripts/test-sdk-interop.sh
   - tests/fixtures/error_taxonomy_v1.json
+  - tests/integration/server_reactor_security_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -27,7 +29,9 @@ requirements:
   - workflow: ci.yml
     note: sdk-clients / interop
   rischio_residuo:
-  - Server-side cancellation/deadline semantics beyond client contract remain open
+  - None for daemon request/idle timeout vs client contract (proven by reactor
+    timeout tests); cold-read cancel epochs and no-cancel admitted mutations remain
+    the normative server model
   hazards:
   - HAZ-010
   - HAZ-011

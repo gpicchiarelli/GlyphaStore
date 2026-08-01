@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -638,6 +639,141 @@ GLYPHA_TEST("server idle timeout closes quiet connections") {
         break;
     }
     GLYPHA_REQUIRE(closed);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server request timeout closes in-flight cold read and cancels") {
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    {
+        auto seed = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                              .storage_mode = glyphastore::StorageMode::durable_sync,
+                                              .data_directory = path,
+                                              .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+        GLYPHA_REQUIRE(seed.has_value());
+        GLYPHA_REQUIRE((*seed)->put("timeout-read", bytes("value")).has_value());
+        GLYPHA_REQUIRE((*seed)->close().has_value());
+    }
+
+    BlockingColdRead blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 1,
+         .disk_read_thread_count = 1,
+         .abuse = {.request_timeout_ms = 50}},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+         .filesystem_hooks = {
+             .file_io = {.context = &blocker, .read_some_at = &BlockingColdRead::read_some_at}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    blocker.arm();
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 71,
+        .key = bytes("timeout-read"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *get));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    bool closed = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        char byte{};
+        const auto received = ::recv(socket, &byte, 1, 0);
+        if (received == 0) {
+            closed = true;
+            break;
+        }
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            continue;
+        }
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(closed);
+
+    const auto report = server.stats_report();
+    GLYPHA_REQUIRE(report.has_value());
+    const auto marker = report->find("abuse_request_timeout_closed=");
+    GLYPHA_REQUIRE(marker != std::string::npos);
+    const auto value_start = marker + std::strlen("abuse_request_timeout_closed=");
+    GLYPHA_REQUIRE(value_start < report->size());
+    GLYPHA_REQUIRE((*report)[value_start] != '0');
+
+    blocker.release();
+    GLYPHA_REQUIRE(blocker.wait_until_finished());
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("server request timeout closes partial request frames") {
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 4,
+        .worker_count = 1,
+        .abuse =
+            {
+                .request_timeout_ms = 50,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    // Incomplete frame starts the partial-assembly budget; peer must be closed.
+    constexpr std::array<std::byte, 8> partial{
+        std::byte{0x28}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+        std::byte{0x02}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+    };
+    GLYPHA_REQUIRE(send_all(socket, partial));
+
+    bool closed = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < deadline) {
+        char byte{};
+        const auto received = ::recv(socket, &byte, 1, 0);
+        if (received == 0) {
+            closed = true;
+            break;
+        }
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            continue;
+        }
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(closed);
+
+    const auto report = server.stats_report();
+    GLYPHA_REQUIRE(report.has_value());
+    GLYPHA_REQUIRE(report->find("abuse_request_timeout_closed=") != std::string::npos);
+    const auto marker = report->find("abuse_request_timeout_closed=");
+    const auto value_start = marker + std::strlen("abuse_request_timeout_closed=");
+    GLYPHA_REQUIRE(value_start < report->size());
+    GLYPHA_REQUIRE((*report)[value_start] != '0');
 
     static_cast<void>(::close(socket));
     server.request_stop();

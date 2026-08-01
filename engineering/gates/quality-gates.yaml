@@ -94,6 +94,8 @@ gates:
   - tests/concurrency/linearizability_tests.cpp
   - tests/integration/runtime_equivalence_tests.cpp
   - tests/fixtures/error_taxonomy_v1.json
+  - tests/integration/server_reactor_security_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
   - engineering/formal/shard_pair/ShardPair.tla
   piattaforme:
   - linux-x86_64
@@ -102,13 +104,14 @@ gates:
   - workflow: ci.yml
   - workflow: formal-shard-pair.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Daemon cancellation/deadline beyond client contract open; TLC job best-effort; checker
-    history size bounded
+  rischio_residuo: TLC job best-effort; checker history size bounded; admitted Store mutations remain
+    non-cancellable by disconnect/timeout (by design)
   riapertura:
   - Visibility or borrow lifetime change without ADR
   - legacy_mutex feature creep without policy update
-  narrative: Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, and legacy_mutex
-    policy are normative; some daemon edges remain open.
+  - Daemon request-timeout policy change without client-semantics / wire update
+  narrative: Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, legacy_mutex
+    policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative.
 - id: GATE-DURABLE-ACK
   titolo: Acknowledgement semantics for durable mutations
   sezione: durability_recovery

@@ -43,6 +43,8 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
    destination / failed-online paths, Store process-kill mid-copy (`glyphastore_crash_backup`),
    in-process Server/wire BACKUP kill (`glyphastore_crash_backup_wire`), and real `glyphastored`
    exec mid-BACKUP kill (`glyphastore_crash_backup_daemon`, lab-only crash hooks) are covered.
+   Daemon `--request-timeout-ms` / idle timeout vs client contract (no cancel of admitted Store
+   mutations; partial-frame close) is covered by reactor integration tests.
 
 ## Gate posture (summary)
 

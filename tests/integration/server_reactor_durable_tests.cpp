@@ -30,6 +30,98 @@
 
 using namespace glyphastore::test::server_reactor_support;
 
+GLYPHA_TEST("server request timeout closes socket without cancelling admitted durable mutation") {
+    // Beyond client-semantics §6: daemon --request-timeout-ms may reset the TCP
+    // connection while Store execution is already underway. Wire v2 has no cancel
+    // frame; the admitted durable mutation must still commit (client sees transport
+    // / indeterminate and reconciles via read).
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 2,
+         .durable_mutation_queue_capacity = 1,
+         .abuse = {.request_timeout_ms = 50}},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto mutation_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(mutation_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(mutation_socket, 0, 1));
+    blocker.arm();
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 81,
+        .key = bytes("timeout-survives"),
+        .value = bytes("committed"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(mutation_socket, *put));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+
+    bool peer_closed = false;
+    const auto close_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < close_deadline) {
+        char byte{};
+        const auto received = ::recv(mutation_socket, &byte, 1, 0);
+        if (received == 0) {
+            peer_closed = true;
+            break;
+        }
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            continue;
+        }
+        if (received < 0 && errno == EINTR) {
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(peer_closed);
+
+    const auto probe_socket = connect_to(server.port());
+    GLYPHA_REQUIRE(probe_socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(probe_socket, 0, 1));
+    const auto stats = probe_lifecycle(probe_socket, glyphastore::server::RequestOpcode::stats, 82);
+    GLYPHA_REQUIRE(stats.has_value());
+    const auto report = text(stats->decoded.frame.value);
+    GLYPHA_REQUIRE(report.find("abuse_request_timeout_closed=") != std::string_view::npos);
+    const auto marker = report.find("abuse_request_timeout_closed=");
+    GLYPHA_REQUIRE(marker != std::string_view::npos);
+    const auto count_begin = marker + std::string_view{"abuse_request_timeout_closed="}.size();
+    GLYPHA_REQUIRE(count_begin < report.size());
+    GLYPHA_REQUIRE(report[count_begin] != '0');
+
+    blocker.release();
+    // Allow the Writer to finish after the peer was already reset.
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 83,
+        .key = bytes("timeout-survives"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(probe_socket, *get));
+    const auto get_frame = receive_response(probe_socket);
+    const auto decoded = glyphastore::server::decode_response(get_frame);
+    GLYPHA_REQUIRE(decoded.has_value());
+    GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(text(decoded->frame.value) == "committed");
+
+    static_cast<void>(::close(mutation_socket));
+    static_cast<void>(::close(probe_socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("server shutdown drains an admitted durable mutation before Store close") {
     ServerTemporaryDirectory temporary;
     const auto path = temporary.store_path();
