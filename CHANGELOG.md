@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Add `.gitleaks.toml` allowlist for public SipHash/SHA-256 IV false positives and
+  reword durable-runtime-catalog phrasing so post-squash whole-tree secret scans
+  stay green.
 - CI green: crash harness self-SIGKILL at FS boundary (closes Linux flusher/reactor
   race after checkpoint marker), IPO on LTO test/tool binaries, Ruby TLS pin
   fallback, atomic linearizability `next_id_`, paired sync Writer pre-merge under

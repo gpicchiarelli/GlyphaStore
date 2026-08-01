@@ -161,7 +161,7 @@ manifest and namespace recovery selects and validates the completed state.
 Tests cover binary reads, expiration, concurrent readers, a blocked cold `pread` that does not
 block a same-Worker mutation, blocked compaction build and manifest-sync concurrency, waiting and
 restart-durable unrelated rotation, close/rollback, lock lifetime, sticky corruption handling,
-preflighted long-key publication, puts/replacements/tombstones across restart, sealed-active
+preflighted long-key publication, put/replace/tombstone reopen across restart, sealed-active
 completion, and exact prepared-replacement adoption. A separate allocator-interposition executable
 fails every allocation observed in native put, update, erase, owning-read, strict-group, and rotation
 paths. It reopens every pre-write/interrupted-rotation failure, requires uncertain paths to fail

@@ -43,6 +43,7 @@ path = [
   "CMakePresets.json",
   "REUSE.toml",
   ".lychee.toml",
+  ".gitleaks.toml",
   ".clang-format",
   ".clang-tidy",
   ".cmake-format.yaml",
