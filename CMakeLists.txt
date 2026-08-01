@@ -340,6 +340,7 @@ if(BUILD_TESTING)
         tests/integration/compaction_builder_tests.cpp
         tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp
+        tests/integration/runtime_equivalence_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/paired_store_tests.cpp
         tests/integration/persistence_recovery_tests.cpp

@@ -46,9 +46,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified  
   State: `IMPLEMENTATA` · Release target: `alpha`  
-  Requirements: `GS-CONCUR-PAIR-001`, `GS-PROTO-WIRE-001`, `GS-CORE-CLOSE-001`  
-  Residual risk: Daemon cancellation/deadline beyond client contract open; formal linearizability Phase B
-  Client semantics and concurrency model normative; some daemon edges open.
+  Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001`  
+  Residual risk: Daemon cancellation/deadline beyond client contract open; formal linearizability Phase B1
+  Client semantics, error taxonomy, concurrency model, and legacy_mutex policy are normative; formal linearizability remains Phase B1.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
@@ -98,9 +98,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [ ] **GATE-FAULT-INJECTION** — Fault injection for allocation filesystem clock socket thread failures  
   State: `IMPLEMENTATA` · Release target: `beta`  
-  Requirements: `GS-RECOVERY-FAILCLOSED-001`  
-  Residual risk: Exhaustive socket/thread/clock/hardware power-cut open
-  Allocation and FS publication seams exist; broader matrices open.
+  Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`  
+  Residual risk: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
+  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix; E3 honesty enforced in CI.
 
 - [x] **GATE-FUZZ-CI** — Fuzz targets run in CI with retained corpora  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
