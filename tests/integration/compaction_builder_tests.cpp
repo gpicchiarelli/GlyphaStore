@@ -4,10 +4,12 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/store.hpp"
+#include "store/store_internal.hpp"
 #include "test.hpp"
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -18,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -1110,4 +1113,116 @@ GLYPHA_TEST("public Store compaction scheduler advances one Worker per call") {
     GLYPHA_REQUIRE(text(*(*store)->get(worker_one_first)) == "one-first");
     GLYPHA_REQUIRE(text(*(*store)->get(worker_one_second)) == "one-second");
     GLYPHA_REQUIRE((*store)->verify_index().has_value());
+}
+
+GLYPHA_TEST("background reclaim_threshold skip advances past live-only Worker to reclaimable peer") {
+    // HAZ-026 end-to-end: Store observe advances the compaction cursor even when normal policy
+    // skips reclaim_threshold, so a live-only Worker cannot starve a peer with overwrite debt.
+    CompactionBuildDirectory temporary;
+    const glyphastore::Manifest manifest{
+        .store_id = {std::byte{0x71}, std::byte{0x72}, std::byte{0x73}},
+        .manifest_generation = 13,
+        .worker_count = 2,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{7},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{5},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{6},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{1},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+    const auto worker_zero_first = key_for_worker(0, 2, "starve-zero-first-");
+    const auto worker_zero_second = key_for_worker(0, 2, "starve-zero-second-");
+    const auto worker_one_key = key_for_worker(1, 2, "starve-one-");
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        const std::vector<TestRecord> zero_first{
+            {.sequence = 1, .key = worker_zero_first, .value = "zero-first"}};
+        const std::vector<TestRecord> zero_second{
+            {.sequence = 2, .key = worker_zero_second, .value = "zero-second"}};
+        // Equal-sized overwrite history ⇒ ~50% dead bytes (meets inclusive 5000 bp threshold).
+        const std::vector<TestRecord> one_old{{.sequence = 1, .key = worker_one_key, .value = "old-value"}};
+        const std::vector<TestRecord> one_new{{.sequence = 2, .key = worker_one_key, .value = "new-value"}};
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[0], zero_first));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[1], zero_second));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[2], {}));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[3], one_old));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[4], one_new));
+        static_cast<void>(create_records(*directory, manifest, manifest.segments[5], {}));
+        GLYPHA_REQUIRE(directory->publish_manifest(manifest).durable());
+    }
+
+    auto store = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 2},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = temporary.path(),
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .maintenance =
+            {
+                .mode = glyphastore::MaintenanceMode::background,
+                .min_eval_interval_ms = 60'000,
+                .max_eval_interval_ms = 60'000,
+                .dead_byte_ratio_bp_normal = 5'000,
+            },
+    });
+    GLYPHA_REQUIRE(store.has_value());
+    auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
+    GLYPHA_REQUIRE(controller != nullptr);
+
+    const auto skip_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    glyphastore::MaintenanceSnapshot after_skip{};
+    while (std::chrono::steady_clock::now() < skip_deadline) {
+        after_skip = (*store)->maintenance_snapshot();
+        if (after_skip.last_skip_reason == glyphastore::MaintenanceSkipReason::reclaim_threshold &&
+            after_skip.last_observation.compaction_candidate_worker == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(after_skip.last_skip_reason == glyphastore::MaintenanceSkipReason::reclaim_threshold);
+    GLYPHA_REQUIRE(after_skip.last_observation.compaction_candidate_worker == 0);
+    GLYPHA_REQUIRE(after_skip.compact_attempts == 0);
+    GLYPHA_REQUIRE(after_skip.useful_compactions == 0);
+
+    controller->request_evaluate();
+    const auto compact_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    glyphastore::MaintenanceSnapshot after_compact{};
+    while (std::chrono::steady_clock::now() < compact_deadline) {
+        after_compact = (*store)->maintenance_snapshot();
+        if (after_compact.useful_compactions > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(after_compact.useful_compactions > 0);
+    GLYPHA_REQUIRE(after_compact.compact_attempts > 0);
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_first)) == "zero-first");
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_zero_second)) == "zero-second");
+    GLYPHA_REQUIRE(text(*(*store)->get(worker_one_key)) == "new-value");
+    GLYPHA_REQUIRE((*store)->verify_index().has_value());
+    GLYPHA_REQUIRE((*store)->close().has_value());
 }

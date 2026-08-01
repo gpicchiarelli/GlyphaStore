@@ -15,6 +15,8 @@ requirements:
   - src/main.cpp
   prove:
   - tests/integration/store_tests.cpp
+  - tests/unit/maintenance_controller_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
   - scripts/exercise_ops_runbooks.sh
   piattaforme:
   - linux-x86_64
@@ -22,8 +24,10 @@ requirements:
   claim_massimo: architectural-prototype
   evidenze:
   - workflow: ops-runbooks.yml
+  - workflow: ci.yml
   rischio_residuo:
   - Misconfiguration on unsupported filesystems remains an operator hazard
+  - Multi-hour adversarial reclaim fairness soak remains open
   hazards:
   - HAZ-025
   - HAZ-026

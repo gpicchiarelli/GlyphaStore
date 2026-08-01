@@ -32,6 +32,6 @@ accepted residual risks do not imply production readiness.
 | `HAZ-023` | Errore di autorizzazione | alta | media | alta | mitigato | `GS-SEC-PROFILE-001` |
 | `HAZ-024` | Aggiramento dei limiti | alta | media | media | mitigato | `GS-SEC-PROFILE-001`, `GS-OPS-CONFIG-001` |
 | `HAZ-025` | Saturazione delle code | media | alta | alta | mitigato | `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`, `GS-CONCUR-PAIR-001` |
-| `HAZ-026` | Starvation | media | media | bassa | aperto | `GS-OPS-CONFIG-001` |
+| `HAZ-026` | Starvation | media | media | bassa | mitigato | `GS-OPS-CONFIG-001` |
 | `HAZ-027` | Blocco permanente | alta | bassa | bassa | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIVE-001`, `GS-CORE-CLOSE-001` |
 | `HAZ-028` | Errore nella pubblicazione delle generazioni | alta | media | media | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001` |

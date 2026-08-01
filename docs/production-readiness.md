@@ -137,8 +137,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-CONFIG** — Configuration precedence validation safe defaults limits  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
   Requirements: `GS-OPS-CONFIG-001`  
-  Residual risk: Operator misuse of unsupported filesystems
-  Validated durable defaults and daemon profiles implemented.
+  Residual risk: Operator misuse of unsupported filesystems; multi-hour adversarial reclaim fairness soak open
+  Validated durable defaults and daemon profiles; HAZ-026 reclaim cursor-advance proofs in CI.
 
 - [x] **GATE-OPS-RUNBOOKS** — Graceful drain overload backup restore corruption runbooks  
   State: `PROVATA_IN_CI` · Release target: `alpha`  

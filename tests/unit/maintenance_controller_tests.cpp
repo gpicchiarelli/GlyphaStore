@@ -67,6 +67,87 @@ GLYPHA_TEST("maintenance integer ratios and pressure thresholds do not overflow"
     GLYPHA_REQUIRE(glyphastore::scheduling_dead_byte_ratio_bp(observation) == 10'000);
 }
 
+GLYPHA_TEST("reclaim_threshold skip advances to a reclaimable peer Worker") {
+    // HAZ-026: a below-threshold Worker must not pin evaluation when observe advances the
+    // round-robin cursor (Store advances on every observation, including reclaim_threshold skips).
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 5'000;
+
+    glyphastore::MaintenanceController controller{config};
+    auto observe_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    auto selected_worker =
+        std::make_shared<std::atomic<std::size_t>>(std::numeric_limits<std::size_t>::max());
+    controller.bind_observe([observe_calls](glyphastore::MaintenanceObserveRequest)
+                                -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        const auto call = observe_calls->fetch_add(1, std::memory_order_relaxed);
+        if (call == 0) {
+            return glyphastore::MaintenanceObservation{
+                .durable = true,
+                .segment_count = 10,
+                .sealed_segment_count = 2,
+                .compaction_candidate_worker = 0,
+                .candidate_sealed_record_bytes = 10'000,
+                .candidate_live_record_bytes = 10'000,
+                .candidate_dead_record_bytes = 0,
+                .candidate_dead_byte_ratio_bp = 0,
+                .max_segment_count = 100,
+                .reserved_free_bytes = 1'024,
+                .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+            };
+        }
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 10,
+            .sealed_segment_count = 2,
+            .compaction_candidate_worker = 1,
+            .candidate_sealed_record_bytes = 10'000,
+            .candidate_live_record_bytes = 4'000,
+            .candidate_dead_record_bytes = 6'000,
+            .candidate_dead_byte_ratio_bp = 6'000,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller.bind_compact([compact_calls, selected_worker](
+                                const std::optional<std::size_t> worker,
+                                const std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+        compact_calls->fetch_add(1, std::memory_order_relaxed);
+        selected_worker->store(worker.value_or(std::numeric_limits<std::size_t>::max()),
+                               std::memory_order_relaxed);
+        return glyphastore::CompactionResult{.compacted = true, .bytes_copied = 1};
+    });
+    controller.start();
+
+    const auto skip_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < skip_deadline) {
+        const auto snapshot = controller.snapshot();
+        if (snapshot.last_skip_reason == glyphastore::MaintenanceSkipReason::reclaim_threshold) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(controller.snapshot().last_skip_reason ==
+                   glyphastore::MaintenanceSkipReason::reclaim_threshold);
+    GLYPHA_REQUIRE(controller.snapshot().last_observation.compaction_candidate_worker == 0);
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 0);
+
+    controller.request_evaluate();
+    const auto compact_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < compact_deadline &&
+           compact_calls->load(std::memory_order_relaxed) < 1) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 1);
+    GLYPHA_REQUIRE(selected_worker->load(std::memory_order_relaxed) == 1);
+    GLYPHA_REQUIRE(controller.snapshot().useful_compactions >= 1);
+    controller.stop();
+}
+
 GLYPHA_TEST("normal dead-byte threshold is inclusive and pressure bypasses it") {
     glyphastore::MaintenanceConfig config{};
     config.mode = glyphastore::MaintenanceMode::background;

@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+- Close HAZ-026 reclaim-starvation residual with adversarial proofs: MaintenanceController unit
+  coverage that a `reclaim_threshold` skip advances to a reclaimable peer Worker, plus durable
+  Store integration that a live-only Worker cannot pin the observe cursor and starve overwrite
+  debt on a peer (`maintenance_controller_tests`, `compaction_builder_tests`). Residual:
+  multi-hour adversarial fairness soak / group-commit per-Worker starvation telemetry remain open.
+  No `e3_certified=yes`.
 - GitHub CI surface expansion (prototype claim ceiling unchanged): OpenSSF Scorecard,
   dependency-review, actionlint + pin validator, CodeQL Python/Go/Actions, Linux ARM64 +
   `unix-release` / `unix-release-lto` jobs, checksum-pinned Syft + C++ install-prefix SBOM,

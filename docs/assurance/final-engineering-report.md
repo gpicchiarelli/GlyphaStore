@@ -49,6 +49,9 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
    exec mid-BACKUP kill (`glyphastore_crash_backup_daemon`, lab-only crash hooks) are covered.
    Daemon `--request-timeout-ms` / idle timeout vs client contract (no cancel of admitted Store
    mutations; partial-frame close) is covered by reactor integration tests.
+   HAZ-026 reclaim starvation from a below-threshold Worker pinning the round-robin cursor is
+   mitigated by observe-on-skip cursor advance with unit + Store integration proofs; multi-hour
+   adversarial fairness soak and group-commit per-Worker starvation telemetry remain open.
 
 ## Gate posture (summary)
 

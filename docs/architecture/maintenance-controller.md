@@ -119,7 +119,10 @@ Manual and automatic compact share `compaction_mutex` with `try_to_lock`. A busy
 
 The automatic candidate cursor advances when a Worker is observed, not only when compaction starts.
 Threshold, copy-budget, or other policy skips therefore cannot pin evaluation to one Worker and
-starve reclaimable peers. `MaintenanceSnapshot::sequence_conflicts` and daemon
+starve reclaimable peers. Adversarial proofs: unit
+`reclaim_threshold skip advances to a reclaimable peer Worker` and integration
+`background reclaim_threshold skip advances past live-only Worker to reclaimable peer`
+(HAZ-026). `MaintenanceSnapshot::sequence_conflicts` and daemon
 `maintenance_sequence_conflicts` count compact attempts rejected by concurrent state change.
 
 ## Explicitly deferred

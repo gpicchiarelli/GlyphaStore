@@ -342,10 +342,12 @@ gates:
   evidenze:
   - workflow: ops-runbooks.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Operator misuse of unsupported filesystems
+  rischio_residuo: Operator misuse of unsupported filesystems; multi-hour adversarial reclaim
+    fairness soak open
   riapertura:
   - Precedence change without docs/tests
-  narrative: Validated durable defaults and daemon profiles implemented.
+  - Reclaim cursor pinned on reclaim_threshold without peer advance
+  narrative: Validated durable defaults and daemon profiles; HAZ-026 reclaim cursor-advance proofs in CI.
 - id: GATE-TELEMETRY
   titolo: Structured logs metrics health readiness diagnostics
   sezione: operations_security

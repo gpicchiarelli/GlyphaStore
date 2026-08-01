@@ -569,13 +569,17 @@ hazards:
   rilevabilita: bassa
   prevenzione:
   - Normative specs + fail-closed implementation paths linked via requirements
+  - Observe advances the round-robin compaction cursor even on reclaim_threshold skips
   contenimento:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - docs/operations/durable-tcp-daemon.md
-  rischio_residuo: Reclaim starvation bounded by config; adversarial proofs limited
-  stato: aperto
-  accettazione_rischio: p99 compaction deferral hysteresis documented
+  - docs/architecture/maintenance-controller.md
+  - tests/unit/maintenance_controller_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
+  rischio_residuo: Multi-hour adversarial fairness soak and group-commit per-Worker starvation telemetry remain open
+  stato: mitigato
+  accettazione_rischio: Cursor-advance + reclaim_threshold peer-compaction proofs; p99 deferral hysteresis documented
   requisiti:
   - GS-OPS-CONFIG-001
 - id: HAZ-027
