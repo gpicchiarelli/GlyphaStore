@@ -57,11 +57,13 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - tests/integration/paired_store_tests.cpp
-  rischio_residuo: No formal linearizability checker yet
-  stato: aperto
-  accettazione_rischio: Accepted for prototype pending Phase B checker
+  - tests/concurrency/linearizability_tests.cpp
+  rischio_residuo: Checker histories are bounded; durable adversarial I/O schedules remain open
+  stato: mitigato
+  accettazione_rischio: B1 linearizability smoke accepted for prototype claim ceiling
   requisiti:
   - GS-CONCUR-PAIR-001
+  - GS-CONCUR-LIN-001
 - id: HAZ-004
   evento_pericoloso: Resurrezione di una cancellazione
   cause:
@@ -579,11 +581,12 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - tests/integration/concurrency_tests.cpp
-  rischio_residuo: No dedicated deadlock detector in CI
-  stato: aperto
-  accettazione_rischio: Phase B progress/liveness timeouts planned
+  rischio_residuo: Default close still unbounded; no dedicated deadlock detector in CI
+  stato: mitigato
+  accettazione_rischio: Optional close_drain_deadline_ms and compact try_lock; detector still open
   requisiti:
   - GS-CONCUR-PAIR-001
+  - GS-CONCUR-LIVE-001
   - GS-CORE-CLOSE-001
 - id: HAZ-028
   evento_pericoloso: Errore nella pubblicazione delle generazioni
@@ -601,9 +604,13 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - tests/integration/paired_store_tests.cpp
+  - tests/concurrency/linearizability_tests.cpp
   - docs/spec/concurrency-memory-model.md
-  rischio_residuo: Memory-order inventory not yet published
-  stato: aperto
-  accettazione_rischio: Phase B memory-order inventory + TLA+ publish/adopt
+  - docs/assurance/memory-order-inventory.md
+  rischio_residuo: Inventory is review-based; TLA+ model omits durable publication
+  stato: mitigato
+  accettazione_rischio: B1 inventory + release/acquire publish/adopt + reduced TLA+
   requisiti:
   - GS-CONCUR-PAIR-001
+  - GS-CONCUR-MEM-001
+  - GS-CONCUR-TLA-001

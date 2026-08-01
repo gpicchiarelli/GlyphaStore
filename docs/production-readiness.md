@@ -46,9 +46,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified  
   State: `IMPLEMENTATA` · Release target: `alpha`  
-  Requirements: `GS-CONCUR-PAIR-001`, `GS-PROTO-WIRE-001`, `GS-CORE-CLOSE-001`  
-  Residual risk: Daemon cancellation/deadline beyond client contract open; formal linearizability Phase B
-  Client semantics and concurrency model normative; some daemon edges open.
+  Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-PROTO-WIRE-001`, `GS-CORE-CLOSE-001`  
+  Residual risk: Daemon cancellation/deadline beyond client contract open; TLC job best-effort; checker history size bounded
+  Client semantics and concurrency model normative; B1 checker/hooks/TLA+ present; some daemon edges open.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices  
   State: `PROVATA_IN_CI` · Release target: `alpha`  

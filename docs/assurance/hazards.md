@@ -9,7 +9,7 @@ accepted residual risks do not imply production readiness.
 | --- | --- | --- | --- | --- | --- | --- |
 | `HAZ-001` | Conferma falsa di durabilità | catastrofica | media | media | aperto | `GS-PERSIST-ACK-001` |
 | `HAZ-002` | Perdita silenziosa | catastrofica | bassa | bassa | mitigato | `GS-RECOVERY-FAILCLOSED-001` |
-| `HAZ-003` | Lettura obsoleta come corrente | alta | media | media | aperto | `GS-CONCUR-PAIR-001` |
+| `HAZ-003` | Lettura obsoleta come corrente | alta | media | media | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIN-001` |
 | `HAZ-004` | Resurrezione di una cancellazione | alta | bassa | media | mitigato | `GS-RECOVERY-DET-001`, `GS-PERSIST-ORDER-001` |
 | `HAZ-005` | Doppia applicazione | alta | bassa | media | mitigato | `GS-PROTO-WIRE-001`, `GS-PERSIST-ACK-001` |
 | `HAZ-006` | Recupero non deterministico | catastrofica | bassa | alta | mitigato | `GS-RECOVERY-DET-001` |
@@ -33,5 +33,5 @@ accepted residual risks do not imply production readiness.
 | `HAZ-024` | Aggiramento dei limiti | alta | media | media | mitigato | `GS-SEC-PROFILE-001`, `GS-OPS-CONFIG-001` |
 | `HAZ-025` | Saturazione delle code | media | alta | alta | mitigato | `GS-OPS-CONFIG-001`, `GS-CONCUR-PAIR-001` |
 | `HAZ-026` | Starvation | media | media | bassa | aperto | `GS-OPS-CONFIG-001` |
-| `HAZ-027` | Blocco permanente | alta | bassa | bassa | aperto | `GS-CONCUR-PAIR-001`, `GS-CORE-CLOSE-001` |
-| `HAZ-028` | Errore nella pubblicazione delle generazioni | alta | media | media | aperto | `GS-CONCUR-PAIR-001` |
+| `HAZ-027` | Blocco permanente | alta | bassa | bassa | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIVE-001`, `GS-CORE-CLOSE-001` |
+| `HAZ-028` | Errore nella pubblicazione delle generazioni | alta | media | media | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001` |
