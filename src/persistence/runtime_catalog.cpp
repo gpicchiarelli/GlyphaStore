@@ -88,10 +88,10 @@ timing_elapsed_ns(const std::optional<std::chrono::steady_clock::time_point> sta
 }
 
 struct ReadContext {
-    std::span<const std::byte> expected_key;
+    std::span<const std::byte> expected_key{};
     std::uint64_t expected_hash{};
     std::uint64_t now_ns{};
-    OwnedValue value;
+    OwnedValue value{};
     std::uint64_t crc_value_copy_ns{};
 };
 

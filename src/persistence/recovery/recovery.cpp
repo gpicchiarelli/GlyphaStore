@@ -12,9 +12,9 @@ namespace glyphastore {
 namespace {
 
 struct RecoveredWorkers final {
-    std::vector<RecoveredSegmentState> segments;
-    std::vector<RecoveredWorkerState> workers;
-    DurableRecoveryStats stats;
+    std::vector<RecoveredSegmentState> segments{};
+    std::vector<RecoveredWorkerState> workers{};
+    DurableRecoveryStats stats{};
 };
 
 [[nodiscard]] auto recover_workers(recovery::RecoveryCatalog& catalog, recovery::RecoveryScanner& scanner,

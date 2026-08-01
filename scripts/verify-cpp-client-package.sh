@@ -35,6 +35,10 @@ if [[ -z "$cmake_bin" ]]; then
     cmake_bin="$(command -v cmake)"
   fi
 fi
+ctest_bin="${CTEST:-$(dirname "$cmake_bin")/ctest}"
+if [[ ! -x "$ctest_bin" ]]; then
+  ctest_bin="$(command -v ctest)"
+fi
 
 prefix="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-cpp-prefix.XXXXXX")"
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-cpp-consumer.XXXXXX")"
@@ -53,7 +57,7 @@ if [[ -d "$root/tests/consumer" ]]; then
     -DCMAKE_PREFIX_PATH="$prefix" \
     -DCMAKE_BUILD_TYPE=Release
   "$cmake_bin" --build "$work/build" -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 2)"
-  ctest --test-dir "$work/build" --output-on-failure
+  "$ctest_bin" --test-dir "$work/build" --output-on-failure
 else
   cat >"$work/CMakeLists.txt" <<EOF
 cmake_minimum_required(VERSION 3.20)

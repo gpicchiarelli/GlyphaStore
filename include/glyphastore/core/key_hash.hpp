@@ -112,8 +112,8 @@ namespace glyphastore {
 }
 
 struct HashedKey {
-    std::string_view key;
-    std::uint64_t hash;
+    std::string_view key{};
+    std::uint64_t hash{};
 
     [[nodiscard]] static auto compute(std::string_view key) noexcept -> HashedKey {
         return HashedKey{key, hash_key_routing(key)};

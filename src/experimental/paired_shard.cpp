@@ -200,9 +200,9 @@ struct DeltaState final {
     // use a persistent two-level ownership directory plus a flat non-owning
     // page view. ReadGeneration pins the directory, so GET keeps the direct
     // page lookup without copying hundreds of shared_ptr refcounts.
-    std::vector<std::shared_ptr<const DeltaPage>> flat_pages;
-    std::vector<const DeltaPage*> page_views;
-    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory;
+    std::vector<std::shared_ptr<const DeltaPage>> flat_pages{};
+    std::vector<const DeltaPage*> page_views{};
+    std::vector<std::shared_ptr<const DeltaDirectoryBlock>> directory{};
 
     [[nodiscard]] auto hierarchical() const noexcept -> bool {
         return !directory.empty();

@@ -57,7 +57,7 @@ enum class MutationOutcome {
 
 struct MutationResult {
     MutationOutcome outcome{MutationOutcome::rejected};
-    std::optional<Error> error;
+    std::optional<Error> error{};
 
     [[nodiscard]] auto committed() const noexcept -> bool {
         return outcome == MutationOutcome::committed;
@@ -72,8 +72,8 @@ enum class PipelineOpcode {
 
 struct PipelineRequest {
     PipelineOpcode opcode{PipelineOpcode::get};
-    std::span<const std::byte> key;
-    std::span<const std::byte> value;
+    std::span<const std::byte> key{};
+    std::span<const std::byte> value{};
     PutOptions put_options{};
 };
 
@@ -85,8 +85,8 @@ enum class PipelineOutcome {
 
 struct PipelineResponse {
     PipelineOutcome outcome{PipelineOutcome::failed};
-    std::vector<std::byte> value;
-    std::optional<Error> error;
+    std::vector<std::byte> value{};
+    std::optional<Error> error{};
 
     [[nodiscard]] auto succeeded() const noexcept -> bool {
         return outcome == PipelineOutcome::succeeded;

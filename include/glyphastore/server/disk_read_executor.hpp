@@ -18,20 +18,20 @@
 namespace glyphastore::server {
 
 struct DiskReadCompletion final {
-    ConnectionToken connection;
+    ConnectionToken connection{};
     std::uint64_t request_id{};
     std::uint64_t generation_epoch{};
-    std::optional<OwnedValue> value;
-    std::optional<Error> error;
+    std::optional<OwnedValue> value{};
+    std::optional<Error> error{};
 };
 
 struct DiskReadTask final {
-    ConnectionToken connection;
+    ConnectionToken connection{};
     std::uint64_t request_id{};
     std::uint64_t generation_epoch{};
     std::size_t worker_index{};
     detail::PreparedColdRead read;
-    detail::ColdReadCancellation cancellation;
+    detail::ColdReadCancellation cancellation{};
     std::size_t maximum_value_bytes{};
     BoundedSpscQueue<DiskReadCompletion>* completions{};
     Wakeup* wakeup{};

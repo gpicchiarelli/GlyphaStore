@@ -8,6 +8,8 @@ endif()
 
 project(GlyphaStore VERSION "${GLYPHASTORE_VERSION}" LANGUAGES CXX)
 
+find_package(Threads REQUIRED)
+
 if(DEFINED CMAKE_CXX_STANDARD AND CMAKE_CXX_STANDARD LESS 23)
     message(FATAL_ERROR "GlyphaStore requires ISO C++23 or newer")
 endif()
@@ -131,7 +133,17 @@ target_include_directories(glyphastore_core
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src"
 )
-target_link_libraries(glyphastore_core PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>)
+target_link_libraries(glyphastore_core
+    PUBLIC Threads::Threads
+    PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
+)
+if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
+    # Their libc++ exposes C++20 stop_token/jthread only when the translation
+    # unit is compiled in pthread mode. FindThreads may legitimately resolve
+    # pthread symbols from libc and otherwise leave this flag empty.
+    target_compile_options(glyphastore_core PUBLIC -pthread)
+    target_link_options(glyphastore_core PUBLIC -pthread)
+endif()
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
 glyphastore_enable_ipo(glyphastore_core)
@@ -904,12 +916,26 @@ install(FILES
 )
 install(FILES
     include/glyphastore/core/error.hpp
+    include/glyphastore/core/types.hpp
+    include/glyphastore/core/worker_routing.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/core"
     COMPONENT Development
 )
 install(FILES
+    include/glyphastore/persistence/compaction_intent.hpp
+    include/glyphastore/persistence/filesystem.hpp
     include/glyphastore/persistence/filesystem_hooks.hpp
+    include/glyphastore/persistence/manifest.hpp
+    include/glyphastore/persistence/namespace_audit.hpp
+    include/glyphastore/persistence/resource_limits.hpp
+    include/glyphastore/persistence/store_backup.hpp
+    include/glyphastore/persistence/store_verify.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/persistence"
+    COMPONENT Development
+)
+install(FILES
+    include/glyphastore/segment/segment_header.hpp
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/segment"
     COMPONENT Development
 )
 install(FILES
@@ -919,6 +945,7 @@ install(FILES
 )
 install(FILES
     include/glyphastore/store/config.hpp
+    include/glyphastore/store/maintenance_types.hpp
     include/glyphastore/store/store.hpp
     include/glyphastore/store/value.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/store"

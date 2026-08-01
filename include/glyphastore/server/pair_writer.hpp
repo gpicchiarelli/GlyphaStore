@@ -23,11 +23,11 @@ namespace glyphastore::server {
 enum class MutationKind : std::uint8_t { put = 0, erase = 1 };
 
 struct MutationCompletion final {
-    ConnectionToken connection;
+    ConnectionToken connection{};
     std::uint64_t request_id{};
     std::size_t admission_bytes{};
     std::uint32_t payload_slot{};
-    std::optional<Error> error;
+    std::optional<Error> error{};
 };
 
 struct PairWriterStats final {
@@ -84,13 +84,13 @@ struct PairWriterStats final {
 };
 
 struct MutationRequest final {
-    ConnectionToken connection;
+    ConnectionToken connection{};
     std::uint64_t request_id{};
     std::size_t worker_index{};
     MutationKind kind{};
-    std::span<const std::byte> key;
+    std::span<const std::byte> key{};
     std::uint64_t key_hash{};
-    std::span<const std::byte> value;
+    std::span<const std::byte> value{};
     std::uint64_t expire_at_ns{};
     BoundedSpscQueue<MutationCompletion>* completions{};
     Wakeup* wakeup{};

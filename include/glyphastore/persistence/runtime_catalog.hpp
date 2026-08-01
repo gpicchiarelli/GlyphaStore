@@ -65,8 +65,8 @@ struct DurableRuntimeOptions {
 
 struct DurableMutationResult {
     DurableMutationOutcome outcome{DurableMutationOutcome::not_committed};
-    std::optional<SequenceNumber> sequence;
-    std::optional<Error> error;
+    std::optional<SequenceNumber> sequence{};
+    std::optional<Error> error{};
 
     [[nodiscard]] auto committed() const noexcept -> bool {
         return outcome == DurableMutationOutcome::committed;
@@ -343,9 +343,9 @@ class DurableRuntimeCatalog final {
     };
 
     struct PreparedRead final {
-        std::optional<OwnedValue> value;
-        std::optional<PinnedRead> cold;
-        std::optional<BorrowedPinnedRead> borrowed_cold;
+        std::optional<OwnedValue> value{};
+        std::optional<PinnedRead> cold{};
+        std::optional<BorrowedPinnedRead> borrowed_cold{};
     };
 
     [[nodiscard]] static auto open_existing(const std::filesystem::path& path,

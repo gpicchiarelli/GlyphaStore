@@ -37,10 +37,10 @@ struct ParsedSegmentFilename {
 };
 
 struct NamespaceIssue {
-    NamespaceIssueKind kind;
-    std::string name;
-    std::optional<SegmentId> segment_id;
-    std::optional<GenerationId> generation;
+    NamespaceIssueKind kind{};
+    std::string name{};
+    std::optional<SegmentId> segment_id{};
+    std::optional<GenerationId> generation{};
 };
 
 struct NamespaceAuditReport {

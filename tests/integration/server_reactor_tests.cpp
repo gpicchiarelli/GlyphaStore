@@ -159,8 +159,8 @@ auto initialize_and_bind(const int socket, const std::uint32_t worker, const std
 }
 
 struct LifecycleProbeResponse final {
-    glyphastore::server::DecodedFrame<glyphastore::server::ResponseView> decoded;
-    std::vector<std::byte> frame_bytes;
+    glyphastore::server::DecodedFrame<glyphastore::server::ResponseView> decoded{};
+    std::vector<std::byte> frame_bytes{};
 };
 
 auto probe_lifecycle(const int socket, const glyphastore::server::RequestOpcode opcode,

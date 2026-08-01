@@ -49,7 +49,7 @@ enum class CommitSlotValidity { empty, valid, invalid };
 
 struct DecodedCommitSlot {
     CommitSlotValidity validity{CommitSlotValidity::empty};
-    std::optional<SegmentCommit> commit;
+    std::optional<SegmentCommit> commit{};
 };
 
 struct SegmentHeader {
@@ -58,8 +58,8 @@ struct SegmentHeader {
 };
 
 struct DecodedSegmentHeader {
-    SegmentHeaderIdentity identity;
-    std::array<DecodedCommitSlot, kSegmentCommitSlotCount> slots;
+    SegmentHeaderIdentity identity{};
+    std::array<DecodedCommitSlot, kSegmentCommitSlotCount> slots{};
 };
 
 struct SelectedSegmentCommit {

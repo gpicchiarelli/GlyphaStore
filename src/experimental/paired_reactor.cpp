@@ -280,8 +280,9 @@ struct PairedReactorPrototype::Impl final {
                                            .iov_len = frame.value_size - frame.value_offset};
             }
         }
-        msghdr message{.msg_iov = vectors.data(),
-                       .msg_iovlen = static_cast<decltype(msghdr::msg_iovlen)>(vector_count)};
+        msghdr message{};
+        message.msg_iov = vectors.data();
+        message.msg_iovlen = static_cast<decltype(msghdr::msg_iovlen)>(vector_count);
         ++writev_calls;
         const auto written = ::sendmsg(current->socket.descriptor(), &message, send_flags());
         if (written < 0 && errno == EINTR) {

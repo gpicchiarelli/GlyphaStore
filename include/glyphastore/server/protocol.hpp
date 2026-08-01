@@ -45,8 +45,8 @@ struct RequestView {
     std::uint64_t request_id{};
     std::uint64_t expire_at_ns{};
     std::uint32_t target_worker{kNoWorker};
-    std::span<const std::byte> key;
-    std::span<const std::byte> value;
+    std::span<const std::byte> key{};
+    std::span<const std::byte> value{};
 };
 
 struct ResponseView {
@@ -55,7 +55,7 @@ struct ResponseView {
     std::uint32_t owner_worker{kNoWorker};
     std::uint32_t worker_count{};
     std::uint64_t routing_epoch{};
-    std::span<const std::byte> value;
+    std::span<const std::byte> value{};
 };
 
 template <typename View> struct DecodedFrame {

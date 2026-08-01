@@ -312,11 +312,11 @@ module GlyphaStore
     end
 
     def wait_readable!(socket, timeout)
-      raise Error.transport("request deadline expired") unless socket.wait_readable(timeout)
+      raise Error.transport("request deadline expired") unless socket.to_io.wait_readable(timeout)
     end
 
     def wait_writable!(socket, timeout)
-      raise Error.transport("request deadline expired") unless socket.wait_writable(timeout)
+      raise Error.transport("request deadline expired") unless socket.to_io.wait_writable(timeout)
     end
 
     def send!(conn, frame, deadline)

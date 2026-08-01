@@ -31,7 +31,7 @@ class MutationSlotPool final {
     };
 
     struct AcquireResult final {
-        std::optional<Lease> lease;
+        std::optional<Lease> lease{};
         AcquireFailure failure{AcquireFailure::none};
     };
 

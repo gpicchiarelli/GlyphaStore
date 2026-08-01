@@ -11,8 +11,8 @@
 namespace glyphastore {
 
 struct DurableStoreBackupReport {
-    std::filesystem::path source;
-    std::filesystem::path destination;
+    std::filesystem::path source{};
+    std::filesystem::path destination{};
     std::size_t files_copied{};
     std::uint64_t bytes_copied{};
     DurableStoreVerifyReport source_verification{};

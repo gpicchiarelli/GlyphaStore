@@ -337,8 +337,8 @@ struct CompactReadRecord final {
         std::array<char, 16> inline_key{};
         const char* external_key;
     };
-    RecordRef record;
-    KeyStorage key;
+    RecordRef record{};
+    KeyStorage key{};
     std::uint32_t key_size{};
     std::uint32_t pin_index{};
     Opcode opcode{Opcode::put};

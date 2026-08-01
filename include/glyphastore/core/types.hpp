@@ -32,11 +32,11 @@ using RecordOffset = StrongId<RecordOffsetTag, std::uint32_t>;
 using RecordSize = StrongId<RecordSizeTag, std::uint32_t>;
 
 struct RecordRef {
-    SegmentId segment_id;
-    RecordOffset offset;
-    RecordSize size;
-    SequenceNumber sequence;
-    GenerationId generation;
+    SegmentId segment_id{};
+    RecordOffset offset{};
+    RecordSize size{};
+    SequenceNumber sequence{};
+    GenerationId generation{};
 
     auto operator<=>(const RecordRef&) const = default;
 };

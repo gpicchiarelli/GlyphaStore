@@ -27,13 +27,13 @@ enum class PrototypeSubmitStatus : std::uint8_t {
 
 struct PrototypeCompletion final {
     std::uint64_t request_id{};
-    std::optional<ErrorCode> error;
+    std::optional<ErrorCode> error{};
     std::uint64_t visible_through{};
     std::uint64_t epoch{};
 };
 
 struct PrototypeRead final {
-    std::span<const std::byte> value;
+    std::span<const std::byte> value{};
     std::uint64_t sequence{};
 };
 

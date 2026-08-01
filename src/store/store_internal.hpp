@@ -29,25 +29,25 @@ class StoreAccess final {
 
     struct DurableMutationView final {
         MutationOperation operation{};
-        HashedKey key;
-        std::span<const std::byte> value;
+        HashedKey key{};
+        std::span<const std::byte> value{};
         std::uint64_t expire_at_ns{};
     };
 
     struct DurableWriterBatchResult final {
-        DurableMutationResult mutation;
+        DurableMutationResult mutation{};
         bool conflict_retried{};
     };
 
     struct VolatileMutationPublication final {
-        RecordRef record;
-        SegmentPtr segment;
+        RecordRef record{};
+        SegmentPtr segment{};
         Opcode opcode{Opcode::put};
     };
 
     struct PreparedGet final {
-        std::optional<OwnedValue> value;
-        std::optional<PreparedColdRead> cold;
+        std::optional<OwnedValue> value{};
+        std::optional<PreparedColdRead> cold{};
     };
 
     using DurablePublishedRead = DurableRuntimeCatalog::PublishedReadRecord;

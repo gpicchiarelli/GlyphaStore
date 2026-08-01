@@ -11,10 +11,10 @@ namespace glyphastore::recovery {
 namespace {
 
 struct WorkerScanContext {
-    WorkerId worker_id;
+    WorkerId worker_id{};
     std::size_t worker_count{};
     WorkerRoutingState routing{};
-    SegmentId segment_id;
+    SegmentId segment_id{};
     std::uint64_t now_ns{};
     SequenceNumber maximum_sequence{};
     LatestMap* latest{};

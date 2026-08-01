@@ -22,7 +22,7 @@ class StoreAccess;
 
 struct CompactionResult {
     bool compacted{};
-    std::optional<std::size_t> worker_index;
+    std::optional<std::size_t> worker_index{};
     std::uint64_t source_records_verified{};
     std::uint64_t source_bytes_verified{};
     std::uint64_t records_copied{};

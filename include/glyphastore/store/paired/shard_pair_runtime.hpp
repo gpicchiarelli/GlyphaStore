@@ -30,11 +30,11 @@ struct MutationContext final {
 };
 
 struct MutationOutcome final {
-    MutationContext context;
+    MutationContext context{};
     std::uint64_t request_id{};
     std::size_t admission_bytes{};
     std::uint32_t payload_slot{};
-    std::optional<Error> error;
+    std::optional<Error> error{};
 };
 
 // Writer-side completion sink for asynchronous submissions. deliver() must be
@@ -55,9 +55,9 @@ struct AsyncMutationRequest final {
     MutationKind kind{};
     MutationContext context{};
     std::uint64_t request_id{};
-    std::span<const std::byte> key;
+    std::span<const std::byte> key{};
     std::uint64_t key_hash{};
-    std::span<const std::byte> value;
+    std::span<const std::byte> value{};
     std::uint64_t expire_at_ns{};
     MutationSink sink{};
 };

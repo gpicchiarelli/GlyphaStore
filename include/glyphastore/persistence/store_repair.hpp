@@ -11,20 +11,20 @@
 namespace glyphastore {
 
 struct DurableStoreQuarantinedFile {
-    std::string source_name;
+    std::string source_name{};
     NamespaceIssueKind kind{};
-    std::filesystem::path quarantine_path;
+    std::filesystem::path quarantine_path{};
     std::uint64_t bytes_copied{};
 };
 
 struct DurableStoreRepairReport {
-    std::filesystem::path source;
-    std::filesystem::path workspace;
-    std::filesystem::path repaired_store;
-    std::filesystem::path quarantine_directory;
+    std::filesystem::path source{};
+    std::filesystem::path workspace{};
+    std::filesystem::path repaired_store{};
+    std::filesystem::path quarantine_directory{};
     std::size_t catalog_files_copied{};
     std::uint64_t catalog_bytes_copied{};
-    std::vector<DurableStoreQuarantinedFile> quarantined;
+    std::vector<DurableStoreQuarantinedFile> quarantined{};
     NamespaceAuditReport source_namespace_audit{};
     DurableStoreVerifyReport repaired_verification{};
 };

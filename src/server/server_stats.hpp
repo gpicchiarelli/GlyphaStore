@@ -30,10 +30,10 @@ struct ServerStatsSnapshot final {
     bool live{};
     bool ready{};
     bool store_operational{};
-    std::vector<ExecutorStats> executors;
-    MaintenanceSnapshot maintenance;
-    std::vector<PairWriterStats> mutations;
-    std::vector<DurableBatchWorkerStats> batches;
+    std::vector<ExecutorStats> executors{};
+    MaintenanceSnapshot maintenance{};
+    std::vector<PairWriterStats> mutations{};
+    std::vector<DurableBatchWorkerStats> batches{};
     AbuseStats abuse{};
     SecurityAuditStats security_audit{};
     bool tls_enabled{};

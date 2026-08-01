@@ -17,15 +17,15 @@
 namespace glyphastore::server {
 
 struct ConnectionHandoff {
-    SocketHandle socket;
-    std::unique_ptr<TlsSession> tls;
+    SocketHandle socket{};
+    std::unique_ptr<TlsSession> tls{};
     std::string principal{};
     Capability capabilities{Capability::none};
     // Empty = unrestricted keyspace; set from --authz-map prefix= (Phase 8 slice).
     std::string key_prefix{};
-    std::vector<std::byte> input;
-    std::vector<std::byte> output;
-    std::optional<std::uint32_t> bound_worker;
+    std::vector<std::byte> input{};
+    std::vector<std::byte> output{};
+    std::optional<std::uint32_t> bound_worker{};
     bool initialized{};
     bool peer_read_closed{};
     std::chrono::steady_clock::time_point last_activity{};

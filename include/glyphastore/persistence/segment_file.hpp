@@ -27,13 +27,13 @@ using RecordVisitor = Status (*)(void* context, const RecordView& record);
 struct SegmentFileCreationResult;
 
 struct DurableSegmentInspectReport {
-    std::filesystem::path path;
+    std::filesystem::path path{};
     SegmentHeaderIdentity identity{};
     SelectedSegmentCommit selected{};
     std::uint64_t scanned_records{};
     // Set when the basename parses as a canonical Segment name; true iff it
     // matches header identity. Unset when the basename is not canonical.
-    std::optional<bool> filename_matches_identity;
+    std::optional<bool> filename_matches_identity{};
 };
 
 struct SegmentCommitResult {

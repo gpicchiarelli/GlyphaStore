@@ -19,10 +19,10 @@ namespace glyphastore::store::paired {
 // A Writer-owned mutation which has already been linearized in the Store.
 // The SegmentPtr is the generation pin: RecordRef must never escape alone.
 struct ReadMutation final {
-    HashedKey key;
-    RecordRef record;
-    SegmentPtr segment;
-    std::optional<DurableRuntimeCatalog::PublishedReadRecord> durable;
+    HashedKey key{};
+    RecordRef record{};
+    SegmentPtr segment{};
+    std::optional<DurableRuntimeCatalog::PublishedReadRecord> durable{};
     Opcode opcode{Opcode::put};
 };
 

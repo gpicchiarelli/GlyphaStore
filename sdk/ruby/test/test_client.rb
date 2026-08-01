@@ -172,12 +172,15 @@ class ClientTest < Minitest::Test
   def test_build_ssl_context_requires_tls_1_3
     skip "TLS 1.3 unavailable in this Ruby/OpenSSL" unless GlyphaStore::Tls.tls13_available?
 
-    context = GlyphaStore::Tls.build_ssl_context(
-      GlyphaStore::ClientConfig.defaults.tap do |c|
-        c.tls = true
-        c.insecure_skip_verify = true
-      end
-    )
+    context = Struct.new(:min_version, :max_version, :verify_mode).new
+    OpenSSL::SSL::SSLContext.stub(:new, context) do
+      GlyphaStore::Tls.build_ssl_context(
+        GlyphaStore::ClientConfig.defaults.tap do |c|
+          c.tls = true
+          c.insecure_skip_verify = true
+        end
+      )
+    end
     assert_equal OpenSSL::SSL::TLS1_3_VERSION, context.min_version
     assert_equal OpenSSL::SSL::TLS1_3_VERSION, context.max_version
     assert_equal OpenSSL::SSL::VERIFY_NONE, context.verify_mode

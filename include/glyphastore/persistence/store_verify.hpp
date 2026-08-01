@@ -22,10 +22,10 @@ struct DurableStoreVerifiedSegment {
 };
 
 struct DurableStoreVerifyReport {
-    std::filesystem::path path;
+    std::filesystem::path path{};
     Manifest manifest{};
     NamespaceAuditReport namespace_audit{};
-    std::vector<DurableStoreVerifiedSegment> segments;
+    std::vector<DurableStoreVerifiedSegment> segments{};
     std::uint64_t scanned_records{};
     std::size_t active_requires_rotation_count{};
 };

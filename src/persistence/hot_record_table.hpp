@@ -31,7 +31,7 @@ struct HotRecordEntry {
     static constexpr std::size_t kInlineValueBytes = 48;
 
     RecordRef reference{};
-    std::shared_ptr<const std::byte[]> heap_value;
+    std::shared_ptr<const std::byte[]> heap_value{};
     alignas(std::max_align_t) std::byte inline_value[kInlineValueBytes]{};
     std::size_t value_size{};
     std::uint64_t expire_at_ns{};
@@ -52,7 +52,7 @@ struct HotRecordEntry {
 };
 
 struct HotRecordSnapshot {
-    std::shared_ptr<const std::byte[]> heap_value;
+    std::shared_ptr<const std::byte[]> heap_value{};
     alignas(std::max_align_t) std::byte inline_value[HotRecordEntry::kInlineValueBytes]{};
     std::size_t value_size{};
     SequenceNumber sequence{};
