@@ -53,6 +53,14 @@ jobs:
             compiler: clang
             cc: clang
             cxx: clang++
+          - os: ubuntu-24.04-arm
+            compiler: clang
+            cc: clang
+            cxx: clang++
+          - os: ubuntu-24.04-arm
+            compiler: gcc
+            cc: gcc
+            cxx: g++
           - os: macos-latest
             compiler: apple-clang
             cc: clang
@@ -195,3 +203,43 @@ jobs:
         run: |
           cmake --build build/consumer
           ctest --test-dir build/consumer --output-on-failure
+
+  release-optimized:
+    name: Release optimized / unix-release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-release
+      - name: Build release
+        run: cmake --build --preset unix-release
+      - name: Test release
+        run: ctest --preset unix-release
+
+  release-lto-smoke:
+    name: Release LTO smoke / unix-release-lto
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: python -m pip install --disable-pip-version-check cmake ninja
+      - name: Configure release LTO
+        env:
+          CC: clang
+          CXX: clang++
+        run: cmake --preset unix-release-lto
+      - name: Build release LTO
+        run: cmake --build --preset unix-release-lto
+      - name: Test release LTO
+        run: ctest --preset unix-release-lto

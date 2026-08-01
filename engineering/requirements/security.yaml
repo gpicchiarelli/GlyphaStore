@@ -46,12 +46,15 @@ requirements:
   - engineering/tools/validate_actions_pins.py
   prove:
   - engineering/tools/validate_actions_pins.py
+  - .github/workflows/actionlint.yml
   piattaforme:
   - linux-x86_64
   claim_massimo: architectural-prototype
   evidenze:
   - workflow: assurance.yml
+  - workflow: actionlint.yml
   rischio_residuo:
   - Dependabot must update SHAs rather than floating tags
+  - Hosted Actions billing may block workflow runs
   gates:
   - GATE-THREAT-SUPPLY

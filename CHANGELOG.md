@@ -1,5 +1,11 @@
 ## [Unreleased]
 
+- GitHub CI surface expansion (prototype claim ceiling unchanged): OpenSSF Scorecard,
+  dependency-review, actionlint + pin validator, CodeQL Python/Go/Actions, Linux ARM64 +
+  `unix-release` / `unix-release-lto` jobs, checksum-pinned Syft + C++ install-prefix SBOM,
+  GitHub Release attach on tags, docs link check, diagnostic coverage, SDK license hygiene,
+  Dependabot pip/gomod, and branch-protection settings checklist
+  (`docs/assurance/github-branch-protection.md`). Hosted Actions billing remains an honest residual.
 - Paired adoption naming: prefer shard-pair / Reader / Writer language in operator telemetry docs
   (`observability` lane/batch surfaces, durable-tcp hot-cache wording) while keeping Manifest/wire
   `worker_count` and CLI `--workers` as 0.1.x aliases.

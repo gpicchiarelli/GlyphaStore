@@ -227,10 +227,11 @@ revocation configuration on hostile binds.
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
-| 7.1 | Dependency + secret scanning in CI | **partial** — gitleaks + Trivy fs (`.github/workflows/supply-chain-scan.yml`) on main/PRs; tune allowlists as needed |
-| 7.2 | SBOM + checksums/signatures for release artifacts | **partial** — checksums + SPDX; tag Cosign keyless bundles; GitHub SLSA attestations on tags (public or `ENABLE_ARTIFACT_ATTESTATIONS`); project GPG optional |
+| 7.1 | Dependency + secret scanning in CI | **partial** — gitleaks + Trivy fs; PR dependency-review; OpenSSF Scorecard; actionlint + SHA-pin validator; CodeQL C/C++/Python/Go/Actions (SARIF upload opt-in via `GLYPHASTORE_UPLOAD_SARIF`) |
+| 7.2 | SBOM + checksums/signatures for release artifacts | **partial** — checksums + SPDX; checksum-pinned Syft install; tag Cosign keyless bundles; GitHub SLSA attestations; C++ install-prefix SBOM on tags; GitHub Release attach (`.github/workflows/release.yml`); project GPG optional |
 | 7.3 | Fuzz regression intake for parsers (wire + persistence) | Documented owners |
 | 7.4 | Supported security maintenance window | Published policy |
+| 7.5 | Branch protection / required checks | Settings checklist — [github-branch-protection](../assurance/github-branch-protection.md) |
 
 **Effort:** ongoing; bootstrap 1–2 weeks.
 

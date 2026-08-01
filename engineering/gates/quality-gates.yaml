@@ -421,21 +421,29 @@ gates:
   prove:
   - docs/security/threat-model.md
   - docs/security/actions-pinning.md
+  - docs/assurance/github-branch-protection.md
   - SECURITY.md
   - .github/workflows/supply-chain.yml
+  - .github/workflows/supply-chain-scan.yml
+  - .github/workflows/scorecard.yml
+  - .github/workflows/dependency-review.yml
+  - .github/workflows/actionlint.yml
   - engineering/tools/validate_actions_pins.py
   piattaforme:
   - linux-x86_64
   evidenze:
   - workflow: supply-chain.yml
   - workflow: supply-chain-scan.yml
+  - workflow: scorecard.yml
+  - workflow: dependency-review.yml
+  - workflow: actionlint.yml
   - workflow: assurance.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs
+  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs
   riapertura:
   - Removing SBOM/checksum gates
   - Reintroducing mutable Action tags
-  narrative: Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions; residuals documented.
+  narrative: Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions + Scorecard/dependency-review; residuals documented.
 - id: GATE-CMAKE-INSTALL
   titolo: CMake installs versioned package metadata and GlyphaStore::core
   sezione: distribution_lifecycle
@@ -491,18 +499,23 @@ gates:
   - .github/workflows/ci.yml
   - .github/workflows/freebsd.yml
   - .github/workflows/openbsd-libressl.yml
+  - .github/workflows/release.yml
   piattaforme:
   - linux-x86_64
+  - linux-arm64
   - macos-arm64
   - freebsd
   - openbsd
   evidenze:
   - workflow: ci.yml
+  - workflow: freebsd.yml
+  - workflow: openbsd-libressl.yml
+  - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Tagged signed release pipeline deferred
+  rischio_residuo: Tagged signed release pipeline still prototype wording; Windows out of scope; hosted billing may block runs
   riapertura:
   - Dropping a supported OS without lifecycle update
-  narrative: Build/test gates exist; full signed release pipeline deferred.
+  narrative: Build/test gates cover gcc/clang x86_64+arm64, macOS, FreeBSD, OpenBSD, release/LTO; GitHub Release attach on tags.
 - id: GATE-REPRO-SBOM
   titolo: Artifacts reproducible signed checksummed with provenance and SBOM
   sezione: distribution_lifecycle
@@ -511,15 +524,18 @@ gates:
   - GS-COMPAT-FIXTURE-001
   prove:
   - .github/workflows/supply-chain.yml
+  - .github/workflows/release.yml
+  - scripts/install-syft.sh
   piattaforme:
   - linux-x86_64
   evidenze:
   - workflow: supply-chain.yml
+  - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: macOS/Windows builders if those become release hosts
+  rischio_residuo: macOS/Windows builders if those become release hosts; C++ install-prefix SBOM is tag/dispatch only
   riapertura:
   - Disabling digest checks on tags
-  narrative: Checksums SPDX Cosign SLSA path landed for Linux tags/dispatch.
+  narrative: Checksums SPDX Cosign SLSA path landed for Linux tags/dispatch; Syft install checksum-pinned; Release attaches artifacts.
 - id: GATE-VERSION-LIFECYCLE
   titolo: Upgrade downgrade deprecation support EOL policies published
   sezione: distribution_lifecycle

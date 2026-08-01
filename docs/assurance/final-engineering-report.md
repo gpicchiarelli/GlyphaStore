@@ -19,7 +19,7 @@ certification and must not be read as production readiness.
 | A | `GS-*` requirements, hazard register, multi-state gates, `validate_assurance.py`, generated readiness view |
 | B | Linearizability/fault/memory-order work, error taxonomy, `legacy_mutex` policy (merged earlier) |
 | C | CMake `add_subdirectory` split, dependency matrix, structure-debt thresholds; **WAV-001 revoked** after source/test splits |
-| D | N↔N-1 matrix, SHA-pinned Actions (74 uses), claim schema/packaging on tags |
+| D | N↔N-1 matrix, SHA-pinned Actions (120 uses / 24 workflows), claim schema/packaging on tags |
 | E | Performance/soak/overload budget catalog linked to `GATE-PERFORMANCE` / `GATE-SOAK` / `GATE-OPS-RUNBOOKS` |
 
 Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
@@ -36,7 +36,11 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
    until `glyphastore-linux-perf` publishes `pass-candidate`.
 5. **Hardware soak / mandatory rotation** — software soak paths exist; controlled multi-hour
    hardware soak residual remains on `GATE-SOAK`.
-6. **Project GPG / full SLSA L3** — optional residuals on supply-chain gates.
+6. **Project GPG / full SLSA L3** — optional residuals on supply-chain gates. Scorecard,
+   dependency-review, actionlint+pin validator, multi-language CodeQL, checksum-pinned Syft,
+   C++ install-prefix SBOM (tag/dispatch), GitHub Release attach, docs-link/license/coverage
+   hygiene, and branch-protection settings checklist are in-tree; hosted Actions billing may
+   still block runs (local green ≠ CI green).
 7. **Zero-fence hot backup** — online fenced backup exists (shorter fence + structural source check +
    bounded Segment copy parallelism; destination CRC promotion gate); fully concurrent hot copy
    remains deferred per [ADR 0034](../adr/0034-zero-fence-hot-backup-deferred.md). HAZ-021 incomplete

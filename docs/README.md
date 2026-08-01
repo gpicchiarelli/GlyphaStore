@@ -41,7 +41,8 @@ the relevant ADR, and add compatibility evidence before changing a persisted or 
 
 Assurance program entry points: [engineering baseline](assurance/engineering-baseline.md),
 [hazard register](assurance/hazards.md), [quality gates](assurance/gates.md),
-[memory-order inventory](assurance/memory-order-inventory.md), and
+[memory-order inventory](assurance/memory-order-inventory.md),
+[GitHub branch-protection checklist](assurance/github-branch-protection.md), and
 [AGENTS.md](../AGENTS.md).
 
 ## Required document metadata

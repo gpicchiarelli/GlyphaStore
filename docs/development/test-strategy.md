@@ -3,7 +3,7 @@
 Status: maintained quality policy
 Applies to: all supported builds
 Owner: maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-01
 
 ## 1. Principles
 
@@ -57,14 +57,20 @@ certification. Harness smoke (`linux-ext4` loopback / `macos-apfs` diskimage) is
 
 ## 6. CI tiers
 
-1. Per change: build, unit/integration/property tests, formatting.
+1. Per change: build, unit/integration/property tests, formatting; ARM64 Linux matrix;
+   release + LTO smoke; SDK clients; assurance validators; actionlint on workflow diffs;
+   dependency-review; CodeQL (C/C++, Python, Go, Actions); Scorecard on `main`.
 2. Required extended: ASan/UBSan and TSan.
 3. Nightly / scheduled: continuous fuzz smoke (Sanitizers `fuzz-run`, 120s per target on Monday),
    crash matrix, opt-in exhaustive and randomized compaction matrices, broader compilers/platforms
-   including FreeBSD and OpenBSD VM gates.
-4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence.
+   including FreeBSD and OpenBSD VM gates; docs link check; license hygiene; diagnostic coverage.
+4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence,
+   tag supply-chain (SBOM/Cosign/attest) and GitHub Release artifact attach.
 
-Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy.
+Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy. Line coverage artifacts are diagnostic only (§7).
+
+Branch-protection / required-check settings:
+[github-branch-protection](../assurance/github-branch-protection.md).
 
 ## 7. Coverage policy
 

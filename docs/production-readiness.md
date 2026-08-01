@@ -155,8 +155,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-THREAT-SUPPLY** — Threat model and security release process including supply chain  
   State: `IMPLEMENTATA` · Release target: `beta`  
   Requirements: `GS-SEC-PROFILE-001`, `GS-SUPPLY-ACTIONS-001`  
-  Residual risk: Project GPG / full SLSA L3 optional; Dependabot must update SHAs
-  Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions; residuals documented.
+  Residual risk: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs
+  Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions + Scorecard/dependency-review; residuals documented.
 
 ### Distribution and lifecycle
 
@@ -175,14 +175,14 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-RELEASE-MATRIX** — Release CI covers supported compilers OS arch optimized builds  
   State: `IMPLEMENTATA` · Release target: `rc`  
   Requirements: `GS-COMPAT-FIXTURE-001`  
-  Residual risk: Tagged signed release pipeline deferred
-  Build/test gates exist; full signed release pipeline deferred.
+  Residual risk: Tagged signed release pipeline still prototype wording; Windows out of scope; hosted billing may block runs
+  Build/test gates cover gcc/clang x86_64+arm64, macOS, FreeBSD, OpenBSD, release/LTO; GitHub Release attach on tags.
 
 - [ ] **GATE-REPRO-SBOM** — Artifacts reproducible signed checksummed with provenance and SBOM  
   State: `IMPLEMENTATA` · Release target: `rc`  
   Requirements: `GS-COMPAT-FIXTURE-001`  
-  Residual risk: macOS/Windows builders if those become release hosts
-  Checksums SPDX Cosign SLSA path landed for Linux tags/dispatch.
+  Residual risk: macOS/Windows builders if those become release hosts; C++ install-prefix SBOM is tag/dispatch only
+  Checksums SPDX Cosign SLSA path landed for Linux tags/dispatch; Syft install checksum-pinned; Release attaches artifacts.
 
 - [x] **GATE-VERSION-LIFECYCLE** — Upgrade downgrade deprecation support EOL policies published  
   State: `PROVATA_IN_CI` · Release target: `alpha`  

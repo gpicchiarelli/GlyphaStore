@@ -27,6 +27,7 @@ ceiling above *architectural prototype*. Authority for gates:
 - [ ] `scripts/package-release-claim.sh X.Y.Z <40-char-sha>`
 - [ ] Decide whether to **commit** `tests/fixtures/released/X.Y.Z/` as a permanent N−1 drop
 - [ ] Supply-chain workflow on tag: SBOM / checksums / Cosign / attestations as configured
+- [ ] Release workflow attaches SDK artifacts to the GitHub Release (prerelease wording)
 - [ ] Upload / retain CI artifacts under `engineering/evidence/` pointers in the claim YAML
 
 ## Honesty gates (do not skip)
@@ -45,5 +46,6 @@ ceiling above *architectural prototype*. Authority for gates:
 ## Related
 
 - [Compatibility and migration manual](../operations/compatibility-and-migration.md)
+- [GitHub branch-protection checklist](github-branch-protection.md)
 - [Final engineering report](final-engineering-report.md)
 - [Production readiness (generated)](../production-readiness.md)
