@@ -152,9 +152,37 @@ Writer threads, generation pins). `store_get_copy` median RSS ~240 MiB with
 - `Store::put_batch` + Writer sync coalesce (≤32 / publish) amortizes publication
   when the caller stages multiple same-shard mutations in one call. Lab median
   ~527 k ops/s (batch 32) vs ~372 k single put on Apple M4 — honest gain without
-  changing single-op semantics. Further single-op wins need generation slot pool ADR.
+  changing single-op semantics.
+- ADR 0035 (rejected): TLS shell freelist under existing publish protocol — mild
+  1t PUT gain, **−16% affine PUT 2t** on A/B; not shipped. Residual remains
+  Delta COW spine + Writer apply, not shell malloc alone.
+- `make_shared` co-allocation for generation shells, then embed `DeltaState` in
+  the same allocation: lab `store_put` ~370–378 k (vs ~344 k plain same day).
+  Affine stays in prior interleaved noise; still far from 600 k single-op target.
+- Writer sync volatile path attributes `worker_apply` vs `publish` when
+  `GLYPHASTORE_HOT_PATH_PHASES` is on. Lab: apply ~381 ns, publish ~640 ns,
+  caller `ack` ~3.0 µs (wake/schedule dominates the residual). Rejected:
+  post-sync Writer busy-spin (−50% `store_put`), sync-before-merge reorder
+  (no reliable 1t win), and conditional `writer_waiting` notify (A/B within
+  noise; sync PUT leaves the Writer parked so notify still fires). See
+  `benchmarks/results/local-macos-2026-08-02-sync-first/` and
+  `.../local-macos-2026-08-02-writer-waiting/`.
+- DeltaArena keeps segment pins in a `deque<SegmentPtr>` (stable raw addresses,
+  no per-pin `unique_ptr` shell). Moving `SegmentPtr` out of `ReadMutation` into
+  the arena was considered and deferred: `publish_incremental` may be retried
+  after `resource_exhausted`, and a consuming move would break pin validation on
+  retry unless publications were rebuilt.
+- Apply sub-phases wired: `encode_copy` (Segment append) and `index_publish`
+  (`Worker::publish`). Lab means: encode ~66 ns, index ~158 ns, outer
+  `worker_apply` ~514 ns, `publish` ~603 ns, `ack` ~2.7 µs (~64%). Removed
+  redundant second `encoded_record_size` inside encode when the caller already
+  sized the buffer (`encode_record(out, input, size)`). Encode is not the
+  binding limit.
 - Thread-local Delta COW freelist was measured and rejected (allocator/custom-deleter
   overhead regressed uniform parallel PUT on Apple Silicon).
 - Uniform multi-thread single-op PUT still below 1t PUT: combine `put_batch` with
   caller-side group-by-owner (or a future shard-bound session).
-- Consider ADR for generation slot pool (prototype) if measured publish cost remains dominant.
+- Full generation slot-pool publish protocol is **ADR 0036 (proposed)**: design bar +
+  V1–V14 matrix in `docs/adr/0036-generation-slot-pool-publish.md`. Production stays
+  on `shared_ptr` + ReadLease until that ADR is accepted and gates close. Prototype
+  reference remains `src/experimental/paired_shard.cpp` (lab only).

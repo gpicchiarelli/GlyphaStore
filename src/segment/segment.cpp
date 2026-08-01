@@ -1,6 +1,7 @@
 #include "glyphastore/segment/segment.hpp"
 
 #include "glyphastore/core/checked_math.hpp"
+#include "glyphastore/core/hot_path_phases.hpp"
 
 #include <cstring>
 #include <utility>
@@ -31,8 +32,11 @@ auto Segment::append(const RecordInput& input) -> Result<RecordRef> {
     const auto offset = write_offset_;
     const auto destination =
         std::span<std::byte>{storage_.get() + offset, static_cast<std::size_t>(*encoded_size)};
-    if (auto encoded = encode_record(destination, input); !encoded) {
-        return unexpected(encoded.error());
+    {
+        GS_PHASE_PUT(encode_copy);
+        if (auto encoded = encode_record(destination, input, *encoded_size); !encoded) {
+            return unexpected(encoded.error());
+        }
     }
     write_offset_ += *encoded_size;
     stats_.used_bytes = write_offset_;

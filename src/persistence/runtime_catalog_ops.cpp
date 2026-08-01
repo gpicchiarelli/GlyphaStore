@@ -1123,7 +1123,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             return mutation_failure(DurableMutationOutcome::not_committed, encoded_size.error());
         }
         worker.encode_scratch.resize(*encoded_size);
-        if (auto encoded = encode_record(worker.encode_scratch, input); !encoded) {
+        if (auto encoded = encode_record(worker.encode_scratch, input, *encoded_size); !encoded) {
             return mutation_failure(DurableMutationOutcome::not_committed, encoded.error());
         }
         // The mutation, not the Worker, owns encoded bytes across every

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <deque>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -210,7 +211,7 @@ class DeltaArena final {
             durable = true;
             pin = retain_durable_pin(*source.durable);
         } else if (source.opcode == Opcode::put && source.segment != nullptr) {
-            pin = retain_segment_pin(*source.segment, source.record);
+            pin = retain_segment_pin(SegmentPtr{*source.segment}, source.record);
         }
 
         auto& block = record_blocks_.back();
@@ -272,20 +273,20 @@ class DeltaArena final {
         return key_blocks_.back().bytes.get() + key_blocks_.back().used;
     }
 
-    [[nodiscard]] auto retain_segment_pin(const SegmentPtr& source, const RecordRef& record)
-        -> const SegmentPtr* {
-        if (!segment_pins_.empty() && same_segment(*segment_pins_.back(), record)) {
-            return segment_pins_.back().get();
+    // Pins live in a deque so element addresses stay stable across push_back
+    // (DeltaRecord::pin stores a raw SegmentPtr*). By-value intake lets callers
+    // move a SegmentPtr in; steady-state same-segment hits avoid any insert.
+    [[nodiscard]] auto retain_segment_pin(SegmentPtr source, const RecordRef& record) -> const SegmentPtr* {
+        if (!segment_pins_.empty() && same_segment(segment_pins_.back(), record)) {
+            return &segment_pins_.back();
         }
         const auto found = std::find_if(segment_pins_.begin(), segment_pins_.end(),
-                                        [&](const auto& pin) { return same_segment(*pin, record); });
+                                        [&](const auto& pin) { return same_segment(pin, record); });
         if (found != segment_pins_.end()) {
-            return found->get();
+            return &*found;
         }
-        auto pin = std::make_unique<SegmentPtr>(source);
-        const auto* result = pin.get();
-        segment_pins_.push_back(std::move(pin));
-        return result;
+        segment_pins_.push_back(std::move(source));
+        return &segment_pins_.back();
     }
 
     [[nodiscard]] auto retain_durable_pin(const DurableReadPin& source) -> const DurableReadPin* {
@@ -309,7 +310,7 @@ class DeltaArena final {
     std::size_t allocated_key_bytes_{};
     std::vector<DeltaRecordBlock> record_blocks_;
     std::vector<DeltaKeyBlock> key_blocks_;
-    std::vector<std::unique_ptr<SegmentPtr>> segment_pins_;
+    std::deque<SegmentPtr> segment_pins_;
     std::vector<std::unique_ptr<DurableReadPin>> durable_pins_;
 };
 
@@ -843,7 +844,7 @@ class DeltaState final {
     friend class DeltaBuilder;
 };
 
-[[nodiscard]] auto make_empty_delta(const std::size_t maximum_entries) -> std::shared_ptr<const DeltaState> {
+[[nodiscard]] auto make_empty_delta(const std::size_t maximum_entries) -> DeltaState {
     if (maximum_entries > std::numeric_limits<std::size_t>::max() - kMaximumPublicationBatch) {
         throw std::bad_alloc{};
     }
@@ -858,24 +859,22 @@ class DeltaState final {
     const auto page_count = capacity / kDeltaPageSlots;
     auto arena = std::make_shared<DeltaArena>(maximum_entries);
     if (page_count <= kFlatDeltaMaximumPages) {
-        return std::make_shared<const DeltaState>(
-            capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>(page_count),
-            std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{}, std::move(arena));
+        return DeltaState{capacity, maximum_entries, 0,
+                          std::vector<std::shared_ptr<const DeltaPage>>(page_count),
+                          std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{}, std::move(arena)};
     }
     const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
     const auto chunk_count = (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
-    return std::make_shared<const DeltaState>(
-        capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
-        std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count), std::move(arena));
+    return DeltaState{capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
+                      std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count), std::move(arena)};
 }
 
 class DeltaBuilder final {
   public:
-    explicit DeltaBuilder(std::shared_ptr<const DeltaState> previous,
-                          std::shared_ptr<DeltaArena> allocation_arena = {})
-        : previous_(std::move(previous)), flat_pages_(previous_->flat_pages_),
-          directory_chunks_(previous_->directory_chunks_), primary_arena_(previous_->primary_arena_),
-          secondary_arena_(previous_->secondary_arena_), size_(previous_->size_) {
+    explicit DeltaBuilder(const DeltaState& previous, std::shared_ptr<DeltaArena> allocation_arena = {})
+        : previous_(&previous), flat_pages_(previous.flat_pages_),
+          directory_chunks_(previous.directory_chunks_), primary_arena_(previous.primary_arena_),
+          secondary_arena_(previous.secondary_arena_), size_(previous.size_) {
         if (allocation_arena) {
             if (allocation_arena != primary_arena_ && allocation_arena != secondary_arena_) {
                 if (secondary_arena_) {
@@ -954,10 +953,9 @@ class DeltaBuilder final {
         }
     }
 
-    [[nodiscard]] auto freeze() && -> std::shared_ptr<const DeltaState> {
-        return std::make_shared<const DeltaState>(previous_->capacity_, previous_->maximum_entries_, size_,
-                                                  std::move(flat_pages_), std::move(directory_chunks_),
-                                                  std::move(primary_arena_), std::move(secondary_arena_));
+    [[nodiscard]] auto freeze() && -> DeltaState {
+        return DeltaState{previous_->capacity_, previous_->maximum_entries_, size_, std::move(flat_pages_),
+                          std::move(directory_chunks_), std::move(primary_arena_), std::move(secondary_arena_)};
     }
 
     [[nodiscard]] auto allocation_arena() const noexcept -> const std::shared_ptr<DeltaArena>& {
@@ -1035,7 +1033,7 @@ class DeltaBuilder final {
         return *page;
     }
 
-    std::shared_ptr<const DeltaState> previous_;
+    const DeltaState* previous_{};
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
     std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks_;
     std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryChunk>>> mutable_chunks_;
@@ -1053,15 +1051,14 @@ struct PairReadMerge::State final {
     enum class Phase : std::uint8_t { initialize, base, delta, ready };
 
     State(std::shared_ptr<const PairReadGeneration> merge_cut,
-          std::unique_ptr<IncrementalBaseBuilder> next_base, std::shared_ptr<const DeltaState> post,
-          const std::size_t maximum_post) noexcept
-        : cut(std::move(merge_cut)), current(cut), builder(std::move(next_base)), post_delta(std::move(post)),
-          maximum_post_entries(maximum_post) {}
+          std::unique_ptr<IncrementalBaseBuilder> next_base, DeltaState post, const std::size_t maximum_post)
+        : cut(std::move(merge_cut)), current(cut), builder(std::move(next_base)),
+          post_delta(std::move(post)), maximum_post_entries(maximum_post) {}
 
     std::shared_ptr<const PairReadGeneration> cut;
     std::shared_ptr<const PairReadGeneration> current;
     std::unique_ptr<IncrementalBaseBuilder> builder;
-    std::shared_ptr<const DeltaState> post_delta;
+    DeltaState post_delta;
     std::size_t maximum_post_entries{};
     std::size_t base_cursor{};
     std::size_t delta_cursor{};
@@ -1075,16 +1072,37 @@ auto PairReadMerge::operator=(PairReadMerge&&) noexcept -> PairReadMerge& = defa
 
 PairReadGeneration::PairReadGeneration(const WorkerRoutingState routing,
                                        std::shared_ptr<const ImmutableReadIndex> base,
-                                       std::shared_ptr<const DeltaState> delta, const std::uint64_t epoch,
+                                       const DeltaState* delta, const std::uint64_t epoch,
                                        const std::uint64_t visible_through) noexcept
-    : routing_(routing), base_(std::move(base)), delta_(std::move(delta)), epoch_(epoch),
+    : routing_(routing), base_(std::move(base)), delta_(delta), epoch_(epoch),
       visible_through_(visible_through) {}
+
+struct PairReadGenerationEnableShared final : PairReadGeneration {
+    PairReadGenerationEnableShared(WorkerRoutingState routing,
+                                   std::shared_ptr<const ImmutableReadIndex> base, DeltaState delta,
+                                   const std::uint64_t epoch, const std::uint64_t visible_through) noexcept
+        : PairReadGeneration(routing, std::move(base), nullptr, epoch, visible_through),
+          delta_storage_(std::move(delta)) {
+        bind_delta(&delta_storage_);
+    }
+
+    DeltaState delta_storage_;
+};
+
+[[nodiscard]] auto make_shared_generation(WorkerRoutingState routing,
+                                          std::shared_ptr<const ImmutableReadIndex> base, DeltaState delta,
+                                          const std::uint64_t epoch, const std::uint64_t visible_through)
+    -> std::shared_ptr<const PairReadGeneration> {
+    // Co-allocate generation shell + embedded DeltaState in one control block.
+    return std::make_shared<PairReadGenerationEnableShared>(routing, std::move(base), std::move(delta),
+                                                            epoch, visible_through);
+}
 
 auto PairReadGeneration::empty(const WorkerRoutingState routing)
     -> Result<std::shared_ptr<const PairReadGeneration>> try {
-    return std::shared_ptr<const PairReadGeneration>{
-        new PairReadGeneration{routing, std::make_shared<const ImmutableReadIndex>(),
-                               make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries), 0, 0}};
+    return make_shared_generation(routing, std::make_shared<const ImmutableReadIndex>(),
+                                  make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries), 0,
+                                  0);
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "read generation allocation failed");
 } catch (...) {
@@ -1120,9 +1138,9 @@ auto PairReadGeneration::build_durable_snapshot(
     for (const auto& record : records) {
         visible_through = std::max(visible_through, record.reference().sequence.value);
     }
-    return std::shared_ptr<const PairReadGeneration>{new PairReadGeneration{
-        routing, std::make_shared<const ImmutableReadIndex>(records),
-        make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries), epoch, visible_through}};
+    return make_shared_generation(routing, std::make_shared<const ImmutableReadIndex>(records),
+                                  make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries),
+                                  epoch, visible_through);
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "durable read generation allocation failed");
 } catch (...) {
@@ -1143,7 +1161,7 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
         return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
     }
 
-    DeltaBuilder builder{previous->delta_};
+    DeltaBuilder builder{*previous->delta_};
     auto visible_through = previous->visible_through_;
     for (const auto& mutation : mutations) {
         const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
@@ -1166,15 +1184,14 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
 
     auto next_delta = std::move(builder).freeze();
     auto next_base = previous->base_;
-    if (next_delta->size() >= merge_delta_entries) {
+    if (next_delta.size() >= merge_delta_entries) {
         auto merged = next_base->records();
-        next_delta->for_each([&](const ReadRecordView record) { apply_record(merged, materialize(record)); });
+        next_delta.for_each([&](const ReadRecordView record) { apply_record(merged, materialize(record)); });
         next_base = std::make_shared<const ImmutableReadIndex>(std::move(merged));
         next_delta = make_empty_delta(std::max(merge_delta_entries, previous->delta_->maximum_entries()));
     }
-    return std::shared_ptr<const PairReadGeneration>{
-        new PairReadGeneration{previous->routing_, std::move(next_base), std::move(next_delta),
-                               previous->epoch_ + 1U, visible_through}};
+    return make_shared_generation(previous->routing_, std::move(next_base), std::move(next_delta),
+                                  previous->epoch_ + 1U, visible_through);
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "read generation publication allocation failed");
 } catch (...) {
@@ -1203,8 +1220,8 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
     if (merge != nullptr) {
         post_builder.emplace(merge->state_->post_delta);
     }
-    DeltaBuilder current_builder{previous->delta_, post_builder ? post_builder->allocation_arena()
-                                                                : std::shared_ptr<DeltaArena>{}};
+    DeltaBuilder current_builder{*previous->delta_, post_builder ? post_builder->allocation_arena()
+                                                                 : std::shared_ptr<DeltaArena>{}};
     auto visible_through = previous->visible_through_;
     for (const auto& mutation : mutations) {
         const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
@@ -1233,14 +1250,14 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
     }
 
     auto next_delta = std::move(current_builder).freeze();
-    std::shared_ptr<const DeltaState> next_post;
+    std::optional<DeltaState> next_post;
     if (post_builder) {
-        next_post = std::move(*post_builder).freeze();
+        next_post.emplace(std::move(*post_builder).freeze());
     }
-    auto next = std::shared_ptr<const PairReadGeneration>{new PairReadGeneration{
-        previous->routing_, previous->base_, std::move(next_delta), previous->epoch_ + 1U, visible_through}};
+    auto next = make_shared_generation(previous->routing_, previous->base_, std::move(next_delta),
+                                       previous->epoch_ + 1U, visible_through);
     if (merge != nullptr) {
-        merge->state_->post_delta = std::move(next_post);
+        merge->state_->post_delta = std::move(*next_post);
         merge->state_->current = next;
     }
     return next;
@@ -1341,9 +1358,9 @@ auto PairReadGeneration::finish_incremental_merge(std::shared_ptr<const PairRead
     }
     auto next_base = std::move(*merge.state_->builder).freeze();
     merge.state_->builder.reset();
-    return std::shared_ptr<const PairReadGeneration>{
-        new PairReadGeneration{current->routing_, std::move(next_base), merge.state_->post_delta,
-                               current->epoch_ + 1U, current->visible_through_}};
+    return make_shared_generation(current->routing_, std::move(next_base),
+                                  std::move(merge.state_->post_delta), current->epoch_ + 1U,
+                                  current->visible_through_);
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "incremental read merge publication allocation failed");
 } catch (...) {
@@ -1355,7 +1372,7 @@ auto PairReadGeneration::merge_ready(const PairReadMerge& merge) noexcept -> boo
 }
 
 auto PairReadGeneration::merge_post_entries(const PairReadMerge& merge) noexcept -> std::size_t {
-    return merge.state_ ? merge.state_->post_delta->size() : 0U;
+    return merge.state_ ? merge.state_->post_delta.size() : 0U;
 }
 
 auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& current,
@@ -1373,10 +1390,10 @@ auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& curre
     if (!merge->state_) {
         return false;
     }
-    const auto post_size = merge->state_->post_delta->size();
+    const auto post_size = merge->state_->post_delta.size();
     return post_size <= merge->state_->maximum_post_entries &&
            maximum_new_entries <= merge->state_->maximum_post_entries - post_size &&
-           maximum_new_entries <= merge->state_->post_delta->available_record_versions();
+           maximum_new_entries <= merge->state_->post_delta.available_record_versions();
 }
 
 auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) const -> Result<OwnedValue> {

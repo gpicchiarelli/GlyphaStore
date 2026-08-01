@@ -144,6 +144,26 @@ GLYPHA_TEST("record codec supports empty key and value without unsafe extents") 
     GLYPHA_REQUIRE(decoded->value.empty());
 }
 
+GLYPHA_TEST("record encode with precomputed size matches encoded_record_size path") {
+    const glyphastore::RecordInput input{
+        .sequence = glyphastore::SequenceNumber{9},
+        .key = as_bytes("pre"),
+        .value = as_bytes("size"),
+    };
+    const auto size = glyphastore::encoded_record_size(input);
+    GLYPHA_REQUIRE(size.has_value());
+
+    std::vector<std::byte> via_size(*size, std::byte{0});
+    std::vector<std::byte> via_compute(*size, std::byte{0});
+    GLYPHA_REQUIRE(glyphastore::encode_record(via_size, input, *size).has_value());
+    GLYPHA_REQUIRE(glyphastore::encode_record(via_compute, input).has_value());
+    GLYPHA_REQUIRE(via_size == via_compute);
+
+    const auto decoded = glyphastore::decode_record(via_size);
+    GLYPHA_REQUIRE(decoded.has_value());
+    GLYPHA_REQUIRE(decoded->key_string() == "pre");
+}
+
 GLYPHA_TEST("crc32c matches the standard Castagnoli test vector") {
     static constexpr std::array<char, 9> payload{'1', '2', '3', '4', '5', '6', '7', '8', '9'};
     const auto bytes =

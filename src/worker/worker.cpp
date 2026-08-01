@@ -1,5 +1,6 @@
 #include "glyphastore/worker/worker.hpp"
 
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 
 #include <algorithm>
@@ -119,6 +120,7 @@ auto Worker::read_ref(const RecordRef& ref) const -> Result<RecordView> {
 }
 
 auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segment) -> Status {
+    GS_PHASE_PUT(index_publish);
     if (segment.id() != ref.segment_id || segment.owner() != id_) {
         return fail(ErrorCode::invalid_reference,
                     "new record reference targets a segment not owned by this worker");

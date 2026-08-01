@@ -425,8 +425,7 @@ auto ShardPairRuntime::try_submit(const AsyncMutationRequest& request) noexcept
     lane.admitted.fetch_add(1U, std::memory_order_relaxed);
     atomic_max(lane.maximum_queue_depth, lane.queue.size());
     atomic_max(lane.maximum_queued_bytes, next_bytes);
-    lane.signal.fetch_add(1U, std::memory_order_release);
-    lane.signal.notify_one();
+    wake(lane);
     return admission_bytes;
 }
 
@@ -1012,41 +1011,50 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     std::size_t publication_count = 0;
                     bool store_mutated = false;
                     try {
-                        for (std::size_t index = 0; index < chunk_size; ++index) {
-                            auto* node = chunk[index];
-                            GS_FAULT_SITE(mutate);
-                            const auto& key = *node->key;
-                            auto published =
-                                node->kind == MutationKind::put
-                                    ? detail::StoreAccess::put_volatile_published(
-                                          store_, shard, key, node->value, node->expire_at_ns,
-                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard)
-                                    : detail::StoreAccess::erase_volatile_published(
-                                          store_, shard, key,
-                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard);
-                            if (!published) {
-                                node->status = Status{unexpected(published.error())};
-                                continue;
+                        {
+                            GS_PHASE_PUT(worker_apply);
+                            for (std::size_t index = 0; index < chunk_size; ++index) {
+                                auto* node = chunk[index];
+                                GS_FAULT_SITE(mutate);
+                                const auto& key = *node->key;
+                                auto published =
+                                    node->kind == MutationKind::put
+                                        ? detail::StoreAccess::put_volatile_published(
+                                              store_, shard, key, node->value, node->expire_at_ns,
+                                              detail::StoreAccess::PublishedAdmission::caller_holds_guard)
+                                        : detail::StoreAccess::erase_volatile_published(
+                                              store_, shard, key,
+                                              detail::StoreAccess::PublishedAdmission::caller_holds_guard);
+                                if (!published) {
+                                    node->status = Status{unexpected(published.error())};
+                                    continue;
+                                }
+                                store_mutated = true;
+                                publications[publication_count] = ReadMutation{
+                                    .key = key,
+                                    .record = published->record,
+                                    .segment = std::move(published->segment),
+                                    .opcode = published->opcode};
+                                published_nodes[publication_count] = node;
+                                ++publication_count;
                             }
-                            store_mutated = true;
-                            publications[publication_count] = ReadMutation{
-                                .key = key,
-                                .record = published->record,
-                                .segment = std::move(published->segment),
-                                .opcode = published->opcode};
-                            published_nodes[publication_count] = node;
-                            ++publication_count;
                         }
                         if (publication_count != 0) {
-                            auto next = PairReadGeneration::publish_incremental(
-                                lane.writer_generation,
-                                std::span{publications.data(), publication_count}, lane.read_merge.get());
-                            if (!next && next.error().code == ErrorCode::resource_exhausted) {
-                                reclaim_quiescent();
-                                process_merge();
+                            Result<std::shared_ptr<const PairReadGeneration>> next{fail(
+                                ErrorCode::internal_error, "read publication not attempted")};
+                            {
+                                GS_PHASE_PUT(publish);
                                 next = PairReadGeneration::publish_incremental(
                                     lane.writer_generation,
                                     std::span{publications.data(), publication_count}, lane.read_merge.get());
+                                if (!next && next.error().code == ErrorCode::resource_exhausted) {
+                                    reclaim_quiescent();
+                                    process_merge();
+                                    next = PairReadGeneration::publish_incremental(
+                                        lane.writer_generation,
+                                        std::span{publications.data(), publication_count},
+                                        lane.read_merge.get());
+                                }
                             }
                             if (!next) {
                                 publish_fail_closed();

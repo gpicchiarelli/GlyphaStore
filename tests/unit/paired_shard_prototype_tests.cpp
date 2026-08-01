@@ -2,10 +2,15 @@
 #include "experimental/spsc_ring.hpp"
 #include "test.hpp"
 
+// ADR 0036 (proposed) — prototype evidence for a future generation slot-pool.
+// These tests exercise src/experimental/paired_shard.cpp only. They do not authorize
+// production ShardPairRuntime landing; see docs/adr/0036-generation-slot-pool-publish.md.
+
 #include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -169,6 +174,7 @@ GLYPHA_TEST("paired delta capacity covers one full batch beyond a small merge th
 }
 
 GLYPHA_TEST("paired QSBR retires generations only across Reader turn boundaries") {
+    // ADR 0036 prototype gate analogue: V2/V3 (turn-based quiescence).
     auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(128, 32);
     GLYPHA_REQUIRE(pair.has_value());
     for (std::uint64_t index = 0; index < 512; ++index) {
@@ -245,7 +251,149 @@ GLYPHA_TEST("paired Writer batch policy validates bounds and supports zero-wait 
     GLYPHA_REQUIRE(stats.writer_batch_deadline_closes == 0);
 }
 
+GLYPHA_TEST("ADR 0036 V1 prototype: adopt publishes one immutable generation atomically") {
+    // Publish release ↔ Reader acquire: GET stays on the adopted generation until the
+    // next adopt_publication; epoch/visible_through move together (no torn pair).
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    GLYPHA_REQUIRE((*pair)->try_submit_put(1, "atomic-key", bytes("first")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    (*pair)->adopt_publication();
+    const auto epoch_first = (*pair)->stats().reader_epoch;
+    const auto visible_first = (*pair)->stats().visible_through;
+    const auto first = (*pair)->get("atomic-key");
+    GLYPHA_REQUIRE(first.has_value());
+    GLYPHA_REQUIRE(text(*first) == "first");
+    GLYPHA_REQUIRE(epoch_first == (*pair)->stats().writer_epoch);
+    GLYPHA_REQUIRE(visible_first == first->sequence);
+
+    GLYPHA_REQUIRE((*pair)->try_submit_put(2, "atomic-key", bytes("second")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    // Writer has advanced; Reader still observes the previously adopted generation.
+    GLYPHA_REQUIRE((*pair)->stats().writer_epoch > epoch_first);
+    GLYPHA_REQUIRE((*pair)->stats().reader_epoch == epoch_first);
+    const auto stale = (*pair)->get("atomic-key");
+    GLYPHA_REQUIRE(stale.has_value());
+    GLYPHA_REQUIRE(text(*stale) == "first");
+    GLYPHA_REQUIRE((*pair)->stats().visible_through == visible_first);
+
+    (*pair)->adopt_publication();
+    const auto epoch_second = (*pair)->stats().reader_epoch;
+    const auto visible_second = (*pair)->stats().visible_through;
+    const auto second = (*pair)->get("atomic-key");
+    GLYPHA_REQUIRE(second.has_value());
+    GLYPHA_REQUIRE(text(*second) == "second");
+    GLYPHA_REQUIRE(epoch_second == (*pair)->stats().writer_epoch);
+    GLYPHA_REQUIRE(epoch_second > epoch_first);
+    GLYPHA_REQUIRE(visible_second == second->sequence);
+    GLYPHA_REQUIRE(visible_second > visible_first);
+}
+
+GLYPHA_TEST("ADR 0036 V3 prototype: pinned generation bytes survive publish and retire races") {
+    // Two-boundary retire while a pin holds the pre-storm generation: spans from that
+    // generation remain readable; reclaim is blocked (pin_blocks) until reset.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+    GLYPHA_REQUIRE((*pair)->try_submit_put(1, "pin-race", bytes("pinned-value")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    (*pair)->adopt_publication();
+    auto pin = (*pair)->pin_read_generation();
+    GLYPHA_REQUIRE(static_cast<bool>(pin));
+    const auto pinned = (*pair)->get("pin-race");
+    GLYPHA_REQUIRE(pinned.has_value());
+    GLYPHA_REQUIRE(text(*pinned) == "pinned-value");
+    const auto pinned_copy = *pinned;
+
+    for (std::uint64_t index = 0; index < 64; ++index) {
+        const auto value = std::string{"storm-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index + 2U, "pin-race", bytes(value)) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+
+    // Span into the pinned generation must remain valid across the storm.
+    GLYPHA_REQUIRE(text(pinned_copy) == "pinned-value");
+    const auto stats = (*pair)->stats();
+    GLYPHA_REQUIRE(stats.generation_output_pins == 1);
+    GLYPHA_REQUIRE(stats.generation_retire_pin_blocks > 0);
+    GLYPHA_REQUIRE(stats.writer_epoch > stats.reader_epoch || stats.publications > 1);
+
+    (*pair)->adopt_publication();
+    const auto latest = (*pair)->get("pin-race");
+    GLYPHA_REQUIRE(latest.has_value());
+    GLYPHA_REQUIRE(text(*latest) == "storm-63");
+    // Old span still valid until pin drop.
+    GLYPHA_REQUIRE(text(pinned_copy) == "pinned-value");
+    pin.reset();
+    GLYPHA_REQUIRE((*pair)->stats().generation_output_pins == 0);
+}
+
+GLYPHA_TEST("ADR 0036 V9 prototype: slot-pool starvation increments publication backpressure") {
+    // Starve QSBR (no adopt) with one-publication-per-mutation so the fixed generation
+    // pool cannot reclaim. Writer must signal publication_backpressure rather than
+    // silently overwriting a live slot. Prototype still yields while waiting for a free
+    // slot — production landing must bound that wait (ADR 0036 V9 residual).
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        64, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    std::uint64_t submitted = 0;
+    std::uint64_t completed = 0;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (std::chrono::steady_clock::now() < deadline &&
+           (*pair)->stats().publication_backpressure == 0) {
+        if (submitted < 1'024) {
+            const auto status =
+                (*pair)->try_submit_put(submitted, "pool-pressure", bytes("x"));
+            if (status == glyphastore::experimental::PrototypeSubmitStatus::submitted) {
+                ++submitted;
+            }
+        }
+        if (auto completion = (*pair)->try_pop_completion()) {
+            GLYPHA_REQUIRE(!completion->error.has_value());
+            ++completed;
+        } else {
+            std::this_thread::yield();
+        }
+    }
+
+    const auto backpressure = (*pair)->stats().publication_backpressure;
+    GLYPHA_REQUIRE(backpressure > 0);
+    GLYPHA_REQUIRE(submitted > 0);
+
+    // Advance Reader turns so retired slots can free and the Writer can drain.
+    for (int turn = 0; turn < 512; ++turn) {
+        (*pair)->adopt_publication();
+        while (auto completion = (*pair)->try_pop_completion()) {
+            GLYPHA_REQUIRE(!completion->error.has_value());
+            ++completed;
+        }
+        if (completed == submitted && (*pair)->stats().mutation_queue_depth == 0) {
+            break;
+        }
+    }
+    GLYPHA_REQUIRE(completed == submitted);
+    GLYPHA_REQUIRE((*pair)->stats().generation_live >= 1);
+    GLYPHA_REQUIRE((*pair)->stats().generation_high_watermark <=
+                   glyphastore::experimental::VolatileShardPairPrototype::kQueueCapacity + 2U);
+}
+
 GLYPHA_TEST("paired slow-output pin delays generation retirement across Reader turns") {
+    // ADR 0036 prototype gate analogue: V4 (pin blocks reclaim).
     auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(128, 32);
     GLYPHA_REQUIRE(pair.has_value());
     GLYPHA_REQUIRE((*pair)->try_submit_put(1, "pinned", bytes("old")) ==
@@ -270,6 +418,7 @@ GLYPHA_TEST("paired slow-output pin delays generation retirement across Reader t
 }
 
 GLYPHA_TEST("paired volatile shutdown drains submission and closes admission") {
+    // ADR 0036 prototype gate analogue: V5 (shutdown drain).
     auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(64, 16);
     GLYPHA_REQUIRE(pair.has_value());
     GLYPHA_REQUIRE((*pair)->try_submit_put(1, "shutdown", bytes("visible")) ==

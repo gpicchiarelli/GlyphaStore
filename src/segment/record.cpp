@@ -103,22 +103,34 @@ auto encoded_record_size(const RecordInput& input) -> Result<std::size_t> {
     return compute_encoded_size(input);
 }
 
-auto encode_record(const std::span<std::byte> out, const RecordInput& input) -> Status {
-    const auto size = compute_encoded_size(input);
-    if (!size) {
-        return unexpected(size.error());
+auto encode_record(const std::span<std::byte> out, const RecordInput& input,
+                   const std::size_t encoded_size) -> Status {
+    if (auto valid = validate_record_input(input); !valid) {
+        return valid;
     }
-    if (out.size() < *size) {
-        return fail(ErrorCode::invalid_argument, "encode buffer is too small for the record");
+    const auto minimum = kEncodedRecordHeaderSize + input.key.size() + input.value.size();
+    if (encoded_size < minimum || encoded_size % kRecordAlignment != 0 || out.size() < encoded_size ||
+        encoded_size > kMaxNormalRecordSize) {
+        return fail(ErrorCode::invalid_argument, "encode buffer size is inconsistent with the record");
     }
+#ifndef NDEBUG
+    const auto checked = compute_encoded_size(input);
+    if (!checked) {
+        return unexpected(checked.error());
+    }
+    if (*checked != encoded_size) {
+        return fail(ErrorCode::invalid_argument,
+                    "encode_record encoded_size does not match encoded_record_size(input)");
+    }
+#endif
 
     const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);
     const auto type_raw = static_cast<std::uint16_t>(input.type);
-    const auto encoded = out.first(*size);
+    const auto encoded = out.first(encoded_size);
     put_u32(encoded, 0, kRecordMagic);
     put_u16(encoded, 4, kRecordFormatVersion);
     put_u16(encoded, 6, kEncodedRecordHeaderSize);
-    put_u32(encoded, 8, static_cast<std::uint32_t>(*size));
+    put_u32(encoded, 8, static_cast<std::uint32_t>(encoded_size));
     put_u32(encoded, 12, static_cast<std::uint32_t>(input.key.size()));
     put_u32(encoded, 16, static_cast<std::uint32_t>(input.value.size()));
     put_u32(encoded, 20, 0);
@@ -136,11 +148,19 @@ auto encode_record(const std::span<std::byte> out, const RecordInput& input) -> 
                     input.value.size());
     }
     const auto payload_end = kEncodedRecordHeaderSize + input.key.size() + input.value.size();
-    if (payload_end < *size) {
-        std::memset(encoded.data() + payload_end, 0, *size - payload_end);
+    if (payload_end < encoded_size) {
+        std::memset(encoded.data() + payload_end, 0, encoded_size - payload_end);
     }
     put_u32(encoded, 20, crc32c_with_zeroed_checksum_field(encoded));
     return {};
+}
+
+auto encode_record(const std::span<std::byte> out, const RecordInput& input) -> Status {
+    const auto size = compute_encoded_size(input);
+    if (!size) {
+        return unexpected(size.error());
+    }
+    return encode_record(out, input, *size);
 }
 
 auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
@@ -149,7 +169,7 @@ auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>> {
         return unexpected(size.error());
     }
     std::vector<std::byte> bytes(*size, std::byte{0});
-    if (auto encoded = encode_record(bytes, input); !encoded) {
+    if (auto encoded = encode_record(bytes, input, *size); !encoded) {
         return unexpected(encoded.error());
     }
     return bytes;

@@ -28,6 +28,7 @@ enum class GetPhase : std::uint8_t {
 enum class PutPhase : std::uint8_t {
     admit = 0,
     encode_copy,
+    index_publish,
     enqueue,
     worker_apply,
     publish,
@@ -74,6 +75,8 @@ enum class TcpPhase : std::uint8_t {
         return "admit";
     case PutPhase::encode_copy:
         return "encode_copy";
+    case PutPhase::index_publish:
+        return "index_publish";
     case PutPhase::enqueue:
         return "enqueue";
     case PutPhase::worker_apply:

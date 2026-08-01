@@ -106,6 +106,39 @@ GLYPHA_TEST("paired Store concurrent read-after-write keeps adopted generations 
     GLYPHA_REQUIRE(store.close().has_value());
 }
 
+GLYPHA_TEST("paired Store concurrent GET observes live generation under overwrite storm") {
+    // ADR 0036 V2/V3 baseline under production shared_ptr + ReadLease (not slot-pool).
+    // Slot-pool landing must keep this class of race green (see ADR 0036 verification matrix).
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string key = "overwrite-storm";
+    GLYPHA_REQUIRE(store.put(key, bytes("seed")).has_value());
+
+    std::atomic_bool stop{false};
+    std::atomic_bool failed{false};
+    std::thread reader{[&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            const auto got = store.get(key);
+            if (!got.has_value() || got->bytes.empty()) {
+                failed.store(true, std::memory_order_relaxed);
+                return;
+            }
+        }
+    }};
+    for (std::size_t write = 0; write < 8'192; ++write) {
+        const auto value = "v-" + std::to_string(write);
+        if (!store.put(key, bytes(value)).has_value()) {
+            failed.store(true, std::memory_order_relaxed);
+            break;
+        }
+    }
+    stop.store(true, std::memory_order_release);
+    reader.join();
+    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
 GLYPHA_TEST("paired Store put_batch publishes once per shard and keeps RAW") {
     auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 2}});
     GLYPHA_REQUIRE(opened.has_value());

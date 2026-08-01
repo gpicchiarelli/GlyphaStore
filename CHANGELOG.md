@@ -1,5 +1,37 @@
 ## [Unreleased]
 
+- ADR 0036 (proposed): generation slot-pool publish/reclaim design bar and V1–V14
+  verification matrix before any production protocol swap. Default paired path
+  unchanged (`shared_ptr` + ReadLease). See
+  `docs/adr/0036-generation-slot-pool-publish.md`.
+- Record encode: `encode_record(out, input, encoded_size)` avoids a second
+  `encoded_record_size` pass on Segment append and durable encode-scratch paths.
+  Bytes unchanged; release validates input + extent; debug asserts size match.
+  Lab attribution (`GLYPHASTORE_HOT_PATH_PHASES`): `encode_copy` ~66 ns,
+  `index_publish` ~158 ns inside Writer apply; `ack` still ~64% of PUT section.
+  Evidence: `benchmarks/results/local-macos-2026-08-02-encode-size/`.
+- Embed `DeltaState` in the `make_shared` generation allocation (one heap block
+  per publish for shell + delta). Wire Writer `worker_apply` / `publish` phase
+  scopes on sync volatile PUT. Lab `store_put` ~370–378 k vs prior plain ~344 k
+  on Apple M4; affine within prior interleaved noise. Phase dump: apply ~381 ns,
+  publish ~640 ns, ack wait ~3 µs (scheduling residual). Rejected Writer
+  post-sync spin, sync-before-merge reorder, and conditional `writer_waiting`
+  notify (A/B noise / no reliable win; see
+  `benchmarks/results/local-macos-2026-08-02-writer-waiting/`). Evidence:
+  `benchmarks/results/local-macos-2026-08-02-embed-delta/` and
+  `.../local-macos-2026-08-02-sync-first/`.
+- DeltaArena segment pins: store `SegmentPtr` by value in a `deque` (stable
+  addresses for `DeltaRecord::pin`) instead of `unique_ptr<SegmentPtr>` per new
+  pin — one fewer heap allocation on cold pin insert; steady-state same-segment
+  hits unchanged.
+- Co-allocate `PairReadGeneration` object + `shared_ptr` control block via
+  `make_shared` / private helper (no freelist, no custom deleter).
+  Interleaved affine PUT A/B neutral; mild 1t PUT gain. Lab:
+  `benchmarks/results/local-macos-2026-08-02-make-shared-gen/`.
+- ADR 0035 (rejected): TLS `PairReadGeneration` shell freelist under the existing
+  publish protocol. Same-machine A/B on Apple M4 showed mild 1t PUT gain but
+  **−16% worker-affine PUT 2t**; not shipped. Evidence under
+  `benchmarks/results/local-macos-2026-08-02-gen-shell(-ab-baseline)/`.
 - Add `Store::put_batch` with paired Writer sync coalesce (≤32 mutations per
   publish, stack chunking, no early ACK). Same-shard batches share one epoch;
   cross-shard groups run independently. Lab `store_put_batch` ~527 k ops/s vs

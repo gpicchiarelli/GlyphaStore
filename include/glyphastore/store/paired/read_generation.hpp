@@ -32,7 +32,9 @@ class PairReadMerge;
 
 // Immutable two-level read view published by one paired Writer and adopted by
 // its Reader. GET performs at most one delta lookup and one base lookup.
-class PairReadGeneration final {
+// Not marked final: a private EnableShared derived type exists solely so
+// make_shared can co-allocate the object and control block.
+class PairReadGeneration {
   public:
     static constexpr std::size_t kMaximumIncrementalDeltaEntries = 40'960;
 
@@ -99,15 +101,23 @@ class PairReadGeneration final {
                            std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
                            std::uint64_t epoch, std::uint64_t visible_floor)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
+    // Generation + embedded DeltaState are co-allocated in the .cpp via a private
+    // derived helper. delta_ points into that storage for the object's lifetime.
     PairReadGeneration(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
-                       std::shared_ptr<const DeltaState> delta, std::uint64_t epoch,
+                       const DeltaState* delta, std::uint64_t epoch,
                        std::uint64_t visible_through) noexcept;
+    void bind_delta(const DeltaState* delta) noexcept {
+        delta_ = delta;
+    }
 
     WorkerRoutingState routing_{};
     std::shared_ptr<const ImmutableReadIndex> base_;
-    std::shared_ptr<const DeltaState> delta_;
+    const DeltaState* delta_{};
     std::uint64_t epoch_{};
     std::uint64_t visible_through_{};
+
+    // Allow the .cpp co-allocation helper to construct and bind embedded delta storage.
+    friend struct PairReadGenerationEnableShared;
 };
 
 // Opaque Writer-owned state. It is never published to or touched by Reader.

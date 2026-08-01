@@ -20,6 +20,10 @@ Companion to [hot-path-performance-2026-08-01.md](hot-path-performance-2026-08-0
 | Global mutex around phase counters | Would distort the paths being measured |
 | Thread-local DeltaPage/Block/Chunk freelist with custom `shared_ptr` deleter | Measured regression on uniform parallel PUT (Apple Silicon lab); allocator/custom-deleter tax exceeded reuse benefit |
 | Expecting sync Writer coalesce alone to lift blocking `Store::put` | Blocking put presents N≈1; coalesce needs `put_batch` (or equivalent) to stage multi-mutation drains |
+| TLS `PairReadGeneration` shell freelist + custom `shared_ptr` deleter (ADR 0035) | Same-machine A/B: mild single-thread PUT gain, **−16% worker-affine PUT 2t**; rejected |
+| Writer post-sync busy-spin (64 yields) before merge/park | Collapsed `store_put` ~378 k → ~170 k; dual-sided spin tax |
+| Writer sync-before-merge reorder alone | No reliable 1t PUT win vs merge-first; affine mixed; keep merge-first |
+| Conditional `notify_one` gated on `writer_waiting` | Same-machine A/B vs unconditional wake: `store_put` 359 k vs 349 k (noise), affine 502 k vs 509 k; no reliable win. Sync PUT parks the Writer every op so notify almost always fires anyway. Evidence: `benchmarks/results/local-macos-2026-08-02-writer-waiting/` |
 
 Accepted residuals remain documented in the main performance report (PUT ack cost,
 uniform embedded PUT vs owner-bound daemon model).

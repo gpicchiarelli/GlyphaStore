@@ -5,7 +5,9 @@ Applies to: prototipo volatile Reader–Writer e Reactor TCP a coppia singola so
 Owner: storage, networking e performance maintainers
 Last reviewed: 2026-07-31
 
-ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md)
+ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md);
+[ADR 0036](../adr/0036-generation-slot-pool-publish.md) (proposed) governa eventuali
+approdi production del generation slot-pool.
 
 ## Scopo implementato
 
