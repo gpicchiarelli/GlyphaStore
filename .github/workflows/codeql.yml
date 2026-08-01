@@ -20,7 +20,7 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --disable-pip-version-check cmake ninja
-      - uses: github/codeql-action/init@v4
+      - uses: github/codeql-action/init@v4.37.3
         with:
           languages: c-cpp
           build-mode: manual
@@ -29,7 +29,7 @@ jobs:
           cmake --preset unix-debug
           cmake --build --preset unix-debug
       - name: Analyze
-        uses: github/codeql-action/analyze@v4
+        uses: github/codeql-action/analyze@v4.37.3
         with:
           output: codeql-results
           upload: false
