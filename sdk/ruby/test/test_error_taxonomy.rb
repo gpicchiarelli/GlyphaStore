@@ -2,10 +2,10 @@
 
 require "json"
 require "pathname"
-require "test/unit"
+require "minitest/autorun"
 require "glypha_store"
 
-class TestErrorTaxonomy < Test::Unit::TestCase
+class TestErrorTaxonomy < Minitest::Test
   FIXTURES = Pathname.new(__dir__).join("fixtures")
   REPO_FIXTURES = Pathname.new(__dir__).join("../../../tests/fixtures")
 

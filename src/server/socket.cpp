@@ -28,7 +28,7 @@ namespace {
     if (tcp && ::setsockopt(descriptor, IPPROTO_TCP, TCP_NODELAY, &enabled, sizeof(enabled)) != 0) {
         return system_error("setsockopt(TCP_NODELAY)");
     }
-#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
+#if defined(SO_NOSIGPIPE)
     if (::setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &enabled, sizeof(enabled)) != 0) {
         return system_error("setsockopt(SO_NOSIGPIPE)");
     }

@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <pthread.h>
 
-#if defined(__OpenBSD__)
+#if defined(__OpenBSD__) || defined(__FreeBSD__)
 #include <pthread_np.h>
 #endif
 

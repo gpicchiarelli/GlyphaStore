@@ -282,7 +282,8 @@ class BlockingFileSync final {
         condition_.notify_all();
     }
 
-    static auto sync_file(void* opaque, const int descriptor, const glyphastore::FileSyncMode mode) -> int {
+    static auto sync_file(void* opaque, const int descriptor,
+                          [[maybe_unused]] const glyphastore::FileSyncMode mode) -> int {
         auto& state = *static_cast<BlockingFileSync*>(opaque);
         {
             std::unique_lock lock{state.mutex_};

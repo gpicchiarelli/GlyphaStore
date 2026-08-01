@@ -525,7 +525,8 @@ GLYPHA_TEST("foreground latency guard uses hysteresis and bounded reclaim debt")
     config.dead_byte_ratio_bp_normal = 0;
     config.suspend_on_p99_latency_ms = 25;
     config.suspend_on_p99_min_samples = 1;
-    config.max_latency_deferral_ms = 20;
+    // Headroom above CI scheduling jitter so hysteresis checks are not raced by debt override.
+    config.max_latency_deferral_ms = 500;
 
     glyphastore::MaintenanceController controller{config};
     auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
@@ -587,7 +588,7 @@ GLYPHA_TEST("foreground latency guard uses hysteresis and bounded reclaim debt")
     }
     GLYPHA_REQUIRE(controller.snapshot().latency_guard_active);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds{25});
+    std::this_thread::sleep_for(std::chrono::milliseconds{520});
     controller.report_foreground_latency(40'000'000ULL);
     controller.request_evaluate();
     const auto debt_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};

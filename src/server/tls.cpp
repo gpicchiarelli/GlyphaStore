@@ -532,7 +532,9 @@ auto TlsContext::connect_socket(const int descriptor, const std::string_view ser
     SSL_set_connect_state(ssl);
 
     const std::string sni{server_name};
-    if (SSL_set_tlsext_host_name(ssl, sni.c_str()) != 1) {
+    // Avoid SSL_set_tlsext_host_name: the OpenSSL macro uses an old-style cast to void*.
+    if (SSL_ctrl(ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name,
+                 reinterpret_cast<void*>(const_cast<char*>(sni.c_str()))) != 1) {
         SSL_free(ssl);
         return fail(ErrorCode::io_error, "TLS SNI configuration failed: " + tls_error_string());
     }
