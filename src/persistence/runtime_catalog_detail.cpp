@@ -87,11 +87,7 @@ auto copy_verified_value(void* opaque, const RecordView& record) -> Status {
         context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
         return fail(ErrorCode::not_found, "key has expired");
     }
-    context.value = {
-        .bytes = std::vector<std::byte>{record.value.begin(), record.value.end()},
-        .sequence = record.sequence.value,
-        .expire_at_ns = record.expire_at_ns,
-    };
+    context.value = OwnedValue::from_bytes(record.value, record.sequence.value, record.expire_at_ns);
     context.crc_value_copy_ns = timing_elapsed_ns(copy_started);
     return {};
 }

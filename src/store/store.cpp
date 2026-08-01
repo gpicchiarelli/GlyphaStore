@@ -1,6 +1,7 @@
 #include "glyphastore/store/store.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/index/index.hpp"
@@ -221,17 +222,31 @@ auto Store::get(const std::span<const std::byte> key) -> Result<OwnedValue> {
 }
 
 auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
-    const HashedKey hashed{key, hash_key_routing(key, impl_->routing)};
-    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
+    PrehashedKey hashed;
+    {
+        GS_PHASE_GET(hash);
+        hashed = PrehashedKey{key, hash_key_routing(key, impl_->routing)};
+    }
+    std::size_t shard = 0;
+    {
+        GS_PHASE_GET(route);
+        shard = route_worker(hashed.hash, impl_->worker_count_value);
+    }
     Impl::OperationGuard operation{*impl_, shard};
-    if (!operation) {
-        return store_detail::closed_store();
+    {
+        GS_PHASE_GET(admit);
+        if (!operation) {
+            return store_detail::closed_store();
+        }
     }
     const auto now_ns = impl_->now_ns();
     if (impl_->pair_runtime) {
         store::paired::ShardPairRuntime::ReadLease lease{*impl_->pair_runtime, shard};
-        if (!lease) {
-            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+        {
+            GS_PHASE_GET(lease_adopt);
+            if (!lease) {
+                return fail(ErrorCode::unavailable, "paired read generation is unavailable");
+            }
         }
         if (impl_->durable_runtime) {
             auto view = lease.generation()->prepare_durable(hashed);
@@ -250,17 +265,21 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
             }
             return fail(ErrorCode::internal_error, "paired durable GET produced no result");
         }
+        // index_lookup / value_copy phases are recorded inside PairReadGeneration::get.
         return lease.generation()->get(hashed, now_ns);
     }
     if (impl_->durable_runtime) {
+        GS_PHASE_GET(index_lookup);
         return impl_->durable_runtime->get(hashed, now_ns);
     }
     auto& worker = impl_->volatile_runtime->workers.route(hashed);
     const std::lock_guard lock{worker.mutex_};
+    GS_PHASE_GET(index_lookup);
     auto record = worker.get_locked(hashed, now_ns);
     if (!record) {
         return unexpected(record.error());
     }
+    GS_PHASE_GET(value_copy);
     return store_detail::copy_value(*record);
 } catch (const std::bad_alloc&) {
     return store_detail::resource_exhausted();
@@ -269,63 +288,21 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
     return store_detail::internal_failure();
 }
 
-auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue> try {
-    const auto key_view = store_detail::as_string_view(key);
-    const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
-    Impl::OperationGuard operation{*impl_, shard};
-    if (!operation) {
-        return store_detail::closed_store();
-    }
-    const auto now_ns = impl_->now_ns();
-    if (impl_->pair_runtime) {
-        store::paired::ShardPairRuntime::ReadLease lease{*impl_->pair_runtime, shard};
-        if (!lease) {
-            return fail(ErrorCode::unavailable, "paired read generation is unavailable");
-        }
-        if (impl_->durable_runtime) {
-            auto view = lease.generation()->prepare_durable(hashed);
-            if (!view) {
-                return unexpected(view.error());
-            }
-            auto prepared = detail::StoreAccess::prepare_published_durable_get(*this, shard, *view, now_ns);
-            if (!prepared) {
-                return unexpected(prepared.error());
-            }
-            if (prepared->value) {
-                return std::move(*prepared->value);
-            }
-            if (prepared->cold) {
-                return detail::StoreAccess::complete_get_owned(*this, shard, std::move(*prepared->cold));
-            }
-            return fail(ErrorCode::internal_error, "paired durable GET produced no result");
-        }
-        return lease.generation()->get(hashed, now_ns);
-    }
-    if (impl_->durable_runtime) {
-        return impl_->durable_runtime->get(hashed, now_ns);
-    }
-    auto& worker = impl_->volatile_runtime->workers.route(hashed);
-    const std::lock_guard lock{worker.mutex_};
-    auto record = worker.get_locked(hashed, now_ns);
-    if (!record) {
-        return unexpected(record.error());
-    }
-    return store_detail::copy_value(*record);
-} catch (const std::bad_alloc&) {
-    return store_detail::resource_exhausted();
-} catch (...) {
-    impl_->mark_durable_fail_closed();
-    return store_detail::internal_failure();
+auto Store::get_copy(const std::span<const std::byte> key) -> Result<OwnedValue> {
+    // Single hash/route/lookup lineage: byte-key overload converges on KeyView.
+    return get_copy(store_detail::as_string_view(key));
 }
 
 auto Store::put(const std::string_view key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status try {
-    const HashedKey hashed{key, hash_key_routing(key, impl_->routing)};
+    const PrehashedKey hashed{key, hash_key_routing(key, impl_->routing)};
     const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
     Impl::OperationGuard operation{*impl_, shard};
-    if (!operation) {
-        return store_detail::closed_store();
+    {
+        GS_PHASE_PUT(admit);
+        if (!operation) {
+            return store_detail::closed_store();
+        }
     }
     if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
         return rejected;
@@ -346,30 +323,8 @@ auto Store::put(const std::string_view key, const std::span<const std::byte> val
 }
 
 auto Store::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
-                const std::uint64_t expire_at_ns) -> Status try {
-    const auto key_view = store_detail::as_string_view(key);
-    const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
-    Impl::OperationGuard operation{*impl_, shard};
-    if (!operation) {
-        return store_detail::closed_store();
-    }
-    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
-        return rejected;
-    }
-    if (impl_->pair_runtime) {
-        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::put, hashed, value,
-                                           expire_at_ns);
-    }
-    if (impl_->durable_runtime) {
-        return store_detail::durable_status(impl_->durable_runtime->put(hashed, value, expire_at_ns));
-    }
-    return impl_->volatile_runtime->workers.route(hashed).put(hashed, value, expire_at_ns);
-} catch (const std::bad_alloc&) {
-    return store_detail::resource_exhausted();
-} catch (...) {
-    impl_->mark_durable_fail_closed();
-    return store_detail::internal_failure();
+                const std::uint64_t expire_at_ns) -> Status {
+    return put(store_detail::as_string_view(key), value, expire_at_ns);
 }
 
 auto Store::erase(const std::string_view key) -> Status try {
@@ -396,29 +351,8 @@ auto Store::erase(const std::string_view key) -> Status try {
     return store_detail::internal_failure();
 }
 
-auto Store::erase(const std::span<const std::byte> key) -> Status try {
-    const auto key_view = store_detail::as_string_view(key);
-    const HashedKey hashed{key_view, hash_key_routing(key, impl_->routing)};
-    const auto shard = route_worker(hashed.hash, impl_->worker_count_value);
-    Impl::OperationGuard operation{*impl_, shard};
-    if (!operation) {
-        return store_detail::closed_store();
-    }
-    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
-        return rejected;
-    }
-    if (impl_->pair_runtime) {
-        return impl_->pair_runtime->mutate(shard, store::paired::MutationKind::erase, hashed, {}, 0);
-    }
-    if (impl_->durable_runtime) {
-        return store_detail::durable_status(impl_->durable_runtime->erase(hashed));
-    }
-    return impl_->volatile_runtime->workers.route(hashed).erase(hashed);
-} catch (const std::bad_alloc&) {
-    return store_detail::resource_exhausted();
-} catch (...) {
-    impl_->mark_durable_fail_closed();
-    return store_detail::internal_failure();
+auto Store::erase(const std::span<const std::byte> key) -> Status {
+    return erase(store_detail::as_string_view(key));
 }
 
 auto Store::flush() -> Status try {

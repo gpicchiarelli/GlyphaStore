@@ -48,11 +48,7 @@ namespace store_detail {
 }
 
 [[nodiscard]] inline auto copy_value(const RecordView& record) -> OwnedValue {
-    return OwnedValue{
-        .bytes = std::vector<std::byte>{record.value.begin(), record.value.end()},
-        .sequence = record.sequence.value,
-        .expire_at_ns = record.expire_at_ns,
-    };
+    return OwnedValue::from_bytes(record.value, record.sequence.value, record.expire_at_ns);
 }
 
 inline auto durable_status(DurableMutationResult result) -> Status {

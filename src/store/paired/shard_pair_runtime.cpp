@@ -1,6 +1,7 @@
 #include "glyphastore/store/paired/shard_pair_runtime.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/bounded_spsc_queue.hpp"
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
@@ -204,11 +205,15 @@ struct ShardPairRuntime::Lane final {
     alignas(128) std::atomic_bool refresh_requested{};
     alignas(128) std::atomic_bool reclaim_requested{};
     const bool async_enabled{};
-    std::mutex sync_mutex{};
+    // Keep sync admission and read-lease counters on separate lines: embedded GET
+    // and PUT otherwise false-share through the tail of Lane.
+    alignas(128) std::mutex sync_mutex{};
     SyncMutation* sync_head{};
-    std::atomic_size_t active_read_leases{};
-    std::atomic<std::uint64_t> sync_admitted{};
+    alignas(128) std::atomic_size_t active_read_leases{};
+    alignas(128) std::atomic<std::uint64_t> sync_admitted{};
 };
+static_assert(alignof(std::atomic_size_t) <= 128);
+static_assert(sizeof(std::atomic_size_t) <= 128);
 
 ShardPairRuntime::ShardPairRuntime(Store& store, PairedConcurrencyConfig config,
                                    std::vector<std::shared_ptr<const PairReadGeneration>> initial_generations,
@@ -660,6 +665,10 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                  std::memory_order_relaxed);
     };
     const auto reclaim_quiescent = [&]() noexcept {
+        if (lane.retired_generations.empty()) {
+            lane.retired_generation_count.store(0U, std::memory_order_relaxed);
+            return;
+        }
         const auto before = lane.retired_generations.size();
         std::uint64_t quiescent_epoch{};
         if (config_.reader_epoch_lease) {
@@ -675,6 +684,10 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                   ? lane.writer_epoch.load(std::memory_order_relaxed)
                                   : std::uint64_t{0};
         }
+        if (quiescent_epoch == 0) {
+            lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+            return;
+        }
         std::erase_if(lane.retired_generations,
                       [&](const auto& retired) { return retired->epoch() < quiescent_epoch; });
         const auto retired = before - lane.retired_generations.size();
@@ -682,6 +695,19 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             lane.generations_retired.fetch_add(retired, std::memory_order_relaxed);
         }
         lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+    };
+    // Publication produces one retired generation per successful incremental
+    // publish. Reclaiming on every single-mutation publish dominated volatile
+    // PUT ack time; reclaim proportionally when debt accumulates, and always
+    // before hard retire limits / merge pressure checks.
+    const auto reclaim_proportional = [&]() noexcept {
+        constexpr std::size_t kReclaimPublishQuantum = 8;
+        if (lane.retired_generations.size() >= kReclaimPublishQuantum ||
+            lane.retired_generations.size() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            reclaim_quiescent();
+        } else {
+            lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
+        }
     };
     const auto process_reclamation = [&]() noexcept {
         if (lane.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
@@ -1004,7 +1030,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                                 std::memory_order_relaxed);
                                         publish_read_generation(lane.published_generation,
                                                                 lane.writer_generation.get());
-                                        reclaim_quiescent();
+                                        reclaim_proportional();
                                     }
                                 }
                             } else {
@@ -1024,7 +1050,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                             std::memory_order_relaxed);
                                     publish_read_generation(lane.published_generation,
                                                             lane.writer_generation.get());
-                                    reclaim_quiescent();
+                                    reclaim_proportional();
                                 }
                             }
                         }
@@ -1091,7 +1117,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                                 std::memory_order_relaxed);
                                         publish_read_generation(lane.published_generation,
                                                                 lane.writer_generation.get());
-                                        reclaim_quiescent();
+                                        reclaim_proportional();
                                     }
                                 } else {
                                     lane.retired_generations.push_back(lane.writer_generation);
@@ -1103,7 +1129,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                             std::memory_order_relaxed);
                                     publish_read_generation(lane.published_generation,
                                                             lane.writer_generation.get());
-                                    reclaim_quiescent();
+                                    reclaim_proportional();
                                 }
                             }
                         }
@@ -1134,7 +1160,23 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             if (!task && !sync_pending && !lane.stopping.load(std::memory_order_acquire) &&
                 !lane.refresh_requested.load(std::memory_order_acquire) &&
                 !lane.reclaim_requested.load(std::memory_order_acquire) && !lane.read_merge) {
-                lane.signal.wait(observed, std::memory_order_acquire);
+                bool woke = false;
+                for (unsigned spin = 0; spin < 16U; ++spin) {
+                    if (lane.signal.load(std::memory_order_acquire) != observed) {
+                        woke = true;
+                        break;
+                    }
+#if defined(__aarch64__) || defined(_M_ARM64)
+                    __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+                    __builtin_ia32_pause();
+#else
+                    std::this_thread::yield();
+#endif
+                }
+                if (!woke) {
+                    lane.signal.wait(observed, std::memory_order_acquire);
+                }
             }
             if (!task) {
                 continue;
@@ -1473,8 +1515,11 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
     if (shard >= lanes_.size()) {
         return fail(ErrorCode::invalid_argument, "paired mutation shard is out of range");
     }
-    if (!begin_submission()) {
-        return fail(ErrorCode::unavailable, "paired runtime is not accepting mutations");
+    {
+        GS_PHASE_PUT(admit);
+        if (!begin_submission()) {
+            return fail(ErrorCode::unavailable, "paired runtime is not accepting mutations");
+        }
     }
     struct AdmissionGuard final {
         ShardPairRuntime& runtime;
@@ -1487,13 +1532,32 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
     auto& lane = *lanes_[shard];
     GS_FAULT_SITE(enqueue);
     {
+        GS_PHASE_PUT(enqueue);
         const std::lock_guard lock{lane.sync_mutex};
         node.next = lane.sync_head;
         lane.sync_head = &node;
     }
     lane.sync_admitted.fetch_add(1U, std::memory_order_relaxed);
     wake(lane);
-    node.done.wait(false, std::memory_order_acquire);
+    {
+        GS_PHASE_PUT(ack);
+        // Short adaptive spin before parking. Keep this bounded: on Apple Silicon
+        // long dual-sided spins (caller + Writer) compete for the same P-cores and
+        // can regress worker-affine multi-thread PUT.
+        for (unsigned spin = 0; spin < 32U; ++spin) {
+            if (node.done.load(std::memory_order_acquire)) {
+                return node.status;
+            }
+#if defined(__aarch64__) || defined(_M_ARM64)
+            __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+#else
+            std::this_thread::yield();
+#endif
+        }
+        node.done.wait(false, std::memory_order_acquire);
+    }
     return node.status;
 }
 
@@ -1522,10 +1586,13 @@ ShardPairRuntime::ReadLease::~ReadLease() {
         return;
     }
     auto& lane = *runtime_->lanes_[shard_];
+    // Drop the lease without waking the Writer. Reclaim is opportunistic: the
+    // Writer observes reclaim_requested on its next loop turn / park predicate.
+    // Waking on every serial GET created a Reader→Writer ping-pong that dominated
+    // embedded get_copy cost while contributing no correctness benefit (retired
+    // generations are only produced by publication, which already wakes Writer).
     if (lane.active_read_leases.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
         lane.reclaim_requested.store(true, std::memory_order_release);
-        lane.signal.fetch_add(1U, std::memory_order_release);
-        lane.signal.notify_one();
     }
 }
 

@@ -1,3 +1,4 @@
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/reactor.hpp"
 #include "server/reactor_detail.hpp"
@@ -19,111 +20,117 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
+    // Sample the reactor clock once per process_frames turn (not per request).
     const auto now = std::chrono::steady_clock::now();
     while (!current->request_in_flight && !current->output_lease &&
            current->input_offset < current->input.size()) {
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
-        auto decoded = decode_request(available);
-        if (!decoded) {
-            return unexpected(decoded.error());
+        DecodedFrame<RequestView> decoded{};
+        {
+            GS_PHASE_TCP(decode);
+            auto parsed = decode_request(available);
+            if (!parsed) {
+                return unexpected(parsed.error());
+            }
+            decoded = std::move(*parsed);
         }
-        if (!decoded->complete) {
+        if (!decoded.complete) {
             if (current->partial_request_since.time_since_epoch().count() == 0) {
                 current->partial_request_since = now;
             }
             break;
         }
         current->partial_request_since = {};
-        if (shutting_down_ && decoded->frame.opcode != RequestOpcode::health &&
-            decoded->frame.opcode != RequestOpcode::ready && decoded->frame.opcode != RequestOpcode::stats) {
+        if (shutting_down_ && decoded.frame.opcode != RequestOpcode::health &&
+            decoded.frame.opcode != RequestOpcode::ready && decoded.frame.opcode != RequestOpcode::stats) {
             // Connection drain refuses new work; lifecycle probes may still observe live/ready/stats.
             ResponseView refused{.status = ResponseStatus::overloaded,
-                                 .request_id = decoded->frame.request_id,
+                                 .request_id = decoded.frame.request_id,
                                  .owner_worker = static_cast<std::uint32_t>(executor_id_),
                                  .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                  .routing_epoch = kRoutingEpoch};
             if (auto queued = queue_response(token, refused); !queued) {
                 return queued;
             }
-            current->input_offset += decoded->consumed;
+            current->input_offset += decoded.consumed;
             continue;
         }
         if (!authorize_request(config_.authz, current->capabilities, current->key_prefix,
-                               decoded->frame.opcode, decoded->frame.key)) {
+                               decoded.frame.opcode, decoded.frame.key)) {
             if (security_audit_) {
                 const auto reason = authorize_opcode(config_.authz, current->capabilities,
-                                                     decoded->frame.opcode, current->key_prefix)
+                                                     decoded.frame.opcode, current->key_prefix)
                                         ? "prefix_denied"
                                         : "capability_denied";
-                security_audit_->authz_deny(current->principal, request_opcode_name(decoded->frame.opcode),
+                security_audit_->authz_deny(current->principal, request_opcode_name(decoded.frame.opcode),
                                             reason);
             }
             ResponseView denied{.status = ResponseStatus::permission_denied,
-                                .request_id = decoded->frame.request_id,
+                                .request_id = decoded.frame.request_id,
                                 .owner_worker = static_cast<std::uint32_t>(executor_id_),
                                 .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                 .routing_epoch = kRoutingEpoch};
             if (auto queued = queue_response(token, denied); !queued) {
                 return queued;
             }
-            current->input_offset += decoded->consumed;
+            current->input_offset += decoded.consumed;
             continue;
         }
         // Lifecycle probes stay exempt from request/bandwidth quotas so HEALTH/READY/STATS remain
         // observable under overload (same posture as shutdown drain).
-        const bool lifecycle_probe = decoded->frame.opcode == RequestOpcode::health ||
-                                     decoded->frame.opcode == RequestOpcode::ready ||
-                                     decoded->frame.opcode == RequestOpcode::stats;
+        const bool lifecycle_probe = decoded.frame.opcode == RequestOpcode::health ||
+                                     decoded.frame.opcode == RequestOpcode::ready ||
+                                     decoded.frame.opcode == RequestOpcode::stats;
         if (!lifecycle_probe && abuse_) {
             if (!abuse_->try_admit_connection_request(current->connection_rate_window_start_ns,
                                                       current->connection_rate_used, now)) {
                 ResponseView refused{.status = ResponseStatus::overloaded,
-                                     .request_id = decoded->frame.request_id,
+                                     .request_id = decoded.frame.request_id,
                                      .owner_worker = static_cast<std::uint32_t>(executor_id_),
                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                      .routing_epoch = kRoutingEpoch};
                 if (auto queued = queue_response(token, refused); !queued) {
                     return queued;
                 }
-                current->input_offset += decoded->consumed;
+                current->input_offset += decoded.consumed;
                 continue;
             }
-            const auto request_bytes = decoded->frame.key.size() + decoded->frame.value.size();
+            const auto request_bytes = decoded.frame.key.size() + decoded.frame.value.size();
             if (!abuse_->try_admit_principal(current->principal, request_bytes, now)) {
                 ResponseView refused{.status = ResponseStatus::overloaded,
-                                     .request_id = decoded->frame.request_id,
+                                     .request_id = decoded.frame.request_id,
                                      .owner_worker = static_cast<std::uint32_t>(executor_id_),
                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                                      .routing_epoch = kRoutingEpoch};
                 if (auto queued = queue_response(token, refused); !queued) {
                     return queued;
                 }
-                current->input_offset += decoded->consumed;
+                current->input_offset += decoded.consumed;
                 continue;
             }
         }
-        if (decoded->frame.opcode == RequestOpcode::bind_worker) {
-            current->input_offset += decoded->consumed;
+        if (decoded.frame.opcode == RequestOpcode::bind_worker) {
+            current->input_offset += decoded.consumed;
             touch_activity(*current, now);
-            return bind_connection(token, decoded->frame);
+            return bind_connection(token, decoded.frame);
         }
 
         ResponseView response{.status = ResponseStatus::ok,
-                              .request_id = decoded->frame.request_id,
+                              .request_id = decoded.frame.request_id,
                               .owner_worker = static_cast<std::uint32_t>(executor_id_),
                               .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                               .routing_epoch = kRoutingEpoch};
         bool immediate_response = true;
         std::vector<std::byte> init_identity;
-        switch (decoded->frame.opcode) {
+        switch (decoded.frame.opcode) {
         case RequestOpcode::init:
             current->initialized = true;
             init_identity = encode_init_identity_value(get_worker_routing());
             response.value = init_identity;
             break;
         case RequestOpcode::ping:
-            response.value = decoded->frame.value;
+            response.value = decoded.frame.value;
             break;
         case RequestOpcode::health:
             if (lifecycle_probes_.live != nullptr && lifecycle_probes_.live(lifecycle_probes_.context)) {
@@ -174,7 +181,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             }
             try {
                 const auto destination = std::string_view{
-                    reinterpret_cast<const char*>(decoded->frame.key.data()), decoded->frame.key.size()};
+                    reinterpret_cast<const char*>(decoded.frame.key.data()), decoded.frame.key.size()};
                 std::string report;
                 if (!lifecycle_probes_.backup(const_cast<void*>(lifecycle_probes_.context), destination,
                                               report)) {
@@ -206,12 +213,15 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         case RequestOpcode::get:
         case RequestOpcode::put:
         case RequestOpcode::erase:
-            if (available.size() > decoded->consumed) {
+            if (available.size() > decoded.consumed) {
                 current->pipelined_store_input_observed = true;
             }
             immediate_response = false;
-            if (auto dispatched = dispatch_request(token, decoded->frame, cached_now_ns); !dispatched) {
-                return dispatched;
+            {
+                GS_PHASE_TCP(dispatch);
+                if (auto dispatched = dispatch_request(token, decoded.frame, cached_now_ns); !dispatched) {
+                    return dispatched;
+                }
             }
             break;
         case RequestOpcode::bind_worker:
@@ -222,7 +232,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                 return queued;
             }
         }
-        current->input_offset += decoded->consumed;
+        current->input_offset += decoded.consumed;
         touch_activity(*current, now);
         if (current->request_in_flight) {
             current->in_flight_since = now;
@@ -356,6 +366,7 @@ auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& r
 
 auto Reactor::execute_local(const ConnectionToken token, const RequestView& request,
                             const std::uint64_t key_hash, std::uint64_t& cached_now_ns) -> Status {
+    GS_PHASE_TCP(store_op);
     const auto key_string = reactor_detail::key_text(request.key);
     const HashedKey key{.key = key_string, .hash = key_hash};
     ResponseView response{.status = ResponseStatus::ok,

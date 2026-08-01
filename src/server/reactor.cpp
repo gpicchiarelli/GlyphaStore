@@ -1,5 +1,6 @@
 #include "glyphastore/server/reactor.hpp"
 
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/peercred.hpp"
 #include "server/reactor_detail.hpp"
@@ -429,6 +430,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
 }
 
 auto Reactor::queue_response(const ConnectionToken token, const ResponseView& response) -> Status {
+    GS_PHASE_TCP(encode);
     auto* current = connection(token);
     if (current == nullptr) {
         return fail(ErrorCode::not_found, "response targets a stale connection");
@@ -614,6 +616,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
 }
 
 auto Reactor::write_ready(const ConnectionToken token) -> Status {
+    GS_PHASE_TCP(write);
     auto* current = connection(token);
     if (current == nullptr) {
         return {};

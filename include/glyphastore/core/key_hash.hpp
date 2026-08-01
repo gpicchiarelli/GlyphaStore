@@ -121,4 +121,8 @@ struct HashedKey {
     }
 };
 
+// Alias used by Store hot-path helpers: key bytes plus a routing/index hash computed once.
+using PrehashedKey = HashedKey;
+using KeyView = std::string_view;
+
 } // namespace glyphastore

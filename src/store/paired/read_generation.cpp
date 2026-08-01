@@ -1,5 +1,6 @@
 #include "glyphastore/store/paired/read_generation.hpp"
 
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
 
 #include <algorithm>
@@ -436,11 +437,7 @@ class ImmutableReadIndex final {
         if (decoded->expired(now_ns)) {
             return fail(ErrorCode::not_found, "key not found");
         }
-        OwnedValue value;
-        value.bytes.assign(decoded->value.begin(), decoded->value.end());
-        value.sequence = decoded->sequence.value;
-        value.expire_at_ns = decoded->expire_at_ns;
-        return value;
+        return OwnedValue::from_bytes(decoded->value, decoded->sequence.value, decoded->expire_at_ns);
     }
 
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
@@ -1404,11 +1401,8 @@ auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) c
     if (decoded->expired(now_ns)) {
         return fail(ErrorCode::not_found, "key not found");
     }
-    OwnedValue value;
-    value.bytes.assign(decoded->value.begin(), decoded->value.end());
-    value.sequence = decoded->sequence.value;
-    value.expire_at_ns = decoded->expire_at_ns;
-    return value;
+    GS_PHASE_GET(value_copy);
+    return OwnedValue::from_bytes(decoded->value, decoded->sequence.value, decoded->expire_at_ns);
 }
 
 auto PairReadGeneration::prepare_durable(const HashedKey& key) const
