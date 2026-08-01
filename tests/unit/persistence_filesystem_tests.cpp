@@ -272,6 +272,143 @@ GLYPHA_TEST("positional write faults preserve native resource categories") {
     GLYPHA_REQUIRE(result.error().code == glyphastore::ErrorCode::io_error);
 }
 
+// GS-PERSIST-FAULT-001: deterministic syscall-class matrix (EINTR / short I/O / ENOSPC / EDQUOT / EIO).
+// Labels are E0–E2 fault-injection only; never an E3/E4 physical certification claim.
+GLYPHA_TEST("positional IO fault matrix covers EINTR short IO and capacity errno classes") {
+    struct MatrixIo {
+        std::size_t maximum_chunk{1};
+        std::size_t remaining_eintr{3};
+        int fatal_errno{0};
+        bool fail_sync_only{false};
+        std::size_t read_calls{};
+        std::size_t write_calls{};
+        std::size_t sync_calls{};
+
+        static auto read(void* context, const int descriptor, const std::span<std::byte> bytes,
+                         const std::uint64_t offset) -> std::ptrdiff_t {
+            auto& io = *static_cast<MatrixIo*>(context);
+            ++io.read_calls;
+            if (io.fatal_errno != 0 && !io.fail_sync_only) {
+                errno = io.fatal_errno;
+                return -1;
+            }
+            if (io.remaining_eintr > 0) {
+                --io.remaining_eintr;
+                errno = EINTR;
+                return -1;
+            }
+            const auto count = std::min(bytes.size(), io.maximum_chunk);
+            return static_cast<std::ptrdiff_t>(
+                ::pread(descriptor, bytes.data(), count, static_cast<off_t>(offset)));
+        }
+
+        static auto write(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                          const std::uint64_t offset) -> std::ptrdiff_t {
+            auto& io = *static_cast<MatrixIo*>(context);
+            ++io.write_calls;
+            if (io.fatal_errno != 0 && !io.fail_sync_only) {
+                errno = io.fatal_errno;
+                return -1;
+            }
+            if (io.remaining_eintr > 0) {
+                --io.remaining_eintr;
+                errno = EINTR;
+                return -1;
+            }
+            const auto count = std::min(bytes.size(), io.maximum_chunk);
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), count, static_cast<off_t>(offset)));
+        }
+
+        static auto sync(void* context, const int descriptor, glyphastore::FileSyncMode) -> int {
+            auto& io = *static_cast<MatrixIo*>(context);
+            ++io.sync_calls;
+            if (io.fatal_errno != 0 && io.fail_sync_only) {
+                errno = io.fatal_errno;
+                return -1;
+            }
+            if (io.remaining_eintr > 0) {
+                --io.remaining_eintr;
+                errno = EINTR;
+                return -1;
+            }
+            return ::fsync(descriptor);
+        }
+    };
+
+    static constexpr std::array payload{std::byte{0x11}, std::byte{0x22}, std::byte{0x33}, std::byte{0x44}};
+
+    // Repeated EINTR + single-byte short transfers still complete exact extents.
+    {
+        TemporaryDirectory temporary;
+        MatrixIo io{.maximum_chunk = 1, .remaining_eintr = 4};
+        glyphastore::FileDescriptor file{::open((temporary.path() / "matrix-ok.bin").c_str(),
+                                                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600),
+                                         {.context = &io,
+                                          .read_some_at = &MatrixIo::read,
+                                          .write_some_at = &MatrixIo::write,
+                                          .sync_file = &MatrixIo::sync}};
+        GLYPHA_REQUIRE(file.valid());
+        GLYPHA_REQUIRE(file.write_all_at(payload, 0).has_value());
+        io.remaining_eintr = 2;
+        GLYPHA_REQUIRE(file.sync(glyphastore::FileSyncMode::full).has_value());
+        std::array<std::byte, payload.size()> decoded{};
+        GLYPHA_REQUIRE(file.read_exact_at(decoded, 0).has_value());
+        GLYPHA_REQUIRE(decoded == payload);
+        GLYPHA_REQUIRE(io.write_calls >= payload.size());
+        GLYPHA_REQUIRE(io.read_calls >= payload.size());
+        GLYPHA_REQUIRE(io.sync_calls >= 3);
+    }
+
+    const auto expect_write_failure = [](const int error_number,
+                                         const glyphastore::ErrorCode expected) {
+        TemporaryDirectory temporary;
+        MatrixIo io{.fatal_errno = error_number};
+        glyphastore::FileDescriptor file{::open((temporary.path() / "matrix-fail.bin").c_str(),
+                                                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600),
+                                         {.context = &io,
+                                          .read_some_at = &MatrixIo::read,
+                                          .write_some_at = &MatrixIo::write,
+                                          .sync_file = &MatrixIo::sync}};
+        GLYPHA_REQUIRE(file.valid());
+        const auto result = file.write_all_at(payload, 0);
+        GLYPHA_REQUIRE(!result.has_value());
+        GLYPHA_REQUIRE(result.error().code == expected);
+    };
+
+    expect_write_failure(ENOSPC, glyphastore::ErrorCode::storage_exhausted);
+#if defined(EDQUOT)
+    expect_write_failure(EDQUOT, glyphastore::ErrorCode::storage_exhausted);
+#endif
+    expect_write_failure(EIO, glyphastore::ErrorCode::io_error);
+
+    // Capacity / I/O faults on sync are classified the same way as write faults.
+    const auto expect_sync_failure = [](const int error_number,
+                                        const glyphastore::ErrorCode expected) {
+        TemporaryDirectory temporary;
+        MatrixIo io{};
+        glyphastore::FileDescriptor file{::open((temporary.path() / "matrix-sync.bin").c_str(),
+                                                O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600),
+                                         {.context = &io,
+                                          .read_some_at = &MatrixIo::read,
+                                          .write_some_at = &MatrixIo::write,
+                                          .sync_file = &MatrixIo::sync}};
+        GLYPHA_REQUIRE(file.valid());
+        GLYPHA_REQUIRE(file.write_all_at(payload, 0).has_value());
+        io.fatal_errno = error_number;
+        io.fail_sync_only = true;
+        const auto result = file.sync(glyphastore::FileSyncMode::data);
+        GLYPHA_REQUIRE(!result.has_value());
+        GLYPHA_REQUIRE(result.error().code == expected);
+    };
+
+    expect_sync_failure(ENOSPC, glyphastore::ErrorCode::storage_exhausted);
+#if defined(EDQUOT)
+    expect_sync_failure(EDQUOT, glyphastore::ErrorCode::storage_exhausted);
+#endif
+    expect_sync_failure(EIO, glyphastore::ErrorCode::io_error);
+}
+
 GLYPHA_TEST("data directory holds one process lock and rejects a symlink root") {
     TemporaryDirectory temporary;
     {

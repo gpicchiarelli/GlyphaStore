@@ -60,3 +60,43 @@ requirements:
   - HAZ-019
   gates:
   - GATE-WRITE-ORDER
+- id: GS-PERSIST-FAULT-001
+  titolo: Deterministic persistence fault matrix with honest E0-E2 labeling
+  categoria: persistence
+  criticita: alta
+  stato: implementato
+  descrizione: Where filesystem fault-injection seams exist, cover EINTR, short I/O, ENOSPC,
+    EDQUOT (when available), and EIO on write/sync paths. CI and evidence must hard-fail any
+    e3_certified=yes claim without a retained pinned campaign. Maximum hosted claim remains E2.
+  autorita:
+  - docs/architecture/platform-durability-evidence.md
+  - docs/architecture/durability-recovery.md
+  - docs/spec/persistence-v1.md
+  implementazione:
+  - include/glyphastore/persistence/filesystem_hooks.hpp
+  - src/persistence/filesystem.cpp
+  - engineering/tools/validate_durability_claims.py
+  prove:
+  - tests/unit/persistence_filesystem_tests.cpp
+  - tests/integration/persistence_recovery_tests.cpp
+  - scripts/assert-e3-rehearsal-honesty.sh
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: E2-fault-injection
+  evidenze:
+  - workflow: assurance.yml
+    note: validate_durability_claims.py rejects unpinned e3_certified=yes
+  - workflow: durability-evidence.yml
+    note: E0 metadata / E2 process-kill; rehearsal keeps e3_certified=no
+  rischio_residuo:
+  - Native disk-full, quota, and delayed-writeback campaigns remain open
+  - No platform row is E3/E4 certified
+  hazards:
+  - HAZ-001
+  - HAZ-016
+  - HAZ-017
+  - HAZ-018
+  gates:
+  - GATE-FAULT-INJECTION
+  - GATE-DURABLE-ACK
