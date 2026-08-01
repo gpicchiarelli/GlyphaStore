@@ -71,14 +71,20 @@ gates:
   - GS-CONCUR-MEM-001
   - GS-CONCUR-TLA-001
   - GS-CONCUR-LIVE-001
+  - GS-CONCUR-LEGACY-001
   - GS-PROTO-WIRE-001
+  - GS-PROTO-ERROR-001
   - GS-CORE-CLOSE-001
   prove:
   - docs/spec/client-semantics-v1.md
+  - docs/spec/error-taxonomy-v1.md
   - docs/spec/concurrency-memory-model.md
   - docs/assurance/memory-order-inventory.md
+  - docs/architecture/legacy-mutex-policy.md
   - tests/integration/concurrency_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
+  - tests/integration/runtime_equivalence_tests.cpp
+  - tests/fixtures/error_taxonomy_v1.json
   - engineering/formal/shard_pair/ShardPair.tla
   piattaforme:
   - linux-x86_64
@@ -91,8 +97,9 @@ gates:
     history size bounded
   riapertura:
   - Visibility or borrow lifetime change without ADR
-  narrative: Client semantics and concurrency model normative; B1 checker/hooks/TLA+ present; some daemon
-    edges open.
+  - legacy_mutex feature creep without policy update
+  narrative: Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, and legacy_mutex
+    policy are normative; some daemon edges remain open.
 - id: GATE-DURABLE-ACK
   titolo: Acknowledgement semantics for durable mutations
   sezione: durability_recovery
@@ -218,18 +225,24 @@ gates:
   livello_rilascio: beta
   requisiti:
   - GS-RECOVERY-FAILCLOSED-001
+  - GS-PERSIST-FAULT-001
   prove:
   - tests/integration/persistence_recovery_tests.cpp
+  - tests/unit/persistence_filesystem_tests.cpp
+  - engineering/tools/validate_durability_claims.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ci.yml
+  - workflow: assurance.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Exhaustive socket/thread/clock/hardware power-cut open
+  rischio_residuo: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
   riapertura:
   - Removing deterministic seams without replacement
-  narrative: Allocation and FS publication seams exist; broader matrices open.
+  - e3_certified=yes without pinned campaign
+  narrative: Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix; E3 honesty
+    enforced in CI.
 - id: GATE-FUZZ-CI
   titolo: Fuzz targets run in CI with retained corpora
   sezione: verification

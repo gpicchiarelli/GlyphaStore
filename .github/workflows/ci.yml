@@ -96,7 +96,7 @@ jobs:
       - name: Verify wire golden fixtures
         run: |
           python scripts/generate_wire_fixtures.py --verify tests/fixtures
-          for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
+          for fixture in wire_requests_v2.hex wire_responses_v2.hex error_taxonomy_v1.json; do
             cmp -s "tests/fixtures/$fixture" "sdk/python/tests/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/perl/t/fixtures/$fixture"
             cmp -s "tests/fixtures/$fixture" "sdk/go/testdata/$fixture"
