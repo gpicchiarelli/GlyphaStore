@@ -65,7 +65,7 @@ jobs:
         run: ./scripts/benchmark_paired_linux_ab.sh
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: paired-linux-ab-${{ github.sha }}
           path: benchmark-results/paired-shards/
