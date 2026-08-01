@@ -19,6 +19,7 @@
 #include "store/store_internal.hpp"
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <exception>
@@ -325,6 +326,136 @@ auto Store::put(const std::string_view key, const std::span<const std::byte> val
 auto Store::put(const std::span<const std::byte> key, const std::span<const std::byte> value,
                 const std::uint64_t expire_at_ns) -> Status {
     return put(store_detail::as_string_view(key), value, expire_at_ns);
+}
+
+auto Store::put_batch(const std::span<const PutItem> items) -> std::vector<Status> try {
+    std::vector<Status> statuses(items.size());
+    if (items.empty()) {
+        return statuses;
+    }
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get()); !rejected) {
+        for (auto& status : statuses) {
+            status = rejected;
+        }
+        return statuses;
+    }
+
+    struct Prepared final {
+        HashedKey hashed{};
+        std::span<const std::byte> value{};
+        std::uint64_t expire_at_ns{};
+        std::size_t shard{};
+        std::size_t input_index{};
+    };
+    std::vector<Prepared> prepared;
+    prepared.reserve(items.size());
+    bool single_shard = true;
+    std::size_t first_shard = 0;
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        const auto& item = items[index];
+        Prepared entry{.hashed = PrehashedKey{item.key, hash_key_routing(item.key, impl_->routing)},
+                       .value = item.value,
+                       .expire_at_ns = item.expire_at_ns,
+                       .input_index = index};
+        entry.shard = route_worker(entry.hashed.hash, impl_->worker_count_value);
+        if (index == 0) {
+            first_shard = entry.shard;
+        } else if (entry.shard != first_shard) {
+            single_shard = false;
+        }
+        prepared.push_back(std::move(entry));
+    }
+
+    if (!impl_->pair_runtime) {
+        for (const auto& entry : prepared) {
+            Impl::OperationGuard operation{*impl_, entry.shard};
+            if (!operation) {
+                statuses[entry.input_index] = store_detail::closed_store();
+                continue;
+            }
+            if (impl_->durable_runtime) {
+                statuses[entry.input_index] = store_detail::durable_status(
+                    impl_->durable_runtime->put(entry.hashed, entry.value, entry.expire_at_ns));
+            } else {
+                statuses[entry.input_index] =
+                    impl_->volatile_runtime->workers.route(entry.hashed)
+                        .put(entry.hashed, entry.value, entry.expire_at_ns);
+            }
+        }
+        return statuses;
+    }
+
+    const auto run_shard_batch = [&](const std::size_t shard, const std::size_t begin,
+                                     const std::size_t end) {
+        Impl::OperationGuard operation{*impl_, shard};
+        if (!operation) {
+            for (std::size_t index = begin; index < end; ++index) {
+                statuses[prepared[index].input_index] = store_detail::closed_store();
+            }
+            return;
+        }
+        const auto count = end - begin;
+        std::array<store::paired::ShardPairRuntime::SyncBatchItem, 32> stack_items{};
+        std::array<Status, 32> stack_statuses{};
+        std::unique_ptr<store::paired::ShardPairRuntime::SyncBatchItem[]> heap_items;
+        std::unique_ptr<Status[]> heap_statuses;
+        store::paired::ShardPairRuntime::SyncBatchItem* batch_items = stack_items.data();
+        Status* batch_statuses = stack_statuses.data();
+        if (count > stack_items.size()) {
+            heap_items = std::make_unique<store::paired::ShardPairRuntime::SyncBatchItem[]>(count);
+            heap_statuses = std::make_unique<Status[]>(count);
+            batch_items = heap_items.get();
+            batch_statuses = heap_statuses.get();
+        }
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            const auto& entry = prepared[begin + offset];
+            batch_items[offset] = store::paired::ShardPairRuntime::SyncBatchItem{
+                .kind = store::paired::MutationKind::put,
+                .key = &entry.hashed,
+                .value = entry.value,
+                .expire_at_ns = entry.expire_at_ns};
+            batch_statuses[offset] = {};
+        }
+        const auto batch_status = impl_->pair_runtime->mutate_batch(
+            shard, std::span{batch_items, count}, std::span{batch_statuses, count});
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            if (!batch_status && batch_statuses[offset]) {
+                batch_statuses[offset] = batch_status;
+            }
+            statuses[prepared[begin + offset].input_index] = batch_statuses[offset];
+        }
+    };
+
+    if (single_shard) {
+        run_shard_batch(first_shard, 0, prepared.size());
+        return statuses;
+    }
+
+    std::sort(prepared.begin(), prepared.end(),
+              [](const Prepared& left, const Prepared& right) { return left.shard < right.shard; });
+    for (std::size_t begin = 0; begin < prepared.size();) {
+        const auto shard = prepared[begin].shard;
+        std::size_t end = begin + 1U;
+        while (end < prepared.size() && prepared[end].shard == shard) {
+            ++end;
+        }
+        run_shard_batch(shard, begin, end);
+        begin = end;
+    }
+    return statuses;
+} catch (const std::bad_alloc&) {
+    std::vector<Status> statuses(items.size());
+    for (auto& status : statuses) {
+        status = store_detail::resource_exhausted();
+    }
+    return statuses;
+} catch (...) {
+    impl_->mark_durable_fail_closed();
+    std::vector<Status> statuses(items.size());
+    for (auto& status : statuses) {
+        status = store_detail::internal_failure();
+    }
+    return statuses;
 }
 
 auto Store::erase(const std::string_view key) -> Status try {

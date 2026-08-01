@@ -19,7 +19,7 @@ Companion to [hot-path-performance-2026-08-01.md](hot-path-performance-2026-08-0
 | Benchmark threshold widening / synthetic-only wins | Forbidden gaming |
 | Global mutex around phase counters | Would distort the paths being measured |
 | Thread-local DeltaPage/Block/Chunk freelist with custom `shared_ptr` deleter | Measured regression on uniform parallel PUT (Apple Silicon lab); allocator/custom-deleter tax exceeded reuse benefit |
-| Sync Writer coalesce without batch/pipeline API | Blocking `Store::put` presents N≈1; coalesce path weight without reliable multi-waiter batches |
+| Expecting sync Writer coalesce alone to lift blocking `Store::put` | Blocking put presents N≈1; coalesce needs `put_batch` (or equivalent) to stage multi-mutation drains |
 
 Accepted residuals remain documented in the main performance report (PUT ack cost,
 uniform embedded PUT vs owner-bound daemon model).

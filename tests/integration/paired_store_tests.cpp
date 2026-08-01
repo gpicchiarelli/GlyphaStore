@@ -105,3 +105,59 @@ GLYPHA_TEST("paired Store concurrent read-after-write keeps adopted generations 
     GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
     GLYPHA_REQUIRE(store.close().has_value());
 }
+
+GLYPHA_TEST("paired Store put_batch publishes once per shard and keeps RAW") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 2}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    std::vector<std::string> keys;
+    std::vector<std::string> values;
+    keys.reserve(64);
+    values.reserve(64);
+    std::vector<glyphastore::Store::PutItem> items;
+    items.reserve(64);
+    for (int index = 0; index < 64; ++index) {
+        keys.push_back("batch-key-" + std::to_string(index));
+        values.push_back("batch-value-" + std::to_string(index));
+        items.push_back(glyphastore::Store::PutItem{
+            .key = keys.back(),
+            .value = bytes(values.back()),
+        });
+    }
+
+    const auto statuses = store.put_batch(items);
+    GLYPHA_REQUIRE(statuses.size() == items.size());
+    for (const auto& status : statuses) {
+        GLYPHA_REQUIRE(status.has_value());
+    }
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        const auto got = store.get(keys[index]);
+        GLYPHA_REQUIRE(got.has_value());
+        GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                       values[index]);
+    }
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired Store put_batch preserves same-key FIFO within one batch") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::string key = "same-key";
+    const std::string first = "first";
+    const std::string second = "second";
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = key, .value = bytes(first)},
+        {.key = key, .value = bytes(second)},
+    };
+    const auto statuses = store.put_batch(items);
+    GLYPHA_REQUIRE(statuses.size() == 2);
+    GLYPHA_REQUIRE(statuses[0].has_value());
+    GLYPHA_REQUIRE(statuses[1].has_value());
+    const auto got = store.get(key);
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   second);
+    GLYPHA_REQUIRE(store.close().has_value());
+}

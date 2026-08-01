@@ -12,6 +12,7 @@
 #include <chrono>
 #include <exception>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -975,6 +976,131 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 }
                 continue;
             }
+            if (!detail::StoreAccess::is_durable(store_)) {
+                // Volatile sync: apply FIFO then one publish_incremental per ≤32
+                // mutations (mirrors async). ACK only after publication. Stack
+                // chunking keeps the N=1 path allocation-free.
+                constexpr std::size_t kSyncPublicationBatch = 32U;
+                while (rev != nullptr) {
+                    std::array<SyncMutation*, kSyncPublicationBatch> chunk{};
+                    std::size_t chunk_size = 0;
+                    while (rev != nullptr && chunk_size < kSyncPublicationBatch) {
+                        chunk[chunk_size++] = rev;
+                        rev = rev->next;
+                    }
+                    for (unsigned spin = 0; !PairReadGeneration::can_publish_incremental(
+                                                *lane.writer_generation, lane.read_merge.get(), chunk_size) &&
+                                            spin < 256U;
+                         ++spin) {
+                        reclaim_quiescent();
+                        process_merge();
+                    }
+                    if (!PairReadGeneration::can_publish_incremental(*lane.writer_generation,
+                                                                     lane.read_merge.get(), chunk_size)) {
+                        lane.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            chunk[index]->status = Status{fail(
+                                ErrorCode::unavailable,
+                                "mutation rejected until incremental read merge advances")};
+                            chunk[index]->done.store(true, std::memory_order_release);
+                            chunk[index]->done.notify_one();
+                        }
+                        continue;
+                    }
+                    std::array<ReadMutation, kSyncPublicationBatch> publications{};
+                    std::array<SyncMutation*, kSyncPublicationBatch> published_nodes{};
+                    std::size_t publication_count = 0;
+                    bool store_mutated = false;
+                    try {
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            auto* node = chunk[index];
+                            GS_FAULT_SITE(mutate);
+                            const auto& key = *node->key;
+                            auto published =
+                                node->kind == MutationKind::put
+                                    ? detail::StoreAccess::put_volatile_published(
+                                          store_, shard, key, node->value, node->expire_at_ns,
+                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard)
+                                    : detail::StoreAccess::erase_volatile_published(
+                                          store_, shard, key,
+                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard);
+                            if (!published) {
+                                node->status = Status{unexpected(published.error())};
+                                continue;
+                            }
+                            store_mutated = true;
+                            publications[publication_count] = ReadMutation{
+                                .key = key,
+                                .record = published->record,
+                                .segment = std::move(published->segment),
+                                .opcode = published->opcode};
+                            published_nodes[publication_count] = node;
+                            ++publication_count;
+                        }
+                        if (publication_count != 0) {
+                            auto next = PairReadGeneration::publish_incremental(
+                                lane.writer_generation,
+                                std::span{publications.data(), publication_count}, lane.read_merge.get());
+                            if (!next && next.error().code == ErrorCode::resource_exhausted) {
+                                reclaim_quiescent();
+                                process_merge();
+                                next = PairReadGeneration::publish_incremental(
+                                    lane.writer_generation,
+                                    std::span{publications.data(), publication_count}, lane.read_merge.get());
+                            }
+                            if (!next) {
+                                publish_fail_closed();
+                                for (std::size_t index = 0; index < publication_count; ++index) {
+                                    published_nodes[index]->status =
+                                        Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                }
+                            } else {
+                                lane.retired_generations.push_back(lane.writer_generation);
+                                lane.retired_generation_count.store(lane.retired_generations.size(),
+                                                                    std::memory_order_relaxed);
+                                lane.writer_generation = std::move(*next);
+                                update_delta_stats();
+                                lane.writer_epoch.store(lane.writer_generation->epoch(),
+                                                        std::memory_order_relaxed);
+                                publish_read_generation(lane.published_generation,
+                                                        lane.writer_generation.get());
+                                reclaim_proportional();
+                            }
+                        }
+                    } catch (const std::bad_alloc&) {
+                        if (store_mutated) {
+                            publish_fail_closed();
+                        }
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            auto* node = chunk[index];
+                            if (store_mutated) {
+                                node->status = Status{fail(ErrorCode::unavailable,
+                                                           "paired mutation allocation failed")};
+                            } else if (node->status) {
+                                node->status = Status{fail(ErrorCode::resource_exhausted,
+                                                           "paired mutation allocation failed")};
+                            }
+                        }
+                    } catch (...) {
+                        if (store_mutated) {
+                            publish_fail_closed();
+                        }
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            auto* node = chunk[index];
+                            if (store_mutated || node->status) {
+                                node->status = Status{fail(store_mutated ? ErrorCode::unavailable
+                                                                         : ErrorCode::internal_error,
+                                                           "paired Writer failure")};
+                            }
+                        }
+                    }
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        chunk[index]->done.store(true, std::memory_order_release);
+                        chunk[index]->done.notify_one();
+                    }
+                }
+                continue;
+            }
             while (rev != nullptr) {
                 auto* node = rev;
                 rev = rev->next;
@@ -1055,89 +1181,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             }
                         }
                     } else {
-                        GS_FAULT_SITE(mutate);
-                        // Match the async Writer path: reject under delta/merge
-                        // pressure *before* mutating the Store. Publishing after
-                        // a successful put_volatile_published and then failing
-                        // closed (previous behavior) permanently disables the
-                        // lane once incremental capacity is exhausted — e.g.
-                        // single-worker 200k parallel puts in CI benchmarks.
-                        bool admit_mutation = true;
-                        for (unsigned spin = 0; !PairReadGeneration::can_publish_incremental(
-                                                    *lane.writer_generation, lane.read_merge.get(), 1U) &&
-                                                spin < 256U;
-                             ++spin) {
-                            reclaim_quiescent();
-                            process_merge();
-                        }
-                        if (!PairReadGeneration::can_publish_incremental(*lane.writer_generation,
-                                                                         lane.read_merge.get(), 1U)) {
-                            lane.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
-                            status = Status{fail(ErrorCode::unavailable,
-                                                 "mutation rejected until incremental read merge advances")};
-                            admit_mutation = false;
-                        }
-                        if (admit_mutation) {
-                            // Embedded Store::put already holds OperationGuard while
-                            // parked on done; skip the nested Writer admission RMW.
-                            auto published =
-                                node->kind == MutationKind::put
-                                    ? detail::StoreAccess::put_volatile_published(
-                                          store_, shard, key, node->value, node->expire_at_ns,
-                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard)
-                                    : detail::StoreAccess::erase_volatile_published(
-                                          store_, shard, key,
-                                          detail::StoreAccess::PublishedAdmission::caller_holds_guard);
-                            if (!published) {
-                                status = Status{unexpected(published.error())};
-                            } else {
-                                ReadMutation publication{.key = key,
-                                                         .record = published->record,
-                                                         .segment = std::move(published->segment),
-                                                         .opcode = published->opcode};
-                                auto next = PairReadGeneration::publish_incremental(
-                                    lane.writer_generation, std::span{&publication, 1},
-                                    lane.read_merge.get());
-                                if (!next) {
-                                    if (next.error().code == ErrorCode::resource_exhausted) {
-                                        // Store already changed; attempt merge + one
-                                        // republish before the sticky fail-closed path.
-                                        reclaim_quiescent();
-                                        process_merge();
-                                        next = PairReadGeneration::publish_incremental(
-                                            lane.writer_generation, std::span{&publication, 1},
-                                            lane.read_merge.get());
-                                    }
-                                    if (!next) {
-                                        publish_fail_closed();
-                                        status =
-                                            Status{fail(ErrorCode::unavailable, "read publication failed")};
-                                    } else {
-                                        lane.retired_generations.push_back(lane.writer_generation);
-                                        lane.retired_generation_count.store(lane.retired_generations.size(),
-                                                                            std::memory_order_relaxed);
-                                        lane.writer_generation = std::move(*next);
-                                        update_delta_stats();
-                                        lane.writer_epoch.store(lane.writer_generation->epoch(),
-                                                                std::memory_order_relaxed);
-                                        publish_read_generation(lane.published_generation,
-                                                                lane.writer_generation.get());
-                                        reclaim_proportional();
-                                    }
-                                } else {
-                                    lane.retired_generations.push_back(lane.writer_generation);
-                                    lane.retired_generation_count.store(lane.retired_generations.size(),
-                                                                        std::memory_order_relaxed);
-                                    lane.writer_generation = std::move(*next);
-                                    update_delta_stats();
-                                    lane.writer_epoch.store(lane.writer_generation->epoch(),
-                                                            std::memory_order_relaxed);
-                                    publish_read_generation(lane.published_generation,
-                                                            lane.writer_generation.get());
-                                    reclaim_proportional();
-                                }
-                            }
-                        }
+                        status = Status{fail(ErrorCode::internal_error, "volatile sync path misrouted")};
                     }
                 } catch (const std::bad_alloc&) {
                     status = Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
@@ -1564,6 +1608,89 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
         node.done.wait(false, std::memory_order_acquire);
     }
     return node.status;
+}
+
+auto ShardPairRuntime::mutate_batch(const std::size_t shard, const std::span<const SyncBatchItem> items,
+                                    const std::span<Status> statuses) -> Status {
+    if (shard >= lanes_.size()) {
+        return fail(ErrorCode::invalid_argument, "paired mutation shard is out of range");
+    }
+    if (items.size() != statuses.size()) {
+        return fail(ErrorCode::invalid_argument, "paired mutation batch status span size mismatch");
+    }
+    if (items.empty()) {
+        return {};
+    }
+    for (const auto& item : items) {
+        if (item.key == nullptr) {
+            return fail(ErrorCode::invalid_argument, "paired mutation batch item has a null key");
+        }
+    }
+    if (!begin_submission()) {
+        for (auto& status : statuses) {
+            status = Status{fail(ErrorCode::unavailable, "paired runtime is not accepting mutations")};
+        }
+        return fail(ErrorCode::unavailable, "paired runtime is not accepting mutations");
+    }
+    struct AdmissionGuard final {
+        ShardPairRuntime& runtime;
+        ~AdmissionGuard() {
+            runtime.finish_submission();
+        }
+    } admission{*this};
+
+    // Stack nodes for the common ≤32 path; heap for larger caller batches.
+    constexpr std::size_t kStackBatch = 32U;
+    std::array<SyncMutation, kStackBatch> stack_nodes{};
+    std::unique_ptr<SyncMutation[]> heap_nodes;
+    SyncMutation* nodes = stack_nodes.data();
+    if (items.size() > kStackBatch) {
+        heap_nodes = std::make_unique<SyncMutation[]>(items.size());
+        nodes = heap_nodes.get();
+    }
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        nodes[index].kind = items[index].kind;
+        nodes[index].key = items[index].key;
+        nodes[index].value = items[index].value;
+        nodes[index].expire_at_ns = items[index].expire_at_ns;
+        nodes[index].status = {};
+        nodes[index].done.store(false, std::memory_order_relaxed);
+        nodes[index].next = nullptr;
+    }
+
+    auto& lane = *lanes_[shard];
+    GS_FAULT_SITE(enqueue);
+    {
+        const std::lock_guard lock{lane.sync_mutex};
+        // Same LIFO push as single mutate; Writer reverses to FIFO.
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            nodes[index].next = lane.sync_head;
+            lane.sync_head = &nodes[index];
+        }
+    }
+    lane.sync_admitted.fetch_add(items.size(), std::memory_order_relaxed);
+    wake(lane);
+
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        auto& node = nodes[index];
+        for (unsigned spin = 0; spin < 32U; ++spin) {
+            if (node.done.load(std::memory_order_acquire)) {
+                break;
+            }
+#if defined(__aarch64__) || defined(_M_ARM64)
+            __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+#else
+            std::this_thread::yield();
+#endif
+        }
+        if (!node.done.load(std::memory_order_acquire)) {
+            node.done.wait(false, std::memory_order_acquire);
+        }
+        statuses[index] = node.status;
+    }
+    return {};
 }
 
 ShardPairRuntime::ReadLease::ReadLease(const ShardPairRuntime& runtime, const std::size_t shard) noexcept {

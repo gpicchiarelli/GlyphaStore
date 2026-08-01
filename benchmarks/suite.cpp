@@ -526,6 +526,43 @@ template <typename SetupFn, typename BodyFn>
         });
 }
 
+[[nodiscard]] auto run_store_put_batch(const Config& config, const RunSettings& settings) -> Result {
+    const auto material = make_key_material(config);
+    constexpr std::size_t kBatchSize = 32;
+    return benchmark_collect_timed(
+        settings, config.operations, config, "store_put_batch", config.operations,
+        [&]() -> std::unique_ptr<Store> {
+            auto opened = Store::open({.worker_config = {.explicit_count = config.workers}});
+            if (!opened) {
+                return nullptr;
+            }
+            return std::move(*opened);
+        },
+        [&](std::unique_ptr<Store>& store) -> std::size_t {
+            if (store == nullptr) {
+                return 0;
+            }
+            std::size_t writes = 0;
+            std::vector<Store::PutItem> batch;
+            batch.reserve(kBatchSize);
+            for (std::size_t cursor = 0; cursor < material.order.size();) {
+                batch.clear();
+                while (cursor < material.order.size() && batch.size() < kBatchSize) {
+                    const auto index_in_order = material.order[cursor++];
+                    batch.push_back(Store::PutItem{.key = material.keys[index_in_order],
+                                                   .value = bytes(material.values[index_in_order])});
+                }
+                const auto statuses = store->put_batch(batch);
+                for (const auto& status : statuses) {
+                    if (status.has_value()) {
+                        ++writes;
+                    }
+                }
+            }
+            return writes;
+        });
+}
+
 [[nodiscard]] auto run_store_get(const Config& config, const RunSettings& settings) -> Result {
     const auto material = make_key_material(config);
     return benchmark_collect_timed(
@@ -1023,6 +1060,8 @@ template <typename SetupFn, typename BodyFn>
         return run_index_insert_find(config, settings);
     case BenchmarkKind::store_put:
         return run_store_put(config, settings);
+    case BenchmarkKind::store_put_batch:
+        return run_store_put_batch(config, settings);
     case BenchmarkKind::store_get:
         return run_store_get(config, settings);
     case BenchmarkKind::store_put_get:

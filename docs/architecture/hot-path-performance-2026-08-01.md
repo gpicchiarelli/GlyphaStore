@@ -146,17 +146,15 @@ Writer threads, generation pins). `store_get_copy` median RSS ~240 MiB with
 
 ## Follow-ups (residuals)
 
-- PUT ack still ~2.5 µs median: publish_incremental + generation ownership churn.
-  Nested Writer `OperationGuard` on the embedded sync path is removed via
-  `PublishedAdmission::caller_holds_guard` (caller already admitted); async keeps
-  check_admission. Net effect on 1-thread `store_put` is within noise (~400 k ops/s
-  lab); the residual remains one generation publish per sync PUT.
-- Sync multi-mutation coalesce (one publish for N waiters) was prototyped then held
-  back: blocking `Store::put` almost always presents N=1 to the Writer, so coalesce
-  without a batch/pipeline API adds path weight without stable wins. Revisit with an
-  explicit shard-bound batch API.
+- PUT ack still ~2.5 µs median for single `Store::put`: publish_incremental +
+  generation ownership churn. Nested Writer `OperationGuard` on the embedded sync
+  path is removed via `PublishedAdmission::caller_holds_guard`.
+- `Store::put_batch` + Writer sync coalesce (≤32 / publish) amortizes publication
+  when the caller stages multiple same-shard mutations in one call. Lab median
+  ~527 k ops/s (batch 32) vs ~372 k single put on Apple M4 — honest gain without
+  changing single-op semantics. Further single-op wins need generation slot pool ADR.
 - Thread-local Delta COW freelist was measured and rejected (allocator/custom-deleter
   overhead regressed uniform parallel PUT on Apple Silicon).
-- Uniform multi-thread PUT still below 1t PUT: need caller-side batch group-by-owner
-  / shard-bound session API on the embedded Store (daemon already owner-bound).
+- Uniform multi-thread single-op PUT still below 1t PUT: combine `put_batch` with
+  caller-side group-by-owner (or a future shard-bound session).
 - Consider ADR for generation slot pool (prototype) if measured publish cost remains dominant.

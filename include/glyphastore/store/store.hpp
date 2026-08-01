@@ -13,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <vector>
 
 namespace glyphastore {
 
@@ -53,6 +54,17 @@ class Store final {
                            std::uint64_t expire_at_ns = 0) -> Status;
     [[nodiscard]] auto put(std::span<const std::byte> key, std::span<const std::byte> value,
                            std::uint64_t expire_at_ns = 0) -> Status;
+    // Same-call batch of PUTs. Items may span owners: each shard is linearized and
+    // published independently (pairs are independent). Per-item Status values are
+    // returned in input order. Successful items on one shard share one publication
+    // epoch (≤32 per publish). Key/value views must remain live for the call.
+    // After return, every successful item is visible to GET (no early ACK).
+    struct PutItem final {
+        std::string_view key{};
+        std::span<const std::byte> value{};
+        std::uint64_t expire_at_ns{};
+    };
+    [[nodiscard]] auto put_batch(std::span<const PutItem> items) -> std::vector<Status>;
     [[nodiscard]] auto erase(std::string_view key) -> Status;
     [[nodiscard]] auto erase(std::span<const std::byte> key) -> Status;
 

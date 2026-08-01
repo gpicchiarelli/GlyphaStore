@@ -169,6 +169,19 @@ class ShardPairRuntime final {
     [[nodiscard]] auto mutate(std::size_t shard, MutationKind kind, const HashedKey& key,
                               std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
 
+    // Synchronous same-shard batch. Items are linearized FIFO on the owning Writer
+    // and published in groups of at most 32 (same bound as async). Each item gets
+    // its own Status; ACK is only after the publication that includes that item.
+    // Key/value spans must remain live for the duration of the call.
+    struct SyncBatchItem final {
+        MutationKind kind{};
+        const HashedKey* key{};
+        std::span<const std::byte> value{};
+        std::uint64_t expire_at_ns{};
+    };
+    [[nodiscard]] auto mutate_batch(std::size_t shard, std::span<const SyncBatchItem> items,
+                                    std::span<Status> statuses) -> Status;
+
     // Counted read lease for embedded readers. The lease keeps the adopted
     // generation alive: the Writer retires generations eagerly and frees them
     // only at an observed quiescent point with no lease outstanding.

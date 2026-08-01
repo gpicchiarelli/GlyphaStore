@@ -1,10 +1,15 @@
 ## [Unreleased]
 
+- Add `Store::put_batch` with paired Writer sync coalesce (≤32 mutations per
+  publish, stack chunking, no early ACK). Same-shard batches share one epoch;
+  cross-shard groups run independently. Lab `store_put_batch` ~527 k ops/s vs
+  single `store_put` ~372 k on Apple M4 (`macos-release`). FIFO within a batch
+  is tested. Single-op PUT remains publish-bound.
 - Paired sync Writer: skip nested `OperationGuard` / maintenance re-check on
   `put_volatile_published` when the embedded caller already holds admission
   (`PublishedAdmission::caller_holds_guard`). Async path unchanged. No early ACK;
   lab `store_put` remains publish-bound (~400 k ops/s on Apple M4). Rejected for
-  now: sync coalesce without batch API, Delta COW freelist (measured regressions).
+  now: Delta COW freelist (measured regressions).
 - Hot-path performance program (lab, macOS Apple Silicon): disableable phase
   attribution (`GLYPHASTORE_HOT_PATH_PHASES`), GET path consolidation + ReadLease
   without Writer wake + 64 B `OwnedValue` SSO, bounded adaptive spin / proportional

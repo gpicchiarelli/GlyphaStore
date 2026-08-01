@@ -29,6 +29,7 @@ enum class BenchmarkKind {
     index_insert_find,
     index_all,
     store_put,
+    store_put_batch,
     store_get,
     store_put_get,
     store_read_after_write,
@@ -591,6 +592,9 @@ inline void print_result(std::ostream& out, const Result& result) {
     }
     if (value == "store-put") {
         return BenchmarkKind::store_put;
+    }
+    if (value == "store-put-batch") {
+        return BenchmarkKind::store_put_batch;
     }
     if (value == "store-get") {
         return BenchmarkKind::store_get;
