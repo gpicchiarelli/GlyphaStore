@@ -456,7 +456,8 @@ hazards:
   - tests/unit/store_backup_tests.cpp
   - tests/crash/crash_backup.cpp
   - tests/crash/crash_backup_wire.cpp
-  rischio_residuo: Real glyphastored exec mid-BACKUP kill still limited (no production hook injection); Store + in-process Server/wire BACKUP mid-copy covered
+  - tests/crash/crash_backup_daemon.cpp
+  rischio_residuo: Zero-fence hot backup deferred (ADR 0034); online path remains admission-fenced; Store + in-process Server/wire + real glyphastored exec mid-BACKUP kill covered (lab hooks)
   stato: mitigato
   accettazione_rischio: Online backup is fenced not zero-impact; operator verify required before promotion
   requisiti:

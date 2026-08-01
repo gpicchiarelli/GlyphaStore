@@ -40,9 +40,9 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
 7. **Zero-fence hot backup** — online fenced backup exists (shorter fence + structural source check +
    bounded Segment copy parallelism; destination CRC promotion gate); fully concurrent hot copy
    remains deferred per [ADR 0034](../adr/0034-zero-fence-hot-backup-deferred.md). HAZ-021 incomplete
-   destination / failed-online paths, Store process-kill mid-copy (`glyphastore_crash_backup`), and
-   in-process Server/wire BACKUP kill (`glyphastore_crash_backup_wire`) are covered; real
-   `glyphastored` exec mid-BACKUP kill remains limited.
+   destination / failed-online paths, Store process-kill mid-copy (`glyphastore_crash_backup`),
+   in-process Server/wire BACKUP kill (`glyphastore_crash_backup_wire`), and real `glyphastored`
+   exec mid-BACKUP kill (`glyphastore_crash_backup_daemon`, lab-only crash hooks) are covered.
 
 ## Gate posture (summary)
 

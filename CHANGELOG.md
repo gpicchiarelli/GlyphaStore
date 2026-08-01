@@ -1,5 +1,10 @@
 ## [Unreleased]
 
+- HAZ-021: real `glyphastored` exec mid-BACKUP kill matrix via env-gated crash hooks
+  (`GLYPHASTORE_CRASH_TEST` / `GLYPHASTORE_CRASH_KILL_AT` / `GLYPHASTORE_CRASH_CHECKPOINT_DIR`)
+  and `glyphastore_crash_backup_daemon` (`copy_backup_segment` / `copy_backup_manifest` /
+  `sync_backup_destination`). Incomplete dest fails verify; source reopens healthy. Lab-only;
+  production leaves hooks unset. Still not zero-fence (ADR 0034); durable remains sync write-through.
 - Runtime SDK online `BACKUP` interop smoke (`scripts/test-sdk-backup-interop.sh`): durable
   `glyphastored` + typed `backup()` for Python/Go/Perl/Ruby/Erlang; wired into CI `sdk-clients`
   (`BACKUP_INTEROP_REQUIRE_ALL=1`). Closes the symbol-only residual from
@@ -20,17 +25,15 @@
   N↔N-1 `STORE-WORKER-RESHARD` evidence points at unit tests.
 - HAZ-021: wire/reactor BACKUP process-kill via in-process Server + `Client::backup`
   (`glyphastore_crash_backup_wire`). Incomplete dest fails verify; source reopen + wire GET after
-  Server restart. Real `glyphastored` exec mid-BACKUP kill still limited.
+  Server restart.
 - HAZ-021: Store process-kill mid-backup via `FilesystemHooks`
   (`copy_backup_segment` / `copy_backup_manifest` / `sync_backup_destination`) and
-  `glyphastore_crash_backup`. Incomplete dest fails verify; source reopens healthy. Daemon wire
-  BACKUP kill matrix still limited.
+  `glyphastore_crash_backup`. Incomplete dest fails verify; source reopens healthy.
 - Surface `source_crc_scanned` / `destination_crc_scanned` on wire `BACKUP` ASCII and
   `glyphastore_backup_store` text/JSON reports. Clarify ops docs: online fenced backup is supported;
   zero-fence hot backup is not.
 - HAZ-021: incomplete backup destinations fail verify/restore; failed online backup leaves the live
-  Store usable (`tests/unit/store_backup_tests.cpp`). Process-kill mid-copy daemon matrix remains
-  limited.
+  Store usable (`tests/unit/store_backup_tests.cpp`).
 - Online fenced backup: keep only **structural** source verify under the admission fence; run
   committed CRC scan on the destination after admissions resume (promotion gate). Offline backup
   still CRC-scans the source once before copy. Report `source_crc_scanned` /

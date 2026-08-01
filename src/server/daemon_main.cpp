@@ -1,6 +1,7 @@
 #include "cli/arguments.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/index/index_hash_seed.hpp"
+#include "glyphastore/server/crash_test_hooks.hpp"
 #include "glyphastore/server/daemon_config.hpp"
 #include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/openbsd_sandbox.hpp"
@@ -138,6 +139,12 @@ int main(const int argc, char** argv) try {
     // ADR 0026: apply Index mix seed before any Store/Index construction.
     glyphastore::set_index_hash_seed(arguments->index_hash_seed);
     glyphastore::set_worker_routing(arguments->worker_routing);
+
+    if (auto crash_hooks = glyphastore::server::maybe_install_crash_test_hooks(arguments->store);
+        !crash_hooks) {
+        std::cerr << program << ": error: " << crash_hooks.error().message << '\n';
+        return 2;
+    }
 
     auto server = glyphastore::server::Server::create(arguments->server, arguments->store);
     if (!server) {

@@ -58,9 +58,9 @@ requirements:
     matrices (future Manifest/Record versions, truncated Manifest, Worker mismatch) are
     covered in store_backup_tests
   - Zero-fence hot backup deferred (ADR 0034); online path remains admission-fenced
-  - Daemon wire BACKUP process-kill via real glyphastored exec still limited (in-process
-    Server/wire path covered by glyphastore_crash_backup_wire; Store path by
-    glyphastore_crash_backup)
+  - Daemon wire BACKUP process-kill via real glyphastored exec covered by
+    glyphastore_crash_backup_daemon (lab-only GLYPHASTORE_CRASH_TEST hooks); in-process
+    Server/wire by glyphastore_crash_backup_wire; Store path by glyphastore_crash_backup
   hazards:
   - HAZ-021
   - HAZ-022

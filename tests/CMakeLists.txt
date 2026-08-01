@@ -173,6 +173,19 @@ if(BUILD_TESTING)
     set_target_properties(glyphastore_crash_backup_wire PROPERTIES FOLDER "Quality")
     add_test(NAME glyphastore_crash_backup_wire COMMAND glyphastore_crash_backup_wire)
     set_tests_properties(glyphastore_crash_backup_wire PROPERTIES TIMEOUT 180 LABELS "crash")
+
+    add_executable(glyphastore_crash_backup_daemon ${CMAKE_SOURCE_DIR}/tests/crash/crash_backup_daemon.cpp)
+    target_link_libraries(glyphastore_crash_backup_daemon
+        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
+    )
+    target_include_directories(glyphastore_crash_backup_daemon PRIVATE "${CMAKE_SOURCE_DIR}/tests")
+    glyphastore_set_warnings(glyphastore_crash_backup_daemon)
+    glyphastore_enable_hardening(glyphastore_crash_backup_daemon)
+    set_target_properties(glyphastore_crash_backup_daemon PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_crash_backup_daemon
+             COMMAND glyphastore_crash_backup_daemon --daemon $<TARGET_FILE:glyphastored>)
+    set_tests_properties(glyphastore_crash_backup_daemon PROPERTIES TIMEOUT 180 LABELS "crash"
+                         DEPENDS glyphastored)
 endif()
 
 if(BUILD_TESTING)
@@ -279,6 +292,7 @@ if(BUILD_TESTING)
         glyphastore_crash_daemon
         glyphastore_crash_backup
         glyphastore_crash_backup_wire
+        glyphastore_crash_backup_daemon
         glyphastored
         glyphastore_inspect_segment
         glyphastore_verify_store

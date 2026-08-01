@@ -67,7 +67,7 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-BACKUP-RESTORE** — Backup restore verification and version migration  
   State: `IMPLEMENTATA` · Release target: `beta`  
   Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-MIGRATE-001`  
-  Residual risk: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; real glyphastored mid-BACKUP kill limited
+  Residual risk: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
   Offline tools and online fenced backup implemented; normative snapshot boundary published.
 
 - [x] **GATE-DURABLE-ACK** — Acknowledgement semantics for durable mutations  

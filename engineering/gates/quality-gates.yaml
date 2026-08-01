@@ -205,7 +205,7 @@ gates:
   evidenze:
   - workflow: ops-runbooks.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; real glyphastored mid-BACKUP kill limited
+  rischio_residuo: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
   riapertura:
   - Backup format change without fixtures
   narrative: Offline tools and online fenced backup implemented; normative snapshot boundary published.

@@ -174,6 +174,7 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/abuse_limits.cpp
     ${CMAKE_SOURCE_DIR}/src/server/authz.cpp
     ${CMAKE_SOURCE_DIR}/src/server/connection_handoff.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/crash_test_hooks.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_config.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_log.cpp
     ${CMAKE_SOURCE_DIR}/src/server/disk_read_executor.cpp
