@@ -5,6 +5,9 @@ option(GLYPHASTORE_BUILD_FUZZERS "Build libFuzzer targets" OFF)
 option(GLYPHASTORE_FAULT_INJECTION
        "Enable debug-only adverse scheduling hooks (GLYPHASTORE_FAULT_INJECTION); OFF for production"
        OFF)
+option(GLYPHASTORE_HOT_PATH_PHASES
+       "Enable lab-only hot-path phase counters (GLYPHASTORE_HOT_PATH_PHASES); OFF by default"
+       OFF)
 option(GLYPHASTORE_ENABLE_ASAN "Enable AddressSanitizer" OFF)
 option(GLYPHASTORE_ENABLE_UBSAN "Enable UndefinedBehaviorSanitizer" OFF)
 option(GLYPHASTORE_ENABLE_TSAN "Enable ThreadSanitizer" OFF)

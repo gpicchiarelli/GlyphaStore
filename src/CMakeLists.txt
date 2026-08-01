@@ -14,6 +14,7 @@ set_target_properties(glyphastore_cli_support PROPERTIES FOLDER "Libraries/Inter
 
 add_library(glyphastore_core
     ${CMAKE_SOURCE_DIR}/src/core/fault_injection.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/hot_path_phases.cpp
     ${CMAKE_SOURCE_DIR}/src/core/worker_routing.cpp
     ${CMAKE_SOURCE_DIR}/src/index/index.cpp
     ${CMAKE_SOURCE_DIR}/src/index/index_hash_seed.cpp
@@ -91,6 +92,12 @@ if(GLYPHASTORE_FAULT_INJECTION)
     message(STATUS "GlyphaStore fault injection: ENABLED (debug-only adverse scheduling hooks)")
 else()
     message(STATUS "GlyphaStore fault injection: disabled (production default)")
+endif()
+if(GLYPHASTORE_HOT_PATH_PHASES)
+    target_compile_definitions(glyphastore_core PUBLIC GLYPHASTORE_HOT_PATH_PHASES=1)
+    message(STATUS "GlyphaStore hot-path phases: ENABLED (lab attribution counters)")
+else()
+    message(STATUS "GlyphaStore hot-path phases: disabled (default)")
 endif()
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
