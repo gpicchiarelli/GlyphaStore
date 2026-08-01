@@ -59,7 +59,8 @@ struct LatencyHistogram final {
         if (observations == 0 || !(percentile >= 0.0) || percentile > 1.0) {
             return 0;
         }
-        const auto target = static_cast<std::uint64_t>(static_cast<long double>(observations) * percentile);
+        const auto target = static_cast<std::uint64_t>(static_cast<long double>(observations) *
+                                                       static_cast<long double>(percentile));
         const auto rank = target == 0 ? 1U : std::min(target, observations);
         const auto cumulative = this->cumulative();
         std::uint64_t previous = 0;

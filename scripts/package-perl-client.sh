@@ -18,7 +18,12 @@ for fixture in wire_requests_v2.hex wire_responses_v2.hex; do
 done
 
 expected="$(tr -d '[:space:]' <"$root/VERSION")"
-perl_versions="$(rg -o "our \\\$VERSION = '([^']+)'" -r '$1' "$sdk/lib" --no-filename | sort -u)"
+# Prefer portable tools over ripgrep (not installed on all CI images).
+perl_versions="$(
+  find "$sdk/lib" -type f -name '*.pm' -print0 |
+    xargs -0 "$perl" -ne "print \$1, \"\\n\" if /our \\\$VERSION = '([^']+)'/" |
+    sort -u
+)"
 perl_count="$(printf '%s\n' "$perl_versions" | grep -c . || true)"
 if [[ "$perl_count" -ne 1 || "$perl_versions" != "$expected" ]]; then
   echo "Perl \$VERSION drift or mismatch: '${perl_versions:-<none>}' (expected $expected)" >&2

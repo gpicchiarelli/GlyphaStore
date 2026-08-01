@@ -950,7 +950,9 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
         }
     } resume{impl_.get()};
 
-    impl_->wait_for_active_operations();
+    if (!impl_->wait_for_active_operations()) {
+        return fail(ErrorCode::unavailable, "backup timed out waiting for active operations");
+    }
 
     if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
         return closed_store();
