@@ -24,12 +24,43 @@ requirements:
   evidenze:
   - workflow: ci.yml
   rischio_residuo:
-  - Formal linearizability checker and TLA+ model are Phase B; legacy_mutex remains temporary
+  - Formal linearizability checker and TLA+ model are Phase B1; legacy_mutex governed by GS-CONCUR-LEGACY-001
   hazards:
   - HAZ-003
   - HAZ-008
   - HAZ-009
   - HAZ-027
   - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-LEGACY-001
+  titolo: legacy_mutex temporary policy feature freeze and equivalence
+  categoria: concurrency
+  criticita: media
+  stato: implementato
+  descrizione: legacy_mutex remains a deprecated 0.1.x embedded escape hatch removed in 0.2, with
+    feature freeze, daemon paired-only, and public-outcome equivalence to the default paired runtime.
+  autorita:
+  - docs/architecture/legacy-mutex-policy.md
+  - docs/adr/0032-paired-concurrency-embedded-store.md
+  - docs/spec/concurrency-memory-model.md
+  implementazione:
+  - include/glyphastore/store/config.hpp
+  - src/store/store.cpp
+  prove:
+  - tests/integration/runtime_equivalence_tests.cpp
+  - tests/integration/concurrency_tests.cpp
+  - tests/integration/paired_store_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+  rischio_residuo:
+  - Dual-path maintenance until 0.2 removal; equivalence covers public outcomes not full linearizability
+  hazards:
+  - HAZ-003
+  - HAZ-027
   gates:
   - GATE-CONCURRENCY-SPEC

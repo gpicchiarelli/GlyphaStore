@@ -32,8 +32,8 @@ release level.
 | No formal linearizability checker | High | P1 (Phase B) | history recorder | Concurrency regressions undetected |
 | Actions not pinned to commit SHA | Medium | P2 (Phase D) | supply-chain policy | Tag mutability |
 | Physical E3/E4 durability unset | High (claim honesty) | Keep open | hardware campaign | False durability confirmation |
-| Unified error taxonomy across wire/embedded/SDK | Medium | P1 (Phase B) | spec + fixtures | Retry/semantics divergence |
-| `legacy_mutex` policy not yet formalized | Medium | P1 (Phase B) | ADR 0032 | Feature creep on temporary path |
+| Unified error taxonomy across wire/embedded/SDK | Medium | P1 (Phase B) | `docs/spec/error-taxonomy-v1.md` + fixture | Residual unknown-status / mutation_outcome gaps |
+| `legacy_mutex` policy not yet formalized | Medium | P1 (Phase B) | `docs/architecture/legacy-mutex-policy.md` | Removal still pending 0.2 |
 | Performance budgets not gate-linked | Medium | P2 (Phase E) | hardware CI | Hosted-CI noise as product claim |
 
 ## Strategy

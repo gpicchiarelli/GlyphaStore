@@ -321,6 +321,7 @@ if(BUILD_TESTING)
         tests/unit/bounded_mpsc_queue_tests.cpp
         tests/unit/connection_handoff_tests.cpp
         tests/unit/client_tests.cpp
+        tests/unit/client_error_taxonomy_tests.cpp
         tests/unit/client_tls_tests.cpp
         tests/unit/durable_flush_coordinator_tests.cpp
         tests/unit/latency_histogram_tests.cpp
@@ -339,6 +340,7 @@ if(BUILD_TESTING)
         tests/integration/compaction_builder_tests.cpp
         tests/integration/compaction_recovery_tests.cpp
         tests/integration/concurrency_tests.cpp
+        tests/integration/runtime_equivalence_tests.cpp
         tests/integration/optimization_regression_tests.cpp
         tests/integration/paired_store_tests.cpp
         tests/integration/persistence_recovery_tests.cpp

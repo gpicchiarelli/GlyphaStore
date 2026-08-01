@@ -9,6 +9,7 @@ requirements:
   autorita:
   - docs/spec/wire-protocol-v2.md
   - docs/spec/client-semantics-v1.md
+  - docs/spec/error-taxonomy-v1.md
   implementazione:
   - src/server
   - src/client
@@ -16,6 +17,7 @@ requirements:
   prove:
   - tests/fixtures
   - scripts/test-sdk-interop.sh
+  - tests/fixtures/error_taxonomy_v1.json
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -29,4 +31,44 @@ requirements:
   - HAZ-010
   - HAZ-011
   gates:
+  - GATE-DISK-WIRE-VERSIONS
+- id: GS-PROTO-ERROR-001
+  titolo: Unified portable error taxonomy across wire embedded and SDKs
+  categoria: protocol
+  criticita: alta
+  stato: implementato
+  descrizione: Wire ResponseStatus, C++ ErrorCode collapses used by the TCP client, and official
+    SDK structured errors share one status→category→retryability contract defined by
+    error-taxonomy-v1 and proven by the shared fixture matrix.
+  autorita:
+  - docs/spec/error-taxonomy-v1.md
+  - docs/spec/client-semantics-v1.md
+  - docs/spec/wire-protocol-v2.md
+  implementazione:
+  - include/glyphastore/client/client.hpp
+  - src/client/client.cpp
+  - sdk
+  prove:
+  - tests/fixtures/error_taxonomy_v1.json
+  - tests/unit/client_error_taxonomy_tests.cpp
+  - sdk/python/tests/test_error_taxonomy.py
+  - sdk/go/client/error_taxonomy_test.go
+  - sdk/perl/t/03-error-taxonomy.t
+  - sdk/ruby/test/test_error_taxonomy.rb
+  - sdk/erlang/test/glyphastore_error_taxonomy_SUITE.erl
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: sdk-clients job runs taxonomy conformance
+  rischio_residuo:
+  - Unknown wire status exposure before codec reject is not uniform across SDKs
+  - C++ Error omits mutation_outcome (carried by MutationResult)
+  hazards:
+  - HAZ-005
+  - HAZ-010
+  gates:
+  - GATE-CONCURRENCY-SPEC
   - GATE-DISK-WIRE-VERSIONS
