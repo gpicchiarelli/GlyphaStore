@@ -130,8 +130,8 @@ struct ShardPairRuntime::Lane final {
                        ? 1U
                        : (maximum_payload_bytes == 0 ? std::max(payload_bytes, std::size_t{1})
                                                      : maximum_payload_bytes)),
-          async_enabled(capacity != 0U), writer_generation(std::move(initial)),
-          published_catalog_revision(catalog_revision) {
+          writer_generation(std::move(initial)),
+          published_catalog_revision(catalog_revision), async_enabled(capacity != 0U) {
         if (!writer_generation) {
             throw std::runtime_error{"paired Writer has no initial read generation"};
         }

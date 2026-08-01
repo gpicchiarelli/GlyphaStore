@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Paired embedded Store gate snapshot (ADR 0032 T5): macOS-release Zipf durable parallel GET
+  p50/p99 recorded in `docs/benchmarks/paired-embedded-store-gates-2026-08-01.md`; full ctest
+  37/37 green. Fix `ShardPairRuntime::Lane` member init order warning.
 - Paired exclusive Writer mutex-elision (ADR 0032 T2): durable `mutate` / `capture_published_read`
   skip the Worker mutex when `exclusive_writer` and no background flusher (`durable_sync`);
   compaction waits on `hot_path_depth`. Volatile paired Writers keep generation-only publication
