@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Record full local macOS release benchmark suite at
+  `benchmarks/results/local-macos-2026-08-01/` (`629bc68`, Apple M4, `macos-release`,
+  CI-equivalent matrix). Absolute numbers are prototype/lab evidence, not production
+  capacity claims.
 - Add `.gitleaks.toml` allowlist for public SipHash/SHA-256 IV false positives and
   reword durable-runtime-catalog phrasing so post-squash whole-tree secret scans
   stay green.
