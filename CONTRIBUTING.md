@@ -1,6 +1,8 @@
 # Contributing
 
-GlyphaStore is currently an architecture prototype under active design.
+GlyphaStore is currently an architecture prototype under active design. Read
+[AGENTS.md](AGENTS.md) for the promise = requirement + spec + implementation + proof + evidence +
+residual risk rule and the non-negotiables.
 
 ## Development loop
 
@@ -9,6 +11,8 @@ GlyphaStore is currently an architecture prototype under active design.
 3. Run `./scripts/dev.sh format`, `./scripts/dev.sh test`, and the relevant sanitizer.
 4. Add regression tests for every correctness or memory-safety fix.
 5. Update an ADR when changing a fixed architectural decision.
+6. If the change affects a promised behavior or gate, update `engineering/` and run
+   `python3 engineering/tools/validate_assurance.py` (use `--write-generated` when gates change).
 
 Persistence work must follow the accepted
 [durability and recovery contract](docs/architecture/durability-recovery.md). Public API work must
@@ -18,6 +22,16 @@ Changing a commit point, routing metadata, recovery authority, or read lifetime 
 Use Conventional Commits. Keep public terminology aligned with the architecture documents: the
 public model has a Store, Workers, an Index, and Segments. Do not introduce text-protocol
 compatibility layers or unbounded client-controlled work without an accepted design change.
+
+## Assurance
+
+- Authority: [`engineering/`](engineering/README.md) (requirements, hazards, gates).
+- Derived readiness view: [`docs/production-readiness.md`](docs/production-readiness.md).
+- Baseline: [`docs/assurance/engineering-baseline.md`](docs/assurance/engineering-baseline.md).
+- CI: `.github/workflows/assurance.yml`.
+
+Do not claim production readiness or close a gate to `ACCETTATA_PER_RILASCIO` / `PROVATA_IN_CI`
+without linked proofs and existing evidence paths.
 
 ## Safety gates
 

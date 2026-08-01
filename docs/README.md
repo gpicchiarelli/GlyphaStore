@@ -30,12 +30,18 @@ When documents disagree, use this order of authority:
 3. A reference contract under `docs/reference/`.
 4. An architecture or development guide.
 5. The repository README.
-6. A roadmap, readiness checklist, changelog entry, benchmark result, or historical note.
+6. A roadmap, changelog entry, benchmark result, or historical note.
+7. Generated readiness views (`production-readiness.md`, `assurance/*.md`) are **not** normative;
+   their authority is [`engineering/`](../engineering/README.md).
 
 Code and tests are evidence that an implementation follows a contract; they are not a substitute
 for a missing external contract. When code and a normative specification disagree, do not silently
 edit either side. Record the discrepancy, decide which behavior is intended, update or supersede
 the relevant ADR, and add compatibility evidence before changing a persisted or wire-visible rule.
+
+Assurance program entry points: [engineering baseline](assurance/engineering-baseline.md),
+[hazard register](assurance/hazards.md), [quality gates](assurance/gates.md), and
+[AGENTS.md](../AGENTS.md).
 
 ## Required document metadata
 
@@ -112,7 +118,8 @@ source package documents its language-specific API and concurrency contract:
 - [Secure-profile TLS reference](security/secure-profile.md)
 - [TLS performance note](security/tls-performance.md)
 - [Documentation roadmap](documentation-roadmap.md)
-- [Production readiness](production-readiness.md)
+- [Production readiness](production-readiness.md) (generated from `engineering/gates/`)
+- [Assurance baseline](assurance/engineering-baseline.md)
 - [Persistence v1 roadmap](v1-production-roadmap.md)
 
 ## Review discipline

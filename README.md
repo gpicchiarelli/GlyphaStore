@@ -33,8 +33,10 @@ engine throughput as application throughput.
 > **Architectural prototype — not production ready.** Volatile storage, persistence v1, recovery,
 > compaction, the daemon, secure transport, and native clients are implemented and tested. Stable
 > release compatibility, filesystem/device power-loss certification, signed artifacts, and a full
-> production evidence matrix are not complete. Follow the
-> [production-readiness gates](docs/production-readiness.md), not feature presence alone.
+> production evidence matrix are not complete. Follow the machine-readable
+> [assurance catalog](engineering/README.md) and the derived
+> [production-readiness gates](docs/production-readiness.md), not feature presence alone. Agent and
+> contributor rules: [AGENTS.md](AGENTS.md).
 
 Implemented surfaces:
 
@@ -219,6 +221,7 @@ Start with the [documentation map](docs/README.md). The shortest useful paths ar
 | Operate the daemon | [Operations index](docs/operations/README.md) and [CLI reference](docs/cli.md) |
 | Evaluate durability | [Persistence v1](docs/spec/persistence-v1.md) and [evidence matrix](docs/architecture/platform-durability-evidence.md) |
 | Review security | [Secure profile](docs/security/secure-profile.md) and [threat model](docs/security/threat-model.md) |
+| Trace requirements / hazards / gates | [Assurance catalog](engineering/README.md), [baseline](docs/assurance/engineering-baseline.md), [AGENTS.md](AGENTS.md) |
 | Contribute | [Contributing guide](CONTRIBUTING.md) and [test strategy](docs/development/test-strategy.md) |
 
 ## Supported platforms
