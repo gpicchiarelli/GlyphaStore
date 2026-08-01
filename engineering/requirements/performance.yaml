@@ -1,0 +1,26 @@
+requirements:
+- id: GS-PERF-REGRESSION-001
+  titolo: Benchmark CI median regression signal
+  categoria: performance
+  criticita: media
+  stato: implementato
+  descrizione: Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous
+    baseline. Hosted results are regression signals, not absolute product claims.
+  autorita:
+  - docs/spec/benchmark-standard.md
+  - docs/benchmarks/paired-shards-plan.md
+  implementazione:
+  - benchmarks
+  - scripts/benchmark_report.py
+  prove:
+  - benchmarks
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: ci-regression-signal
+  evidenze:
+  - workflow: benchmarks.yml
+  rischio_residuo:
+  - Controlled-hardware CI evidence and enforced tail-latency release budgets remain open (Phase E)
+  gates:
+  - GATE-PERFORMANCE

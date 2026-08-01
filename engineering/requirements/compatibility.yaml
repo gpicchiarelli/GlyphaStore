@@ -1,0 +1,34 @@
+requirements:
+- id: GS-COMPAT-FIXTURE-001
+  titolo: Disk and wire golden fixtures and released-artifact harness
+  categoria: compatibility
+  criticita: alta
+  stato: provato
+  descrizione: Manifest/Segment/commit/Record layouts and wire v2 fixtures are golden-tested; released-artifact
+    harness packages per-SHA self artifacts. Permanent fixture drop of tagged trees remains a release
+    process step.
+  autorita:
+  - docs/spec/persistence-v1.md
+  - docs/spec/wire-protocol-v2.md
+  - docs/architecture/version-lifecycle.md
+  implementazione:
+  - scripts/generate_format_fixtures.py
+  - scripts/package-release-compatibility-artifacts.sh
+  - tests/fixtures
+  prove:
+  - tests/fixtures
+  - scripts/generate_format_fixtures.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: release-compat.yml
+  - workflow: ci.yml
+  rischio_residuo:
+  - Tagged cross-release binary matrices remain open
+  hazards:
+  - HAZ-022
+  gates:
+  - GATE-DISK-WIRE-VERSIONS
+  - GATE-API-ABI-POLICY

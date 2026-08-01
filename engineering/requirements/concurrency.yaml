@@ -1,0 +1,35 @@
+requirements:
+- id: GS-CONCUR-PAIR-001
+  titolo: Paired Reader-Writer shard model
+  categoria: concurrency
+  criticita: critica
+  stato: implementato
+  descrizione: Official daemon and paired Store runtime use one ShardPair (Reader + serial Writer + bounded
+    SPSC lanes) per owner id with immutable ReadGeneration adoption.
+  autorita:
+  - docs/spec/concurrency-memory-model.md
+  - docs/adr/paired-reader-writer-shards.md
+  - docs/adr/0032-paired-concurrency-embedded-store.md
+  implementazione:
+  - src/store/paired
+  - src/server
+  - src/worker
+  prove:
+  - tests/integration/paired_store_tests.cpp
+  - tests/integration/concurrency_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+  rischio_residuo:
+  - Formal linearizability checker and TLA+ model are Phase B; legacy_mutex remains temporary
+  hazards:
+  - HAZ-003
+  - HAZ-008
+  - HAZ-009
+  - HAZ-027
+  - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC

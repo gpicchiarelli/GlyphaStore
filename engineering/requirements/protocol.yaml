@@ -1,0 +1,32 @@
+requirements:
+- id: GS-PROTO-WIRE-001
+  titolo: Wire protocol v2 framing and session semantics
+  categoria: protocol
+  criticita: alta
+  stato: provato
+  descrizione: Wire protocol v2 request/response framing, session INIT/BIND, and status codes are normative
+    and covered by golden fixtures across official codecs.
+  autorita:
+  - docs/spec/wire-protocol-v2.md
+  - docs/spec/client-semantics-v1.md
+  implementazione:
+  - src/server
+  - src/client
+  - sdk
+  prove:
+  - tests/fixtures
+  - scripts/test-sdk-interop.sh
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: sdk-clients / interop
+  rischio_residuo:
+  - Server-side cancellation/deadline semantics beyond client contract remain open
+  hazards:
+  - HAZ-010
+  - HAZ-011
+  gates:
+  - GATE-DISK-WIRE-VERSIONS

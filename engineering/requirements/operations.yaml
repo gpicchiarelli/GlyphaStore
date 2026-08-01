@@ -1,0 +1,61 @@
+requirements:
+- id: GS-OPS-CONFIG-001
+  titolo: Configuration precedence validation and safe defaults
+  categoria: operations
+  criticita: alta
+  stato: provato
+  descrizione: Daemon and embedded durable config have documented precedence, validation, safe defaults,
+    and resource limits; production profile fails closed before listen.
+  autorita:
+  - docs/cli.md
+  - docs/operations/durable-tcp-daemon.md
+  implementazione:
+  - src/cli
+  - src/persistence/resource_limits.cpp
+  - src/main.cpp
+  prove:
+  - tests/integration/store_tests.cpp
+  - scripts/exercise_ops_runbooks.sh
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ops-runbooks.yml
+  rischio_residuo:
+  - Misconfiguration on unsupported filesystems remains an operator hazard
+  hazards:
+  - HAZ-025
+  - HAZ-026
+  gates:
+  - GATE-CONFIG
+- id: GS-OPS-BACKUP-001
+  titolo: Backup restore verify and online fence
+  categoria: operations
+  criticita: alta
+  stato: implementato
+  descrizione: Offline backup/restore/verify/repair and online fenced Store::backup_to are implemented;
+    released-tag artifact consumption remains open.
+  autorita:
+  - docs/operations/backup-restore.md
+  - docs/architecture/backup-restore.md
+  implementazione:
+  - src/persistence/store_backup.cpp
+  - src/persistence/store_verify.cpp
+  - src/persistence/store_repair.cpp
+  prove:
+  - scripts/exercise_ops_runbooks.sh
+  - tests/unit
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ops-runbooks.yml
+  rischio_residuo:
+  - Released-tag artifact consumption and incompatible restore matrices remain open
+  hazards:
+  - HAZ-021
+  - HAZ-022
+  gates:
+  - GATE-BACKUP-RESTORE
