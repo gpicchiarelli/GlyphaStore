@@ -87,7 +87,7 @@ embedded profile lowers several caps automatically.
 | `--max-store-bytes` | 8 GiB | cap catalog Segment bytes |
 | `--reserved-free-bytes` | 256 MiB | keep filesystem headroom unused |
 | `--max-segments` | 127 | cap Segment count |
-| `--max-hot-cache-bytes` | 256 MiB | cap cross-Worker hot cache (`0` disables) |
+| `--max-hot-cache-bytes` | 256 MiB | cap cross-shard-pair hot cache (`0` disables) |
 | `--max-temporary-compaction-bytes` | 1 GiB | cap compaction temporary peak |
 
 Embedded profile preset: 1 GiB store, 64 MiB reserved, 32 segments, 64 MiB hot cache, 256 MiB

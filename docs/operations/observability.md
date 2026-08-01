@@ -41,11 +41,12 @@ Operator triage: [graceful-drain-and-overload](graceful-drain-and-overload.md),
 | `*_bytes` | bytes | |
 | `*_bp` | basis points | Ratio × 10000 |
 | boolean fields | `0` / `1` | |
-| `lane[N].*` | per shard-pair Writer lane | `N` = executor/shard index |
-| `batch[W].*` | per durable batch Worker | Thin subset of batch stats |
+| `lane[N].*` | per shard-pair Writer lane (`pair_writer_stats`) | `N` = shard-pair / executor index |
+| `batch[W].*` | per durable batch shard pair | Thin subset of batch stats; wire still labels owner ids as Workers |
 
-Cardinality is bounded by configured executors / Workers / connections — do not scrape unbound
-label sets. There is no remote metrics port; scrape via authenticated STATS or logs.
+Cardinality is bounded by configured shard pairs (STATS `executors`) / connections — do not scrape
+unbound label sets. Manifest and wire still expose `worker_count` as the 0.1.x name for that same
+pair count. There is no remote metrics port; scrape via authenticated STATS or logs.
 
 ## 3. STATS field catalog
 
@@ -114,9 +115,10 @@ Per histogram: `.count`, `.sum` (ns), cumulative buckets `.le_1000` … `.le_100
 approximate `.p50`, `.p99` (ns). Bucket edges: 1µs … 1s / +Inf
 (`include/glyphastore/core/latency_histogram.hpp`).
 
-### 3.5 Batch Workers (`batch[W].*`)
+### 3.5 Durable batch lanes (`batch[W].*`)
 
-`enabled`, `pending_records`, `committed_batches`, `failed_batches`
+Per shard-pair durable batch surface (index `W` matches owner / shard-pair id; historical “Worker”
+label on the wire). Fields: `enabled`, `pending_records`, `committed_batches`, `failed_batches`.
 
 ## 4. Structured JSON lifecycle logs
 

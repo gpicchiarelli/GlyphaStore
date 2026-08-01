@@ -1,5 +1,8 @@
 ## [Unreleased]
 
+- Paired adoption naming: prefer shard-pair / Reader / Writer language in operator telemetry docs
+  (`observability` lane/batch surfaces, durable-tcp hot-cache wording) while keeping Manifest/wire
+  `worker_count` and CLI `--workers` as 0.1.x aliases.
 - Paired adoption P1 residual honesty: optional Linux I/O backend (`io_uring` / batched
   completion) **deferred** for 0.1.0 without a measured queue/syscall win that preserves write
   ordering; refresh Delta COW / get-into reject / Linux harness residual status in
