@@ -18,6 +18,7 @@ boxes as production readiness.
 | `waivers/` | Time-bounded waivers (CI rejects expired) |
 | `claims/` / `evidence/` | Release claims and retained evidence (later phases) |
 | `tools/validate_assurance.py` | Validator + Markdown generator |
+| `formal/shard_pair/` | Reduced TLA+ ShardPair model + TLC helper |
 
 ## Validate
 

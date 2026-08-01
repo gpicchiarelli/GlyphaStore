@@ -40,7 +40,8 @@ edit either side. Record the discrepancy, decide which behavior is intended, upd
 the relevant ADR, and add compatibility evidence before changing a persisted or wire-visible rule.
 
 Assurance program entry points: [engineering baseline](assurance/engineering-baseline.md),
-[hazard register](assurance/hazards.md), [quality gates](assurance/gates.md), and
+[hazard register](assurance/hazards.md), [quality gates](assurance/gates.md),
+[memory-order inventory](assurance/memory-order-inventory.md), and
 [AGENTS.md](../AGENTS.md).
 
 ## Required document metadata
