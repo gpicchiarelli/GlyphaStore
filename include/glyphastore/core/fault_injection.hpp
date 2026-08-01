@@ -1,0 +1,43 @@
+#pragma once
+
+// Debug-only adverse scheduling hooks for concurrency stress (Phase B1).
+//
+// Production / default builds: every GS_FAULT_SITE expands to a no-op.
+// Enable only with -DGLYPHASTORE_FAULT_INJECTION=ON (CMake) which defines the
+// compile macro GLYPHASTORE_FAULT_INJECTION. Never enable in release packaging.
+
+#include <cstdint>
+
+namespace glyphastore::fault {
+
+enum class Site : std::uint8_t {
+    enqueue = 1,
+    mutate = 2,
+    publish = 3,
+    adopt = 4,
+    rotate = 5,
+    compact = 6,
+    close = 7,
+};
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+
+void at(Site site) noexcept;
+void configure(std::uint64_t seed, std::uint32_t yield_percent, std::uint32_t sleep_us_max) noexcept;
+void reset() noexcept;
+
+#else
+
+inline void at(Site) noexcept {}
+inline void configure(std::uint64_t, std::uint32_t, std::uint32_t) noexcept {}
+inline void reset() noexcept {}
+
+#endif
+
+} // namespace glyphastore::fault
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+#define GS_FAULT_SITE(site) ::glyphastore::fault::at(::glyphastore::fault::Site::site)
+#else
+#define GS_FAULT_SITE(site) ((void)0)
+#endif

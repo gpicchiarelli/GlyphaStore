@@ -20,7 +20,10 @@
       "inherits": "base",
       "displayName": "macOS Debug (Ninja)",
       "generator": "Ninja",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GLYPHASTORE_FAULT_INJECTION": "ON"
+      }
     },
     {
       "name": "macos-release",
@@ -105,7 +108,10 @@
       "inherits": "base",
       "displayName": "Unix Debug",
       "generator": "Ninja",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "GLYPHASTORE_FAULT_INJECTION": "ON"
+      }
     },
     {
       "name": "unix-release",

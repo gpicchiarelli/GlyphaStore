@@ -76,6 +76,7 @@ glyphastore_enable_hardening(glyphastore_cli_support)
 set_target_properties(glyphastore_cli_support PROPERTIES FOLDER "Libraries/Internal")
 
 add_library(glyphastore_core
+    src/core/fault_injection.cpp
     src/core/worker_routing.cpp
     src/index/index.cpp
     src/index/index_hash_seed.cpp
@@ -142,6 +143,12 @@ if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
     # the compiler/linker flag empty, while BSD still requires explicit mode.
     target_compile_options(glyphastore_core PUBLIC -pthread)
     target_link_options(glyphastore_core PUBLIC -pthread)
+endif()
+if(GLYPHASTORE_FAULT_INJECTION)
+    target_compile_definitions(glyphastore_core PUBLIC GLYPHASTORE_FAULT_INJECTION=1)
+    message(STATUS "GlyphaStore fault injection: ENABLED (debug-only adverse scheduling hooks)")
+else()
+    message(STATUS "GlyphaStore fault injection: disabled (production default)")
 endif()
 glyphastore_set_warnings(glyphastore_core)
 glyphastore_enable_hardening(glyphastore_core)
@@ -347,6 +354,7 @@ if(BUILD_TESTING)
         tests/integration/server_reactor_tests.cpp
         tests/integration/store_tests.cpp
         tests/property/history_property_tests.cpp
+        tests/concurrency/linearizability_tests.cpp
     )
     target_link_libraries(glyphastore_tests
         PRIVATE GlyphaStore::server GlyphaStore::client glyphastore_cli_support glyphastore_project_options

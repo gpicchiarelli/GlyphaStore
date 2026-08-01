@@ -1,5 +1,6 @@
 #include "glyphastore/store/paired/shard_pair_runtime.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/bounded_spsc_queue.hpp"
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
@@ -101,6 +102,12 @@ void notify_sink(const MutationSink& sink) noexcept {
     }
 }
 
+void publish_read_generation(std::atomic<const PairReadGeneration*>& published,
+                             const PairReadGeneration* generation) noexcept {
+    GS_FAULT_SITE(publish);
+    published.store(generation, std::memory_order_release);
+}
+
 } // namespace
 
 struct ShardPairRuntime::SyncMutation final {
@@ -137,7 +144,7 @@ struct ShardPairRuntime::Lane final {
         delta_arena_key_bytes.store(writer_generation->delta_arena_key_bytes(), std::memory_order_relaxed);
         delta_arena_key_storage_bytes.store(writer_generation->delta_arena_key_storage_bytes(),
                                             std::memory_order_relaxed);
-        published_generation.store(writer_generation.get(), std::memory_order_release);
+        publish_read_generation(published_generation, writer_generation.get());
     }
 
     BoundedSpscQueue<AsyncMutationTask> queue;
@@ -391,6 +398,7 @@ auto ShardPairRuntime::try_submit(const AsyncMutationRequest& request) noexcept
                            .sink = request.sink};
     const auto next_bytes =
         lane.queued_bytes.fetch_add(*admission_bytes, std::memory_order_relaxed) + *admission_bytes;
+    GS_FAULT_SITE(enqueue);
     if (!lane.queue.try_push(std::move(task))) {
         lane.queued_bytes.fetch_sub(*admission_bytes, std::memory_order_relaxed);
         if (!lane.payloads.rollback(*acquired.lease)) {
@@ -439,6 +447,7 @@ auto ShardPairRuntime::adopt_read_generation(const std::size_t shard,
         return nullptr;
     }
     auto& lane = *lanes_[shard];
+    GS_FAULT_SITE(adopt);
     const auto* generation = lane.published_generation.load(std::memory_order_acquire);
     if (generation != nullptr) {
         // The current turn protects generation->epoch(); asynchronous I/O can
@@ -548,6 +557,7 @@ void ShardPairRuntime::note_writer_exit() noexcept {
 }
 
 auto ShardPairRuntime::stop_and_drain(const std::optional<std::chrono::milliseconds> deadline) -> Status {
+    GS_FAULT_SITE(close);
     if (!stopping_.exchange(true, std::memory_order_acq_rel)) {
         auto observed = admission_state_.fetch_or(kAdmissionClosed, std::memory_order_acq_rel);
         while ((observed & kAdmissionCountMask) != 0) {
@@ -714,7 +724,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         lane.writer_generation = std::move(*next);
         update_delta_stats();
         lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
-        lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
+        publish_read_generation(lane.published_generation, lane.writer_generation.get());
         lane.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
         lane.read_merge.reset();
         lane.read_merge_active.store(false, std::memory_order_relaxed);
@@ -787,7 +797,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         lane.writer_generation = std::move(*next);
         update_delta_stats();
         lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
-        lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
+        publish_read_generation(lane.published_generation, lane.writer_generation.get());
         lane.read_merge.reset();
         lane.read_merge_active.store(false, std::memory_order_relaxed);
         lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -857,6 +867,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                              .value = node->value,
                                              .expire_at_ns = node->expire_at_ns});
                         }
+                        GS_FAULT_SITE(mutate);
                         auto results = detail::StoreAccess::mutate_durable_batch(store_, shard, views);
                         if (results.size() != views.size()) {
                             std::terminate();
@@ -899,8 +910,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             update_delta_stats();
                             lane.writer_epoch.store(lane.writer_generation->epoch(),
                                                     std::memory_order_relaxed);
-                            lane.published_generation.store(lane.writer_generation.get(),
-                                                            std::memory_order_release);
+                            publish_read_generation(lane.published_generation, lane.writer_generation.get());
                             lane.published_catalog_revision.store(snapshot->catalog_revision,
                                                                   std::memory_order_release);
                             lane.read_merge.reset();
@@ -988,8 +998,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                         update_delta_stats();
                                         lane.writer_epoch.store(lane.writer_generation->epoch(),
                                                                 std::memory_order_relaxed);
-                                        lane.published_generation.store(lane.writer_generation.get(),
-                                                                        std::memory_order_release);
+                                        publish_read_generation(lane.published_generation, lane.writer_generation.get());
                                         reclaim_quiescent();
                                     }
                                 }
@@ -1008,13 +1017,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                     update_delta_stats();
                                     lane.writer_epoch.store(lane.writer_generation->epoch(),
                                                             std::memory_order_relaxed);
-                                    lane.published_generation.store(lane.writer_generation.get(),
-                                                                    std::memory_order_release);
+                                    publish_read_generation(lane.published_generation, lane.writer_generation.get());
                                     reclaim_quiescent();
                                 }
                             }
                         }
                     } else {
+                        GS_FAULT_SITE(mutate);
                         auto published =
                             node->kind == MutationKind::put
                                 ? detail::StoreAccess::put_volatile_published(store_, shard, key, node->value,
@@ -1040,8 +1049,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                 update_delta_stats();
                                 lane.writer_epoch.store(lane.writer_generation->epoch(),
                                                         std::memory_order_relaxed);
-                                lane.published_generation.store(lane.writer_generation.get(),
-                                                                std::memory_order_release);
+                                publish_read_generation(lane.published_generation, lane.writer_generation.get());
                                 reclaim_quiescent();
                             }
                         }
@@ -1228,6 +1236,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             break;
                         }
                     }
+                    GS_FAULT_SITE(mutate);
                     auto results = detail::StoreAccess::mutate_durable_batch(
                         store_, shard, std::span{durable_views}.subspan(begin, end - begin));
                     if (results.size() != end - begin) {
@@ -1309,6 +1318,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             stage_durable_publication(index, result);
                         }
                     } else {
+                        GS_FAULT_SITE(mutate);
                         auto published =
                             queued.kind == MutationKind::put
                                 ? detail::StoreAccess::put_volatile_published(
@@ -1364,7 +1374,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 lane.writer_generation = std::move(*next);
                 update_delta_stats();
                 lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
-                lane.published_generation.store(lane.writer_generation.get(), std::memory_order_release);
+                publish_read_generation(lane.published_generation, lane.writer_generation.get());
                 if (lane.read_merge) {
                     lane.read_merge_post_entries.store(
                         PairReadGeneration::merge_post_entries(*lane.read_merge), std::memory_order_relaxed);
@@ -1421,6 +1431,7 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
 
     SyncMutation node{.kind = kind, .key = &key, .value = value, .expire_at_ns = expire_at_ns};
     auto& lane = *lanes_[shard];
+    GS_FAULT_SITE(enqueue);
     {
         const std::lock_guard lock{lane.sync_mutex};
         node.next = lane.sync_head;
@@ -1444,6 +1455,7 @@ ShardPairRuntime::ReadLease::ReadLease(const ShardPairRuntime& runtime, const st
     // could otherwise free a generation while a Reader was adopting it.
     lane.active_read_leases.fetch_add(1U, std::memory_order_relaxed);
     std::atomic_thread_fence(std::memory_order_seq_cst);
+    GS_FAULT_SITE(adopt);
     generation_ = lane.published_generation.load(std::memory_order_acquire);
     if (generation_ == nullptr) {
         lane.active_read_leases.fetch_sub(1U, std::memory_order_release);

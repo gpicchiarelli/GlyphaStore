@@ -1,5 +1,6 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/integer_math.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/swiss_table.hpp"
@@ -2087,6 +2088,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
     //     allocation.
     // No RecordRef, file, or Segment generation crosses phase 1 without the
     // exact shared generation pin captured below.
+    GS_FAULT_SITE(rotate);
     if (!worker_lock.owns_lock() && !options_.exclusive_writer) {
         return mutation_failure(
             DurableMutationOutcome::indeterminate,
