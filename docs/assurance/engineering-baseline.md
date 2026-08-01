@@ -28,7 +28,7 @@ release level.
 | No machine-readable requirement IDs (`GS-*`) | High | P0 (Phase A) | schemas + validator | Silent drift; checklist theatre |
 | No formal hazard register | High | P0 (Phase A) | requirements linkage | Untracked integrity failures |
 | Gates not multi-state / not CI-enforced | High | P0 (Phase A) | evidence paths | Closed boxes without proofs |
-| Monolithic `CMakeLists.txt` (~989 lines, no `add_subdirectory`) | Medium | P2 (Phase C) | dependency matrix | Slow refactors; include cycles |
+| Monolithic `CMakeLists.txt` (Phase C: split via `add_subdirectory`) | Medium | P2 (Phase C) | dependency matrix | Done baseline; oversized sources under WAV-001 |
 | No formal linearizability checker | High | P1 (Phase B) | history recorder | Concurrency regressions undetected |
 | Actions not pinned to commit SHA | Medium | P2 (Phase D) | supply-chain policy | Tag mutability |
 | Physical E3/E4 durability unset | High (claim honesty) | Keep open | hardware campaign | False durability confirmation |

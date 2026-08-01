@@ -37,6 +37,11 @@
     "gates": {
       "type": "array",
       "items": { "type": "string", "pattern": "^GATE-[A-Z0-9-]+$" }
+    },
+    "paths": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Optional repo-relative paths covered by this waiver (Phase C size/todo debt)."
     }
   }
 }

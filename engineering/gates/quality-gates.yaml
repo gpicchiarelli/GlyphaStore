@@ -406,19 +406,26 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-CORE-API-001
+  - GS-CORE-BUILD-001
   prove:
   - CMakeLists.txt
+  - src/CMakeLists.txt
+  - engineering/build/dependency-matrix.yaml
+  - engineering/tools/validate_cmake_deps.py
+  - engineering/tools/validate_structure_debt.py
   - tests/consumer
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ci.yml
+  - workflow: assurance.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Monolithic CMake (~989 lines) pending Phase C split
+  rischio_residuo: Oversized sources remain under WAV-001 until decomposed below line budget
   riapertura:
   - Breaking exported targets without alias
-  narrative: Installed targets exist; structure debt remains.
+  - Removing add_subdirectory layout without matrix update
+  narrative: Installed targets exist; Phase C subdirectory split and dependency/structure gates landed.
 - id: GATE-INSTALL-CONSUMER
   titolo: CI builds external consumer from installed prefix
   sezione: distribution_lifecycle

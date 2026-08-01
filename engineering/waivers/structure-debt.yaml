@@ -1,0 +1,22 @@
+waivers:
+  - id: WAV-001
+    titolo: Oversized hot-path and suite sources pending Phase C decomposition
+    ambito: size
+    motivo: >
+      Historical monolith files exceed the Phase C line budget. They remain under
+      active decomposition (paired Store, reactor, recovery matrices) and are
+      tracked here until split below threshold.
+    scadenza: "2026-12-31"
+    approvatore: maintainers
+    stato: attiva
+    requisiti:
+      - GS-CORE-BUILD-001
+    gates:
+      - GATE-CMAKE-INSTALL
+    paths:
+      - src/persistence/runtime_catalog.cpp
+      - src/server/reactor.cpp
+      - src/store/store.cpp
+      - tests/integration/server_reactor_tests.cpp
+      - tests/integration/persistence_recovery_tests.cpp
+      - tests/unit/maintenance_controller_tests.cpp

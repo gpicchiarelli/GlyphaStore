@@ -162,9 +162,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-CMAKE-INSTALL** — CMake installs versioned package metadata and GlyphaStore::core  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
-  Requirements: `GS-CORE-API-001`  
-  Residual risk: Monolithic CMake (~989 lines) pending Phase C split
-  Installed targets exist; structure debt remains.
+  Requirements: `GS-CORE-API-001`, `GS-CORE-BUILD-001`  
+  Residual risk: Oversized sources remain under WAV-001 until decomposed below line budget
+  Installed targets exist; Phase C subdirectory split and dependency/structure gates landed.
 
 - [x] **GATE-INSTALL-CONSUMER** — CI builds external consumer from installed prefix  
   State: `PROVATA_IN_CI` · Release target: `alpha`  

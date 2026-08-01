@@ -56,3 +56,35 @@ requirements:
   hazards:
   - HAZ-020
   - HAZ-027
+- id: GS-CORE-BUILD-001
+  titolo: CMake component split with dependency matrix and structure debt gates
+  categoria: core
+  criticita: media
+  stato: implementato
+  descrizione: The build uses add_subdirectory for src/tools/tests/benchmarks/fuzz, keeps installed
+    GlyphaStore::core/server/client aliases, and enforces a documented dependency matrix plus
+    size/TODO waiver CI.
+  autorita:
+  - docs/assurance/engineering-baseline.md
+  - engineering/build/dependency-matrix.yaml
+  - engineering/build/structure-thresholds.yaml
+  implementazione:
+  - CMakeLists.txt
+  - src/CMakeLists.txt
+  - tools/CMakeLists.txt
+  - tests/CMakeLists.txt
+  - benchmarks/CMakeLists.txt
+  - fuzz/CMakeLists.txt
+  prove:
+  - engineering/tools/validate_cmake_deps.py
+  - engineering/tools/validate_structure_debt.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: assurance.yml
+  rischio_residuo:
+  - Further per-component OBJECT library splits remain optional; oversized sources are waiver-tracked
+  gates:
+  - GATE-CMAKE-INSTALL

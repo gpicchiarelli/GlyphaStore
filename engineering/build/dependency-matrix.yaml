@@ -1,0 +1,66 @@
+# Allowed CMake target dependency edges (Phase C).
+# Validator: engineering/tools/validate_cmake_deps.py
+# Edges are PUBLIC/PRIVATE link_libraries relationships among GlyphaStore targets.
+
+version: 1
+targets:
+  glyphastore_cli_support:
+    may_link: [glyphastore_project_options]
+  glyphastore_core:
+    may_link: [Threads::Threads, glyphastore_project_options]
+    aliases: [GlyphaStore::core]
+  glyphastore_wire:
+    may_link: [glyphastore_project_options]
+    aliases: [GlyphaStore::wire]
+  glyphastore_tls_layer:
+    may_link: [GlyphaStore::core, GlyphaStore::tls, glyphastore_project_options]
+    aliases: [GlyphaStore::tls_layer]
+  glyphastore_client:
+    may_link: [GlyphaStore::wire, GlyphaStore::tls_layer, glyphastore_project_options]
+    aliases: [GlyphaStore::client]
+  glyphastore_server_core:
+    may_link:
+      - GlyphaStore::core
+      - GlyphaStore::wire
+      - GlyphaStore::tls_layer
+      - glyphastore_cli_support
+      - glyphastore_project_options
+    aliases: [GlyphaStore::server]
+  glyphastored:
+    may_link: [GlyphaStore::server, glyphastore_cli_support, glyphastore_project_options]
+  glyphastore_demo:
+    may_link: [GlyphaStore::core, glyphastore_project_options]
+  glyphastore_tests:
+    may_link:
+      - GlyphaStore::server
+      - GlyphaStore::client
+      - GlyphaStore::tls
+      - glyphastore_cli_support
+      - glyphastore_project_options
+
+# Include-path policy (enforced by path prefix checks on #include "..." in src/).
+include_rules:
+  - id: no-client-includes-server-private
+    description: Client sources must not include server implementation headers under src/server/
+    from_glob: src/client/**
+    forbid_include_prefix: glyphastore/server/
+    allow_include_prefix:
+      - glyphastore/server/protocol.hpp
+      - glyphastore/server/tls.hpp
+  - id: no-core-includes-server
+    description: Core library sources must not depend on server headers
+    from_glob: "src/{core,index,segment,persistence,store,vacuum,worker}/**"
+    forbid_include_prefix: glyphastore/server/
+  - id: no-wire-includes-store
+    description: Wire codec must stay independent of Store
+    from_glob: src/server/protocol.cpp
+    forbid_include_prefix: glyphastore/store/
+
+# Structural layout expected after Phase C.
+required_cmake_files:
+  - CMakeLists.txt
+  - src/CMakeLists.txt
+  - tools/CMakeLists.txt
+  - tests/CMakeLists.txt
+  - benchmarks/CMakeLists.txt
+  - fuzz/CMakeLists.txt

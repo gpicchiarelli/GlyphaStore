@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Assurance Phase C: split root `CMakeLists.txt` via `add_subdirectory` for
+  `src`/`tools`/`tests`/`benchmarks`/`fuzz` (installed `GlyphaStore::*` aliases unchanged);
+  add `engineering/build/dependency-matrix.yaml`, structure debt thresholds, waivers (`WAV-001`),
+  and CI validators `validate_cmake_deps.py` / `validate_structure_debt.py`.
 - Paired embedded Store gate snapshot (ADR 0032 T5): macOS-release Zipf durable parallel GET
   p50/p99 recorded in `docs/benchmarks/paired-embedded-store-gates-2026-08-01.md`; full ctest
   37/37 green. Fix `ShardPairRuntime::Lane` member init order warning.

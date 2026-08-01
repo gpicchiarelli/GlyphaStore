@@ -28,3 +28,7 @@ jobs:
         run: python engineering/tools/validate_assurance.py
       - name: Validate durability certification honesty
         run: python engineering/tools/validate_durability_claims.py
+      - name: Validate CMake dependency matrix
+        run: python engineering/tools/validate_cmake_deps.py
+      - name: Validate structure debt and waivers
+        run: python engineering/tools/validate_structure_debt.py
