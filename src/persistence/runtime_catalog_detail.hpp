@@ -321,7 +321,7 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     // Per-shard generation-pin authority. An unrelated shard publication must
     // not force this shard to rebuild its immutable Reader index.
     std::atomic_uint64_t read_catalog_revision{1};
-    std::mutex mutex;
+    mutable std::mutex mutex;
     std::optional<DurableSegmentFile> cached_file;
     bool cached_writable{};
     std::vector<std::byte> encode_scratch;

@@ -1,7 +1,7 @@
 Status: normative for official GlyphaStore TCP clients and embedded ErrorCode mapping
 Applies to: wire protocol v2, C++ client, Python/Go/Perl/Ruby/Erlang SDKs, embedded Store errors that surface as wire statuses
 Owner: networking maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-02
 Requirement: `GS-PROTO-ERROR-001`
 
 # Error taxonomy v1 — wire, embedded, SDK
@@ -70,7 +70,7 @@ When the C++ TCP client maps a wire status or local failure into `glyphastore::E
 | `invalid_argument`, `record_too_large` | `invalid_argument` |
 | `not_found` | `not_found` |
 | `resource_exhausted` | `overloaded` |
-| `unavailable` | `unavailable` |
+| `unavailable` | `unavailable` (embedded/API); Reactor wire map uses `INTERNAL_ERROR` because Store sticky/fail-closed paths may already have linearized — see §6 |
 | `io_error` | `transport` |
 | `corrupted_data` | `protocol` |
 | `internal_error` (and unlisted defaults) | `internal` |
@@ -95,7 +95,23 @@ Official SDKs and the C++ client must pass the shared fixture matrix:
 Fixture copies under `sdk/*/…/fixtures/` (or Go `testdata/`) are synced from
 `tests/fixtures/error_taxonomy_v1.json` via `scripts/sync-sdk-fixtures.sh`.
 
-## 5. Residual gaps
+## 5. Reactor embedded `ErrorCode` → wire status
+
+The daemon Reactor maps completion/`queue_response` errors through
+`reactor_detail::response_status`:
+
+| `ErrorCode` | Wire status | Rationale |
+| --- | --- | --- |
+| `resource_exhausted`, `storage_exhausted`, `file_too_large`, `descriptor_exhausted`, `read_only_filesystem`, `sequence_conflict`, `segment_full`, `segment_sealed`, `arithmetic_overflow` | `OVERLOADED` | Admission / capacity / conflict / segment fit / **pre-Store lane expiry** — known not newly committed by this attempt (server may have retried `sequence_conflict` internally). |
+| `unavailable` | `INTERNAL_ERROR` | Fail-closed and sticky post-commit paths may have linearized; must not claim known-not-committed. |
+| `not_found` | `NOT_FOUND` | |
+| `invalid_argument`, `record_too_large` | `INVALID_REQUEST` | |
+| other / `internal_error` / `io_error` / `corrupted_data` | `INTERNAL_ERROR` | Integrity / I/O / fail-closed — reconcile when mutation bytes may have hit the wire path. |
+
+True admission rejects on the mutation path still set `ResponseStatus::overloaded` directly
+(without going through `ErrorCode::unavailable`).
+
+## 6. Residual gaps
 
 - Transport / deadline / local-validation vectors beyond the shared fixture remain covered by
   client-semantics narrative tests, not this fixture.

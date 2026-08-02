@@ -99,7 +99,11 @@ if(BUILD_TESTING)
             ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_tests.cpp
         )
         target_link_libraries(glyphastore_allocation_fault_tests
-            PRIVATE GlyphaStore::core glyphastore_project_options
+            PRIVATE GlyphaStore::server glyphastore_project_options
+        )
+        target_include_directories(glyphastore_allocation_fault_tests PRIVATE
+            "${CMAKE_SOURCE_DIR}/src"
+            "${CMAKE_SOURCE_DIR}/tests"
         )
         glyphastore_set_warnings(glyphastore_allocation_fault_tests)
         glyphastore_enable_hardening(glyphastore_allocation_fault_tests)

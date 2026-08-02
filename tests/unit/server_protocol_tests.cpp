@@ -1,5 +1,6 @@
 #include "glyphastore/server/protocol.hpp"
 #include "hex_fixture.hpp"
+#include "server/reactor_detail.hpp"
 #include "test.hpp"
 
 #include <algorithm>
@@ -249,4 +250,24 @@ GLYPHA_TEST("wire protocol v2 matches independent canonical response fixtures") 
         ++expected_status;
     }
     GLYPHA_REQUIRE(expected_status == 9);
+}
+
+GLYPHA_TEST("reactor maps unavailable to INTERNAL_ERROR not OVERLOADED") {
+    // Post-commit / fail-closed Store errors use ErrorCode::unavailable. Wire
+    // OVERLOADED is known-not-committed; INTERNAL_ERROR is reconcile_first.
+    using glyphastore::Error;
+    using glyphastore::ErrorCode;
+    using glyphastore::server::ResponseStatus;
+    using glyphastore::server::reactor_detail::response_status;
+
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::unavailable, {}}) == ResponseStatus::internal_error);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::resource_exhausted, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::storage_exhausted, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::sequence_conflict, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::segment_full, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::segment_sealed, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::arithmetic_overflow, {}}) == ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::internal_error, {}}) == ResponseStatus::internal_error);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::corrupted_data, {}}) == ResponseStatus::internal_error);
+    GLYPHA_REQUIRE(response_status(Error{ErrorCode::io_error, {}}) == ResponseStatus::internal_error);
 }

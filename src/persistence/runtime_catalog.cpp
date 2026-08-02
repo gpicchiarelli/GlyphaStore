@@ -56,6 +56,9 @@ void DurableRuntimeCatalog::RuntimeWorker::erase_hot_record(const std::string_vi
 }
 
 auto DurableRuntimeCatalog::RuntimeWorker::drain_deferred_ttl(const std::size_t limit) -> Status {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::deferred_ttl)) {
+        return fail(ErrorCode::resource_exhausted, "injected deferred TTL drain failure");
+    }
     std::size_t processed = 0;
     while (processed < limit && !deferred_ttl_reclaims.empty()) {
         auto pending = std::move(deferred_ttl_reclaims.front());
@@ -471,32 +474,52 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker,
         worker.batch_closed.notify_all();
         return unexpected(std::move(error));
     };
-    for (auto& mutation : worker.pending_group_mutations) {
-        const HashedKey hashed{.key = mutation.key, .hash = mutation.key_hash};
-        if (mutation.opcode == Opcode::put) {
-            const auto published = worker.index.insert_or_assign(hashed, mutation.reference);
-            if (!published) {
-                return publication_failed(published.error());
-            }
-            if (auto counted = worker.update_live_record_bytes(published->previous, mutation.reference);
-                !counted) {
-                return publication_failed(counted.error());
-            }
-            if (mutation.hot_record.empty()) {
+    try {
+        for (auto& mutation : worker.pending_group_mutations) {
+            const HashedKey hashed{.key = mutation.key, .hash = mutation.key_hash};
+            if (mutation.opcode == Opcode::put) {
+                const auto published = worker.index.insert_or_assign(hashed, mutation.reference);
+                if (!published) {
+                    return publication_failed(published.error());
+                }
+                // Index authority applied: advance durable_through before secondary work so
+                // Writer finalize keeps success ACK if count/hot fails after Index publish.
+                worker.durable_through = mutation.reference.sequence;
+                if (glyphastore::fault::consume_fail(glyphastore::fault::Site::index_account)) {
+                    return publication_failed(
+                        Error{ErrorCode::resource_exhausted, "injected Index accounting failure"});
+                }
+                if (auto counted = worker.update_live_record_bytes(published->previous, mutation.reference);
+                    !counted) {
+                    return publication_failed(counted.error());
+                }
+                if (mutation.hot_record.empty()) {
+                    worker.erase_hot_record(mutation.key, mutation.key_hash);
+                } else if (auto hot_published =
+                               worker.publish_hot_record(mutation.hot_record, mutation.reference);
+                           !hot_published) {
+                    return publication_failed(hot_published.error());
+                }
+            } else {
+                const auto erased = worker.index.erase_no_compact(hashed);
+                worker.durable_through = mutation.reference.sequence;
+                if (glyphastore::fault::consume_fail(glyphastore::fault::Site::index_account)) {
+                    return publication_failed(
+                        Error{ErrorCode::resource_exhausted, "injected Index accounting failure"});
+                }
+                if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+                    return publication_failed(counted.error());
+                }
                 worker.erase_hot_record(mutation.key, mutation.key_hash);
-            } else if (auto hot_published =
-                           worker.publish_hot_record(mutation.hot_record, mutation.reference);
-                       !hot_published) {
-                return publication_failed(hot_published.error());
             }
-        } else {
-            const auto erased = worker.index.erase_no_compact(hashed);
-            if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
-                return publication_failed(counted.error());
-            }
-            worker.erase_hot_record(mutation.key, mutation.key_hash);
         }
-        worker.durable_through = mutation.reference.sequence;
+    } catch (const std::bad_alloc&) {
+        // Index/hot allocation must not escape after durable_through advanced: pending
+        // would remain and healthy could stay true while Index is partially published.
+        return publication_failed(
+            Error{ErrorCode::resource_exhausted, "Index publication allocation failed"});
+    } catch (...) {
+        return publication_failed(Error{ErrorCode::internal_error, "Index publication failed"});
     }
     worker.pending_group_mutations.clear();
     worker.pending_group_insertions = 0;
@@ -520,6 +543,20 @@ auto DurableRuntimeCatalog::writer_batch_config() const noexcept -> std::optiona
     return options_.batch;
 }
 
+auto DurableRuntimeCatalog::writer_durable_through(const std::size_t worker_index) const noexcept
+    -> SequenceNumber {
+    if (worker_index >= workers_.size()) {
+        return {};
+    }
+    // Synchronize with flush_worker_batch / mutate writers: durable_through is
+    // non-atomic and advanced under worker.mutex. Unlocked reads after
+    // commit_writer_batch would lack happens-before and could under-read Index
+    // coverage → rewrite visible successes to indeterminate (inverted RAW).
+    auto& worker = *workers_[worker_index];
+    const std::lock_guard lock{worker.mutex};
+    return worker.durable_through;
+}
+
 auto DurableRuntimeCatalog::commit_writer_batch(const std::size_t worker_index) -> Status {
     if (worker_index >= workers_.size()) {
         return fail(ErrorCode::invalid_argument, "Writer batch targets an invalid Worker");
@@ -531,6 +568,18 @@ auto DurableRuntimeCatalog::commit_writer_batch(const std::size_t worker_index) 
         worker.batch_closed.wait(worker_lock);
     }
     if (!healthy()) {
+        // Strict-ack mutates may already have flushed earlier items in this batch.
+        // An empty pending-group with no orphaned Segment pending means there is
+        // nothing left to commit; returning fail would incorrectly rewrite those
+        // successes to indeterminate upstream. Orphaned file pending (group cleared
+        // after a later-item failure) must not look like a clean no-op.
+        if (worker.pending_group_mutations.empty()) {
+            if (worker.cached_file && worker.cached_writable && worker.cached_file->has_pending_commit()) {
+                return fail(ErrorCode::unavailable,
+                            "durable runtime is fail-closed with orphaned pending Segment commit");
+            }
+            return {};
+        }
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
     if (worker.pending_group_mutations.empty()) {
@@ -543,9 +592,16 @@ auto DurableRuntimeCatalog::commit_writer_batch(const std::size_t worker_index) 
 auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) -> Status {
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
-        worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
+        // Use healthy_ (not healthy()): close() sets closed_ before the final flush,
+        // and healthy() is false while closed_ — that must not skip the close flush.
+        worker->mutation_io_finished.wait(
+            lock, [&] { return !worker->mutation_io_active || !healthy_.load(std::memory_order_acquire); });
         worker->compaction_commit_finished.wait(
             lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
+        // Sticky abandon only: do not flush orphaned Segment pending after fail-closed.
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return {};
+        }
         std::shared_lock catalog_lock{catalog_mutex_};
         if (auto flushed = flush_worker_batch(*worker, lock, catalog_lock, sync); !flushed) {
             return flushed;
@@ -557,9 +613,13 @@ auto DurableRuntimeCatalog::flush_pending_batches(const SegmentCommitSync sync) 
 auto DurableRuntimeCatalog::flush_due_batches(const SegmentCommitSync sync) -> Status {
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
-        worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
+        worker->mutation_io_finished.wait(
+            lock, [&] { return !worker->mutation_io_active || !healthy_.load(std::memory_order_acquire); });
         worker->compaction_commit_finished.wait(
             lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return {};
+        }
         if (!should_flush_batch(*worker)) {
             continue;
         }
@@ -757,9 +817,13 @@ auto DurableRuntimeCatalog::sync_worker_file(RuntimeWorker& worker, std::unique_
 auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
     for (auto& worker : workers_) {
         std::unique_lock lock{worker->mutex};
-        worker->mutation_io_finished.wait(lock, [&] { return !worker->mutation_io_active || !healthy(); });
+        worker->mutation_io_finished.wait(
+            lock, [&] { return !worker->mutation_io_active || !healthy_.load(std::memory_order_acquire); });
         worker->compaction_commit_finished.wait(
             lock, [&] { return !worker->compaction_commit_active.load(std::memory_order_relaxed); });
+        if (!healthy_.load(std::memory_order_acquire)) {
+            return {};
+        }
         if (!worker->cached_file || !worker->cached_writable || !worker->cached_file->is_dirty()) {
             continue;
         }
@@ -849,7 +913,11 @@ auto DurableRuntimeCatalog::close() -> Status {
         if (flusher_) {
             result = flusher_->flush_all_blocking();
             flusher_->stop();
-        } else if (!healthy_.load(std::memory_order_acquire) || !directory_.healthy()) {
+        } else if (!healthy_.load(std::memory_order_acquire)) {
+            // Already fail-closed with no periodic flusher: close is a no-op success.
+            // Synthesizing unavailable here poisoned Server::join after sticky Writer close.
+            result = {};
+        } else if (!directory_.healthy()) {
             result = unexpected(Error{ErrorCode::unavailable, {}});
         }
     } catch (const std::bad_alloc&) {

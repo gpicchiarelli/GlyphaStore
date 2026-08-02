@@ -201,6 +201,7 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->pipelined_store_input_observed = false;
     current->request_in_flight = false;
     current->cold_read_in_flight = false;
+    current->close_after_flush = false;
     current->last_activity = {};
     current->partial_request_since = {};
     current->in_flight_since = {};
@@ -250,7 +251,17 @@ void Reactor::close_all_connections() noexcept {
         if (!candidate.socket.valid()) {
             continue;
         }
-        close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
+        const ConnectionToken token{.slot = slot, .generation = candidate.generation};
+        // Shutdown-deadline hard close: best-effort flush of any decided response still
+        // buffered (same posture as in-flight request timeout). Join still reports drain
+        // timeout; this only avoids discarding ACKs the kernel can accept right now.
+        if (has_pending_output(candidate)) {
+            static_cast<void>(write_ready(token));
+            if (connection(token) == nullptr) {
+                continue;
+            }
+        }
+        close_connection(token);
     }
 }
 
@@ -260,7 +271,9 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
     while (true) {
         auto accepted = listener.accept();
         if (!accepted) {
-            return unexpected(accepted.error());
+            // EMFILE/ENFILE/configure_* failures must not stop the executor.
+            // EAGAIN/EINTR are already empty optionals from TcpListener::accept.
+            return {};
         }
         if (!accepted->has_value()) {
             return {};
@@ -317,7 +330,8 @@ auto Reactor::accept_unix_ready() -> Status {
     while (true) {
         auto accepted = unix_listener_.accept();
         if (!accepted) {
-            return unexpected(accepted.error());
+            // Same isolation as TCP accept: one peer/setup glitch must not stop the process.
+            return {};
         }
         if (!accepted->has_value()) {
             return {};
@@ -359,10 +373,15 @@ auto Reactor::accept_unix_ready() -> Status {
 }
 
 auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
-    if (free_slots_.empty()) {
+    if (handoff.peer_read_closed && handoff.input.empty() && handoff.output.empty()) {
         return {};
     }
-    if (handoff.peer_read_closed && handoff.input.empty() && handoff.output.empty()) {
+    if (free_slots_.empty()) {
+        // Accept-flood keeps silent drop. BIND handoffs carry buffered OK / bound_worker
+        // and must not destroy a definitive status with the socket.
+        if (handoff.bound_worker.has_value() || !handoff.output.empty()) {
+            reject_orphaned_handoff(std::move(handoff));
+        }
         return {};
     }
     const auto slot = free_slots_.back();
@@ -372,9 +391,13 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     if (config_.accepted_socket_send_buffer_bytes != 0) {
         const auto bytes = static_cast<int>(config_.accepted_socket_send_buffer_bytes);
         if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) != 0) {
-            current.socket.reset();
+            const bool bind_handoff = handoff.bound_worker.has_value() || !handoff.output.empty();
+            handoff.socket = std::move(current.socket);
             free_slots_.push_back(slot);
-            return system_error("Reactor SO_SNDBUF");
+            if (bind_handoff) {
+                reject_orphaned_handoff(std::move(handoff));
+            }
+            return {};
         }
     }
     current.tls = std::move(handoff.tls);
@@ -393,6 +416,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.pipelined_store_input_observed = false;
     current.request_in_flight = false;
     current.cold_read_in_flight = false;
+    current.close_after_flush = false;
     current.last_activity = handoff.last_activity.time_since_epoch().count() == 0
                                 ? std::chrono::steady_clock::now()
                                 : handoff.last_activity;
@@ -409,24 +433,86 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
         interest = interest | IoInterest::write;
     }
     if (auto added = poller_.add(current.socket.descriptor(), token.encode(), interest); !added) {
-        current.socket.reset();
+        ConnectionHandoff rejected{.socket = std::move(current.socket),
+                                   .tls = std::move(current.tls),
+                                   .principal = std::move(current.principal),
+                                   .capabilities = current.capabilities,
+                                   .key_prefix = std::move(current.key_prefix),
+                                   .input = std::move(current.input),
+                                   .output = std::move(current.output),
+                                   .bound_worker = current.bound_worker,
+                                   .initialized = current.initialized,
+                                   .peer_read_closed = current.peer_read_closed,
+                                   .last_activity = current.last_activity,
+                                   .partial_request_since = current.partial_request_since,
+                                   .connection_rate_window_start_ns = current.connection_rate_window_start_ns,
+                                   .connection_rate_used = current.connection_rate_used};
+        current.capabilities = Capability::none;
+        current.bound_worker.reset();
+        current.initialized = false;
+        current.peer_read_closed = false;
+        current.write_armed = false;
+        current.close_after_flush = false;
         free_slots_.push_back(slot);
-        return added;
+        if (rejected.bound_worker.has_value() || !rejected.output.empty()) {
+            reject_orphaned_handoff(std::move(rejected));
+        }
+        return {};
     }
     ++active_connections_;
     ++adopted_connections_;
-    if (!current.input.empty()) {
-        if (auto processed = process_frames(token); !processed) {
-            close_connection(token);
-            return {};
-        }
-    }
-    if (auto* adopted = connection(token); adopted != nullptr && has_pending_output(*adopted)) {
+    // write_ready flushes BIND OK then processes residual input only after the
+    // decided bytes fully drain (EAGAIN-safe). Do not call process_frames while
+    // output remains — a trailing decode error would close and discard BIND OK.
+    if (auto* adopted = connection(token);
+        adopted != nullptr &&
+        (has_pending_output(*adopted) || adopted->input_offset < adopted->input.size())) {
         if (auto flushed = write_ready(token); !flushed) {
             close_connection(token);
         }
     }
     return {};
+}
+
+void Reactor::reject_orphaned_handoff(ConnectionHandoff handoff,
+                                      const std::optional<std::uint64_t> request_id_override) noexcept {
+    if (!handoff.socket.valid()) {
+        return;
+    }
+    std::uint64_t request_id = request_id_override.value_or(0);
+    if (!request_id_override.has_value() && !handoff.output.empty()) {
+        if (auto decoded = decode_response(handoff.output)) {
+            request_id = decoded->frame.request_id;
+        }
+    }
+    const ResponseView overloaded{
+        .status = ResponseStatus::overloaded,
+        .request_id = request_id,
+        .owner_worker = handoff.bound_worker.value_or(kNoWorker),
+        .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+        .routing_epoch = kRoutingEpoch,
+    };
+    auto encoded = encode_response(overloaded);
+    if (!encoded) {
+        return;
+    }
+    std::size_t offset = 0;
+    while (offset < encoded->size()) {
+        if (handoff.tls) {
+            auto written = handoff.tls->write(encoded->data() + offset, encoded->size() - offset);
+            if (!written || written->kind != TlsIoKind::ok || written->bytes == 0) {
+                break;
+            }
+            offset += written->bytes;
+            continue;
+        }
+        const auto sent =
+            ::send(handoff.socket.descriptor(), encoded->data() + offset, encoded->size() - offset, 0);
+        if (sent <= 0) {
+            break;
+        }
+        offset += static_cast<std::size_t>(sent);
+    }
 }
 
 auto Reactor::queue_response(const ConnectionToken token, const ResponseView& response) -> Status {
@@ -562,7 +648,8 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
             if (received->kind == TlsIoKind::closed) {
                 current->peer_read_closed = true;
-                if (!has_pending_output(*current) && !current->request_in_flight) {
+                if (!has_pending_output(*current) && !current->request_in_flight &&
+                    current->input_offset >= current->input.size()) {
                     close_connection(token);
                     return {};
                 }
@@ -575,7 +662,8 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                 received_size = static_cast<std::size_t>(received);
             } else if (received == 0) {
                 current->peer_read_closed = true;
-                if (!has_pending_output(*current) && !current->request_in_flight) {
+                if (!has_pending_output(*current) && !current->request_in_flight &&
+                    current->input_offset >= current->input.size()) {
                     close_connection(token);
                     return {};
                 }
@@ -597,6 +685,16 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                               buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
         touch_activity(*current, std::chrono::steady_clock::now());
         if (auto processed = process_frames(token); !processed) {
+            // Mirror write_ready: a decided response (abuse OVERLOADED / authz deny)
+            // may already be queued before a trailing decode failure. Closing here
+            // discarded that signal as silent EOF and undermined rate-limit feedback.
+            current = connection(token);
+            if (current != nullptr && has_pending_output(*current)) {
+                current->close_after_flush = true;
+                current->input.clear();
+                current->input_offset = 0;
+                return write_ready(token);
+            }
             return processed;
         }
         current = connection(token);
@@ -743,12 +841,26 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         }
 
         touch_activity(*current, std::chrono::steady_clock::now());
-        if (current->peer_read_closed && !current->request_in_flight) {
+        if (current->close_after_flush && !has_pending_output(*current) && !current->request_in_flight) {
             close_connection(token);
             return {};
         }
+        // Drain pipelined input before half-close teardown. Client SHUT_WR means
+        // "done sending" — responses already decided (or still buffered) must flush,
+        // and frames already received must still execute. Closing here used to drop
+        // residual input and, via callers that process_frames on EAGAIN, could also
+        // discard a buffered ACK when a trailing decode failed.
         if (!current->request_in_flight && current->input_offset < current->input.size()) {
             if (auto processed = process_frames(token); !processed) {
+                // A decided response may have been queued earlier in this turn
+                // (e.g. abuse OVERLOADED) before a trailing decode failed. Drain it.
+                current = connection(token);
+                if (current != nullptr && has_pending_output(*current)) {
+                    current->close_after_flush = true;
+                    current->input.clear();
+                    current->input_offset = 0;
+                    continue;
+                }
                 return processed;
             }
             current = connection(token);
@@ -758,6 +870,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
             if (has_pending_output(*current)) {
                 continue;
             }
+        }
+        if (current->peer_read_closed && !current->request_in_flight && !has_pending_output(*current) &&
+            current->input_offset >= current->input.size()) {
+            close_connection(token);
+            return {};
         }
         if (current->request_in_flight) {
             return update_connection_interest(token);
@@ -837,9 +954,10 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         }
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (!has_pending_output(*current) && !current->request_in_flight) {
+            if (!has_pending_output(*current) && !current->request_in_flight &&
+                current->input_offset >= current->input.size()) {
                 close_connection(token);
-            } else if (auto modified = update_connection_interest(token); !modified) {
+            } else if (auto drained = write_ready(token); !drained) {
                 close_connection(token);
             }
         }
@@ -895,7 +1013,26 @@ void Reactor::enforce_timeouts(const std::chrono::steady_clock::time_point now) 
         } else {
             abuse_->note_idle_closed();
         }
-        close_connection(ConnectionToken{.slot = slot, .generation = candidate.generation});
+        const ConnectionToken token{.slot = slot, .generation = candidate.generation};
+        if (request_timeout && has_pending_output(candidate) && !candidate.request_in_flight) {
+            // Partial-frame timeout must not discard a prior decided response still
+            // blocked on EAGAIN (idle timeout already requires !has_pending_output).
+            candidate.close_after_flush = true;
+            candidate.input.clear();
+            candidate.input_offset = 0;
+            candidate.partial_request_since = {};
+            static_cast<void>(write_ready(token));
+            continue;
+        }
+        if (request_timeout && has_pending_output(candidate)) {
+            // In-flight timeout: best-effort flush of any prior decided bytes, then hard
+            // close (admitted work continues; stale completions are dropped).
+            static_cast<void>(write_ready(token));
+            if (connection(token) == nullptr) {
+                continue;
+            }
+        }
+        close_connection(token);
     }
 }
 

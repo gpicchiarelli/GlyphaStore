@@ -428,6 +428,11 @@ class DurableRuntimeCatalog final {
                               std::unique_lock<std::mutex>& lock);
     [[nodiscard]] auto commit_writer_batch(std::size_t worker_index) -> Status;
     [[nodiscard]] auto writer_batch_config() const noexcept -> std::optional<DurableGroupConfig>;
+    // Highest sequence whose index publication has been applied for this Writer
+    // (advanced in flush_worker_batch / non-strict Index paths). Used to distinguish
+    // flushed siblings from abandoned unflushed pending after a later-item sticky
+    // failure. Takes the Worker mutex (happens-before with Index publishers).
+    [[nodiscard]] auto writer_durable_through(std::size_t worker_index) const noexcept -> SequenceNumber;
     [[nodiscard]] auto fail_closed(Error error) -> Unexpected;
     [[nodiscard]] auto mutate(std::span<const std::byte> key, std::span<const std::byte> value, Opcode opcode,
                               std::uint64_t key_hash, std::uint64_t expire_at_ns, ValueType type,
@@ -439,11 +444,18 @@ class DurableRuntimeCatalog final {
     // Writer-side publication helpers. Both capture methods may take runtime
     // locks but never perform file I/O. The returned records are immutable and
     // retain exact Segment-generation pins for lock-free Reader lookup.
-    [[nodiscard]] auto snapshot_published_reads(std::size_t worker_index) -> Result<PublishedReadSnapshot>;
+    // allow_fail_closed: one-shot drain after sticky failure so committed siblings
+    // can still enter the published generation when durable already marked itself
+    // unhealthy (pair Writer sync/async recovery publish only).
+    [[nodiscard]] auto snapshot_published_reads(std::size_t worker_index, bool allow_fail_closed = false)
+        -> Result<PublishedReadSnapshot>;
     [[nodiscard]] auto read_catalog_revision(std::size_t worker_index) const noexcept -> std::uint64_t;
     [[nodiscard]] static auto advance_read_catalog_revision(RuntimeWorker& worker) noexcept -> bool;
     [[nodiscard]] auto capture_published_read(std::size_t worker_index, const HashedKey& key)
         -> Result<PublishedReadRecord>;
+    // Immutable published GETs: pin/identity only. Servable after sticky fail-closed so
+    // drain-snapshot success-ACKs remain RAW via Store::get / reactor prepare_published.
+    // Mutable Index prepare_get still rejects when !healthy().
     [[nodiscard]] auto prepare_published_get(PublishedReadRecord read, std::uint64_t now_ns)
         -> Result<PreparedRead>;
     [[nodiscard]] auto prepare_published_get(PublishedReadView read, std::uint64_t now_ns)

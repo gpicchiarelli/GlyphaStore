@@ -140,7 +140,7 @@ Changing an atomic's role from telemetry to correctness requires revisiting its 
 
 The server's bounded queue has many producer executors and one consumer executor. A producer constructs a complete handoff object, claims a cell, and publishes the cell with release semantics. The sole consumer observes the cell with acquire semantics before taking ownership.
 
-After successful publication, the producer must not read or mutate the connection. Before successful publication, the consumer cannot observe it. If the queue is full, the connection is closed; the server does not create an unbounded backlog. Wakeups are hints to run the consumer, not ownership transfer by themselves.
+After successful publication, the producer must not read or mutate the connection. Before successful publication, the consumer cannot observe it. If the queue is full, the producer retains ownership, may emit wire `OVERLOADED` for the pending `BIND_WORKER`, and then closes the connection; the server does not create an unbounded backlog. After successful publication, destination connection-table exhaustion or adopt registration failure likewise best-effort `OVERLOADED` then close (the producer cannot restore). Wakeups are hints to run the consumer, not ownership transfer by themselves.
 
 This queue is for one-time connection transfer. It is not a general per-request remote execution mesh.
 

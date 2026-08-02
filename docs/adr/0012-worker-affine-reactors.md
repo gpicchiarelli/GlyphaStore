@@ -35,8 +35,8 @@ that Worker. Misdirected requests receive `wrong_owner` and routing metadata; th
 ## Consequences
 
 Steady-state requests avoid cross-executor queues and retain Worker cache affinity. Clients need a
-connection strategy covering the Workers they use. Handoff saturation closes a connection rather
-than allocating an unbounded backlog. Online Worker-count changes require an explicit epoch and
+connection strategy covering the Workers they use. Handoff saturation restores the connection on the producer, returns wire `OVERLOADED` for that
+`BIND_WORKER` when flush is still possible, then closes rather than allocating an unbounded backlog. Online Worker-count changes require an explicit epoch and
 rebalance protocol.
 
 ## Compatibility and verification

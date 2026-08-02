@@ -102,6 +102,7 @@ struct PrototypePairStats final {
     std::uint64_t delta_pages_allocated{};
     std::uint64_t delta_merges{};
     std::uint64_t publication_backpressure{};
+    std::uint64_t generation_slot_exhaustions{};
     std::size_t generation_live{};
     std::size_t generation_high_watermark{};
     std::uint64_t generation_retire_count{};

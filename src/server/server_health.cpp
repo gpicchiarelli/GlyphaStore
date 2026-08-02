@@ -30,10 +30,15 @@ auto ServerHealth::ready(const bool is_live, const bool stop_requested, const bo
 }
 
 auto Server::live() const noexcept -> bool {
-    return ServerHealth::live(started_.load(std::memory_order_acquire), healthy());
+    // Process/executor liveness only. Pair sticky fail-closed must not fail HEALTH
+    // (wire v2 / durable-tcp-daemon: sticky fails READY, HEALTH may remain OK).
+    return started_.load(std::memory_order_acquire) && !failed_.load(std::memory_order_acquire);
 }
 
 auto Server::ready() const noexcept -> bool {
+    if (!pair_writers_ || !pair_writers_->healthy()) {
+        return false;
+    }
     return ServerHealth::ready(live(), stop_requested(), store_operational(), maintenance_snapshot());
 }
 

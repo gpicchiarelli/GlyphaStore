@@ -201,12 +201,13 @@ int main(const int argc, char** argv) try {
         log.emit_ready(true);
     }
 
-    while (g_stop_signal == 0 && (*server)->healthy()) {
+    while (g_stop_signal == 0 && (*server)->live()) {
         observe_lifecycle(**server, log, was_ready, was_emergency, was_fault);
         std::this_thread::sleep_for(std::chrono::milliseconds{50});
     }
 
-    const bool executor_failure = !(*server)->healthy();
+    // Sticky pair fail-closed keeps live() true; only executor `failed_` ends the loop.
+    const bool executor_failure = !(*server)->live() && g_stop_signal == 0;
     if (executor_failure) {
         if (const auto failure = (*server)->first_failure(); failure.has_value()) {
             if (log.structured()) {

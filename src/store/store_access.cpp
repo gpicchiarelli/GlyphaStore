@@ -96,7 +96,8 @@ auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t wor
         read.state()->prepared);
 }
 
-auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index)
+auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t worker_index,
+                                                 const bool allow_fail_closed)
     -> Result<DurableReadSnapshot> {
     if (worker_index >= store.worker_count()) {
         return fail(ErrorCode::invalid_argument,
@@ -109,7 +110,7 @@ auto detail::StoreAccess::snapshot_durable_reads(Store& store, const std::size_t
     if (!store.impl_->durable_runtime) {
         return fail(ErrorCode::invalid_argument, "durable read-generation snapshot requires a durable Store");
     }
-    return store.impl_->durable_runtime->snapshot_published_reads(worker_index);
+    return store.impl_->durable_runtime->snapshot_published_reads(worker_index, allow_fail_closed);
 }
 
 auto detail::StoreAccess::durable_read_catalog_revision(const Store& store,
@@ -372,6 +373,10 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
     }
 
     for (const auto& mutation : mutations) {
+        if (!store.impl_->durable_runtime->healthy()) {
+            reject_remaining(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+            break;
+        }
         const auto key_bytes = std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
         DurableWriterBatchResult result;
         for (unsigned attempt = 0; attempt < 2; ++attempt) {
@@ -385,18 +390,39 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
             result.conflict_retried = true;
         }
         results.push_back(std::move(result));
-        if (!store.impl_->durable_runtime->healthy()) {
-            reject_remaining(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        const auto& last = results.back().mutation;
+        // Stop later siblings after sticky outcomes even if a path forgot to mark
+        // durable unhealthy (defense in depth; emitters should fail-close first).
+        if (!store.impl_->durable_runtime->healthy() ||
+            last.outcome == DurableMutationOutcome::indeterminate ||
+            (last.committed() && last.error.has_value())) {
+            if (store.impl_->durable_runtime->healthy()) {
+                store.impl_->durable_runtime->mark_fail_closed();
+            }
+            reject_remaining(Error{ErrorCode::unavailable,
+                                   "durable Writer batch stopped after a sticky mutation failure"});
             break;
         }
     }
 
     const auto committed = store.impl_->durable_runtime->commit_writer_batch(worker_index);
-    if (!committed) {
+    // Unify finalize: commit fail (orphan pending / flush-index error) and unhealthy
+    // no-op both keep success only for sequences already covered by durable_through
+    // (flushed + indexed). Blunt rewrite of every clean success would clear
+    // committed() for already-durable siblings → skip drain-snapshot and lie RAW.
+    if (!committed || !store.impl_->durable_runtime->healthy()) {
+        const auto through = store.impl_->durable_runtime->writer_durable_through(worker_index);
+        const auto finalize_error =
+            !committed ? committed.error()
+                       : Error{ErrorCode::unavailable,
+                               "durable Writer batch abandoned before index publication"};
         for (auto& result : results) {
-            if (result.mutation.committed() && !result.mutation.error) {
+            if (!result.mutation.committed() || result.mutation.error) {
+                continue;
+            }
+            if (!result.mutation.sequence || result.mutation.sequence->value > through.value) {
                 result.mutation.outcome = DurableMutationOutcome::indeterminate;
-                result.mutation.error = committed.error();
+                result.mutation.error = finalize_error;
             }
         }
     }

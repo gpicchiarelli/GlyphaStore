@@ -19,6 +19,12 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
     if (current == nullptr) {
         return {};
     }
+    if (current->close_after_flush) {
+        // Handoff-reject path: drain OVERLOADED only — do not accept BIND/Store frames.
+        current->input.clear();
+        current->input_offset = 0;
+        return {};
+    }
     std::uint64_t cached_now_ns{};
     // Sample the reactor clock once per process_frames turn (not per request).
     const auto now = std::chrono::steady_clock::now();
@@ -270,15 +276,20 @@ auto Reactor::bind_connection(const ConnectionToken token, const RequestView& re
     }
     current->bound_worker = request.target_worker;
     if (auto queued = queue_response(token, response); !queued) {
+        current->bound_worker.reset();
         return queued;
     }
     if (request.target_worker == executor_id_) {
-        return process_frames(token);
+        // write_ready flushes BIND OK then parses residual input only after drain.
+        // Calling process_frames while EAGAIN still holds decided bytes lets a
+        // trailing decode error close the socket and discard BIND OK.
+        return write_ready(token);
     }
-    return transfer_connection(token, request.target_worker);
+    return transfer_connection(token, request.target_worker, request.request_id);
 }
 
-auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t target_worker) -> Status {
+auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t target_worker,
+                                  const std::uint64_t request_id) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
@@ -318,6 +329,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->initialized = false;
     current->peer_read_closed = false;
     current->write_armed = false;
+    current->pipelined_store_input_observed = false;
     current->request_in_flight = false;
     current->cold_read_in_flight = false;
     current->last_activity = {};
@@ -325,13 +337,89 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     current->in_flight_since = {};
     current->connection_rate_window_start_ns = 0;
     current->connection_rate_used = 0;
+    // Slot stays occupied until enqueue succeeds. A full handoff queue must not
+    // destroy the socket after BIND already buffered OK — restore, replace with
+    // OVERLOADED, flush best-effort, then close (spec: close on enqueue failure).
+    if (!mesh_.try_handoff(target_worker, std::move(handoff))) {
+        current->socket = std::move(handoff.socket);
+        current->tls = std::move(handoff.tls);
+        current->principal = std::move(handoff.principal);
+        current->capabilities = handoff.capabilities;
+        current->key_prefix = std::move(handoff.key_prefix);
+        current->input = std::move(handoff.input);
+        current->output.clear();
+        current->output_offset = 0;
+        current->output_lease.reset();
+        current->bound_worker.reset();
+        current->initialized = handoff.initialized;
+        current->peer_read_closed = handoff.peer_read_closed;
+        current->last_activity = handoff.last_activity;
+        current->partial_request_since = handoff.partial_request_since;
+        current->connection_rate_window_start_ns = handoff.connection_rate_window_start_ns;
+        current->connection_rate_used = handoff.connection_rate_used;
+        if (auto added = poller_.add(current->socket.descriptor(), token.encode(), IoInterest::read);
+            !added) {
+            reject_orphaned_handoff(
+                ConnectionHandoff{.socket = std::move(current->socket),
+                                  .tls = std::move(current->tls),
+                                  .bound_worker = static_cast<std::uint32_t>(target_worker),
+                                  .initialized = current->initialized},
+                request_id);
+            // Socket is no longer on the connection / poller; finish slot teardown.
+            current->principal.clear();
+            current->capabilities = Capability::none;
+            current->key_prefix.clear();
+            current->input.clear();
+            current->input_offset = 0;
+            current->output.clear();
+            current->output_offset = 0;
+            current->output_lease.reset();
+            current->bound_worker.reset();
+            current->initialized = false;
+            current->peer_read_closed = false;
+            current->write_armed = false;
+            current->pipelined_store_input_observed = false;
+            current->request_in_flight = false;
+            current->cold_read_in_flight = false;
+            current->close_after_flush = false;
+            current->last_activity = {};
+            current->partial_request_since = {};
+            current->in_flight_since = {};
+            current->connection_rate_window_start_ns = 0;
+            current->connection_rate_used = 0;
+            ++current->generation;
+            if (current->generation == 0) {
+                current->generation = 1;
+            }
+            free_slots_.push_back(token.slot);
+            --active_connections_;
+            return {};
+        }
+        const ResponseView overloaded{.status = ResponseStatus::overloaded,
+                                      .request_id = request_id,
+                                      .owner_worker = static_cast<std::uint32_t>(target_worker),
+                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                      .routing_epoch = kRoutingEpoch};
+        if (auto queued = queue_response(token, overloaded); queued) {
+            current->close_after_flush = true;
+            current->input.clear();
+            current->input_offset = 0;
+            if (auto flushed = write_ready(token); !flushed) {
+                close_connection(token);
+            }
+            // Pending OVERLOADED stays until writable drain; do not fail the
+            // read path (that would close and clear the buffered status).
+            return {};
+        }
+        close_connection(token);
+        return {};
+    }
     ++current->generation;
     if (current->generation == 0) {
         current->generation = 1;
     }
     free_slots_.push_back(token.slot);
     --active_connections_;
-    static_cast<void>(mesh_.try_handoff(target_worker, std::move(handoff)));
     return {};
 }
 
@@ -596,14 +684,10 @@ auto Reactor::process_disk_read_completions() -> Status {
             close_connection(completion->connection);
             continue;
         }
-        if (auto processed = process_frames(completion->connection); !processed) {
+        // Flush the decided response; write_ready processes pipelined input only
+        // after output fully drains. process_frames-on-EAGAIN discarded ACKs.
+        if (auto flushed = write_ready(completion->connection); !flushed) {
             close_connection(completion->connection);
-            continue;
-        }
-        if (connection(completion->connection) != nullptr) {
-            if (auto flushed = write_ready(completion->connection); !flushed) {
-                close_connection(completion->connection);
-            }
         }
     }
     return {};
@@ -651,14 +735,10 @@ auto Reactor::process_mutation_completions() -> Status {
             close_connection(completion->connection);
             continue;
         }
-        if (auto processed = process_frames(completion->connection); !processed) {
+        // Flush the decided response; write_ready processes pipelined input only
+        // after output fully drains. process_frames-on-EAGAIN discarded ACKs.
+        if (auto flushed = write_ready(completion->connection); !flushed) {
             close_connection(completion->connection);
-            continue;
-        }
-        if (connection(completion->connection) != nullptr) {
-            if (auto flushed = write_ready(completion->connection); !flushed) {
-                close_connection(completion->connection);
-            }
         }
     }
     return {};

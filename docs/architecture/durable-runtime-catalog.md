@@ -111,6 +111,8 @@ No allocation is required after the persistent commit. Erase appends a tombstone
 deliberately non-compacting, non-allocating Index removal after commit; volatile erase retains safe
 arena reclamation. Results distinguish `committed`, `not_committed`, and `indeterminate`. Any
 post-commit publication error reports the committed boundary and makes the runtime fail closed.
+Mutations and mutable Index GETs reject while unhealthy; immutable published-generation reads
+(`prepare_published_get` / pin-backed complete) remain servable so ACK-after-publish RAW holds.
 
 Strict group commit with one v1 Worker separates admission from commit execution. Producers stage
 bounded pending mutations and wait for completion; the durability coordinator owns Record ordering,

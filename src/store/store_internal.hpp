@@ -65,7 +65,8 @@ class StoreAccess final {
                                                  const ColdReadCancellation* cancellation = nullptr,
                                                  std::vector<std::byte>* scratch = nullptr)
         -> Result<OwnedValue>;
-    [[nodiscard]] static auto snapshot_durable_reads(Store& store, std::size_t worker_index)
+    [[nodiscard]] static auto snapshot_durable_reads(Store& store, std::size_t worker_index,
+                                                     bool allow_fail_closed = false)
         -> Result<DurableReadSnapshot>;
     [[nodiscard]] static auto durable_read_catalog_revision(const Store& store,
                                                             std::size_t worker_index) noexcept

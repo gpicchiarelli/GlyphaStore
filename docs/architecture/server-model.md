@@ -145,11 +145,17 @@ therefore cannot target a new connection that reused the same descriptor or slot
 Input and output buffering is bounded per connection. The one-time connection handoff queue for
 each Reader, every per-pair mutation SPSC, every cold-read SPSC, and every completion path are
 bounded as well. Mutation admission has both a request-count limit and an owned-byte limit, so
-maximum-size payloads cannot multiply up to the count limit. A full handoff queue closes the
-connection being rebound. A cold-read or mutation admission failure returns `overloaded` and does
-not enqueue work.
+maximum-size payloads cannot multiply up to the count limit. A full handoff queue restores the
+connection on the source Reactor, returns wire `overloaded` for that `BIND_WORKER` when the socket
+can still flush, then closes the connection (no silent success ACK / EOF). Destination connection-table
+exhaustion (and adopt poller/`SO_SNDBUF` failure) after a successful enqueue likewise best-effort
+`overloaded` then close — the buffered BIND OK must not die with the socket. Accept floods with no
+prior bind still drop silently. A cold-read or mutation
+admission failure returns `overloaded` and does not enqueue work.
 Exceeding an input/output byte watermark closes the offending connection. Queue capacity is rounded
-up to a power of two at startup; overload never becomes unbounded memory growth.
+up to a power of two at startup; overload never becomes unbounded memory growth. A single
+`accept`/`configure_*` failure for one peer does not stop the Reactor executor; the listen loop
+retries on the next readiness event (TLS handshake reject already used this isolation).
 
 The mutation lane also has a configurable wait deadline. A task that expires before Store entry
 returns `overloaded` and is known not committed; a task that has entered Store is never cancelled.
@@ -170,12 +176,16 @@ to run on performance cores. Optional executor affinity is strict over the
 process-allowed CPU set on Linux. macOS exposes only Mach affinity tags, so its mode is advisory
 rather than a hard performance-core pin. The executable validates `INIT`, one-time connection
 rebinding, wrong-owner rejection, TCP lifecycle, native readiness, partial frames, pipelining,
-large partial output, half-close, connection generations, and graceful stop.
+large partial output, half-close (drain residual frames and decided ACKs before
+teardown), decided-response drain on pipelined decode failure (including abuse
+`OVERLOADED` from `read_ready`), partial-frame request timeout that drains prior
+decided output before close, connection generations, and graceful stop.
 
 Graceful stop stops accepting new connections, drains existing connections within
 `--shutdown-drain-ms`, drains mutations already admitted before closing Store, and fails
-closed if the shared deadline expires. Wire-protocol `HEALTH` and `READY` report process liveness
-and traffic readiness without requiring Worker binding. Client disconnect does not cancel admitted
+closed if the shared deadline expires. Wire-protocol `HEALTH` reports process/executor liveness
+(`started && !failed_`) without requiring Worker binding; `READY` additionally requires traffic
+admission (including paired Writer health). Client disconnect does not cancel admitted
 storage work: a stale `(slot, generation)` completion is discarded, and the client must classify the
 mutation as indeterminate.
 

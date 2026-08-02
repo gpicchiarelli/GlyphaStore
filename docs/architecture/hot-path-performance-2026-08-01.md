@@ -185,4 +185,34 @@ Writer threads, generation pins). `store_get_copy` median RSS ~240 MiB with
 - Full generation slot-pool publish protocol is **ADR 0036 (proposed)**: design bar +
   V1–V14 matrix in `docs/adr/0036-generation-slot-pool-publish.md`. Production stays
   on `shared_ptr` + ReadLease until that ADR is accepted and gates close. Prototype
-  reference remains `src/experimental/paired_shard.cpp` (lab only).
+  evidence now covers V1/V2/V3/V6/V7/V9/V13 (bounded slot acquire → `resource_exhausted`;
+  rejected publication never visible; `macos-tsan` and `macos-asan` ASan+UBSan green on
+  ADR gates + `paired Store`). Production-baseline notes for V3/V4/V6/V8/V10/V14 under
+  `benchmarks/results/local-macos-2026-08-02-adr0036-v6-v8-v14/`,
+  `…/local-macos-2026-08-02-adr0036-v6-failclosed/`, and
+  `…/local-macos-2026-08-02-adr0036-v14-sync-matrix/` (91 sync crash checkpoints).
+  V6 production seam also covers async/sync durable sibling drain-snapshot after
+  later-item failure (incl. `allow_fail_closed` when durable already self-closed),
+  rejects success-ACK for abandoned unflushed writer-batch siblings
+  (`durable_through` gate on commit-fail and unhealthy no-op; flushed siblings keep
+  ACK + snapshot), sticky-fails + stops Writer batches on deferred-TTL drain
+  indeterminate, preserves staged async sibling success ACKs across Writer catch,
+  and keeps immutable published-generation `Store::get` RAW after sticky fail-closed
+  (mutable Index GET / mutations still rejected). Sync `durable_sync` single-op
+  also drain-snapshots before sticky close on post-commit publication failure.
+  Async durable ACK-after-drain clears capture-fail errors on clean commits once the
+  snapshot is published (no GET-visible + error-ACK). Happy-path incremental publish
+  failure also drains before sticky close. Sync single-op ACK-after-visibility for
+  committed+error after drain and preserves success across catch after publish.
+  Sync batch + async durable extend the same visibility upgrade for sticky
+  Index-visible `committed+error`; catalog advances `durable_through` before
+  secondary Index accounting (`Site::index_account`).   Sync durable batch never
+  success-ACKs unprocessed items after catch-path drain (sticky Index-committed
+  only — never presence-upgrade of attempted puts on pre-existing keys). Index/hot flush publication catches allocation throws
+  into fail-closed (clears pending). Volatile sync preserves
+  success ACK across catch after publish (put+erase); async Writer ACK-after-publish for
+  staged indices and preserves completions across post-publish catch (put+erase).
+  Sync durable catch keeps resolved error polarity (no success promotion).
+  `writer_durable_through` locks the Worker mutex for finalize gating.
+  Evidence under paired durable litmus + allocation-fault suite.
+  Reference remains `src/experimental/paired_shard.cpp` (lab only).

@@ -1,9 +1,134 @@
 ## [Unreleased]
 
+- Pre-Store Writer lane expiry / merge-retire pressure / force-expire stamps
+  `resource_exhausted` (wire `OVERLOADED`, known not committed) instead of
+  `unavailable` (`INTERNAL_ERROR` / reconcile). Sticky/post-commit paths keep
+  `unavailable`. Existing deadline litmus expects `overloaded`.
+- `Server::live()` / HEALTH: process started and no executor `failed_` only —
+  pair sticky fail-closed no longer fails liveness or auto-exits the daemon loop.
+  `ready()` still requires `pair_writers_->healthy()`. `DurableRuntimeCatalog::close`
+  on already-fail-closed durable_sync (no flusher) returns success so `join` is
+  clean. Litmus: sticky → live+HEALTH OK, READY fail, join OK.
+- BIND OK / mutation·cold-read completions: flush (`write_ready`) before
+  `process_frames` so a pipelined decode failure cannot discard a decided response
+  as silent EOF. Litmus: BIND + trailing bad-version frame still yields BIND OK.
+- Half-close / completion drain: `write_ready` processes residual input before
+  `peer_read_closed` teardown; EOF/hangup only close when input+output are idle.
+  Mutation/cold-read completions and same-executor BIND no longer call
+  `process_frames` while decided bytes remain after `EAGAIN` (decode error used to
+  close and discard the ACK). Litmus: pipelined PUT+PUT then `SHUT_WR` ACKs both
+  and values remain visible.
+- `read_ready`: same decided-response drain as `write_ready` when `process_frames`
+  fails after queuing abuse `OVERLOADED` / authz deny — trailing decode used to
+  close as silent EOF and hide the rate-limit signal. Litmus: budget-exhausted
+  PING + bad-version frame still yields `OVERLOADED`.
+- Partial-frame `--request-timeout-ms`: when decided output remains (EAGAIN), set
+  `close_after_flush` and drain before teardown — idle timeout already required
+  `!has_pending_output`, but partial timeout did not and could discard a prior ACK.
+  In-flight timeout best-effort flushes prior decided bytes once then hard-closes.
+  Litmus: large PING + small client `SO_RCVBUF` + trailing partial frame still
+  delivers the full PING response.
+- Reactor `response_status`: `segment_full` / `segment_sealed` / `arithmetic_overflow`
+  map to wire `OVERLOADED` (known not committed), not `INTERNAL_ERROR` (reconcile).
+  Same capacity posture as `storage_exhausted`. Litmus: unit map + durable PUT with
+  injected `write_record` → `segment_full` yields wire `OVERLOADED`.
+- Shutdown-deadline `close_all_connections`: best-effort `write_ready` before hard
+  close so a decided ACK the kernel can accept is not discarded when drain times out
+  (join still reports drain failure).
+- Catalog flush-after-abandon gates use sticky `healthy_` (not `healthy()`):
+  `close()` sets `closed_` before the final flush, and `healthy()` is false while
+  closed — the old gate skipped deferred `sync_record` and returned success,
+  losing sticky final-flush failures. Litmus: deferred put + injected
+  `sync_record` failure on `close()` → `io_error`, sticky on repeat close.
+- Sync durable batch catch-path drain: remove presence-based
+  `ack_attempted_after_visibility` (put-hit on a pre-existing key falsely
+  success-ACK'd unapplied puts). Only sticky Index-committed items upgrade after
+  drain. Litmus: `put_batch` overwrite of an existing key that throws mid-mutate
+  keeps error ACK while GET still sees the old value.
+- `close_after_flush` (BIND handoff OVERLOADED drain): refuse new frames / clear
+  input so a pipelined BIND cannot append OK after OVERLOADED.
+- Reactor maps Store `ErrorCode::unavailable` to wire `INTERNAL_ERROR` (not
+  `OVERLOADED`). Sticky/fail-closed and post-commit Writer paths may already have
+  linearized; `OVERLOADED` would falsely tell clients the mutation is known-not-
+  committed. Admission/capacity still use direct `OVERLOADED` /
+  `resource_exhausted`/`storage_exhausted`. Litmus: `response_status` unit map +
+  durable `Site::publish` sticky PUT → `INTERNAL_ERROR` on the wire.
+- TCP/Unix `accept` and post-accept `configure_*` failures no longer fail the
+  Reactor executor (same isolation posture as TLS handshake reject); retry on the
+  next listen readiness.
+- Reactor `BIND_WORKER` handoff: on a full per-Worker MPSC queue, restore the
+  connection on the source Reactor (do not free the slot / bump generation before
+  enqueue), replace the buffered OK with wire `OVERLOADED`, best-effort flush, then
+  close — no silent success ACK destroyed with the socket. Litmus: prefill Worker 1
+  handoff ring (capacity-1 → ring of 2), pump only Reactor 0, cross-Reactor BIND
+  observes `overloaded` then EOF. Destination connection-table exhaustion and
+  adopt `SO_SNDBUF`/poller failures likewise best-effort `OVERLOADED` then close
+  (accept-flood stays silent drop); queue-full path uses `close_after_flush` so
+  pending OVERLOADED is not cleared on would-block. Litmus: Worker 1 max-connections=1
+  filled, BIND from Reactor 0 observes `overloaded` then EOF.
 - ADR 0036 (proposed): generation slot-pool publish/reclaim design bar and V1–V14
   verification matrix before any production protocol swap. Default paired path
-  unchanged (`shared_ptr` + ReadLease). See
-  `docs/adr/0036-generation-slot-pool-publish.md`.
+  unchanged (`shared_ptr` + ReadLease). Prototype gates V1/V2/V3/V6/V7/V9/V13
+  evidenced. Production-baseline: V3 overwrite-storm (TSan), V4 durable refresh/cold
+  pin, V6 sticky fail-closed (sync `healthy_` reject + couple when durable marks
+  itself unhealthy), V8/V10, V14 full sync crash matrix (91 checkpoints). See
+  `docs/adr/0036-generation-slot-pool-publish.md` and
+  `benchmarks/results/local-macos-2026-08-02-adr0036-*/`.
+- Paired Writer: sticky fail-closed on exceptions after durable mutate has begun
+  (and on durable committed-with-error / indeterminate without staged publication),
+  aligning async batch/single-op paths with the sync `publication_required` rule. Sync
+  `mutate`/`mutate_batch` reject when `!healthy_`; Writer couples pair `healthy_`
+  when the durable catalog becomes unhealthy without a thrown exception. Volatile
+  sync multi-chunk drains (`put_batch` >32) and async durable coalesced sub-batches
+  stop mutating after fail-closed instead of continuing later chunks/items. After a
+  later-item publication failure, async and sync durable batches still drain-snapshot
+  publish committed siblings (`allow_fail_closed` when durable already self-closed)
+  or publish already-staged volatile siblings before sticky close — earlier commits
+  are not left unpublished with an aborted ACK. Sync `durable_sync` / single-op
+  Writer path drain-snapshots before sticky close on capture/publish failure
+  (and batch catch drains when `durable_mutate_entered`), matching async; ACK is
+  success when the drain published a clean commit. Sync single-op also
+  ACK-after-visibility for `committed+error` / indeterminate after drain (put hit /
+  erase miss), marks generation published before reclaim, and preserves success ACK
+  across Writer catch once authority is published. Sync durable batches and async
+  durable (batch + single-op) likewise upgrade sticky Index-visible `committed+error`
+  completions after a successful drain-snapshot (only tracked committed sticky items —
+  not incidental same-key put-hit).   Sync durable batch items start as not-processed
+  (not default success); catch-path drain promotes only sticky Index-committed items
+  (never presence-upgrade of unprocessed attempted puts — pre-existing keys would
+  false-ACK). Volatile sync chunks mark generation published
+  before reclaim and preserve success ACK across catch (`Site::publish` litmus),
+  matching durable. Async Writer likewise ACK-after-publish for staged indices
+  (volatile sticky sibling publish and happy-path), skips error-ACK in catch when
+  already staged, and preserves success completions across post-publish catch
+  (`Site::publish` async volatile/durable put+erase litmus). Sync durable single-op
+  catch keeps any already-resolved ACK polarity (including visibility-failed errors)
+  instead of promoting them to success when a generation was published. Catalog Index
+  publish advances
+  `durable_through` before secondary accounting/hot so flush/finalize keeps success
+  for already-indexed sequences (`Site::index_account` litmus, including async
+  durable_group put/erase); flush/wait failures after Index authority return
+  `committed` rather than indeterminate. Index/hot publication in
+  `flush_worker_batch` and non-strict mutate accounting catch allocation throws
+  into fail-closed `publication_failed` / `committed+error` (no escape with
+  partial Index + uncleared pending). `writer_durable_through` takes the Worker
+  mutex so batch finalize cannot under-read Index coverage. Async durable
+  upgrades clean-commit completions to success after a successful drain-snapshot (no
+  visible key + error ACK), and drain-snapshots before sticky close when happy-path
+  `publish_incremental` fails. After sticky close, immutable
+  published-generation GETs (`prepare_published_get` / borrowed complete) remain
+  servable so success-ACK'd siblings keep RAW via `Store::get`; mutable Index GET
+  and mutations stay rejected. Unflushed writer-batch siblings
+  abandoned when a later item clears `pending_group` are rewritten to indeterminate
+  (gate on `durable_through` for both commit fail and unhealthy no-op — already-flushed
+  siblings keep success ACK + drain-snapshot; orphaned Segment pending still fails
+  commit). Async durable catch preserves staged sibling success completions. Indeterminate
+  emitters that previously left durable healthy (deferred TTL drain on mutate, rotate
+  preflight corruption) now abandon/fail-close; `mutate_durable_batch` also stops
+  later siblings on indeterminate/committed-with-error. Refresh/merge skip when pair
+  `!healthy_`. Sync volatile chunks also stop mid-chunk when another lane sticky-fails.
+  Pre-I/O `!healthy` returns `not_committed`. Prevents unpublished committed durable
+  state, inverted RAW, and post-fail-closed mutation.
 - Record encode: `encode_record(out, input, encoded_size)` avoids a second
   `encoded_record_size` pass on Segment append and durable encode-scratch paths.
   Bytes unchanged; release validates input + extent; debug asserts size match.

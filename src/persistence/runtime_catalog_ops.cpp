@@ -191,20 +191,21 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
                                            cold_reference, std::move(cold_pin)}};
 }
 
-auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_index)
+auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_index,
+                                                     const bool allow_fail_closed)
     -> Result<PublishedReadSnapshot> try {
     if (worker_index >= workers_.size()) {
         return fail(ErrorCode::invalid_argument,
                     "durable read-generation snapshot targets an invalid Worker");
     }
-    if (!healthy()) {
+    if (!allow_fail_closed && !healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
 
     auto& worker = *workers_[worker_index];
     const std::lock_guard worker_lock{worker.mutex};
     const std::shared_lock catalog_lock{catalog_mutex_};
-    if (!healthy()) {
+    if (!allow_fail_closed && !healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
 
@@ -263,6 +264,9 @@ auto DurableRuntimeCatalog::advance_read_catalog_revision(RuntimeWorker& worker)
 
 auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_index, const HashedKey& key)
     -> Result<PublishedReadRecord> try {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::capture)) {
+        return fail(ErrorCode::resource_exhausted, "injected durable read publication failure");
+    }
     if (worker_index >= workers_.size() || route_worker(key.hash, workers_.size()) != worker_index) {
         return fail(ErrorCode::invalid_argument, "durable read publication targets the wrong Worker owner");
     }
@@ -314,9 +318,9 @@ auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_inde
 
 auto DurableRuntimeCatalog::prepare_published_get(PublishedReadRecord read, const std::uint64_t now_ns)
     -> Result<PreparedRead> {
-    if (!healthy()) {
-        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
-    }
+    // Immutable pin-backed reads must remain servable after sticky fail-closed:
+    // sibling drain-snapshot success-ACKs keys into the published generation; RAW
+    // after ACK must not die on healthy(). Mutable Index prepare_get still gates.
     const auto worker_index = read.pin_.worker_index_;
     if (worker_index >= workers_.size() || route_worker(read.key_hash_, workers_.size()) != worker_index ||
         !read.pin_.matches(read.reference_) ||
@@ -330,9 +334,7 @@ auto DurableRuntimeCatalog::prepare_published_get(PublishedReadRecord read, cons
 
 auto DurableRuntimeCatalog::prepare_published_get(const PublishedReadView read, const std::uint64_t now_ns)
     -> Result<PreparedRead> {
-    if (!healthy()) {
-        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
-    }
+    // Same RAW contract as the owned overload: published pins outlive fail-closed.
     if (read.pin_ == nullptr || !read.pin_->generation_) {
         return fail_closed(Error{ErrorCode::corrupted_data, "borrowed durable read has no generation pin"});
     }
@@ -380,9 +382,7 @@ auto DurableRuntimeCatalog::complete_generation_get(
 auto DurableRuntimeCatalog::complete_get(BorrowedPinnedRead read,
                                          const detail::ColdReadCancellation* cancellation,
                                          std::vector<std::byte>* scratch) -> Result<OwnedValue> {
-    if (!healthy()) {
-        return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
-    }
+    // Pin identity only — mirror generation_linearized_ owned complete (no healthy gate).
     if (read.worker_index_ >= workers_.size() || read.generation_ == nullptr ||
         route_worker(read.key_hash_, workers_.size()) != read.worker_index_ ||
         read.generation_->identity.owner_worker != workers_[read.worker_index_]->worker_id ||
@@ -692,6 +692,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                          });
     if (old_position == manifest_.segments.end() || old_position->segment_id != worker.active_segment ||
         old_position->owner_worker != worker.worker_id || old_position->role != ManifestSegmentRole::active) {
+        abandon_pending_batches();
         return mutation_failure(
             DurableMutationOutcome::indeterminate,
             Error{ErrorCode::corrupted_data, "runtime active Segment disagrees with the manifest"});
@@ -724,6 +725,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                                              .owner_worker = old_entry.owner_worker};
     if (old_index >= generation_pins_.size() || !generation_pins_[old_index] ||
         generation_pins_[old_index]->identity != old_identity) {
+        abandon_pending_batches();
         return mutation_failure(
             DurableMutationOutcome::indeterminate,
             Error{ErrorCode::corrupted_data, "active Segment has no exact generation pin"});
@@ -962,7 +964,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
     }};
     try {
         if (!healthy()) {
-            return mutation_failure(DurableMutationOutcome::indeterminate,
+            return mutation_failure(DurableMutationOutcome::not_committed,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
         }
         const auto worker_index = route_worker(key_hash, workers_.size());
@@ -1040,10 +1042,23 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             }
         }
         if (!healthy()) {
-            return mutation_failure(DurableMutationOutcome::indeterminate,
+            return mutation_failure(DurableMutationOutcome::not_committed,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
         }
         if (auto drained = worker.drain_deferred_ttl(worker.deferred_ttl_reclaims.size()); !drained) {
+            // Mirror GET: sticky. Never call abandon_pending_batches() while this
+            // Worker mutex is held (non-recursive); clear under lock, then unlock.
+            healthy_.store(false, std::memory_order_release);
+            worker.pending_group_mutations.clear();
+            worker.pending_group_insertions = 0;
+            worker.pending_group_heap_key_bytes = 0;
+            worker.batch_started = {};
+            worker.batch_closing = false;
+            worker.batch_closed.notify_all();
+            if (worker_lock.owns_lock()) {
+                worker_lock.unlock();
+            }
+            abandon_pending_batches();
             return mutation_failure(DurableMutationOutcome::indeterminate, drained.error());
         }
         if (worker.compaction_commit_active.load(std::memory_order_acquire)) {
@@ -1366,29 +1381,53 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             catalog_lock.unlock();
                             flusher_->request_flush();
                             wait_for_batch_close(worker, committed_sequence, worker_lock);
-                            if (!healthy() || worker.durable_through.value < committed_sequence.value) {
-                                return mutation_failure(
-                                    DurableMutationOutcome::indeterminate,
-                                    Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+                            if (worker.durable_through.value >= committed_sequence.value) {
+                                // Index already published this sequence; sticky close is not
+                                // indeterminate for RAW (ACK + drain-snapshot).
+                                final_record_committed = true;
+                                return {.outcome = DurableMutationOutcome::committed,
+                                        .sequence = committed_sequence,
+                                        .error = std::nullopt};
                             }
+                            return mutation_failure(
+                                DurableMutationOutcome::indeterminate,
+                                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
                         } else if (auto flushed = flush_worker_batch(worker, worker_lock, catalog_lock,
                                                                      SegmentCommitSync::immediate);
                                    !flushed) {
+                            if (worker.durable_through.value >= committed_sequence.value) {
+                                final_record_committed = true;
+                                return {.outcome = DurableMutationOutcome::committed,
+                                        .sequence = committed_sequence,
+                                        .error = std::nullopt};
+                            }
                             return mutation_failure(DurableMutationOutcome::indeterminate, flushed.error());
                         }
                     } else {
                         catalog_lock.unlock();
                         wait_for_batch_close(worker, committed_sequence, worker_lock);
-                        if (!healthy() || worker.durable_through.value < committed_sequence.value) {
-                            return mutation_failure(
-                                DurableMutationOutcome::indeterminate,
-                                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+                        if (worker.durable_through.value >= committed_sequence.value) {
+                            final_record_committed = true;
+                            return {.outcome = DurableMutationOutcome::committed,
+                                    .sequence = committed_sequence,
+                                    .error = std::nullopt};
                         }
+                        return mutation_failure(
+                            DurableMutationOutcome::indeterminate,
+                            Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
                     }
                 } else if (should_flush_batch(worker)) {
                     if (auto flushed = flush_worker_batch(worker, worker_lock, catalog_lock,
                                                           SegmentCommitSync::deferred);
                         !flushed) {
+                        if (worker.durable_through.value >= committed_sequence.value) {
+                            // Writer-batch / deferred flush: Index publish advanced
+                            // durable_through before secondary accounting failed.
+                            final_record_committed = true;
+                            return {.outcome = DurableMutationOutcome::committed,
+                                    .sequence = committed_sequence,
+                                    .error = std::nullopt};
+                        }
                         return mutation_failure(DurableMutationOutcome::indeterminate, flushed.error());
                     }
                 } else if (flusher_) {
@@ -1412,31 +1451,76 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             .sequence = committed_sequence,
                             .error = published.error()};
                 }
-                if (auto counted = worker.update_live_record_bytes(published->previous, reference);
-                    !counted) {
+                // Index authority applied: advance durable_through before secondary work.
+                worker.durable_through = committed_sequence;
+                try {
+                    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::index_account)) {
+                        healthy_.store(false, std::memory_order_release);
+                        return {.outcome = DurableMutationOutcome::committed,
+                                .sequence = committed_sequence,
+                                .error = Error{ErrorCode::resource_exhausted,
+                                               "injected Index accounting failure"}};
+                    }
+                    if (auto counted = worker.update_live_record_bytes(published->previous, reference);
+                        !counted) {
+                        healthy_.store(false, std::memory_order_release);
+                        return {.outcome = DurableMutationOutcome::committed,
+                                .sequence = committed_sequence,
+                                .error = counted.error()};
+                    }
+                    if (prepared_hot_record.empty()) {
+                        worker.erase_hot_record(hashed);
+                    } else if (auto hot_published =
+                                   worker.publish_hot_record(prepared_hot_record, reference);
+                               !hot_published) {
+                        healthy_.store(false, std::memory_order_release);
+                        return {.outcome = DurableMutationOutcome::committed,
+                                .sequence = committed_sequence,
+                                .error = hot_published.error()};
+                    }
+                } catch (const std::bad_alloc&) {
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
                             .sequence = committed_sequence,
-                            .error = counted.error()};
-                }
-                if (prepared_hot_record.empty()) {
-                    worker.erase_hot_record(hashed);
-                } else if (auto hot_published = worker.publish_hot_record(prepared_hot_record, reference);
-                           !hot_published) {
+                            .error = Error{ErrorCode::resource_exhausted,
+                                           "Index accounting allocation failed"}};
+                } catch (...) {
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
                             .sequence = committed_sequence,
-                            .error = hot_published.error()};
+                            .error = Error{ErrorCode::internal_error, "Index accounting failed"}};
                 }
             } else {
                 const auto erased = worker.index.erase_no_compact(hashed);
-                if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt); !counted) {
+                worker.durable_through = committed_sequence;
+                try {
+                    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::index_account)) {
+                        healthy_.store(false, std::memory_order_release);
+                        return {.outcome = DurableMutationOutcome::committed,
+                                .sequence = committed_sequence,
+                                .error = Error{ErrorCode::resource_exhausted,
+                                               "injected Index accounting failure"}};
+                    }
+                    if (auto counted = worker.update_live_record_bytes(erased.previous, std::nullopt);
+                        !counted) {
+                        healthy_.store(false, std::memory_order_release);
+                        return {.outcome = DurableMutationOutcome::committed,
+                                .sequence = committed_sequence,
+                                .error = counted.error()};
+                    }
+                    worker.erase_hot_record(hashed);
+                } catch (const std::bad_alloc&) {
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
                             .sequence = committed_sequence,
-                            .error = counted.error()};
+                            .error = Error{ErrorCode::resource_exhausted,
+                                           "Index accounting allocation failed"}};
+                } catch (...) {
+                    healthy_.store(false, std::memory_order_release);
+                    return {.outcome = DurableMutationOutcome::committed,
+                            .sequence = committed_sequence,
+                            .error = Error{ErrorCode::internal_error, "Index accounting failed"}};
                 }
-                worker.erase_hot_record(hashed);
             }
             final_record_committed = true;
             return {.outcome = DurableMutationOutcome::committed,

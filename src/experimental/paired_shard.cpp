@@ -672,17 +672,26 @@ struct VolatileShardPairPrototype::Impl final {
         }
     }
 
-    [[nodiscard]] auto acquire_generation_slot() noexcept -> std::size_t {
-        for (;;) {
+    [[nodiscard]] auto acquire_generation_slot() noexcept -> std::optional<std::size_t> {
+        // Bound the wait: QSBR reclaim depends on Reader turns. Spinning forever
+        // when the Reader is stuck would hang the Writer and hide pool exhaustion.
+        // ADR 0036 V9: backpressure signal, then fail closed — never overwrite a live slot.
+        constexpr std::size_t kMaximumAcquireSpins = 1'000'000U;
+        for (std::size_t spin = 0; spin <= kMaximumAcquireSpins; ++spin) {
             reclaim_generations();
             for (std::size_t index = 0; index < generations.size(); ++index) {
                 if (generations[index].state == GenerationSlotState::free) {
                     return index;
                 }
             }
+            if (spin == kMaximumAcquireSpins) {
+                break;
+            }
             publication_backpressure.fetch_add(1U, std::memory_order_relaxed);
             std::this_thread::yield();
         }
+        generation_slot_exhaustions.fetch_add(1U, std::memory_order_relaxed);
+        return std::nullopt;
     }
 
     void publish(const std::size_t next_slot, std::shared_ptr<const ImmutableReadIndex> next_base,
@@ -739,8 +748,19 @@ struct VolatileShardPairPrototype::Impl final {
             }
             const auto next_epoch = writer_epoch.load(std::memory_order_relaxed) + 1U;
             const auto generation_slot = acquire_generation_slot();
+            if (!generation_slot.has_value()) {
+                for (const auto slot : batch) {
+                    push_completion(
+                        slot, PrototypeCompletion{.request_id = slots[slot].request_id,
+                                                  .error = ErrorCode::resource_exhausted,
+                                                  .visible_through = visible_through,
+                                                  .epoch = writer_epoch.load(std::memory_order_relaxed)});
+                }
+                notify_reader();
+                return;
+            }
             const auto publication_storage = next_base->storage_bytes() + next_delta->storage_bytes();
-            publish(generation_slot, next_base, next_delta, next_visible, next_epoch);
+            publish(*generation_slot, next_base, next_delta, next_visible, next_epoch);
 
             base = std::move(next_base);
             mutable_delta = std::move(next_delta);
@@ -879,6 +899,7 @@ struct VolatileShardPairPrototype::Impl final {
     std::atomic_uint64_t delta_pages_allocated{};
     std::atomic_uint64_t delta_merges{};
     std::atomic_uint64_t publication_backpressure{};
+    std::atomic_uint64_t generation_slot_exhaustions{};
     std::atomic_uint64_t generation_retire_count{};
     std::atomic_uint64_t generation_retire_delay_ns{};
     std::atomic_size_t generation_output_pins{};
@@ -1027,6 +1048,7 @@ auto VolatileShardPairPrototype::stats() const noexcept -> PrototypePairStats {
         .delta_pages_allocated = impl_->delta_pages_allocated.load(std::memory_order_relaxed),
         .delta_merges = impl_->delta_merges.load(std::memory_order_relaxed),
         .publication_backpressure = impl_->publication_backpressure.load(std::memory_order_relaxed),
+        .generation_slot_exhaustions = impl_->generation_slot_exhaustions.load(std::memory_order_relaxed),
         .generation_live = impl_->generation_live.load(std::memory_order_relaxed),
         .generation_high_watermark = impl_->generation_high_watermark.load(std::memory_order_relaxed),
         .generation_retire_count = impl_->generation_retire_count.load(std::memory_order_relaxed),

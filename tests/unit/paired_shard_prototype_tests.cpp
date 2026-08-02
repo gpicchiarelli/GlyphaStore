@@ -328,7 +328,7 @@ GLYPHA_TEST("ADR 0036 V3 prototype: pinned generation bytes survive publish and 
     const auto stats = (*pair)->stats();
     GLYPHA_REQUIRE(stats.generation_output_pins == 1);
     GLYPHA_REQUIRE(stats.generation_retire_pin_blocks > 0);
-    GLYPHA_REQUIRE(stats.writer_epoch > stats.reader_epoch || stats.publications > 1);
+    GLYPHA_REQUIRE(stats.publications >= 65);
 
     (*pair)->adopt_publication();
     const auto latest = (*pair)->get("pin-race");
@@ -342,9 +342,8 @@ GLYPHA_TEST("ADR 0036 V3 prototype: pinned generation bytes survive publish and 
 
 GLYPHA_TEST("ADR 0036 V9 prototype: slot-pool starvation increments publication backpressure") {
     // Starve QSBR (no adopt) with one-publication-per-mutation so the fixed generation
-    // pool cannot reclaim. Writer must signal publication_backpressure rather than
-    // silently overwriting a live slot. Prototype still yields while waiting for a free
-    // slot — production landing must bound that wait (ADR 0036 V9 residual).
+    // pool cannot reclaim. Writer signals publication_backpressure, then fail-closes with
+    // resource_exhausted after a bounded spin (never overwrites a live slot).
     auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
         64, 32,
         glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
@@ -353,9 +352,11 @@ GLYPHA_TEST("ADR 0036 V9 prototype: slot-pool starvation increments publication 
 
     std::uint64_t submitted = 0;
     std::uint64_t completed = 0;
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
-    while (std::chrono::steady_clock::now() < deadline &&
-           (*pair)->stats().publication_backpressure == 0) {
+    std::uint64_t rejected = 0;
+    const auto pressure_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (std::chrono::steady_clock::now() < pressure_deadline &&
+           (*pair)->stats().publication_backpressure == 0 &&
+           (*pair)->stats().generation_slot_exhaustions == 0) {
         if (submitted < 1'024) {
             const auto status =
                 (*pair)->try_submit_put(submitted, "pool-pressure", bytes("x"));
@@ -364,32 +365,376 @@ GLYPHA_TEST("ADR 0036 V9 prototype: slot-pool starvation increments publication 
             }
         }
         if (auto completion = (*pair)->try_pop_completion()) {
-            GLYPHA_REQUIRE(!completion->error.has_value());
-            ++completed;
+            if (completion->error.has_value()) {
+                GLYPHA_REQUIRE(*completion->error == glyphastore::ErrorCode::resource_exhausted);
+                ++rejected;
+            } else {
+                ++completed;
+            }
         } else {
             std::this_thread::yield();
         }
     }
 
-    const auto backpressure = (*pair)->stats().publication_backpressure;
-    GLYPHA_REQUIRE(backpressure > 0);
-    GLYPHA_REQUIRE(submitted > 0);
+    GLYPHA_REQUIRE((*pair)->stats().publication_backpressure > 0);
+    GLYPHA_REQUIRE(submitted > completed + rejected);
 
-    // Advance Reader turns so retired slots can free and the Writer can drain.
-    for (int turn = 0; turn < 512; ++turn) {
+    // Advance Reader turns so retired slots can free; drain remaining work.
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < drain_deadline && completed + rejected < submitted) {
         (*pair)->adopt_publication();
-        while (auto completion = (*pair)->try_pop_completion()) {
-            GLYPHA_REQUIRE(!completion->error.has_value());
-            ++completed;
-        }
-        if (completed == submitted && (*pair)->stats().mutation_queue_depth == 0) {
-            break;
+        (*pair)->adopt_publication();
+        if (auto completion = (*pair)->try_pop_completion()) {
+            if (completion->error.has_value()) {
+                GLYPHA_REQUIRE(*completion->error == glyphastore::ErrorCode::resource_exhausted);
+                ++rejected;
+            } else {
+                ++completed;
+            }
+        } else {
+            std::this_thread::yield();
         }
     }
-    GLYPHA_REQUIRE(completed == submitted);
+    GLYPHA_REQUIRE(completed + rejected == submitted);
+    GLYPHA_REQUIRE((*pair)->stats().mutation_queue_depth == 0);
     GLYPHA_REQUIRE((*pair)->stats().generation_live >= 1);
     GLYPHA_REQUIRE((*pair)->stats().generation_high_watermark <=
                    glyphastore::experimental::VolatileShardPairPrototype::kQueueCapacity + 2U);
+
+    // Recovery after reclaim: a new publish must succeed (pool not wedged).
+    GLYPHA_REQUIRE((*pair)->try_submit_put(submitted + 1U, "pool-recovery", bytes("ok")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    const auto recovered = wait_completion(**pair);
+    GLYPHA_REQUIRE(!recovered.error.has_value());
+    (*pair)->adopt_publication();
+    const auto found = (*pair)->get("pool-recovery");
+    GLYPHA_REQUIRE(found.has_value());
+    GLYPHA_REQUIRE(text(*found) == "ok");
+    (*pair)->stop_and_drain();
+}
+
+GLYPHA_TEST("ADR 0036 V6 prototype: rejected publication never makes mutations visible") {
+    // Prototype applies Writer delta + publish atomically: slot-pool exhaustion fails the
+    // completion before release-store. Rejected keys must never appear on GET (RAW).
+    // Failed-batch completions report the pre-failure Writer epoch / visible_through.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        64, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    GLYPHA_REQUIRE((*pair)->try_submit_put(1, "v6-seed", bytes("seed")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    (*pair)->adopt_publication();
+
+    std::vector<std::string> rejected_keys;
+    rejected_keys.reserve(64);
+    std::uint64_t submitted = 0;
+    std::uint64_t completed = 0;
+    std::uint64_t rejected = 0;
+    std::optional<std::uint64_t> epoch_at_reject;
+    std::optional<std::uint64_t> visible_at_reject;
+    std::uint64_t request_id = 2;
+    // ASan/TSan make the Writer's bounded acquire spin (≤1e6 yields) much slower than
+    // Release; wait for backpressure first, then for the fail-closed completion itself.
+    const auto pressure_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{90};
+    while (std::chrono::steady_clock::now() < pressure_deadline &&
+           (*pair)->stats().generation_slot_exhaustions == 0) {
+        // No adopt_publication: QSBR cannot free slots → eventual acquire failure.
+        if (submitted < 1'024) {
+            auto key = "v6-key-" + std::to_string(request_id);
+            const auto status = (*pair)->try_submit_put(request_id, key, bytes("ghost"));
+            if (status == glyphastore::experimental::PrototypeSubmitStatus::submitted) {
+                ++submitted;
+                ++request_id;
+            }
+        }
+        if (auto completion = (*pair)->try_pop_completion()) {
+            if (completion->error.has_value()) {
+                GLYPHA_REQUIRE(*completion->error == glyphastore::ErrorCode::resource_exhausted);
+                if (!epoch_at_reject.has_value()) {
+                    epoch_at_reject = completion->epoch;
+                    visible_at_reject = completion->visible_through;
+                    GLYPHA_REQUIRE((*pair)->stats().writer_epoch == *epoch_at_reject);
+                    GLYPHA_REQUIRE((*pair)->stats().visible_through == *visible_at_reject);
+                }
+                GLYPHA_REQUIRE(completion->epoch == *epoch_at_reject);
+                GLYPHA_REQUIRE(completion->visible_through == *visible_at_reject);
+                rejected_keys.push_back("v6-key-" + std::to_string(completion->request_id));
+                ++rejected;
+            } else {
+                ++completed;
+            }
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    GLYPHA_REQUIRE((*pair)->stats().generation_slot_exhaustions > 0);
+    GLYPHA_REQUIRE((*pair)->stats().publication_backpressure > 0);
+
+    // Unblock QSBR so remaining queue work can finish (same reclaim path as V9). Rejected
+    // keys collected above must still miss after recovery; successful keys may be visible.
+    const auto drain_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{90};
+    while (std::chrono::steady_clock::now() < drain_deadline && completed + rejected < submitted) {
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+        if (auto completion = (*pair)->try_pop_completion()) {
+            if (completion->error.has_value()) {
+                GLYPHA_REQUIRE(*completion->error == glyphastore::ErrorCode::resource_exhausted);
+                if (!epoch_at_reject.has_value()) {
+                    epoch_at_reject = completion->epoch;
+                    visible_at_reject = completion->visible_through;
+                }
+                // After adopt, later rejects may observe a newer Writer frontier if an
+                // intervening publish succeeded; still record the key as never-ACKed.
+                rejected_keys.push_back("v6-key-" + std::to_string(completion->request_id));
+                ++rejected;
+            } else {
+                ++completed;
+            }
+        } else {
+            std::this_thread::yield();
+        }
+    }
+    GLYPHA_REQUIRE(completed + rejected == submitted);
+    GLYPHA_REQUIRE(epoch_at_reject.has_value());
+    GLYPHA_REQUIRE(!rejected_keys.empty());
+    GLYPHA_REQUIRE((*pair)->stats().mutation_queue_depth == 0);
+
+    GLYPHA_REQUIRE((*pair)->try_submit_put(request_id, "v6-alive", bytes("ok")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    const auto alive = wait_completion(**pair);
+    GLYPHA_REQUIRE(!alive.error.has_value());
+    (*pair)->adopt_publication();
+    GLYPHA_REQUIRE((*pair)->get("v6-alive").has_value());
+    GLYPHA_REQUIRE((*pair)->get("v6-seed").has_value());
+    for (const auto& key : rejected_keys) {
+        GLYPHA_REQUIRE(!(*pair)->get(key).has_value());
+    }
+    (*pair)->stop_and_drain();
+}
+
+GLYPHA_TEST("ADR 0036 V2 prototype: reclaim never frees a pinned or pre-quiescent generation") {
+    // Retire waits for two Reader turns; a pin blocks free even after the turn frontier.
+    // Spans into the pinned generation remain readable until pin reset.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    GLYPHA_REQUIRE((*pair)->try_submit_put(1, "v2-key", bytes("keep-alive")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    (*pair)->adopt_publication();
+    auto pin = (*pair)->pin_read_generation();
+    GLYPHA_REQUIRE(static_cast<bool>(pin));
+    const auto pinned = *(*pair)->get("v2-key");
+    GLYPHA_REQUIRE(text(pinned) == "keep-alive");
+
+    const auto retires_before = (*pair)->stats().generation_retire_count;
+    // Publish a successor without advancing Reader turns: previous is retired but not free.
+    GLYPHA_REQUIRE((*pair)->try_submit_put(2, "v2-key", bytes("next")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    GLYPHA_REQUIRE((*pair)->stats().generation_retire_count == retires_before);
+    GLYPHA_REQUIRE(text(pinned) == "keep-alive");
+
+    // Two turns satisfy the QSBR frontier; Writer reclaim runs on the next publish.
+    (*pair)->adopt_publication();
+    (*pair)->adopt_publication();
+    GLYPHA_REQUIRE((*pair)->try_submit_put(3, "v2-key", bytes("force-reclaim")) ==
+                   glyphastore::experimental::PrototypeSubmitStatus::submitted);
+    GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+    const auto blocks_after_turns = (*pair)->stats().generation_retire_pin_blocks;
+    GLYPHA_REQUIRE(blocks_after_turns > 0);
+    GLYPHA_REQUIRE(text(pinned) == "keep-alive");
+    GLYPHA_REQUIRE((*pair)->stats().generation_output_pins == 1);
+
+    // Further publishes with full turn advance still cannot reclaim the pinned slot.
+    for (std::uint64_t index = 0; index < 8; ++index) {
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index + 4U, "v2-key", bytes("storm")) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+    GLYPHA_REQUIRE((*pair)->stats().generation_retire_pin_blocks >= blocks_after_turns);
+    GLYPHA_REQUIRE(text(pinned) == "keep-alive");
+
+    pin.reset();
+    GLYPHA_REQUIRE((*pair)->stats().generation_output_pins == 0);
+    // After unpin, additional turns allow the blocked retire to complete.
+    const auto retires_at_unpin = (*pair)->stats().generation_retire_count;
+    for (int turn = 0; turn < 8; ++turn) {
+        (*pair)->adopt_publication();
+        GLYPHA_REQUIRE((*pair)->try_submit_put(static_cast<std::uint64_t>(100 + turn), "v2-key",
+                                               bytes("post-unpin")) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+    }
+    GLYPHA_REQUIRE((*pair)->stats().generation_retire_count > retires_at_unpin);
+    (*pair)->adopt_publication();
+    const auto latest = (*pair)->get("v2-key");
+    GLYPHA_REQUIRE(latest.has_value());
+    GLYPHA_REQUIRE(text(*latest) == "post-unpin");
+}
+
+GLYPHA_TEST("ADR 0036 V7 prototype: delta merge under pin slot pressure keeps committed keys") {
+    // Low merge threshold + pin holds one generation slot while more keys publish and merge.
+    // Successful completions must remain visible; merge must run under pin_blocks pressure.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        64, 8,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    constexpr std::uint64_t kWarmKeys = 24;
+    for (std::uint64_t index = 0; index < kWarmKeys; ++index) {
+        const auto key = std::string{"merge-"} + std::to_string(index);
+        const auto value = std::string{"warm-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index, key, bytes(value)) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+    (*pair)->adopt_publication();
+    GLYPHA_REQUIRE((*pair)->stats().delta_merges > 0);
+
+    auto pin = (*pair)->pin_read_generation();
+    GLYPHA_REQUIRE(static_cast<bool>(pin));
+    const auto merges_at_pin = (*pair)->stats().delta_merges;
+
+    constexpr std::uint64_t kPressureKeys = 64;
+    std::vector<std::uint64_t> accepted_indices;
+    accepted_indices.reserve(kPressureKeys);
+    for (std::uint64_t index = 0; index < kPressureKeys; ++index) {
+        const auto key = std::string{"merge-"} + std::to_string(kWarmKeys + index);
+        const auto value = std::string{"press-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(kWarmKeys + index, key, bytes(value)) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        const auto completion = wait_completion(**pair);
+        if (completion.error.has_value()) {
+            GLYPHA_REQUIRE(*completion.error == glyphastore::ErrorCode::resource_exhausted);
+            continue;
+        }
+        accepted_indices.push_back(index);
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+    }
+    GLYPHA_REQUIRE(!accepted_indices.empty());
+    GLYPHA_REQUIRE((*pair)->stats().generation_retire_pin_blocks > 0);
+    GLYPHA_REQUIRE((*pair)->stats().delta_merges > merges_at_pin);
+
+    (*pair)->adopt_publication();
+    for (std::uint64_t index = 0; index < kWarmKeys; ++index) {
+        const auto key = std::string{"merge-"} + std::to_string(index);
+        const auto found = (*pair)->get(key);
+        GLYPHA_REQUIRE(found.has_value());
+        GLYPHA_REQUIRE(text(*found) == std::string{"warm-"} + std::to_string(index));
+    }
+    for (const auto index : accepted_indices) {
+        const auto key = std::string{"merge-"} + std::to_string(kWarmKeys + index);
+        const auto found = (*pair)->get(key);
+        GLYPHA_REQUIRE(found.has_value());
+        GLYPHA_REQUIRE(text(*found) == std::string{"press-"} + std::to_string(index));
+    }
+
+    pin.reset();
+    for (int turn = 0; turn < 4; ++turn) {
+        (*pair)->adopt_publication();
+    }
+    // Post-unpin visibility unchanged for committed keys.
+    for (std::uint64_t index = 0; index < kWarmKeys; ++index) {
+        GLYPHA_REQUIRE((*pair)->get(std::string{"merge-"} + std::to_string(index)).has_value());
+    }
+    for (const auto index : accepted_indices) {
+        GLYPHA_REQUIRE(
+            (*pair)->get(std::string{"merge-"} + std::to_string(kWarmKeys + index)).has_value());
+    }
+}
+
+GLYPHA_TEST("ADR 0036 V13 prototype: pin adopt merge reclaim stress") {
+    // Single Reader-owner thread + internal Writer (prototype contract). Hammers
+    // publish/retire/pin/merge/adopt ordering for ThreadSanitizer (macos-tsan).
+    // Does not authorize production landing — see ADR 0036 V13.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 16,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    constexpr std::uint64_t kRounds = 128;
+    constexpr std::uint64_t kKeysPerRound = 8;
+    std::uint64_t submitted = 0;
+    std::uint64_t accepted = 0;
+    std::uint64_t rejected = 0;
+
+    for (std::uint64_t round = 0; round < kRounds; ++round) {
+        (*pair)->adopt_publication();
+        auto pin = (*pair)->pin_read_generation();
+        GLYPHA_REQUIRE(static_cast<bool>(pin));
+
+        for (std::uint64_t index = 0; index < kKeysPerRound; ++index) {
+            const auto key = std::string{"stress-"} + std::to_string(round) + '-' + std::to_string(index);
+            const auto value = std::string{"v-"} + std::to_string(submitted);
+            auto status = (*pair)->try_submit_put(submitted, key, bytes(value));
+            while (status == glyphastore::experimental::PrototypeSubmitStatus::queue_full) {
+                std::this_thread::yield();
+                status = (*pair)->try_submit_put(submitted, key, bytes(value));
+            }
+            GLYPHA_REQUIRE(status == glyphastore::experimental::PrototypeSubmitStatus::submitted);
+            ++submitted;
+            const auto completion = wait_completion(**pair);
+            if (completion.error.has_value()) {
+                GLYPHA_REQUIRE(*completion.error == glyphastore::ErrorCode::resource_exhausted);
+                ++rejected;
+                continue;
+            }
+            ++accepted;
+            (*pair)->adopt_publication();
+            const auto found = (*pair)->get(key);
+            GLYPHA_REQUIRE(found.has_value());
+            GLYPHA_REQUIRE(text(*found) == value);
+            (*pair)->adopt_publication();
+        }
+
+        // Hold the pin across an extra publish/adopt pair, then drop it.
+        auto hold_status =
+            (*pair)->try_submit_put(submitted, "stress-pin-hold", bytes("hold"));
+        while (hold_status == glyphastore::experimental::PrototypeSubmitStatus::queue_full) {
+            std::this_thread::yield();
+            hold_status = (*pair)->try_submit_put(submitted, "stress-pin-hold", bytes("hold"));
+        }
+        GLYPHA_REQUIRE(hold_status == glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        ++submitted;
+        {
+            const auto completion = wait_completion(**pair);
+            if (completion.error.has_value()) {
+                GLYPHA_REQUIRE(*completion.error == glyphastore::ErrorCode::resource_exhausted);
+                ++rejected;
+            } else {
+                ++accepted;
+            }
+        }
+        (*pair)->adopt_publication();
+        (*pair)->adopt_publication();
+        pin.reset();
+    }
+
+    (*pair)->adopt_publication();
+    GLYPHA_REQUIRE(accepted > 0);
+    GLYPHA_REQUIRE(accepted + rejected == submitted);
+    GLYPHA_REQUIRE((*pair)->stats().publications > 0);
+    GLYPHA_REQUIRE((*pair)->stats().delta_merges > 0);
+    GLYPHA_REQUIRE((*pair)->stats().generation_retire_count > 0);
+    GLYPHA_REQUIRE((*pair)->stats().generation_live >= 1);
+    GLYPHA_REQUIRE((*pair)->stats().generation_high_watermark <=
+                   glyphastore::experimental::VolatileShardPairPrototype::kQueueCapacity + 2U);
+    (*pair)->stop_and_drain();
 }
 
 GLYPHA_TEST("paired slow-output pin delays generation retirement across Reader turns") {

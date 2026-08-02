@@ -84,9 +84,10 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 
 `HEALTH`, `READY`, and `STATS` are accepted before initialization and binding. They do not mutate
 Store state. `HEALTH` returns `OK` while the daemon process is live (started and no executor failure
-recorded). `READY` returns `OK` only while the server is ready to accept traffic: live, not shutting
-down, Store admission open, durable catalog healthy, and maintenance is not in emergency or a sticky
-faulted state. `STATS` returns `OK` with a versioned line-oriented report (`version`, `live`, `ready`,
+recorded) — independent of paired Writer sticky fail-closed. `READY` returns `OK` only while the
+server is ready to accept traffic: live, not shutting down, Store admission open, durable catalog /
+pair Writers healthy, and maintenance is not in emergency or a sticky faulted state. `STATS` returns
+`OK` with a versioned line-oriented report (`version`, `live`, `ready`,
 connection counts, per-Worker durable mutation lane counters including fixed-bucket
 `queue_wait_ns` / `service_ns` latency histograms (`count`, `sum`, cumulative `le_*`, approximate
 p50/p99), batch counters, and maintenance snapshot fields, including durable rotation publication
@@ -204,7 +205,7 @@ Clock synchronization is an operational responsibility. Version 2 has no server-
 
 The server closes the connection without a response when it cannot safely decode frame boundaries, including an invalid header size, unsupported version at framing time, size overflow, or frame beyond the maximum. Once framing is trustworthy, semantic request errors may receive `INVALID_REQUEST` or `UNSUPPORTED`.
 
-Failure to enqueue a one-time connection handoff, input/output buffer exhaustion, socket error, or peer EOF also closes the connection.
+Failure to enqueue a one-time connection handoff returns `OVERLOADED` for that `BIND_WORKER` when the source Reactor can still flush, then closes the connection. After a successful enqueue, destination connection-table exhaustion or adopt registration failure likewise returns `OVERLOADED` when flush is still possible, then closes. Input/output buffer exhaustion, socket error, or peer EOF also closes the connection.
 
 ### 10.1 Reconnect and transport loss
 

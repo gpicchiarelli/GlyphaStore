@@ -14,6 +14,8 @@ struct Config final {
     std::atomic<std::uint64_t> rng{0xC0FFEEULL};
     std::atomic<std::uint32_t> yield_percent{25};
     std::atomic<std::uint32_t> sleep_us_max{50};
+    std::atomic<std::uint8_t> fail_site{0};
+    std::atomic<std::uint32_t> fail_remaining{0};
 };
 
 Config& config() noexcept {
@@ -47,6 +49,44 @@ void configure(const std::uint64_t seed, const std::uint32_t yield_percent,
 
 void reset() noexcept {
     configure(0xC0FFEEULL, 25, 50);
+    config().fail_site.store(0, std::memory_order_relaxed);
+    config().fail_remaining.store(0, std::memory_order_relaxed);
+}
+
+void fail_nth(const Site site, const std::uint32_t n) noexcept {
+    if (n == 0) {
+        config().fail_remaining.store(0, std::memory_order_relaxed);
+        config().fail_site.store(0, std::memory_order_release);
+        return;
+    }
+    config().fail_remaining.store(n, std::memory_order_relaxed);
+    config().fail_site.store(static_cast<std::uint8_t>(site), std::memory_order_release);
+}
+
+void fail_once(const Site site) noexcept {
+    fail_nth(site, 1);
+}
+
+auto consume_fail(const Site site) noexcept -> bool {
+    if (config().fail_site.load(std::memory_order_acquire) != static_cast<std::uint8_t>(site)) {
+        return false;
+    }
+    auto remaining = config().fail_remaining.load(std::memory_order_relaxed);
+    while (remaining > 0) {
+        if (config().fail_site.load(std::memory_order_acquire) != static_cast<std::uint8_t>(site)) {
+            return false;
+        }
+        if (config().fail_remaining.compare_exchange_weak(remaining, remaining - 1,
+                                                          std::memory_order_acq_rel,
+                                                          std::memory_order_relaxed)) {
+            if (remaining == 1) {
+                config().fail_site.store(0, std::memory_order_release);
+                return true;
+            }
+            return false;
+        }
+    }
+    return false;
 }
 
 void at(const Site) noexcept {

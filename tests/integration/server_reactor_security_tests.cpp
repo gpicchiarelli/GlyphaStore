@@ -396,6 +396,74 @@ GLYPHA_TEST("TCP reactor handles partial and pipelined protocol frames") {
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("half-close drains pipelined mutations before teardown") {
+    // SHUT_WR means done-sending: frames already received must still run and ACK.
+    // write_ready used to close on peer_read_closed before draining residual input.
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto put1 = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 40,
+        .key = bytes("half-close-a"),
+        .value = bytes("one"),
+    });
+    const auto put2 = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 41,
+        .key = bytes("half-close-b"),
+        .value = bytes("two"),
+    });
+    GLYPHA_REQUIRE(put1.has_value());
+    GLYPHA_REQUIRE(put2.has_value());
+    std::vector<std::byte> pipeline(put1->begin(), put1->end());
+    pipeline.insert(pipeline.end(), put2->begin(), put2->end());
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+    GLYPHA_REQUIRE(::shutdown(socket, SHUT_WR) == 0);
+
+    const auto frame1 = receive_response(socket);
+    const auto frame2 = receive_response(socket);
+    const auto ack1 = glyphastore::server::decode_response(frame1);
+    const auto ack2 = glyphastore::server::decode_response(frame2);
+    GLYPHA_REQUIRE(ack1.has_value());
+    GLYPHA_REQUIRE(ack2.has_value());
+    GLYPHA_REQUIRE(ack1->frame.request_id == 40);
+    GLYPHA_REQUIRE(ack2->frame.request_id == 41);
+    GLYPHA_REQUIRE(ack1->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(ack2->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(socket));
+
+    const auto probe = connect_to(server.port());
+    GLYPHA_REQUIRE(probe >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(probe, 0, 1));
+    for (const auto& [id, key, want] : {std::tuple{50ULL, "half-close-a", "one"},
+                                        std::tuple{51ULL, "half-close-b", "two"}}) {
+        const auto get = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::get,
+            .request_id = id,
+            .key = bytes(key),
+        });
+        GLYPHA_REQUIRE(get.has_value());
+        GLYPHA_REQUIRE(send_all(probe, *get));
+        const auto get_frame = receive_response(probe);
+        const auto got = glyphastore::server::decode_response(get_frame);
+        GLYPHA_REQUIRE(got.has_value());
+        GLYPHA_REQUIRE(got->frame.status == glyphastore::server::ResponseStatus::ok);
+        GLYPHA_REQUIRE(text(got->frame.value) == want);
+    }
+    static_cast<void>(::close(probe));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("bound Reactor redirects wrong owners without forwarding") {
     GLYPHA_REQUIRE(glyphastore::route_worker("bounded-key-0", 2) == 1);
     auto opened = glyphastore::server::Server::create(
@@ -602,6 +670,50 @@ GLYPHA_TEST("server connection rate limit returns overloaded") {
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("connection rate limit OVERLOADED survives trailing decode failure") {
+    // INIT+BIND exhaust the budget; PING queues OVERLOADED then a bad-version frame
+    // used to make read_ready close before flush — silent EOF, no rate-limit signal.
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 8,
+        .worker_count = 1,
+        .abuse =
+            {
+                .connection_max_requests_per_sec = 2,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 99,
+        .value = bytes("x"),
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    std::vector<std::byte> pipeline(ping->begin(), ping->end());
+    std::array<std::byte, glyphastore::server::kRequestHeaderBytes> bad{};
+    bad[0] = std::byte{static_cast<unsigned char>(glyphastore::server::kRequestHeaderBytes)};
+    bad[4] = std::byte{0xff}; // unsupported version
+    pipeline.insert(pipeline.end(), bad.begin(), bad.end());
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+
+    const auto frame = receive_response(socket);
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 99);
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("server idle timeout closes quiet connections") {
     auto opened = glyphastore::server::Server::create({
         .port = 0,
@@ -774,6 +886,79 @@ GLYPHA_TEST("server request timeout closes partial request frames") {
     const auto value_start = marker + std::strlen("abuse_request_timeout_closed=");
     GLYPHA_REQUIRE(value_start < report->size());
     GLYPHA_REQUIRE((*report)[value_start] != '0');
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("partial request timeout drains prior decided response before close") {
+    // Large PING fills the peer receive window so the server retains decided bytes
+    // when a trailing partial frame times out — must not discard that response.
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 4,
+        .worker_count = 1,
+        .abuse =
+            {
+                .request_timeout_ms = 80,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    int rcvbuf = 4 * 1024;
+    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) == 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    constexpr std::size_t kPayload = 64U * 1024U;
+    std::vector<std::byte> payload(kPayload, std::byte{0x5a});
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 55,
+        .value = payload,
+    });
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *ping));
+
+    // Incomplete follow-up starts the partial-assembly budget while PING output may
+    // still be blocked on the small client receive window.
+    constexpr std::array<std::byte, 8> partial{
+        std::byte{0x28}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+        std::byte{0x02}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
+    };
+    GLYPHA_REQUIRE(send_all(socket, partial));
+    std::this_thread::sleep_for(std::chrono::milliseconds{150});
+
+    std::vector<std::byte> received;
+    received.reserve(kPayload + 64);
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    while (std::chrono::steady_clock::now() < deadline) {
+        std::array<std::byte, 16U * 1024U> chunk{};
+        const auto n = ::recv(socket, chunk.data(), chunk.size(), 0);
+        if (n > 0) {
+            received.insert(received.end(), chunk.begin(), chunk.begin() + n);
+            continue;
+        }
+        if (n == 0) {
+            break;
+        }
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(received.size() >= glyphastore::server::kResponseHeaderBytes);
+    const auto decoded = glyphastore::server::decode_response(received);
+    GLYPHA_REQUIRE(decoded.has_value());
+    GLYPHA_REQUIRE(decoded->complete);
+    GLYPHA_REQUIRE(decoded->frame.request_id == 55);
+    GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(decoded->frame.value.size() == kPayload);
 
     static_cast<void>(::close(socket));
     server.request_stop();

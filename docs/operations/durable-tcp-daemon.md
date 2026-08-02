@@ -149,12 +149,14 @@ probes return `INTERNAL_ERROR` with an empty value.
 
 | Probe | Success value | Use for |
 |---|---|---|
-| `HEALTH` (7) | `GlyphaStore/live` | process / executor liveness only |
-| `READY` (8) | `GlyphaStore/ready` | load balancer readiness — admission open, not shutting down, catalog healthy, maintenance not in emergency or sticky fault |
+| `HEALTH` (7) | `GlyphaStore/live` | process / executor liveness (`started && !failed_`) — **not** paired Writer sticky health |
+| `READY` (8) | `GlyphaStore/ready` | load balancer readiness — admission open, not shutting down, catalog/pair Writers healthy, maintenance not in emergency or sticky fault |
 | `STATS` (9) | bounded ASCII report | admin snapshot: version, live/ready, connections, durable lane/batch counters, per-lane latency histograms (`queue_wait_ns` / `service_ns`), maintenance fields |
 
 **Fail closed for traffic:** orchestrators must gate on `READY`, not `HEALTH` alone. During
-graceful drain or sticky storage faults, `HEALTH` may succeed while `READY` fails.
+graceful drain or sticky storage faults, `HEALTH` may succeed while `READY` fails (`internal_error`
+wire status). The daemon main loop also keys exit on `live()`, not `healthy()`, so sticky
+fail-closed does not auto-exit the process while `HEALTH` still answers.
 
 `STATS` requires the `read` capability under `--authz-map` / `--secure-profile` for unscoped
 principals; prefix-scoped principals need `admin` ([ADR 0027](../adr/0027-stats-isolation-prefix-principals.md),

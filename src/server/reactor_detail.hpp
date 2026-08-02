@@ -38,9 +38,18 @@ inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
     case ErrorCode::file_too_large:
     case ErrorCode::descriptor_exhausted:
     case ErrorCode::read_only_filesystem:
-    case ErrorCode::unavailable:
     case ErrorCode::sequence_conflict:
+    case ErrorCode::segment_full:
+    case ErrorCode::segment_sealed:
+    case ErrorCode::arithmetic_overflow:
+        // Capacity / conflict / segment fit — mutation did not newly commit on this
+        // attempt. Must not map to INTERNAL_ERROR (reconcile_first / indeterminate).
         return ResponseStatus::overloaded;
+    case ErrorCode::unavailable:
+        // Store/Writer use unavailable for fail-closed and post-commit sticky paths where
+        // the mutation may already have linearized. Wire OVERLOADED means known-not-committed
+        // (client semantics); INTERNAL_ERROR forces reconcile_first instead.
+        return ResponseStatus::internal_error;
     default:
         return ResponseStatus::internal_error;
     }

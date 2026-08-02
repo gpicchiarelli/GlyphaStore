@@ -214,6 +214,8 @@ class Reactor final {
         // response order and prevents one pipelined client monopolizing a lane.
         bool request_in_flight{};
         bool cold_read_in_flight{};
+        // After BIND handoff rejection, keep the socket until OVERLOADED drains.
+        bool close_after_flush{};
         std::chrono::steady_clock::time_point last_activity{};
         // Set while a partial request frame is buffered; cleared on complete frame.
         std::chrono::steady_clock::time_point partial_request_since{};
@@ -232,11 +234,17 @@ class Reactor final {
     [[nodiscard]] auto accept_ready(bool tls_endpoint) -> Status;
     [[nodiscard]] auto accept_unix_ready() -> Status;
     [[nodiscard]] auto adopt_connection(ConnectionHandoff handoff) -> Status;
+    // Best-effort OVERLOADED on a handoff that cannot be adopted (full table /
+    // poller failure). Isolates the peer; must not fail the executor.
+    // `request_id_override` is used when the buffered BIND OK was already cleared.
+    void reject_orphaned_handoff(ConnectionHandoff handoff,
+                                std::optional<std::uint64_t> request_id_override = {}) noexcept;
     [[nodiscard]] auto read_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto write_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto process_frames(ConnectionToken token) -> Status;
     [[nodiscard]] auto bind_connection(ConnectionToken token, const RequestView& request) -> Status;
-    [[nodiscard]] auto transfer_connection(ConnectionToken token, std::size_t target_worker) -> Status;
+    [[nodiscard]] auto transfer_connection(ConnectionToken token, std::size_t target_worker,
+                                           std::uint64_t request_id) -> Status;
     [[nodiscard]] auto dispatch_request(ConnectionToken token, const RequestView& request,
                                         std::uint64_t& cached_now_ns) -> Status;
     [[nodiscard]] auto execute_local(ConnectionToken token, const RequestView& request,

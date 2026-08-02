@@ -1494,5 +1494,9 @@ GLYPHA_TEST("durable runtime close returns a sticky final flush failure") {
     GLYPHA_REQUIRE(!repeated.has_value());
     GLYPHA_REQUIRE(repeated.error().code == glyphastore::ErrorCode::io_error);
     const auto blocked = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
-    GLYPHA_REQUIRE(blocked.outcome == glyphastore::DurableMutationOutcome::indeterminate);
+    // Post-close sticky admission never enters Store — known not committed (not
+    // indeterminate). Matches Writer healthy_ reject → wire OVERLOADED polarity.
+    GLYPHA_REQUIRE(blocked.outcome == glyphastore::DurableMutationOutcome::not_committed);
+    GLYPHA_REQUIRE(blocked.error.has_value());
+    GLYPHA_REQUIRE(blocked.error->code == glyphastore::ErrorCode::unavailable);
 }

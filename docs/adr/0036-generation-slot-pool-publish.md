@@ -133,27 +133,29 @@ prototype/tests that do not link into `glyphastored` defaults.
 
 ## Verification
 
-All items are **required** before accepting this ADR as implemented. Status starts open.
+All items are **required** before accepting this ADR as *production-implemented*.
+Prototype evidence closes lab gates only; production still uses Alternative A.
 
 | # | Gate | Evidence required | Status |
 | --- | --- | --- | --- |
-| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | open |
-| V2 | Litmus: reclaim never frees epoch ≥ any active lease / pin / safe epoch | TSAN stress + fault injection | open |
-| V3 | Two-boundary (or lease-equivalent) race: Reader mid-GET during publish+retire | Dedicated race test + TSAN | open |
-| V4 | Cold I/O / `reader_safe_epoch` (or pin) holds reclaim across async completion | Integration | open |
-| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | open |
-| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | open |
-| V7 | Incremental merge + post-cut publish under slot pressure | Pair read generation + Writer merge tests | open |
-| V8 | Durable catalog refresh / rotation does not invalidate in-flight GET | Paired durable refresh tests | open |
-| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | open |
-| V10 | Same-key FIFO within `put_batch`; RAW after ACK | Existing paired Store batch tests | open |
-| V11 | Lab A/B vs status quo on Apple Silicon `macos-release`: `store_put`, `store_put_batch`, worker-affine PUT 2t, uniform PUT 2t, `store_get_copy` | Recorded under `benchmarks/results/` | open |
+| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | **prototype-evidence** — `ADR 0036 V1 prototype…` |
+| V2 | Litmus: reclaim never frees epoch ≥ any active lease / pin / safe epoch | TSAN stress + fault injection | **prototype-evidence** — `ADR 0036 V2…` + V13 stress under `macos-tsan`; production TSAN soak still open |
+| V3 | Two-boundary (or lease-equivalent) race: Reader mid-GET during publish+retire | Dedicated race test + TSAN | **prototype-evidence** — `ADR 0036 V3…` + V13 under `macos-tsan`; **production-baseline** — overwrite-storm under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
+| V4 | Cold I/O / `reader_safe_epoch` (or pin) holds reclaim across async completion | Integration | **prototype-evidence** (pin) — `paired slow-output pin…`; **production-baseline** — `paired Reader refreshes compacted durable pins…` + `durable cold read pin survives…` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
+| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | **prototype-evidence** + production close/linearize tests |
+| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | **prototype-evidence** — `ADR 0036 V6…`; **production-baseline** — allocation-fault + paired durable litmus. Sync/async drain-snapshot + ACK-after-visibility/drain (no inverted RAW on catch, capture-fail, Index-visible `committed+error`, unprocessed batch items after drain, Index publish throw fail-close, catch-after-publish put+erase incl. volatile sync erase, or resolved-error catch overwrite); `writer_durable_through` mutex-synchronized; immutable published GET RAW after close. Slot-pool candidate still open |
+| V7 | Incremental merge + post-cut publish under slot pressure | Pair read generation + Writer merge tests | **prototype-evidence** — `ADR 0036 V7 prototype…` (merge under pin pressure); production merge+slot open |
+| V8 | Durable catalog refresh / rotation does not invalidate in-flight GET | Paired durable refresh tests | **production-baseline** — `paired Reader refreshes…` + `durable read catalog refresh…` (`…/local-macos-2026-08-02-adr0036-v6-v8-v14/`); slot-pool candidate still open |
+| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | **prototype-evidence** — backpressure + bounded spin then `resource_exhausted`; recovery put |
+| V10 | Same-key FIFO within `put_batch`; RAW after ACK | Existing paired Store batch tests | **production-baseline** (status-quo path) |
+| V11 | Lab A/B vs status quo on Apple Silicon `macos-release` | Recorded under `benchmarks/results/` | open (requires production candidate) |
 | V12 | **Hard reject** if worker-affine PUT 2t regresses >5% median vs interleaved baseline | Same as V11 | open |
-| V13 | ASan/UBSan/TSAN clean on paired + publish stress | CI jobs | open |
-| V14 | Crash / fault matrix unchanged for durability boundaries (no ACK-before-publish) | Crash harness subset | open |
+| V13 | ASan/UBSan/TSAN clean on paired + publish stress | CI jobs | **prototype-partial** — `ADR 0036 V13…` + full `paired Store` green under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-tsan/`) and `macos-asan` ASan+UBSan (`…/local-macos-2026-08-02-adr0036-asan/`); full multi-OS CI matrix still open |
+| V14 | Crash / fault matrix unchanged for durability boundaries (no ACK-before-publish) | Crash harness subset | **production-baseline** — full sync `crash_persistence --mode matrix` (91 checkpoints) under `macos-release` (`…/local-macos-2026-08-02-adr0036-v14-sync-matrix/`); also crash-daemon pre-commit/post-ack + group-matrix. Slot-pool candidate still open |
 
 Prototype reference (non-production): `src/experimental/paired_shard.cpp` (`publish`,
-`reclaim_generations`, `adopt_publication`, `pin_read_generation`, `stop_and_drain`).
+`reclaim_generations`, `acquire_generation_slot`, `adopt_publication`, `pin_read_generation`,
+`stop_and_drain`).
 
 ## Compatibility with landed hot-path work
 
