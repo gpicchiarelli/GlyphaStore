@@ -34,4 +34,14 @@ class TestErrorTaxonomy < Minitest::Test
       assert_equal want_unhealthy, case_item.fetch("unhealthy"), case_item["id"]
     end
   end
+
+  def test_indeterminate_enrich_ignores_zero_bytes_sent
+    # Receive-after-send paths historically omitted bytes_sent; transport+0 must not
+    # advertise same_request when mutation_outcome is already indeterminate.
+    error = GlyphaStore::Error.transport("socket closed")
+                              .enrich(mutation_outcome: GlyphaStore::MutationOutcome::INDETERMINATE)
+    assert_equal 0, error.bytes_sent
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, error.retryability
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, error.mutation_outcome
+  end
 end

@@ -1,5 +1,7 @@
 #include "glyphastore/server/tls.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
+
 #include <chrono>
 #include <filesystem>
 #include <poll.h>
@@ -35,8 +37,9 @@ namespace {
     const auto error = SSL_get_error(ssl, result);
     switch (error) {
     case SSL_ERROR_WANT_READ:
+        return TlsIoResult{.kind = TlsIoKind::want_read, .bytes = 0};
     case SSL_ERROR_WANT_WRITE:
-        return TlsIoResult{.kind = TlsIoKind::would_block, .bytes = 0};
+        return TlsIoResult{.kind = TlsIoKind::want_write, .bytes = 0};
     case SSL_ERROR_ZERO_RETURN:
         return TlsIoResult{.kind = TlsIoKind::closed, .bytes = 0};
     case SSL_ERROR_SYSCALL:
@@ -612,6 +615,14 @@ auto TlsSession::peer_principal() const noexcept -> std::string_view {
     return impl_->peer_principal;
 }
 
+auto TlsSession::pending() const noexcept -> std::size_t {
+    if (!valid()) {
+        return 0;
+    }
+    const auto count = SSL_pending(impl_->ssl);
+    return count < 0 ? 0 : static_cast<std::size_t>(count);
+}
+
 auto TlsSession::read(std::byte* data, const std::size_t size) -> Result<TlsIoResult> {
     if (!valid()) {
         return fail(ErrorCode::invalid_argument, "TLS session is not valid");
@@ -626,6 +637,9 @@ auto TlsSession::read(std::byte* data, const std::size_t size) -> Result<TlsIoRe
 auto TlsSession::write(const std::byte* data, const std::size_t size) -> Result<TlsIoResult> {
     if (!valid()) {
         return fail(ErrorCode::invalid_argument, "TLS session is not valid");
+    }
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::tls_write_want_read)) {
+        return TlsIoResult{.kind = TlsIoKind::want_read, .bytes = 0};
     }
     const auto result = SSL_write(impl_->ssl, data, static_cast<int>(size));
     if (result > 0) {
@@ -679,6 +693,9 @@ auto TlsSession::valid() const noexcept -> bool {
 }
 auto TlsSession::peer_principal() const noexcept -> std::string_view {
     return {};
+}
+auto TlsSession::pending() const noexcept -> std::size_t {
+    return 0;
 }
 auto TlsSession::read(std::byte*, const std::size_t) -> Result<TlsIoResult> {
     return fail(ErrorCode::invalid_argument, "GlyphaStore was built without TLS support");

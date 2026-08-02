@@ -179,6 +179,10 @@ auto PairWriterPool::healthy() const noexcept -> bool {
     return runtime_.healthy();
 }
 
+void PairWriterPool::abandon_queued_mutations() noexcept {
+    runtime_.abandon_queued_mutations();
+}
+
 auto PairWriterPool::stop_and_drain(const std::optional<std::chrono::milliseconds> deadline) -> Status {
     // Store::close drains the shared runtime. Daemon stop may call this while the Store is still
     // open; draining here is idempotent with respect to an already-stopped runtime.

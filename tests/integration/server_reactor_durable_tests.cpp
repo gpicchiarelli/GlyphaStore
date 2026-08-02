@@ -3,6 +3,7 @@
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
+#include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/disk_read_executor.hpp"
 #include "glyphastore/server/pair_writer.hpp"
 #include "glyphastore/server/protocol.hpp"
@@ -27,10 +28,12 @@
 #include <limits>
 #include <mutex>
 #include <netinet/in.h>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
@@ -213,6 +216,8 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     GLYPHA_REQUIRE(second_socket >= 0);
     GLYPHA_REQUIRE(initialize_and_bind(first_socket, 0, 1));
     GLYPHA_REQUIRE(initialize_and_bind(second_socket, 0, 1));
+    timeval timeout{.tv_sec = 2, .tv_usec = 0};
+    GLYPHA_REQUIRE(::setsockopt(second_socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
     blocker.arm();
     const auto first = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::put,
@@ -248,11 +253,33 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     server.request_stop();
     std::optional<glyphastore::Status> joined;
     std::thread joiner{[&] { joined = server.join(); }};
-    // Past shutdown_drain_ms the executor arms expire_remaining_; in-flight Store work is
-    // still blocked until we release the sync hook.
-    std::this_thread::sleep_for(std::chrono::milliseconds{120});
-    blocker.release();
-    joiner.join();
+    struct JoinGuard final {
+        std::thread& thread;
+        BlockingFileSync& blocker;
+        bool released{};
+        void release_and_join() {
+            if (!released) {
+                blocker.release();
+                released = true;
+            }
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+        ~JoinGuard() {
+            release_and_join();
+        }
+    } join_guard{joiner, blocker};
+    // Drain deadline abandons the queued PUT as wire OVERLOADED while the socket
+    // is still live (before hard close). In-flight Store work stays blocked until
+    // the sync hook releases.
+    const auto abandoned_frame = receive_response(second_socket);
+    GLYPHA_REQUIRE(!abandoned_frame.empty());
+    const auto abandoned_response = glyphastore::server::decode_response(abandoned_frame);
+    GLYPHA_REQUIRE(abandoned_response.has_value());
+    GLYPHA_REQUIRE(abandoned_response->frame.request_id == 201);
+    GLYPHA_REQUIRE(abandoned_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    join_guard.release_and_join();
     GLYPHA_REQUIRE(joined.has_value());
     GLYPHA_REQUIRE(!joined->has_value());
     GLYPHA_REQUIRE(joined->error().code == glyphastore::ErrorCode::unavailable);
@@ -276,6 +303,92 @@ GLYPHA_TEST("server shutdown drain deadline abandons queued durable mutations") 
     const auto abandoned = (*recovered)->get("drain-abandoned");
     GLYPHA_REQUIRE(!abandoned.has_value());
     GLYPHA_REQUIRE(abandoned.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*recovered)->close().has_value());
+}
+
+GLYPHA_TEST("server shutdown drain deadline abandons durable_group coalescing hold") {
+    // Writer has dequeued a PUT and is waiting for min_records — not in the MPSC
+    // queue and not in Store. abandon_queued_mutations alone misses it; expire must
+    // break coalescing so wire OVERLOADED flushes before hard close.
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 2, .durable_mutation_queue_capacity = 4, .shutdown_drain_ms = 50},
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'000, .min_records = 2}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    timeval timeout{.tv_sec = 2, .tv_usec = 0};
+    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) == 0);
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 210,
+        .key = bytes("coalesce-abandoned"),
+        .value = bytes("never"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto held_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{1};
+    bool held = false;
+    while (std::chrono::steady_clock::now() < held_deadline) {
+        const auto stats = server.pair_writer_stats();
+        if (!stats.empty() && stats[0].queue_depth == 0 && stats[0].payload_slots_in_use >= 1 &&
+            stats[0].completed == 0) {
+            held = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    GLYPHA_REQUIRE(held);
+
+    server.request_stop();
+    std::optional<glyphastore::Status> joined;
+    std::thread joiner{[&] { joined = server.join(); }};
+    struct JoinGuard final {
+        std::thread& thread;
+        ~JoinGuard() {
+            if (thread.joinable()) {
+                thread.join();
+            }
+        }
+    } join_guard{joiner};
+    const auto frame = receive_response(socket);
+    GLYPHA_REQUIRE(!frame.empty());
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 210);
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    if (joiner.joinable()) {
+        joiner.join();
+    }
+    GLYPHA_REQUIRE(joined.has_value());
+    GLYPHA_REQUIRE(!joined->has_value());
+    GLYPHA_REQUIRE(joined->error().code == glyphastore::ErrorCode::unavailable);
+    {
+        const auto stats = server.pair_writer_stats();
+        GLYPHA_REQUIRE(!stats.empty());
+        GLYPHA_REQUIRE(stats[0].expired_before_store >= 1);
+    }
+    static_cast<void>(::close(socket));
+
+    auto recovered = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_group,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'000, .min_records = 2},
+    });
+    GLYPHA_REQUIRE(recovered.has_value());
+    const auto missing = (*recovered)->get("coalesce-abandoned");
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
     GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
@@ -1135,6 +1248,68 @@ GLYPHA_TEST("BIND_WORKER handoff saturation returns overloaded then closes") {
     GLYPHA_REQUIRE((*pair_writers)->stop_and_drain().has_value());
 }
 
+GLYPHA_TEST("shutdown force-close rejects pending BIND handoff with OVERLOADED") {
+    // Destination idle_for_shutdown used to ignore the mesh: BIND OK sat in an MPSC
+    // cell, then teardown destroyed the socket with neither OK nor OVERLOADED.
+    auto store = open_paired_store_for_writer(2, 8);
+    GLYPHA_REQUIRE(store.has_value());
+    glyphastore::server::ConnectionHandoffMesh mesh{2, 8};
+    auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
+    GLYPHA_REQUIRE(disk_reads.has_value());
+    auto pair_writers = glyphastore::server::PairWriterPool::create(
+        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(pair_writers.has_value());
+    GLYPHA_REQUIRE((*pair_writers)->start().has_value());
+
+    glyphastore::server::ReactorConfig config{
+        .port = 0,
+        .maximum_connections = 4,
+        .worker_count = 2,
+        .connection_handoff_capacity = 8,
+        .disk_read_thread_count = 2,
+    };
+    auto reactor1 = glyphastore::server::Reactor::create(config, 1, {}, {}, {}, **store, mesh, **disk_reads,
+                                                         **pair_writers);
+    GLYPHA_REQUIRE(reactor1.has_value());
+
+    int fds[2]{-1, -1};
+    GLYPHA_REQUIRE(::socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    GLYPHA_REQUIRE(glyphastore::server::set_nonblocking(fds[0]).has_value());
+    const auto bind_ok = glyphastore::server::encode_response({
+        .status = glyphastore::server::ResponseStatus::ok,
+        .request_id = 2,
+        .owner_worker = 1,
+        .worker_count = 2,
+        .routing_epoch = 1,
+    });
+    GLYPHA_REQUIRE(bind_ok.has_value());
+    glyphastore::server::ConnectionHandoff pending{
+        .socket = glyphastore::server::SocketHandle{fds[0]},
+        .output = *bind_ok,
+        .bound_worker = 1,
+        .initialized = true,
+    };
+    GLYPHA_REQUIRE(mesh.try_handoff(1, std::move(pending)));
+    GLYPHA_REQUIRE(mesh.has_pending(1));
+    GLYPHA_REQUIRE((*reactor1)->active_connections() == 0);
+    GLYPHA_REQUIRE(!(*reactor1)->idle_for_shutdown());
+
+    // Force-close path (shutdown drain timeout): must surface OVERLOADED, not bare EOF.
+    (*reactor1)->stop_accepting();
+    (*reactor1)->close_all_connections();
+    GLYPHA_REQUIRE(!mesh.has_pending(1));
+    GLYPHA_REQUIRE((*reactor1)->idle_for_shutdown());
+
+    const auto bind_frame = receive_response(fds[1]);
+    const auto bound = glyphastore::server::decode_response(bind_frame);
+    GLYPHA_REQUIRE(bound.has_value());
+    GLYPHA_REQUIRE(bound->frame.request_id == 2);
+    GLYPHA_REQUIRE(bound->frame.status == glyphastore::server::ResponseStatus::overloaded);
+
+    static_cast<void>(::close(fds[1]));
+    GLYPHA_REQUIRE((*pair_writers)->stop_and_drain().has_value());
+}
+
 GLYPHA_TEST("BIND_WORKER destination slot exhaustion returns overloaded then closes") {
     auto store = open_paired_store_for_writer(2, 8);
     GLYPHA_REQUIRE(store.has_value());
@@ -1240,6 +1415,98 @@ GLYPHA_TEST("BIND_WORKER destination slot exhaustion returns overloaded then clo
 }
 
 #if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("BIND_WORKER poller remove failure returns overloaded without dual registration") {
+    // Unregister must succeed before socket ownership moves. A failed remove used to
+    // hand off while the source poller still watched the fd (stale-token spin).
+    auto store = open_paired_store_for_writer(2, 8);
+    GLYPHA_REQUIRE(store.has_value());
+    glyphastore::server::ConnectionHandoffMesh mesh{2, 8};
+    auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
+    GLYPHA_REQUIRE(disk_reads.has_value());
+    auto pair_writers = glyphastore::server::PairWriterPool::create(
+        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    GLYPHA_REQUIRE(pair_writers.has_value());
+    GLYPHA_REQUIRE((*pair_writers)->start().has_value());
+
+    glyphastore::server::ReactorConfig config{
+        .port = 0,
+        .maximum_connections = 4,
+        .worker_count = 2,
+        .connection_handoff_capacity = 8,
+        .disk_read_thread_count = 2,
+    };
+    auto listener = glyphastore::server::TcpListener::bind(config.bind_address, 0);
+    GLYPHA_REQUIRE(listener.has_value());
+    auto reactor0 = glyphastore::server::Reactor::create(config, 0, std::move(*listener), {}, {}, **store,
+                                                         mesh, **disk_reads, **pair_writers);
+    GLYPHA_REQUIRE(reactor0.has_value());
+    auto reactor1 = glyphastore::server::Reactor::create(config, 1, {}, {}, {}, **store, mesh, **disk_reads,
+                                                         **pair_writers);
+    GLYPHA_REQUIRE(reactor1.has_value());
+
+    std::atomic<bool> stop{false};
+    std::thread pump{[&] {
+        while (!stop.load(std::memory_order_acquire)) {
+            static_cast<void>((*reactor0)->run_once(5));
+            static_cast<void>((*reactor1)->run_once(5));
+        }
+    }};
+
+    const auto client = connect_to((*reactor0)->port());
+    GLYPHA_REQUIRE(client >= 0);
+    const auto init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
+        .request_id = 1,
+    });
+    GLYPHA_REQUIRE(init.has_value());
+    GLYPHA_REQUIRE(send_all(client, *init));
+    const auto init_frame = receive_response(client);
+    const auto initialized = glyphastore::server::decode_response(init_frame);
+    GLYPHA_REQUIRE(initialized.has_value());
+    GLYPHA_REQUIRE(initialized->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::poller_remove);
+    const auto bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
+        .request_id = 2,
+        .target_worker = 1,
+    });
+    GLYPHA_REQUIRE(bind.has_value());
+    GLYPHA_REQUIRE(send_all(client, *bind));
+    const auto bind_frame = receive_response(client);
+    glyphastore::fault::reset();
+    const auto bound = glyphastore::server::decode_response(bind_frame);
+    GLYPHA_REQUIRE(bound.has_value());
+    GLYPHA_REQUIRE(bound->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(bound->frame.request_id == 2);
+    GLYPHA_REQUIRE((*reactor1)->active_connections() == 0);
+
+    bool peer_closed = false;
+    const auto close_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < close_deadline) {
+        char byte{};
+        const auto received = ::recv(client, &byte, 1, 0);
+        if (received == 0) {
+            peer_closed = true;
+            break;
+        }
+        if (received < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+            continue;
+        }
+        break;
+    }
+    GLYPHA_REQUIRE(peer_closed);
+
+    stop.store(true, std::memory_order_release);
+    pump.join();
+    static_cast<void>(::close(client));
+    GLYPHA_REQUIRE((*pair_writers)->stop_and_drain().has_value());
+}
+#endif
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
 GLYPHA_TEST("sticky post-commit Writer failure is INTERNAL_ERROR on the wire") {
     ServerTemporaryDirectory temporary;
     auto opened = glyphastore::server::Server::create(
@@ -1276,6 +1543,10 @@ GLYPHA_TEST("sticky post-commit Writer failure is INTERNAL_ERROR on the wire") {
     GLYPHA_REQUIRE(!server.healthy());
     GLYPHA_REQUIRE(server.live());
     GLYPHA_REQUIRE(!server.ready());
+    GLYPHA_REQUIRE(!server.store_operational());
+    GLYPHA_REQUIRE(!server.pair_writers_healthy());
+    GLYPHA_REQUIRE(glyphastore::server::classify_ready_loss(server) ==
+                   glyphastore::server::ReadyLossReason::store_not_operational);
 
     const auto health = probe_lifecycle(socket, glyphastore::server::RequestOpcode::health, 79);
     GLYPHA_REQUIRE(health.has_value());
@@ -1285,6 +1556,180 @@ GLYPHA_TEST("sticky post-commit Writer failure is INTERNAL_ERROR on the wire") {
     GLYPHA_REQUIRE(ready->decoded.frame.status == glyphastore::server::ResponseStatus::internal_error);
 
     static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("pre-Store sibling after sticky capture is wire OVERLOADED not INTERNAL_ERROR") {
+    // Two connections, same key: first commits then Site::capture sticky; second must
+    // not enter Store and must not look like reconcile-first INTERNAL_ERROR.
+    ServerTemporaryDirectory temporary;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 8, .worker_count = 1, .disk_read_thread_count = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first = connect_to(server.port());
+    const auto second = connect_to(server.port());
+    GLYPHA_REQUIRE(first >= 0);
+    GLYPHA_REQUIRE(second >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(first, 0, 1));
+    GLYPHA_REQUIRE(initialize_and_bind(second, 0, 1));
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::capture);
+    const auto put1 = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 101,
+        .key = bytes("sibling-fc-key"),
+        .value = bytes("first"),
+    });
+    const auto put2 = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 102,
+        .key = bytes("sibling-fc-key"),
+        .value = bytes("second"),
+    });
+    GLYPHA_REQUIRE(put1.has_value());
+    GLYPHA_REQUIRE(put2.has_value());
+    GLYPHA_REQUIRE(send_all(first, *put1));
+    GLYPHA_REQUIRE(send_all(second, *put2));
+
+    const auto frame1 = receive_response(first);
+    const auto frame2 = receive_response(second);
+    glyphastore::fault::reset();
+    const auto response1 = glyphastore::server::decode_response(frame1);
+    const auto response2 = glyphastore::server::decode_response(frame2);
+    GLYPHA_REQUIRE(response1.has_value());
+    GLYPHA_REQUIRE(response2.has_value());
+    GLYPHA_REQUIRE(response1->frame.request_id == 101);
+    GLYPHA_REQUIRE(response2->frame.request_id == 102);
+    // First: ACK-after-drain success (or sticky INTERNAL_ERROR if drain fails).
+    GLYPHA_REQUIRE(response1->frame.status == glyphastore::server::ResponseStatus::ok ||
+                   response1->frame.status == glyphastore::server::ResponseStatus::internal_error);
+    GLYPHA_REQUIRE(response1->frame.status != glyphastore::server::ResponseStatus::overloaded);
+    // Second: never Store-entered after sticky → OVERLOADED, not INTERNAL_ERROR.
+    GLYPHA_REQUIRE(response2->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(!server.healthy());
+    GLYPHA_REQUIRE(server.live());
+
+    static_cast<void>(::close(first));
+    static_cast<void>(::close(second));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("response queue allocation failure closes connection without daemon fail-stop") {
+    // Committed PUT must not escalate an ACK-buffer bad_alloc into executor failed_.
+    // Close without inventing OVERLOADED (mutation may already be durable).
+    ServerTemporaryDirectory temporary;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::response_queue);
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 81,
+        .key = bytes("ack-alloc-key"),
+        .value = bytes("ack-alloc-value"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(put_frame.empty());
+    GLYPHA_REQUIRE(server.live());
+    GLYPHA_REQUIRE(server.healthy());
+    GLYPHA_REQUIRE(server.ready());
+    static_cast<void>(::close(socket));
+
+    const auto probe = connect_to(server.port());
+    GLYPHA_REQUIRE(probe >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(probe, 0, 1));
+    const auto health = probe_lifecycle(probe, glyphastore::server::RequestOpcode::health, 82);
+    GLYPHA_REQUIRE(health.has_value());
+    GLYPHA_REQUIRE(health->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 83,
+        .key = bytes("ack-alloc-key"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(probe, *get));
+    const auto get_frame = receive_response(probe);
+    const auto got = glyphastore::server::decode_response(get_frame);
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(got->frame.request_id == 83);
+    GLYPHA_REQUIRE(got->frame.status == glyphastore::server::ResponseStatus::ok);
+    GLYPHA_REQUIRE(std::ranges::equal(got->frame.value, bytes("ack-alloc-value")));
+
+    static_cast<void>(::close(probe));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("INIT identity allocation failure returns OVERLOADED without daemon fail-stop") {
+    // Identity encode bad_alloc must not mark initialized or stop the executor.
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::init_identity);
+    const auto init = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::init,
+        .request_id = 91,
+    });
+    GLYPHA_REQUIRE(init.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *init));
+    const auto init_frame = receive_response(socket);
+    glyphastore::fault::reset();
+    const auto initialized = glyphastore::server::decode_response(init_frame);
+    GLYPHA_REQUIRE(initialized.has_value());
+    GLYPHA_REQUIRE(initialized->frame.request_id == 91);
+    GLYPHA_REQUIRE(initialized->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(server.live());
+    GLYPHA_REQUIRE(server.healthy());
+
+    // Same connection must not be treated as initialized (BIND without INIT succeeds
+    // only after a real INIT OK).
+    const auto bind = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::bind_worker,
+        .request_id = 92,
+        .target_worker = 0,
+    });
+    GLYPHA_REQUIRE(bind.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *bind));
+    const auto bind_frame = receive_response(socket);
+    const auto bound = glyphastore::server::decode_response(bind_frame);
+    GLYPHA_REQUIRE(bound.has_value());
+    GLYPHA_REQUIRE(bound->frame.status == glyphastore::server::ResponseStatus::invalid_request);
+
+    const auto probe = connect_to(server.port());
+    GLYPHA_REQUIRE(probe >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(probe, 0, 1));
+
+    static_cast<void>(::close(socket));
+    static_cast<void>(::close(probe));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
 }
@@ -1380,4 +1825,133 @@ GLYPHA_TEST("durable segment_full surfaces as wire OVERLOADED not INTERNAL_ERROR
     static_cast<void>(::close(socket));
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("durable not-committed io_error surfaces as wire OVERLOADED not INTERNAL_ERROR") {
+    // Pre-write append reject is authoritative not_committed; Writer must not leave
+    // ErrorCode::io_error (Reactor → INTERNAL_ERROR → client indeterminate/reconcile).
+    ServerTemporaryDirectory temporary;
+    struct IoErrorOnPut final {
+        std::size_t write_records{};
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& state = *static_cast<IoErrorOnPut*>(opaque);
+            if (operation != glyphastore::FilesystemOperation::write_record) {
+                return {};
+            }
+            ++state.write_records;
+            return glyphastore::fail(glyphastore::ErrorCode::io_error, "injected append reject");
+        }
+    } failure;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.context = &failure, .before = &IoErrorOnPut::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 91,
+        .key = bytes("io-error-not-committed-key"),
+        .value = bytes("value"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto frame = receive_response(socket);
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 91);
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(failure.write_records >= 1);
+
+    const auto get = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 92,
+        .key = bytes("io-error-not-committed-key"),
+    });
+    GLYPHA_REQUIRE(get.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *get));
+    const auto get_frame = receive_response(socket);
+    const auto get_response = glyphastore::server::decode_response(get_frame);
+    GLYPHA_REQUIRE(get_response.has_value());
+    GLYPHA_REQUIRE(get_response->frame.request_id == 92);
+    GLYPHA_REQUIRE(get_response->frame.status == glyphastore::server::ResponseStatus::not_found);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("durable not-committed INTERNAL_ERROR-bucket codes surface as wire OVERLOADED") {
+    // corrupted_data / internal_error on authoritative not_committed must not stay in the
+    // Reactor INTERNAL_ERROR bucket (client indeterminate). Mirrors rotation/open and
+    // pre-boundary catch carriers that already stamp not_committed with those codes.
+    const std::array codes{glyphastore::ErrorCode::corrupted_data, glyphastore::ErrorCode::internal_error};
+    for (std::size_t index = 0; index < codes.size(); ++index) {
+        ServerTemporaryDirectory temporary;
+        struct InjectedReject final {
+            glyphastore::ErrorCode code{};
+            std::size_t write_records{};
+            static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+                -> glyphastore::Status {
+                auto& state = *static_cast<InjectedReject*>(opaque);
+                if (operation != glyphastore::FilesystemOperation::write_record) {
+                    return {};
+                }
+                ++state.write_records;
+                return glyphastore::fail(state.code, "injected not_committed reject");
+            }
+        } failure{.code = codes[index]};
+        auto opened = glyphastore::server::Server::create(
+            {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1},
+            {.storage_mode = glyphastore::StorageMode::durable_sync,
+             .data_directory = temporary.store_path(),
+             .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+             .filesystem_hooks = {.context = &failure, .before = &InjectedReject::before}});
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& server = **opened;
+        GLYPHA_REQUIRE(server.start().has_value());
+
+        const auto socket = connect_to(server.port());
+        GLYPHA_REQUIRE(socket >= 0);
+        GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+        const auto key = bytes(std::string{"bucket-not-committed-"} + std::to_string(index));
+        const auto put = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::put,
+            .request_id = 200U + static_cast<std::uint64_t>(index),
+            .key = key,
+            .value = bytes("value"),
+        });
+        GLYPHA_REQUIRE(put.has_value());
+        GLYPHA_REQUIRE(send_all(socket, *put));
+        const auto frame = receive_response(socket);
+        const auto response = glyphastore::server::decode_response(frame);
+        GLYPHA_REQUIRE(response.has_value());
+        GLYPHA_REQUIRE(response->frame.request_id == 200U + static_cast<std::uint64_t>(index));
+        GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+        GLYPHA_REQUIRE(failure.write_records >= 1);
+
+        const auto get = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::get,
+            .request_id = 210U + static_cast<std::uint64_t>(index),
+            .key = key,
+        });
+        GLYPHA_REQUIRE(get.has_value());
+        GLYPHA_REQUIRE(send_all(socket, *get));
+        const auto get_frame = receive_response(socket);
+        const auto get_response = glyphastore::server::decode_response(get_frame);
+        GLYPHA_REQUIRE(get_response.has_value());
+        GLYPHA_REQUIRE(get_response->frame.status == glyphastore::server::ResponseStatus::not_found);
+
+        static_cast<void>(::close(socket));
+        server.request_stop();
+        GLYPHA_REQUIRE(server.join().has_value());
+    }
 }

@@ -75,6 +75,7 @@ The result classification is deliberately asymmetric:
 | Failure boundary | Outcome | Meaning |
 |---|---|---|
 | argument, Record write, or Record-data sync | `not_committed` | the selected slot still defines the old extent; any tail is ignored |
+| before-hook throw/Status ahead of the matching write/sync | `not_committed` | hook runs before durable bytes or slot authority change |
 | before attempting the slot write (fault seam) | `not_committed` | Record bytes may be durable, but remain outside recovery authority |
 | slot write attempted or following sync failed | `indeterminate` | either old or new valid slot may win after restart; every handle sharing the data directory is poisoned |
 | slot sync completed | `committed` | the new boundary is recovery authority |

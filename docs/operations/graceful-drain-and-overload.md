@@ -64,8 +64,10 @@ The daemon:
 5. exits.
 
 Queued mutations that have **not** entered Store execution when the drain deadline expires complete as
-`unavailable` on the wire. In-flight Store work is **never** cancelled. A timed-out drain makes
-process exit **fail closed** (`join` returns an error; non-zero exit).
+wire `OVERLOADED` (`resource_exhausted`; known not committed). This includes work already dequeued
+into a Writer coalescing wait (`min_records` / burst) or still pending as a later durable_group
+sub-batch. In-flight Store work is **never** cancelled. A timed-out drain makes process exit
+**fail closed** (`join` returns an error; non-zero exit).
 
 ### 3. Tune drain deadline when needed
 

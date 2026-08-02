@@ -3,6 +3,7 @@
 -compile(export_all).
 
 -include_lib("common_test/include/ct.hrl").
+-include("glyphastore_client_internal.hrl").
 
 all() ->
     [
@@ -12,13 +13,17 @@ all() ->
         pipeline_put_get,
         pipeline_preserves_order,
         pipeline_disconnect_classifies_each_request,
+        pipeline_outer_timeout_put_is_indeterminate,
         pipeline_limits_fail_before_transmission,
         batch_multi_worker,
+        batch_preserves_sibling_on_rebind_failure,
         worker_pipelines_concurrent,
         rejects_non_positive_timeout,
         per_call_timeout_overrides_config,
         overloaded_retryability_is_never,
         permission_denied_status,
+        backup_internal_error_is_reconcile_first,
+        backup_validate_failure_is_reconcile_first,
         tls_requires_cert_and_key_pair,
         close_is_synchronous
     ].
@@ -54,6 +59,38 @@ internal_error_mutation_is_indeterminate(_Config) ->
         3 = maps:get(wire_status, Err),
         reconcile_first = maps:get(retryability, Err),
         <<"put">> = maps:get(operation, Err),
+        true = maps:get(bytes_sent, Err) > 0,
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+backup_internal_error_is_reconcile_first(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{internal_error_on_backup => true}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        {error, Err} = glyphastore_client:backup(Client, <<"/tmp/glyphastore-erl-backup-internal">>),
+        internal = maps:get(category, Err),
+        3 = maps:get(wire_status, Err),
+        indeterminate = maps:get(mutation_outcome, Err),
+        reconcile_first = maps:get(retryability, Err),
+        <<"backup">> = maps:get(operation, Err),
+        true = maps:get(bytes_sent, Err) > 0,
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+backup_validate_failure_is_reconcile_first(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        ok = glyphastore_fake_server:control(Server, {set_wrong_request_id, true}),
+        {error, Err} = glyphastore_client:backup(Client, <<"/tmp/glyphastore-erl-backup-wrong-id">>),
+        indeterminate = maps:get(mutation_outcome, Err),
+        reconcile_first = maps:get(retryability, Err),
+        true = maps:get(bytes_sent, Err) > 0,
+        <<"backup">> = maps:get(operation, Err),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -138,6 +175,33 @@ pipeline_disconnect_classifies_each_request(_Config) ->
         glyphastore_fake_server:stop(Server)
     end.
 
+pipeline_outer_timeout_put_is_indeterminate(_Config) ->
+    %% Outer gen_server deadline races inner receive: must return per-slot
+    %% indeterminate / reconcile_first, not bare {error, transport}.
+    {ok, Server} = glyphastore_fake_server:start(#{hold_puts => true}),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        {ok, Responses} =
+            glyphastore_client:execute_pipeline(
+                Client,
+                [
+                    #{opcode => put, key => <<"key">>, value => <<"value">>},
+                    #{opcode => get, key => <<"key">>}
+                ],
+                #{timeout => 0.05}
+            ),
+        indeterminate = maps:get(outcome, lists:nth(1, Responses)),
+        Err = maps:get(error, lists:nth(1, Responses)),
+        reconcile_first = maps:get(retryability, Err),
+        indeterminate = maps:get(mutation_outcome, Err),
+        true = maps:get(bytes_sent, Err) > 0,
+        failed = maps:get(outcome, lists:nth(2, Responses)),
+        ok = glyphastore_fake_server:control(Server, release_held),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
 pipeline_limits_fail_before_transmission(_Config) ->
     {ok, Server} = glyphastore_fake_server:start(#{workers => 1}),
     try
@@ -180,6 +244,37 @@ batch_multi_worker(_Config) ->
         Expected2 = <<"v-", K2/binary>>,
         Expected1 = maps:get(value, lists:nth(2, Responses)),
         Expected2 = maps:get(value, lists:nth(4, Responses)),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+batch_preserves_sibling_on_rebind_failure(_Config) ->
+    %% Match Python/Go: Worker-0 success survives Worker-1 rebind failure; batch
+    %% returns the full slot vector (not a bare {error} that discards siblings).
+    {ok, Server} = glyphastore_fake_server:start(#{
+        workers => 2,
+        fail_rebind_workers => [1]
+    }),
+    try
+        {ok, Client} = glyphastore_client:connect(#{port => glyphastore_fake_server:port(Server)}),
+        Keys = find_keys_for_workers(2),
+        K0 = lists:nth(1, Keys),
+        K1 = lists:nth(2, Keys),
+        Conn1 = worker_conn(Client, 1),
+        exit(Conn1, kill),
+        wait_until_dead(Conn1, 200),
+        {ok, Responses} = glyphastore_client:execute_batch(Client, [
+            #{opcode => put, key => K0, value => <<"a">>},
+            #{opcode => put, key => K1, value => <<"b">>}
+        ]),
+        2 = length(Responses),
+        succeeded = maps:get(outcome, lists:nth(1, Responses)),
+        failed = maps:get(outcome, lists:nth(2, Responses)),
+        Err = maps:get(error, lists:nth(2, Responses)),
+        rejected = maps:get(mutation_outcome, Err),
+        0 = maps:get(bytes_sent, Err),
+        {ok, <<"a">>} = glyphastore_client:get(Client, K0),
         glyphastore_client:close(Client)
     after
         glyphastore_fake_server:stop(Server)
@@ -309,4 +404,18 @@ find_keys_for_workers(Workers, Candidate, Acc) ->
                     _ -> Acc
                 end,
             find_keys_for_workers(Workers, Candidate + 1, Acc1)
+    end.
+
+worker_conn(Client, Worker) ->
+    State = sys:get_state(Client),
+    maps:get(Worker, State#state.workers).
+
+wait_until_dead(_Pid, 0) ->
+    error(process_still_alive);
+wait_until_dead(Pid, Left) ->
+    case is_process_alive(Pid) of
+        false -> ok;
+        true ->
+            timer:sleep(10),
+            wait_until_dead(Pid, Left - 1)
     end.

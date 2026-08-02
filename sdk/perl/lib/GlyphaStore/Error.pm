@@ -66,7 +66,12 @@ sub enrich {
         && defined $self->{mutation_outcome};
     my $indeterminate
         =defined $self->{mutation_outcome} && $self->{mutation_outcome} eq 'indeterminate';
-    if (   defined $self->{mutation_outcome}
+    # Indeterminate always means reconcile_first — including transport failures after a
+    # full mutation send where bytes_sent was omitted (must not fall through to same_request).
+    if ($indeterminate) {
+        $self->{retryability} = 'reconcile_first';
+    }
+    elsif (defined $self->{mutation_outcome}
         && ($self->{bytes_sent} // 0) > 0
         && $self->{category} eq 'transport')
     {

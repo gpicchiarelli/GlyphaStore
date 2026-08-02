@@ -26,6 +26,8 @@ enum class ReadyLossReason : std::uint8_t {
     not_live,
     shutting_down,
     store_not_operational,
+    pair_fail_closed,
+    admission_fenced,
     maintenance_emergency,
     maintenance_fault,
 };

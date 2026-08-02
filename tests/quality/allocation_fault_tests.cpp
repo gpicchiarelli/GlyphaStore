@@ -987,6 +987,8 @@ void run_paired_async_durable_coalesced_fail_closed() {
     require(!done[0]->error.has_value(),
             "first clean commit kept error ACK after successful drain (inverted RAW)");
     require(done[1]->error.has_value(), "later same-key sub-batch must not success-ACK after fail-closed");
+    require(done[1]->error->code == glyphastore::ErrorCode::resource_exhausted,
+            "pre-Store sibling fail-closed must be resource_exhausted (not unavailable/reconcile)");
     const auto armed_writes = counter.writes.load(std::memory_order_relaxed) - baseline_writes;
     require(armed_writes <= 1U,
             "async durable Writer mutated a later sub-batch after post-commit fail-closed");
@@ -1299,6 +1301,187 @@ void run_paired_volatile_multichunk_fail_closed() {
         break;
     }
     require(closed, "paired volatile multichunk fail-closed never tripped");
+}
+
+void run_paired_volatile_sync_midchunk_fail_closed_resource_exhausted() {
+#if !defined(GLYPHASTORE_FAULT_INJECTION)
+    return;
+#else
+    // Sync volatile put_batch: after the first same-shard item mutates, Site::mutate
+    // sticky-closes the pair. The later sibling never enters Store and must be
+    // resource_exhausted (rejected), not unavailable (reconcile / INTERNAL_ERROR).
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                   .reader_epoch_lease = true},
+    });
+    require(opened.has_value(), "failed to open paired volatile Store");
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    require(runtime != nullptr, "missing paired runtime");
+
+    const std::string key_a = "mid-a";
+    const std::string key_b = "mid-b";
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = key_a, .value = bytes("alpha")},
+        {.key = key_b, .value = bytes("beta")},
+    };
+
+    glyphastore::fault::fail_once(glyphastore::fault::Site::mutate);
+    const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
+    require(statuses.size() == 2, "put_batch size mismatch");
+    require(statuses[0].has_value(), "first mid-chunk put lost success ACK after publication");
+    require(!statuses[1].has_value(), "later mid-chunk sibling must not success-ACK after sticky");
+    require(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted,
+            "mid-chunk never-Store-entered sibling must be resource_exhausted");
+    require(statuses[1].error().message.find("fail-closed") != std::string::npos,
+            "mid-chunk sibling did not hit fail-closed reject");
+    require(!runtime->healthy(), "Site::mutate sticky did not fail-close the pair");
+
+    const auto got_a = store.get(key_a);
+    require(got_a.has_value(), "Store::get missed published first mid-chunk key");
+    require(std::string_view(reinterpret_cast<const char*>(got_a->bytes.data()), got_a->bytes.size()) ==
+                "alpha",
+            "published mid-chunk value mismatch");
+    const auto got_b = store.get(key_b);
+    require(!got_b.has_value(), "never-Store-entered mid-chunk sibling became GET-visible");
+
+    const auto late = store.put("mid-late", bytes("no"));
+    require(!late.has_value(), "late put accepted after sticky fail-closed");
+    require(late.error().code == glyphastore::ErrorCode::unavailable,
+            "late put was not unavailable after sticky fail-closed");
+    static_cast<void>(store.close());
+#endif
+}
+
+void run_paired_volatile_sync_midchunk_catch_preserves_resource_exhausted() {
+#if !defined(GLYPHASTORE_FAULT_INJECTION)
+    return;
+#else
+    // Mid-chunk sticky stamps the never-entered sibling resource_exhausted; a later
+    // Site::publish catch must not upgrade that to unavailable (false indeterminate).
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                   .reader_epoch_lease = true},
+    });
+    require(opened.has_value(), "failed to open paired volatile Store");
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    require(runtime != nullptr, "missing paired runtime");
+
+    const std::string key_a = "mid-catch-a";
+    const std::string key_b = "mid-catch-b";
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = key_a, .value = bytes("alpha")},
+        {.key = key_b, .value = bytes("beta")},
+    };
+
+    glyphastore::fault::fail_once(glyphastore::fault::Site::mutate);
+    glyphastore::fault::fail_once(glyphastore::fault::Site::publish);
+    const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
+    require(statuses.size() == 2, "put_batch size mismatch");
+    require(statuses[0].has_value(),
+            "first mid-chunk put lost success ACK after publish-then-catch");
+    require(!statuses[1].has_value(), "later mid-chunk sibling must not success-ACK after sticky");
+    require(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted,
+            "catch must not upgrade never-Store-entered sibling to unavailable");
+    require(statuses[1].error().message.find("fail-closed") != std::string::npos,
+            "mid-chunk sibling did not keep fail-closed reject through catch");
+    require(!runtime->healthy(), "mutate+publish sticky did not fail-close the pair");
+
+    const auto got_a = store.get(key_a);
+    require(got_a.has_value(), "Store::get missed published first mid-chunk key after catch");
+    require(std::string_view(reinterpret_cast<const char*>(got_a->bytes.data()), got_a->bytes.size()) ==
+                "alpha",
+            "published mid-chunk value mismatch after catch");
+    const auto got_b = store.get(key_b);
+    require(!got_b.has_value(), "never-Store-entered mid-chunk sibling became GET-visible");
+
+    const auto late = store.put("mid-catch-late", bytes("no"));
+    require(!late.has_value(), "late put accepted after sticky fail-closed");
+    require(late.error().code == glyphastore::ErrorCode::unavailable,
+            "late put was not unavailable after sticky fail-closed");
+    static_cast<void>(store.close());
+#endif
+}
+
+void run_paired_sync_durable_group_catch_preserves_resource_exhausted() {
+#if !defined(GLYPHASTORE_FAULT_INJECTION)
+    return;
+#else
+    // Sync durable_group put_batch: same-key splits into sub-batches. First Index
+    // publish + Site::index_account sticky-closes; second is never Store-entered
+    // (resource_exhausted). Site::publish catch must not upgrade that sibling to
+    // unavailable.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-sync-grp-catch-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .concurrency = glyphastore::StoreConcurrencyMode::paired,
+        .paired = {.async_lane_capacity = 8,
+                   .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                   .reader_epoch_lease = true},
+        .storage_mode = glyphastore::StorageMode::durable_group,
+        .data_directory = store_path,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .durable_group = {.max_records = 1,
+                          .max_bytes = 65'536,
+                          .max_wait_ms = 60'000,
+                          .min_records = 1},
+        .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+    });
+    require(opened.has_value(), "failed to open paired durable_group Store");
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    require(runtime != nullptr, "missing paired runtime");
+
+    const std::string key = "grp-catch";
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = key, .value = bytes("first")},
+        {.key = key, .value = bytes("second")},
+    };
+
+    glyphastore::fault::fail_once(glyphastore::fault::Site::index_account);
+    glyphastore::fault::fail_once(glyphastore::fault::Site::publish);
+    const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
+    require(statuses.size() == 2, "put_batch size mismatch");
+    require(statuses[0].has_value(),
+            "first durable-group put lost success ACK after index_account+publish catch");
+    require(!statuses[1].has_value(), "later same-key sub-batch must not success-ACK after sticky");
+    require(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted,
+            "durable-group catch must not upgrade never-Store-entered sibling to unavailable");
+    require(statuses[1].error().message.find("fail-closed") != std::string::npos,
+            "later sibling did not keep fail-closed reject through catch");
+    require(!runtime->healthy(), "index_account+publish sticky did not fail-close the pair");
+
+    const auto got = store.get(key);
+    require(got.has_value(), "Store::get missed drain-snapshotted first value after catch");
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                "first",
+            "drain-snapshotted value mismatch after catch");
+
+    const auto late = store.put("grp-catch-late", bytes("no"));
+    require(!late.has_value(), "late put accepted after sticky fail-closed");
+    require(late.error().code == glyphastore::ErrorCode::unavailable,
+            "late put was not unavailable after sticky fail-closed");
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+#endif
 }
 
 void run_paired_sync_durable_sync_drain_after_capture_fail() {
@@ -2329,6 +2512,9 @@ void run_all_tests() {
     run_volatile_vacuum_publication_allocation_failures();
     run_index_tombstone_rebuild_allocation_failures();
     run_paired_volatile_multichunk_fail_closed();
+    run_paired_volatile_sync_midchunk_fail_closed_resource_exhausted();
+    run_paired_volatile_sync_midchunk_catch_preserves_resource_exhausted();
+    run_paired_sync_durable_group_catch_preserves_resource_exhausted();
     run_paired_async_durable_coalesced_fail_closed();
     run_paired_async_durable_sibling_publish_after_capture_fail();
     run_paired_durable_batch_stops_after_indeterminate_ttl();

@@ -47,6 +47,10 @@ module GlyphaStore
       Retryability::NEW_ATTEMPT
     end
 
+    def base_copy
+      self.class.new(category: @category, message: message, wire_status: @wire_status)
+    end
+
     def enrich(
       wire_status: :unset,
       bytes_sent: :unset,
@@ -64,7 +68,9 @@ module GlyphaStore
       @operation = operation unless operation == :unset
       @mutation_outcome = mutation_outcome unless mutation_outcome == :unset
 
-      if !@mutation_outcome.nil? && @bytes_sent.positive? && @category == Category::TRANSPORT
+      if @mutation_outcome == MutationOutcome::INDETERMINATE
+        @retryability = Retryability::RECONCILE_FIRST
+      elsif !@mutation_outcome.nil? && @bytes_sent.positive? && @category == Category::TRANSPORT
         @retryability = Retryability::RECONCILE_FIRST
       elsif @bytes_sent.zero? && @category == Category::TRANSPORT
         @retryability = Retryability::SAME_REQUEST

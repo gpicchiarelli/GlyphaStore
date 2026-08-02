@@ -151,18 +151,27 @@ observes either names still awaiting cleanup or their durable removal.
 
 Compaction must not run in a mutation or acknowledgement critical path. The implemented internal
 `compact_worker` takes a brief owning snapshot, then performs source reads, CRC validation,
-replacement writes, sealing, and reopen validation without the target Worker or catalog lock. Reads
-and ordinary mutations continue on that Worker. A mutation wins publication: sequence/batch drift
+replacement writes, sealing, and reopen validation without the target Worker or catalog lock. On the
+mutex-elided exclusive Writer path, Phase A arms the Worker-local `compaction_commit_active` gate and
+waits for `hot_path_depth == 0` before enumerating the Index (shared catalog lock alone does not
+serialize exclusive mutates that skip `worker.mutex`); the gate is cleared before Phase B so ordinary
+mutations continue during the unlocked build. Reads and ordinary mutations continue on that Worker
+during Phase B. A mutation wins publication: sequence/batch drift
 causes a finite `sequence_conflict`, durable removal of replacement files and intent under the still
 authoritative old manifest, and no fail-close unless rollback itself becomes uncertain. Publication
 uses a non-waiting Worker try-lock and the catalog-exclusive lock only to validate and prepare
 already-reserved vectors. It then installs a Worker-local logical commit gate and releases every
-physical mutex before manifest write, sync, rename, and directory sync. Reads continue through the
-old Index and pinned sources. Mutations on that Worker receive a finite `sequence_conflict`; flush
-paths wait on a condition variable that releases the Worker mutex. After durable publication, the
-runtime reacquires the locks, refreshes retained commit metadata that other Workers may have
-advanced, performs the allocation-free in-memory switch, and clears the gate. Source retirement and
-final audit also run unlocked.
+physical mutex before quiesce waits and the durable manifest write, sync, rename, and directory
+sync. On the mutex-elided exclusive Writer path it waits for `hot_path_depth == 0` (and otherwise
+for `!mutation_io_active`) only after that unlock, then reacquires the locks and revalidates
+sequence / batch / source pins; drift aborts with finite `sequence_conflict` and rolls back
+replacements under the old authority — holding catalog across the depth wait would deadlock a
+mutate that already entered the hot path and needs shared catalog after append. Reads continue
+through the old Index and pinned sources. Mutations on that Worker receive a finite
+`sequence_conflict`; flush paths wait on a condition variable that releases the Worker mutex.
+After durable publication, the runtime reacquires the locks, refreshes retained commit metadata
+that other Workers may have advanced, performs the allocation-free in-memory switch, and clears
+the gate. Source retirement and final audit also run unlocked.
 
 Persistence v1 admits exactly the old and next manifest authorities. A Store-wide logical
 publication lease preserves that invariant without holding the publication mutex through intent

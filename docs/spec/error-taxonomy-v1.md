@@ -102,11 +102,39 @@ The daemon Reactor maps completion/`queue_response` errors through
 
 | `ErrorCode` | Wire status | Rationale |
 | --- | --- | --- |
-| `resource_exhausted`, `storage_exhausted`, `file_too_large`, `descriptor_exhausted`, `read_only_filesystem`, `sequence_conflict`, `segment_full`, `segment_sealed`, `arithmetic_overflow` | `OVERLOADED` | Admission / capacity / conflict / segment fit / **pre-Store lane expiry** — known not newly committed by this attempt (server may have retried `sequence_conflict` internally). |
+| `resource_exhausted`, `storage_exhausted`, `file_too_large`, `descriptor_exhausted`, `read_only_filesystem`, `sequence_conflict`, `segment_full`, `segment_sealed`, `arithmetic_overflow` | `OVERLOADED` | Admission / capacity / conflict / segment fit / **pre-Store lane expiry** (including shutdown-drain abandon of still-queued work) — known not newly committed by this attempt (server may have retried `sequence_conflict` internally). |
 | `unavailable` | `INTERNAL_ERROR` | Fail-closed and sticky post-commit paths may have linearized; must not claim known-not-committed. |
 | `not_found` | `NOT_FOUND` | |
 | `invalid_argument`, `record_too_large` | `INVALID_REQUEST` | |
 | other / `internal_error` / `io_error` / `corrupted_data` | `INTERNAL_ERROR` | Integrity / I/O / fail-closed — reconcile when mutation bytes may have hit the wire path. |
+
+Writer-normalized known-not-committed durable failures rewrite any Reactor
+`INTERNAL_ERROR`-bucket code (`io_error`, `unavailable`, `corrupted_data`,
+`internal_error`, `invalid_record`, `checksum_mismatch`, `invalid_reference`, …) to
+`resource_exhausted` before completion, so they surface as wire `OVERLOADED` /
+client `rejected` rather than `INTERNAL_ERROR` / `indeterminate`. Codes that already
+map to rejected polarity (`segment_full`, capacity, `not_found`, `invalid_argument`,
+…) are left alone. Volatile Writer applies the same rewrite to Store-mutate failures
+that never crossed append (e.g. rotation `invalid_reference`); post-append Index
+failures stay `unavailable` (sticky) and must not be demoted to `OVERLOADED`.
+`mutate_durable_batch` converts pre-mutate allocation/unexpected failures into
+per-slot `not_committed` + `resource_exhausted` (no Writer sticky) so a throw cannot
+escape after the Writer has already set `durable_mutate_entered`.
+Already-queued siblings rejected before Store entry after sticky
+fail-closed also stamp `resource_exhausted` directly — including sync mid-chunk
+abort of never-Store-entered items and sync incremental-merge backpressure (matching
+async). Sync volatile catch after a Store mutate must not upgrade those never-entered
+siblings to `unavailable` (keep known-not-committed polarity; only unpublished
+Store-entered nodes stay `unavailable`). Sync/async durable_group batch catch follows
+the same rule: preserve mid-chunk fail-closed / rewritten errors; upgrade the pre-mutate
+placeholder to `unavailable` for the in-flight sub-batch **through result classification**
+after `mutate_durable_batch` returns (write boundary may have been crossed — not only while
+the mutate call is on the stack); later never-started sub-batch placeholders stay
+`resource_exhausted`. Committed and indeterminate durable failures still become
+`unavailable` → `INTERNAL_ERROR`.
+New admissions after sticky still reject at `try_submit` (wire `OVERLOADED`) or at the
+sync Store API with `unavailable` (not a linearized mutation). Already-queued async work
+rejected before Store entry after sticky stamps `resource_exhausted` (wire `OVERLOADED`).
 
 True admission rejects on the mutation path still set `ResponseStatus::overloaded` directly
 (without going through `ErrorCode::unavailable`).

@@ -147,13 +147,11 @@ module GlyphaStore
       end
 
       threads = []
-      first_error = nil
-      error_mutex = Mutex.new
       result_mutex = Mutex.new
       groups.each_value do |items|
         threads << Thread.new do
           begin
-            local = Array.new(requests.length)
+            local = Array.new(items.length)
             apply_group!(local, items, deadline, sparse: true)
             result_mutex.synchronize do
               items.each_with_index do |(index, _), i|
@@ -161,12 +159,17 @@ module GlyphaStore
               end
             end
           rescue Error => e
-            error_mutex.synchronize { first_error ||= e }
+            # Match C++/Erlang: stamp this Worker's slots failed with rejected
+            # polarity (bytes_sent=0); keep sibling results.
+            result_mutex.synchronize do
+              failed_group_responses(items, e).each_with_index do |resp, i|
+                responses[items[i][0]] = resp
+              end
+            end
           end
         end
       end
       threads.each(&:join)
-      raise first_error if first_error
 
       responses
     end
@@ -243,13 +246,41 @@ module GlyphaStore
 
     def apply_group!(responses, items, deadline, sparse: false)
       reqs = items.map { |(_, request)| request }
-      resps = execute_pipeline_deadline(reqs, deadline)
+      begin
+        resps = execute_pipeline_deadline(reqs, deadline)
+      rescue Error => e
+        resps = failed_group_responses(items, e)
+      end
       items.each_with_index do |(index, _), i|
         if sparse
           responses[i] = resps[i]
         else
           responses[index] = resps[i]
         end
+      end
+    end
+
+    # Pre-admission group failure: bytes_sent=0 → rejected for PUT/ERASE.
+    def failed_group_responses(items, error)
+      items.map do |(_, request)|
+        is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(request.opcode)
+        op =
+          case request.opcode
+          when PipelineOpcode::PUT then "put"
+          when PipelineOpcode::ERASE then "erase"
+          else "get"
+          end
+        fields = {
+          operation: op,
+          worker: worker_for(request.key),
+          routing_epoch: @routing_epoch,
+          bytes_sent: 0
+        }
+        fields[:mutation_outcome] = MutationOutcome::REJECTED if is_mutation
+        PipelineResponse.new(
+          outcome: PipelineOutcome::FAILED,
+          error: error.base_copy.enrich(**fields)
+        )
       end
     end
 
@@ -507,14 +538,23 @@ module GlyphaStore
           begin
             response = exchange!(conn, frame, deadline)
           rescue SendFailure => e
-            last = promote_send_failure(e, op, request_id, worker, mutation: false)
+            backup_sent = opcode == Protocol::Opcode::BACKUP && e.bytes_sent.positive?
+            last = promote_send_failure(e, op, request_id, worker, mutation: backup_sent)
             conn.reset!
+            raise last if backup_sent
             raise last if last.category == Category::UNAVAILABLE && !healthy?
 
             next
           rescue Error => e
             last = annotate!(e, op, request_id, worker)
             conn.reset!
+            if opcode == Protocol::Opcode::BACKUP
+              last.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+              raise last
+            end
             raise last if last.category == Category::UNAVAILABLE && !healthy?
 
             next
@@ -524,6 +564,14 @@ module GlyphaStore
           rescue Error => e
             conn.reset!
             annotated = annotate!(e, op, request_id, worker)
+            if opcode == Protocol::Opcode::BACKUP
+              # Response arrived after send — fenced copy may already exist.
+              annotated.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+              raise annotated
+            end
             raise annotated if annotated.category == Category::PROTOCOL
             raise annotated if annotated.category == Category::UNAVAILABLE && !healthy?
 
@@ -532,7 +580,15 @@ module GlyphaStore
           end
           if response.status != Protocol::Status::OK
             mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
-            raise annotate!(Error.from_status(response.status), op, request_id, worker)
+            error = annotate!(Error.from_status(response.status), op, request_id, worker)
+            if opcode == Protocol::Opcode::BACKUP && response.status == Protocol::Status::INTERNAL_ERROR
+              # Fenced copy may already be committed — same polarity as C++.
+              error.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+            end
+            raise error
           end
           return response.value
         end
@@ -615,7 +671,7 @@ module GlyphaStore
             return MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
               error: annotate!(e, op, request_id, worker)
-                .enrich(mutation_outcome: MutationOutcome::INDETERMINATE)
+                .enrich(bytes_sent: frame.bytesize, mutation_outcome: MutationOutcome::INDETERMINATE)
             )
           end
           begin
@@ -625,7 +681,7 @@ module GlyphaStore
             return MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
               error: annotate!(e, op, request_id, worker)
-                .enrich(mutation_outcome: MutationOutcome::INDETERMINATE)
+                .enrich(bytes_sent: frame.bytesize, mutation_outcome: MutationOutcome::INDETERMINATE)
             )
           end
           if response.status == Protocol::Status::OK
@@ -635,13 +691,14 @@ module GlyphaStore
                 outcome: MutationOutcome::INDETERMINATE,
                 error: Error.protocol("mutation response value must be empty")
                   .enrich(operation: op, request_id: request_id, worker: worker,
-                          routing_epoch: @routing_epoch,
+                          routing_epoch: @routing_epoch, bytes_sent: frame.bytesize,
                           mutation_outcome: MutationOutcome::INDETERMINATE)
               )
             end
             return MutationResult.new(outcome: MutationOutcome::COMMITTED)
           end
           status_err = annotate!(Error.from_status(response.status), op, request_id, worker)
+            .enrich(bytes_sent: frame.bytesize)
           if response.status == Protocol::Status::INTERNAL_ERROR
             return MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
@@ -720,11 +777,36 @@ module GlyphaStore
         mark_unresolved = lambda do |first, err, bytes_sent|
           (first...metadata.length).each do |index|
             opcode = metadata[index][:opcode]
-            mutation_arrived = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(opcode) &&
-                               bytes_sent > metadata[index][:begin]
+            is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(opcode)
+            mutation_arrived = is_mutation && bytes_sent > metadata[index][:begin]
+            pos_bytes = bytes_sent > metadata[index][:begin] ? bytes_sent - metadata[index][:begin] : 0
+            op =
+              case opcode
+              when PipelineOpcode::PUT then "put"
+              when PipelineOpcode::ERASE then "erase"
+              else "get"
+              end
+            enriched =
+              if err.is_a?(Error)
+                copy = err.base_copy
+                fields = {
+                  operation: op,
+                  request_id: metadata[index][:request_id],
+                  worker: worker,
+                  routing_epoch: @routing_epoch,
+                  bytes_sent: pos_bytes
+                }
+                if is_mutation
+                  fields[:mutation_outcome] =
+                    mutation_arrived ? MutationOutcome::INDETERMINATE : MutationOutcome::REJECTED
+                end
+                copy.enrich(**fields)
+              else
+                err
+              end
             responses[index] = PipelineResponse.new(
               outcome: mutation_arrived ? PipelineOutcome::INDETERMINATE : PipelineOutcome::FAILED,
-              error: err
+              error: enriched
             )
           end
         end
@@ -772,12 +854,28 @@ module GlyphaStore
             responses[index] = PipelineResponse.new(outcome: PipelineOutcome::SUCCEEDED, value: response.value)
             next
           end
-          err = Error.from_status(response.status)
-          outcome = PipelineOutcome::FAILED
-          if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) &&
-             response.status == Protocol::Status::INTERNAL_ERROR
-            outcome = PipelineOutcome::INDETERMINATE
+          is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode])
+          indeterminate = is_mutation && response.status == Protocol::Status::INTERNAL_ERROR
+          outcome = indeterminate ? PipelineOutcome::INDETERMINATE : PipelineOutcome::FAILED
+          op =
+            case item[:opcode]
+            when PipelineOpcode::PUT then "put"
+            when PipelineOpcode::ERASE then "erase"
+            else "get"
+            end
+          fields = {
+            operation: op,
+            request_id: item[:request_id],
+            worker: worker,
+            routing_epoch: @routing_epoch,
+            bytes_sent: output.bytesize - item[:begin],
+            wire_status: response.status
+          }
+          if is_mutation
+            fields[:mutation_outcome] =
+              indeterminate ? MutationOutcome::INDETERMINATE : MutationOutcome::REJECTED
           end
+          err = Error.from_status(response.status).enrich(**fields)
           responses[index] = PipelineResponse.new(outcome: outcome, error: err)
           mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
         end

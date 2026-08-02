@@ -15,6 +15,7 @@
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/pool.hpp"
 #include "glyphastore/worker/topology.hpp"
+#include "glyphastore/worker/worker.hpp"
 #include "store/store_impl.hpp"
 #include "store/store_internal.hpp"
 
@@ -368,6 +369,21 @@ auto Store::put_batch(const std::span<const PutItem> items) -> std::vector<Statu
 
     if (!impl_->pair_runtime) {
         for (const auto& entry : prepared) {
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+            // Litmus: arm the real emergency gate after the batch-entry check so
+            // later siblings exercise the per-item re-check (mid-batch TOCTOU).
+            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::put_batch_gate)) {
+                if (auto* controller = impl_->maintenance.get(); controller != nullptr) {
+                    controller->publish_mutations_rejected(true);
+                }
+            }
+#endif
+            // Mid-batch / TOCTOU: gate may arm after the batch-entry probe.
+            if (auto rejected = store_detail::reject_if_maintenance_emergency(impl_->maintenance.get());
+                !rejected) {
+                statuses[entry.input_index] = rejected;
+                continue;
+            }
             Impl::OperationGuard operation{*impl_, entry.shard};
             if (!operation) {
                 statuses[entry.input_index] = store_detail::closed_store();
@@ -541,6 +557,16 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
     auto copied = [&]() -> Result<DurableStoreBackupReport> {
         std::unique_lock compaction_lock{impl_->compaction_mutex};
 
+        // Another backup may have resumed admissions while we waited for exclusive
+        // compaction ownership. Re-fence and drain before the catalog copy so a
+        // successful BACKUP cannot copy after the advertised admission fence ended.
+        impl_->close_admission();
+        if (!impl_->wait_for_active_operations()) {
+            return fail(ErrorCode::unavailable, "backup timed out waiting for active operations");
+        }
+        if (impl_->lifecycle.load(std::memory_order_acquire) != Impl::LifecycleState::open) {
+            return store_detail::closed_store();
+        }
         if (!impl_->durable_runtime || !impl_->durable_runtime->healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is unavailable");
         }
@@ -693,6 +719,16 @@ auto Store::verify_index() const -> Status try {
         return impl_->durable_runtime->verify_index();
     }
     auto& runtime = *impl_->volatile_runtime;
+    // Exclusive Writer: drain Index hot path before locking — mutex alone does not
+    // serialize with put/erase_locked_published Index publish.
+    std::vector<std::unique_ptr<Worker::ExclusiveIndexQuiesce>> index_quiesces;
+    index_quiesces.reserve(runtime.workers.size());
+    for (std::size_t index = 0; index < runtime.workers.size(); ++index) {
+        auto& worker = runtime.workers.worker(index);
+        if (worker.exclusive_writer()) {
+            index_quiesces.push_back(std::make_unique<Worker::ExclusiveIndexQuiesce>(worker, true));
+        }
+    }
     std::vector<std::unique_lock<std::mutex>> worker_locks;
     worker_locks.reserve(runtime.workers.size());
     for (std::size_t index = 0; index < runtime.workers.size(); ++index) {

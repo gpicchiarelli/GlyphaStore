@@ -148,7 +148,8 @@ Writer threads, generation pins). `store_get_copy` median RSS ~240 MiB with
 
 - PUT ack still ~2.5 µs median for single `Store::put`: publish_incremental +
   generation ownership churn. Nested Writer `OperationGuard` on the embedded sync
-  path is removed via `PublishedAdmission::caller_holds_guard`.
+  path is removed via `PublishedAdmission::caller_holds_guard` (maintenance
+  emergency gate still checked).
 - `Store::put_batch` + Writer sync coalesce (≤32 / publish) amortizes publication
   when the caller stages multiple same-shard mutations in one call. Lab median
   ~527 k ops/s (batch 32) vs ~372 k single put on Apple M4 — honest gain without

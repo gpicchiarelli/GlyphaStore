@@ -25,7 +25,9 @@ from .client import (
     ProtocolError,
     TransportError,
     Unavailable,
+    _clone_error,
     _enrich,
+    _pipeline_op_name,
     build_ssl_context,
 )
 from .protocol import (
@@ -74,12 +76,18 @@ class _Connection:
         self.reader = None
         self.input.clear()
         self.input_offset = 0
-        if writer is not None:
-            writer.close()
-            try:
-                await writer.wait_closed()
-            except OSError:
-                pass
+        if writer is None:
+            return
+        writer.close()
+        try:
+            # Shield so a second cancel during close cannot skip local teardown
+            # already done above; swallow CancelledError so callers that already
+            # classified a post-send outcome (§6.3) are not erased by wait_closed.
+            await asyncio.shield(writer.wait_closed())
+        except OSError:
+            pass
+        except asyncio.CancelledError:
+            pass
 
 
 class AsyncClient:
@@ -266,24 +274,42 @@ class AsyncClient:
             def mark_unresolved(first: int, error: GlyphaError, bytes_sent: int) -> None:
                 for index in range(first, len(normalized)):
                     opcode = normalized[index][0]
-                    mutation_may_have_arrived = (
-                        opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
-                        and bytes_sent > metadata[index][1]
+                    is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                    mutation_may_have_arrived = is_mutation and bytes_sent > metadata[index][1]
+                    pos_bytes = (
+                        bytes_sent - metadata[index][1]
+                        if bytes_sent > metadata[index][1]
+                        else 0
                     )
+                    mutation_outcome = None
+                    if is_mutation:
+                        mutation_outcome = (
+                            MutationOutcome.INDETERMINATE
+                            if mutation_may_have_arrived
+                            else MutationOutcome.REJECTED
+                        )
                     responses[index] = PipelineResponse(
                         PipelineOutcome.INDETERMINATE
                         if mutation_may_have_arrived
                         else PipelineOutcome.FAILED,
-                        error=error,
+                        error=_enrich(
+                            _clone_error(error),
+                            operation=_pipeline_op_name(opcode),
+                            request_id=metadata[index][0],
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=pos_bytes,
+                            mutation_outcome=mutation_outcome,
+                        ),
                     )
 
             try:
                 try:
                     await self._send(connection, output, deadline)
                 except _SendFailure as error:
-                    await connection.reset()
                     mark_unresolved(0, error.error, error.bytes_sent)
                     completed = True
+                    await connection.reset()
                     return responses
 
                 for index, (opcode, _, _, _) in enumerate(normalized):
@@ -291,31 +317,59 @@ class AsyncClient:
                         response = await self._receive_response(connection, deadline)
                         self._validate_response(response, metadata[index][0], worker)
                     except (TransportError, ProtocolError, Unavailable) as error:
-                        await connection.reset()
                         mark_unresolved(index, error, len(output))
                         completed = True
+                        await connection.reset()
+                        return responses
+                    except asyncio.CancelledError:
+                        # Classify before poison: reset() awaits close and must not
+                        # re-raise CancelledError over indeterminate slots (§6.3).
+                        mark_unresolved(
+                            index,
+                            TransportError("request cancelled after send"),
+                            len(output),
+                        )
+                        completed = True
+                        try:
+                            await connection.reset()
+                        except asyncio.CancelledError:
+                            pass
                         return responses
                     if response.status is Status.OK:
                         if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE) and response.value:
-                            await connection.reset()
                             mark_unresolved(
                                 index,
                                 ProtocolError("mutation response value must be empty"),
                                 len(output),
                             )
                             completed = True
+                            await connection.reset()
                             return responses
                         responses[index] = PipelineResponse(
                             PipelineOutcome.SUCCEEDED, value=response.value
                         )
                         continue
-                    error = self._status_error(response.status)
+                    is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                    indeterminate = is_mutation and response.status is Status.INTERNAL_ERROR
+                    mutation_outcome = None
+                    if is_mutation:
+                        mutation_outcome = (
+                            MutationOutcome.INDETERMINATE
+                            if indeterminate
+                            else MutationOutcome.REJECTED
+                        )
                     responses[index] = PipelineResponse(
-                        PipelineOutcome.INDETERMINATE
-                        if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
-                        and response.status is Status.INTERNAL_ERROR
-                        else PipelineOutcome.FAILED,
-                        error=error,
+                        PipelineOutcome.INDETERMINATE if indeterminate else PipelineOutcome.FAILED,
+                        error=_enrich(
+                            self._status_error(response.status),
+                            operation=_pipeline_op_name(opcode),
+                            request_id=metadata[index][0],
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(output) - metadata[index][1],
+                            mutation_outcome=mutation_outcome,
+                            wire_status=int(response.status),
+                        ),
                     )
                     if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                         self._healthy = False
@@ -356,15 +410,116 @@ class AsyncClient:
 
         responses: list[PipelineResponse | None] = [None] * len(requests)
 
+        def _cancelled_group(
+            items: list[tuple[int, PipelineRequest]],
+        ) -> list[PipelineResponse]:
+            # Pre-pipeline / unclassified cancel: known not newly committed.
+            cancelled = TransportError("request cancelled")
+            failed: list[PipelineResponse] = []
+            for _, request in items:
+                is_mutation = request.opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                failed.append(
+                    PipelineResponse(
+                        PipelineOutcome.FAILED,
+                        error=_enrich(
+                            _clone_error(cancelled),
+                            operation=_pipeline_op_name(request.opcode),
+                            worker=self.worker_for(bytes(request.key)),
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=0,
+                            mutation_outcome=(
+                                MutationOutcome.REJECTED if is_mutation else None
+                            ),
+                        ),
+                    )
+                )
+            return failed
+
         async def run_group(
             items: list[tuple[int, PipelineRequest]],
         ) -> tuple[list[int], list[PipelineResponse]]:
             indices = [index for index, _ in items]
             group_requests = [request for _, request in items]
-            return indices, await self.execute_pipeline(group_requests, _deadline=shared_deadline)
+            try:
+                return indices, await self.execute_pipeline(
+                    group_requests, _deadline=shared_deadline
+                )
+            except GlyphaError as error:
+                failed = [
+                    PipelineResponse(
+                        PipelineOutcome.FAILED,
+                        error=_enrich(
+                            _clone_error(error),
+                            operation=_pipeline_op_name(request.opcode),
+                            worker=self.worker_for(bytes(request.key)),
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=0,
+                            mutation_outcome=(
+                                MutationOutcome.REJECTED
+                                if request.opcode
+                                in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                                else None
+                            ),
+                        ),
+                    )
+                    for _, request in items
+                ]
+                return indices, failed
+            except asyncio.CancelledError:
+                # Cancel escaped execute_pipeline (lock / bootstrap / pre-send).
+                # After-send cancel is classified inside the pipeline and returned.
+                return indices, _cancelled_group(items)
 
-        results = await asyncio.gather(*(run_group(items) for items in groups.values()))
-        for indices, group_responses in results:
+        group_items = list(groups.values())
+        tasks = [asyncio.create_task(run_group(items)) for items in group_items]
+        try:
+            await asyncio.wait(tasks)
+        except asyncio.CancelledError:
+            # Outer cancel cancels gather-style fan-in and would discard sibling
+            # results (§5 / §6.3). Stop peers, let pipelines classify, then return
+            # the slot vector instead of re-raising CancelledError.
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        for task, items in zip(tasks, group_items, strict=True):
+            if task.cancelled():
+                group_responses = _cancelled_group(items)
+                indices = [index for index, _ in items]
+            else:
+                exc = task.exception()
+                if exc is not None:
+                    if isinstance(exc, GlyphaError):
+                        # Defensive: run_group already enriches; keep rejected /
+                        # bytes_sent=0 if a GlyphaError somehow escapes.
+                        indices = [index for index, _ in items]
+                        group_responses = [
+                            PipelineResponse(
+                                PipelineOutcome.FAILED,
+                                error=_enrich(
+                                    _clone_error(exc),
+                                    operation=_pipeline_op_name(request.opcode),
+                                    worker=self.worker_for(bytes(request.key)),
+                                    routing_epoch=self._routing_epoch,
+                                    bytes_sent=0,
+                                    mutation_outcome=(
+                                        MutationOutcome.REJECTED
+                                        if request.opcode
+                                        in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                                        else None
+                                    ),
+                                ),
+                            )
+                            for _, request in items
+                        ]
+                    elif isinstance(exc, asyncio.CancelledError):
+                        indices = [index for index, _ in items]
+                        group_responses = _cancelled_group(items)
+                    else:
+                        raise exc
+                else:
+                    indices, group_responses = task.result()
             for index, response in zip(indices, group_responses, strict=True):
                 responses[index] = response
 
@@ -496,6 +651,9 @@ class AsyncClient:
             )
             # write() handed the frame to the transport buffer; treat as may-have-sent.
             raise _SendFailure(wrapped, len(frame)) from error
+        except asyncio.CancelledError:
+            # write() already queued the frame; classify like a mid-drain failure (§6.3).
+            raise _SendFailure(TransportError("request send cancelled"), len(frame)) from None
 
     async def _receive_response(self, connection: _Connection, deadline: float) -> Response:
         assert connection.reader is not None
@@ -602,6 +760,8 @@ class AsyncClient:
                 raise Unavailable("client closed before read admission")
             last_error: GlyphaError = Unavailable("request was not attempted")
             for _ in range(2):
+                request_id: int | None = None
+                frame = b""
                 exchange_started = False
                 try:
                     await self._ensure_connected(connection)
@@ -618,18 +778,90 @@ class AsyncClient:
                     if response.status is not Status.OK:
                         if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                             self._healthy = False
+                        if opcode is Opcode.BACKUP and response.status is Status.INTERNAL_ERROR:
+                            # Fenced copy may already be committed — same polarity as C++.
+                            raise _enrich(
+                                self._status_error(response.status),
+                                operation="backup",
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                bytes_sent=len(frame),
+                                mutation_outcome=MutationOutcome.INDETERMINATE,
+                            )
                         raise self._status_error(response.status)
                     return response.value
                 except (TransportError, _SendFailure) as error:
-                    last_error = error.error if isinstance(error, _SendFailure) else error
+                    if isinstance(error, _SendFailure):
+                        last_error = error.error
+                        bytes_sent = error.bytes_sent
+                    else:
+                        # Receive-side failure implies the BACKUP/PING frame left the client.
+                        last_error = error
+                        bytes_sent = len(frame)
                     await connection.reset()
+                    if opcode is Opcode.BACKUP and bytes_sent > 0:
+                        # Not idempotent to the same destination — same polarity as C++.
+                        raise _enrich(
+                            last_error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=bytes_sent,
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
                 except Unavailable as error:
                     await connection.reset()
+                    if opcode is Opcode.BACKUP and len(frame) > 0:
+                        raise _enrich(
+                            error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
                     if not self._healthy:
                         raise
                     last_error = error
-                except ProtocolError:
+                except ProtocolError as error:
                     await connection.reset()
+                    if opcode is Opcode.BACKUP and len(frame) > 0:
+                        raise _enrich(
+                            error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
+                    raise
+                except asyncio.CancelledError:
+                    if exchange_started and opcode is Opcode.BACKUP:
+                        # Classify before poison so a cancel during close cannot
+                        # erase indeterminate / reconcile_first (§6.3).
+                        enriched = _enrich(
+                            TransportError("request cancelled after send"),
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        )
+                        try:
+                            await connection.reset()
+                        except asyncio.CancelledError:
+                            pass
+                        raise enriched from None
+                    if exchange_started:
+                        try:
+                            await connection.reset()
+                        except asyncio.CancelledError:
+                            pass
                     raise
                 except BaseException:
                     if exchange_started:
@@ -761,9 +993,32 @@ class AsyncClient:
                             request_id=request_id,
                             worker=worker,
                             routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
                             mutation_outcome=MutationOutcome.INDETERMINATE,
                         ),
                     )
+                except asyncio.CancelledError:
+                    if exchange_started:
+                        # Classify before poison: reset awaits close and must not
+                        # re-raise CancelledError over indeterminate (§6.3 / §6.1).
+                        result = MutationResult(
+                            MutationOutcome.INDETERMINATE,
+                            _enrich(
+                                TransportError("request cancelled after send"),
+                                operation=op,
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                bytes_sent=len(frame),
+                                mutation_outcome=MutationOutcome.INDETERMINATE,
+                            ),
+                        )
+                        try:
+                            await connection.reset()
+                        except asyncio.CancelledError:
+                            pass
+                        return result
+                    raise
                 except BaseException:
                     if exchange_started:
                         await connection.reset()
@@ -779,6 +1034,7 @@ class AsyncClient:
                                 request_id=request_id,
                                 worker=worker,
                                 routing_epoch=self._routing_epoch,
+                                bytes_sent=len(frame),
                                 mutation_outcome=MutationOutcome.INDETERMINATE,
                             ),
                         )
@@ -790,6 +1046,7 @@ class AsyncClient:
                     worker=worker,
                     routing_epoch=self._routing_epoch,
                     wire_status=int(response.status),
+                    bytes_sent=len(frame),
                 )
                 if response.status is Status.INTERNAL_ERROR:
                     return MutationResult(

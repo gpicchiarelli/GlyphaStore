@@ -57,9 +57,12 @@ struct DurableRuntimeOptions {
     std::optional<DurableGroupConfig> batch{};
     bool strict_ack{false};
     DurableResourceLimits limits{};
-    // Paired exclusive Writer (ADR 0032): ordinary mutate/capture skip the Worker
-    // mutex when no background flusher shares the shard. Compaction, verify,
-    // backup, and catalog-refresh snapshots still take Worker/catalog locks.
+    // Paired exclusive Writer (ADR 0032): ordinary mutate skips the Worker mutex
+    // when no background flusher shares the shard (hot_path_depth). Mutable Index
+    // readers (prepare_get, snapshot_live_keys, snapshot_published_reads,
+    // capture_published_read, compaction Phase A, unread TTL probe,
+    // flush_dirty_segments) arm compaction_commit_active and drain depth before
+    // Index / dirty-file touch.
     bool exclusive_writer{false};
 };
 
@@ -163,6 +166,7 @@ class DurableRuntimeCatalog final {
     struct PendingGroupMutation;
     struct RuntimeWorker;
     struct RuntimeSegmentGeneration;
+    struct ExclusiveIndexQuiesce;
 
   public:
     // Copyable ownership token for one immutable on-disk Segment generation.

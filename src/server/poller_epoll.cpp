@@ -5,6 +5,8 @@
 #error "epoll backend requires Linux"
 #endif
 
+#include "glyphastore/core/fault_injection.hpp"
+
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -99,7 +101,14 @@ auto Poller::modify(const int descriptor, const std::uint64_t token, const IoInt
 }
 
 auto Poller::remove(const int descriptor) -> Status {
-    if (::epoll_ctl(descriptor_, EPOLL_CTL_DEL, descriptor, nullptr) != 0 && errno != ENOENT) {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::poller_remove)) {
+        return fail(ErrorCode::io_error, "injected poller remove failure");
+    }
+    int result = 0;
+    do {
+        result = ::epoll_ctl(descriptor_, EPOLL_CTL_DEL, descriptor, nullptr);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0 && errno != ENOENT) {
         return system_error("epoll_ctl(DEL)");
     }
     return {};

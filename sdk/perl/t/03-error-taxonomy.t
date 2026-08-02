@@ -47,4 +47,15 @@ for my $case (@{ $fixture->{cases} }) {
     };
 }
 
+subtest 'indeterminate enrich ignores zero bytes_sent' => sub {
+    # Receive-after-send paths historically omitted bytes_sent; transport+0 must not
+    # advertise same_request when mutation_outcome is already indeterminate.
+    my $error = GlyphaStore::Error->new('transport', 'socket closed')->enrich(
+        mutation_outcome => 'indeterminate',
+    );
+    is($error->bytes_sent, 0, 'bytes_sent stays zero when omitted');
+    is($error->retryability, 'reconcile_first', 'indeterminate beats transport+0 same_request');
+    is($error->mutation_outcome, 'indeterminate', 'mutation_outcome preserved');
+};
+
 done_testing();

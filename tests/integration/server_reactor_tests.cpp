@@ -1,9 +1,12 @@
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/persistence/store_backup.hpp"
+#include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/store/store.hpp"
+#include "server/reactor_detail.hpp"
 #include "server_reactor_test_support.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
@@ -795,6 +798,41 @@ GLYPHA_TEST("server StoreConfig persists acknowledged wire writes across restart
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("wire BACKUP before INIT returns NOT_BOUND and creates no destination") {
+    // BACKUP is Bound-state only; unbound frames must not run the fenced path.
+    ServerTemporaryDirectory temporary;
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 4},
+                                            {.storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = temporary.store_path(),
+                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    const auto backup_dir = temporary.store_path().parent_path() / "unbound-backup";
+    const auto backup_path = backup_dir.string();
+    const auto backup = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::backup,
+        .request_id = 89,
+        .key = bytes(backup_path),
+    });
+    GLYPHA_REQUIRE(backup.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *backup));
+    const auto backup_frame = receive_response(socket);
+    const auto backup_response = glyphastore::server::decode_response(backup_frame);
+    GLYPHA_REQUIRE(backup_response.has_value());
+    GLYPHA_REQUIRE(backup_response->frame.request_id == 89);
+    GLYPHA_REQUIRE(backup_response->frame.status == glyphastore::server::ResponseStatus::not_bound);
+    GLYPHA_REQUIRE(!std::filesystem::exists(backup_dir));
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("wire BACKUP copies a live durable Server catalog into an empty destination") {
     ServerTemporaryDirectory temporary;
     auto opened =
@@ -867,6 +905,120 @@ GLYPHA_TEST("wire BACKUP copies a live durable Server catalog into an empty dest
     const auto got = (*reopened)->get("backup-live-key");
     GLYPHA_REQUIRE(got.has_value());
     GLYPHA_REQUIRE(text(got->bytes) == "backup-live-value");
+}
+
+GLYPHA_TEST("wire BACKUP refuses before fence when OK report cannot fit output budget") {
+    // Oversized OK report used to map to OVERLOADED after a successful fenced copy —
+    // false known-not-committed polarity while the destination already held the backup.
+    ServerTemporaryDirectory temporary;
+    const auto backup_dir = temporary.store_path().parent_path() / "fit-refuse-backup";
+    const auto backup_path = backup_dir.string();
+    const auto estimated =
+        glyphastore::server::reactor_detail::backup_ok_report_max_bytes(backup_path.size());
+    GLYPHA_REQUIRE(estimated > 64);
+    const auto max_output = glyphastore::server::kResponseHeaderBytes + 64;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .maximum_output_bytes = max_output},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto backup = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::backup,
+        .request_id = 92,
+        .key = bytes(backup_path),
+    });
+    GLYPHA_REQUIRE(backup.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *backup));
+    const auto backup_frame = receive_response(socket);
+    const auto backup_response = glyphastore::server::decode_response(backup_frame);
+    GLYPHA_REQUIRE(backup_response.has_value());
+    GLYPHA_REQUIRE(backup_response->frame.request_id == 92);
+    GLYPHA_REQUIRE(backup_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    GLYPHA_REQUIRE(!std::filesystem::exists(backup_dir));
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("wire BACKUP keeps OK after report formatting fails post-commit") {
+#if !defined(GLYPHASTORE_FAULT_INJECTION)
+    return;
+#else
+    // Site::backup_report throws after backup_to succeeds. Probe must still return
+    // success (minimal status=ok) — not INTERNAL_ERROR with destination already filled.
+    ServerTemporaryDirectory temporary;
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 4},
+                                            {.storage_mode = glyphastore::StorageMode::durable_sync,
+                                             .data_directory = temporary.store_path(),
+                                             .durable_open_mode = glyphastore::DurableOpenMode::create_new});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 93,
+        .key = bytes("backup-report-key"),
+        .value = bytes("backup-report-value"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    const auto put_response = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok);
+
+    const auto backup_dir = temporary.store_path().parent_path() / "report-fault-backup";
+    const auto backup_path = backup_dir.string();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::backup_report);
+    const auto backup = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::backup,
+        .request_id = 94,
+        .key = bytes(backup_path),
+    });
+    GLYPHA_REQUIRE(backup.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *backup));
+    const auto backup_frame = receive_response(socket);
+    glyphastore::fault::reset();
+    const auto backup_response = glyphastore::server::decode_response(backup_frame);
+    GLYPHA_REQUIRE(backup_response.has_value());
+    GLYPHA_REQUIRE(backup_response->frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto report = text(backup_response->frame.value);
+    GLYPHA_REQUIRE(report.find("status=ok") != std::string_view::npos);
+    GLYPHA_REQUIRE(std::filesystem::exists(backup_dir));
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    const auto restored_dir = temporary.store_path().parent_path() / "report-fault-restored";
+    const auto restored = glyphastore::restore_durable_store(backup_dir, restored_dir);
+    GLYPHA_REQUIRE(restored.has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored_dir,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    const auto got = (*reopened)->get("backup-report-key");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(text(got->bytes) == "backup-report-value");
+#endif
 }
 
 GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded FIFO admission") {
@@ -1164,3 +1316,62 @@ GLYPHA_TEST("durable mutation queue deadline rejects only before Store execution
     GLYPHA_REQUIRE(absent.error().code == glyphastore::ErrorCode::not_found);
     GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("volatile pair sticky fails READY with pair_fail_closed reason") {
+    // Store catalog stays operational on volatile sticky; ready() already fails on
+    // pair_writers_->healthy(), but classify_ready_loss must not report none.
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4, .worker_count = 1});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    GLYPHA_REQUIRE(server.ready());
+    GLYPHA_REQUIRE(server.store_operational());
+    GLYPHA_REQUIRE(server.pair_writers_healthy());
+    GLYPHA_REQUIRE(glyphastore::server::classify_ready_loss(server) ==
+                   glyphastore::server::ReadyLossReason::none);
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    glyphastore::fault::reset();
+    glyphastore::fault::configure(1, 0, 0);
+    glyphastore::fault::fail_once(glyphastore::fault::Site::publish);
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 91,
+        .key = bytes("volatile-sticky"),
+        .value = bytes("x"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto put_frame = receive_response(socket);
+    glyphastore::fault::reset();
+    const auto put_response = glyphastore::server::decode_response(put_frame);
+    GLYPHA_REQUIRE(put_response.has_value());
+    GLYPHA_REQUIRE(put_response->frame.request_id == 91);
+    GLYPHA_REQUIRE(put_response->frame.status == glyphastore::server::ResponseStatus::ok ||
+                   put_response->frame.status == glyphastore::server::ResponseStatus::internal_error);
+    GLYPHA_REQUIRE(put_response->frame.status != glyphastore::server::ResponseStatus::overloaded);
+
+    GLYPHA_REQUIRE(server.live());
+    GLYPHA_REQUIRE(server.store_operational());
+    GLYPHA_REQUIRE(!server.pair_writers_healthy());
+    GLYPHA_REQUIRE(!server.ready());
+    GLYPHA_REQUIRE(glyphastore::server::classify_ready_loss(server) ==
+                   glyphastore::server::ReadyLossReason::pair_fail_closed);
+
+    const auto health = probe_lifecycle(socket, glyphastore::server::RequestOpcode::health, 92);
+    GLYPHA_REQUIRE(health.has_value());
+    GLYPHA_REQUIRE(health->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+    const auto ready = probe_lifecycle(socket, glyphastore::server::RequestOpcode::ready, 93);
+    GLYPHA_REQUIRE(ready.has_value());
+    GLYPHA_REQUIRE(ready->decoded.frame.status == glyphastore::server::ResponseStatus::internal_error);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+#endif

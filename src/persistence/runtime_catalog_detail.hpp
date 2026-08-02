@@ -348,12 +348,29 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     // pins and relinearize against the Index. Writers, flush, and compaction do.
     bool mutation_io_active{};
     std::condition_variable mutation_io_finished;
-    // Set while compaction holds logical ownership of this Worker's Index. Under
-    // exclusive_writer the hot path observes this atomically without the mutex.
+    // Set while compaction, unread-TTL probe, or exclusive Index readers
+    // (prepare_get / snapshot_live_keys) hold logical Index ownership. Under
+    // exclusive_writer the mutate hot path observes this atomically without the mutex.
+    // Holders nest (GET + Phase A/C): only the last disarm clears the bool.
     std::atomic_bool compaction_commit_active{};
+    std::atomic_uint32_t compaction_commit_holders{};
     std::condition_variable compaction_commit_finished;
-    // Nested exclusive-Writer hot-path depth. Compaction waits for zero before
-    // swapping the Index when exclusive_writer elides the Worker mutex.
+
+    void arm_index_quiesce_gate() noexcept {
+        if (compaction_commit_holders.fetch_add(1U, std::memory_order_acq_rel) == 0U) {
+            compaction_commit_active.store(true, std::memory_order_release);
+        }
+    }
+    void disarm_index_quiesce_gate() noexcept {
+        if (compaction_commit_holders.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+            compaction_commit_active.store(false, std::memory_order_release);
+            compaction_commit_finished.notify_all();
+        }
+    }
+    // Nested exclusive-Writer hot-path depth. Compaction / exclusive Index readers
+    // wait for zero before touching the Index when exclusive_writer elides the
+    // Worker mutex (`exclusive_writer &&` no background flusher). Flusher paths
+    // never bump this.
     std::atomic_uint32_t hot_path_depth{};
 
     [[nodiscard]] auto hot_cache_total_bytes() const noexcept -> std::uint64_t;
@@ -376,6 +393,43 @@ struct DurableRuntimeCatalog::RuntimeWorker {
     // Caller holds the Worker mutex after Index publication. `reference` is
     // the sole sequence/Segment identity stored in the resident cache entry.
     [[nodiscard]] auto publish_hot_record(PreparedHotRecord& prepared, const RecordRef& reference) -> Status;
+};
+
+// Arms compaction_commit_active and drains hot_path_depth before Index touch on the
+// mutex-elided exclusive Writer path. Mutex alone does not serialize with mutate.
+// Used by prepare_get, snapshot_live_keys, snapshot_published_reads,
+// capture_published_read, compaction Phase A, unread TTL probe, and
+// flush_dirty_segments (exclusive durable_sync, no flusher).
+struct DurableRuntimeCatalog::ExclusiveIndexQuiesce final {
+    RuntimeWorker& worker;
+    bool armed{};
+
+    explicit ExclusiveIndexQuiesce(RuntimeWorker& owner, const bool enable) noexcept : worker(owner) {
+        if (!enable) {
+            return;
+        }
+        worker.arm_index_quiesce_gate();
+        armed = true;
+        for (;;) {
+            const auto depth = worker.hot_path_depth.load(std::memory_order_acquire);
+            if (depth == 0) {
+                break;
+            }
+            worker.hot_path_depth.wait(depth, std::memory_order_acquire);
+        }
+    }
+    void clear() noexcept {
+        if (!armed) {
+            return;
+        }
+        armed = false;
+        worker.disarm_index_quiesce_gate();
+    }
+    ~ExclusiveIndexQuiesce() {
+        clear();
+    }
+    ExclusiveIndexQuiesce(const ExclusiveIndexQuiesce&) = delete;
+    auto operator=(const ExclusiveIndexQuiesce&) -> ExclusiveIndexQuiesce& = delete;
 };
 
 } // namespace glyphastore

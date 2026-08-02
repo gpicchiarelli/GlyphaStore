@@ -195,9 +195,9 @@ Full probe and overload detail: [graceful drain and overload runbook](graceful-d
 5. exit.
 
 The drain deadline is `--shutdown-drain-ms` (default **30s**; **`0` waits unbounded**). Queued
-mutations that never enter Store execution before the deadline complete as `unavailable` on the
-wire. In-flight Store work is **never** cancelled. A timed-out drain makes process exit fail closed
-(non-zero exit).
+mutations that never enter Store execution before the deadline complete as wire `OVERLOADED`
+(known not committed). In-flight Store work is **never** cancelled. A timed-out drain makes process
+exit fail closed (non-zero exit).
 
 ```bash
 glyphastored --shutdown-drain-ms 120000 --data-dir /var/lib/glyphastore ...

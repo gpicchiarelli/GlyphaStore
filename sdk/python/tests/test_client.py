@@ -9,6 +9,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest import mock
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 try:
@@ -29,7 +30,7 @@ from glyphastore import (  # noqa: E402
     PipelineRequest,
     TransportError,
 )
-from glyphastore.client import _retryability_for, build_ssl_context  # noqa: E402
+from glyphastore.client import _enrich, _retryability_for, build_ssl_context  # noqa: E402
 from glyphastore.protocol import (  # noqa: E402
     Opcode,
     Status,
@@ -51,6 +52,12 @@ class FakeServer:
         disconnect_on_put: bool = False,
         internal_error_on_put: bool = False,
         stall_on_get: bool = False,
+        stall_on_put: bool = False,
+        stall_on_put_workers: frozenset[int] | set[int] | None = None,
+        drop_on_backup: bool = False,
+        internal_error_on_backup: bool = False,
+        wrong_request_id_on_backup: bool = False,
+        fail_rebind_workers: frozenset[int] | set[int] | None = None,
         ssl_context: ssl.SSLContext | None = None,
         routing: WorkerRouting | None = None,
     ) -> None:
@@ -58,6 +65,16 @@ class FakeServer:
         self._disconnect_on_put = disconnect_on_put
         self._internal_error_on_put = internal_error_on_put
         self._stall_on_get = stall_on_get
+        self._stall_on_put = stall_on_put
+        self._stall_on_put_workers = set(stall_on_put_workers or ())
+        self._drop_on_backup = drop_on_backup
+        self._internal_error_on_backup = internal_error_on_backup
+        self._wrong_request_id_on_backup = wrong_request_id_on_backup
+        self._fail_rebind_workers = set(fail_rebind_workers or ())
+        self._bind_counts: dict[int, int] = {}
+        self._bind_counts_lock = threading.Lock()
+        self._backup_requests = 0
+        self._backup_lock = threading.Lock()
         self._ssl_context = ssl_context
         self._routing = routing or WorkerRouting()
         self._values: dict[bytes, bytes] = {}
@@ -71,6 +88,11 @@ class FakeServer:
         self._stop = threading.Event()
         self._acceptor = threading.Thread(target=self._accept, daemon=True)
         self._acceptor.start()
+
+    @property
+    def backup_requests(self) -> int:
+        with self._backup_lock:
+            return self._backup_requests
 
     @staticmethod
     def _receive_exact(connection: socket.socket, size: int) -> bytes:
@@ -161,6 +183,15 @@ class FakeServer:
                                 owner_worker=0,
                             )
                             continue
+                        with self._bind_counts_lock:
+                            count = self._bind_counts.get(request.target_worker, 0) + 1
+                            self._bind_counts[request.target_worker] = count
+                        if (
+                            request.target_worker in self._fail_rebind_workers
+                            and count > 1
+                        ):
+                            # Close without BIND OK so ensure_connected fails on rebind.
+                            return
                         bound_worker = request.target_worker
                         self._send(
                             connection,
@@ -184,10 +215,28 @@ class FakeServer:
                             value=request.value,
                         )
                     elif request.opcode is Opcode.BACKUP:
+                        with self._backup_lock:
+                            self._backup_requests += 1
+                        if self._drop_on_backup:
+                            return
+                        if self._internal_error_on_backup:
+                            self._send(
+                                connection,
+                                Status.INTERNAL_ERROR,
+                                request.request_id,
+                                owner_worker=bound_worker,
+                                value=b"report failed",
+                            )
+                            continue
+                        reply_id = (
+                            request.request_id ^ 1
+                            if self._wrong_request_id_on_backup
+                            else request.request_id
+                        )
                         self._send(
                             connection,
                             Status.OK,
-                            request.request_id,
+                            reply_id,
                             owner_worker=bound_worker,
                             value=b"status=ok files=0 bytes=0",
                         )
@@ -213,6 +262,10 @@ class FakeServer:
                                 owner_worker=bound_worker,
                             )
                             continue
+                        if self._stall_on_put or bound_worker in self._stall_on_put_workers:
+                            # Hold without a response so clients can cancel mid-receive.
+                            self._stop.wait(timeout=3600)
+                            return
                         self._send(
                             connection,
                             Status.OK,
@@ -302,6 +355,51 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(missing.retryability, "new_attempt")
         server.join()
 
+    def test_backup_does_not_blind_retry_after_bytes_sent(self) -> None:
+        # Online BACKUP is not idempotent to the same destination. A lost OK must
+        # surface indeterminate / reconcile_first — not a second BACKUP attempt.
+        server = FakeServer(drop_on_backup=True)
+        with Client.connect(ClientConfig(port=server.port, request_timeout=0.2)) as client:
+            with self.assertRaises(TransportError) as raised:
+                client.backup("/tmp/glyphastore-sdk-backup-drop")
+            error = raised.exception
+            self.assertGreater(error.bytes_sent, 0)
+            self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(error.retryability, "reconcile_first")
+            self.assertEqual(server.backup_requests, 1)
+        server.join()
+
+    def test_backup_internal_error_is_reconcile_first(self) -> None:
+        # Wire INTERNAL_ERROR after a possible committed fenced copy must not
+        # advertise new_attempt (same-destination retry would look like failure).
+        from glyphastore import InternalError
+
+        server = FakeServer(internal_error_on_backup=True)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            with self.assertRaises(InternalError) as raised:
+                client.backup("/tmp/glyphastore-sdk-backup-internal")
+            error = raised.exception
+            self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(error.retryability, "reconcile_first")
+            self.assertEqual(error.wire_status, int(Status.INTERNAL_ERROR))
+            self.assertEqual(server.backup_requests, 1)
+        server.join()
+
+    def test_backup_validate_failure_is_reconcile_first(self) -> None:
+        # Framed BACKUP response with mismatched request_id — fenced copy may exist.
+        from glyphastore import ProtocolError
+
+        server = FakeServer(wrong_request_id_on_backup=True)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            with self.assertRaises(ProtocolError) as raised:
+                client.backup("/tmp/glyphastore-sdk-backup-wrong-id")
+            error = raised.exception
+            self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(error.retryability, "reconcile_first")
+            self.assertGreater(error.bytes_sent, 0)
+            self.assertEqual(server.backup_requests, 1)
+        server.join()
+
     def test_internal_error_mutation_is_indeterminate(self) -> None:
         server = FakeServer(internal_error_on_put=True)
         with Client.connect(ClientConfig(port=server.port)) as client:
@@ -314,6 +412,7 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(result.error.operation, "put")
             self.assertEqual(result.error.retryability, "reconcile_first")
             self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertGreater(result.error.bytes_sent, 0)
         server.join()
 
     def test_overloaded_retryability_is_never(self) -> None:
@@ -378,7 +477,22 @@ class ClientTests(unittest.TestCase):
             result = client.put(b"key", b"value")
             self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
             self.assertIsNotNone(result.error)
+            assert result.error is not None
+            self.assertGreater(result.error.bytes_sent, 0)
+            self.assertEqual(result.error.retryability, "reconcile_first")
+            self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
+
+    def test_indeterminate_enrich_ignores_zero_bytes_sent(self) -> None:
+        # Receive-after-send paths historically omitted bytes_sent; transport+0 must not
+        # advertise same_request when mutation_outcome is already indeterminate.
+        error = _enrich(
+            TransportError("socket closed"),
+            mutation_outcome=MutationOutcome.INDETERMINATE,
+        )
+        self.assertEqual(error.bytes_sent, 0)
+        self.assertEqual(error.retryability, "reconcile_first")
+        self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
 
     def test_pipeline_preserves_order_and_owned_values(self) -> None:
         server = FakeServer()
@@ -411,6 +525,33 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(responses[0].outcome, PipelineOutcome.INDETERMINATE)
             self.assertEqual(responses[1].outcome, PipelineOutcome.FAILED)
             self.assertEqual(responses[2].outcome, PipelineOutcome.INDETERMINATE)
+            assert responses[0].error is not None
+            self.assertGreater(responses[0].error.bytes_sent, 0)
+            self.assertEqual(responses[0].error.retryability, "reconcile_first")
+            self.assertEqual(
+                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+            assert responses[2].error is not None
+            self.assertEqual(responses[2].error.retryability, "reconcile_first")
+            self.assertEqual(
+                responses[2].error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+        server.join()
+
+    def test_pipeline_internal_error_mutation_is_reconcile_first(self) -> None:
+        server = FakeServer(internal_error_on_put=True)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            responses = client.execute_pipeline(
+                [PipelineRequest(PipelineOpcode.PUT, b"key", b"value")]
+            )
+            self.assertEqual(responses[0].outcome, PipelineOutcome.INDETERMINATE)
+            assert responses[0].error is not None
+            self.assertEqual(responses[0].error.retryability, "reconcile_first")
+            self.assertEqual(
+                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+            self.assertEqual(responses[0].error.wire_status, int(Status.INTERNAL_ERROR))
+            self.assertGreater(responses[0].error.bytes_sent, 0)
         server.join()
 
     def test_pipeline_limits_fail_before_network_transmission(self) -> None:
@@ -455,6 +596,38 @@ class ClientTests(unittest.TestCase):
                 self.assertEqual(responses[len(keys) + index].value, key[::-1])
         server.join()
 
+    def test_batch_preserves_sibling_results_when_one_worker_fails(self) -> None:
+        # Non-atomic batch: Worker A success must survive Worker B admission failure.
+        server = FakeServer(worker_count=2, fail_rebind_workers={1})
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            keys = [None, None]
+            candidate = 0
+            while any(key is None for key in keys):
+                key = f"sib-{candidate}".encode()
+                worker = client.worker_for(key)
+                if keys[worker] is None:
+                    keys[worker] = key
+                candidate += 1
+            assert keys[0] is not None and keys[1] is not None
+            client._connections[1].reset()
+            responses = client.execute_batch(
+                [
+                    PipelineRequest(PipelineOpcode.PUT, keys[0], b"a"),
+                    PipelineRequest(PipelineOpcode.PUT, keys[1], b"b"),
+                ]
+            )
+            self.assertEqual(len(responses), 2)
+            self.assertTrue(responses[0].succeeded)
+            self.assertEqual(responses[1].outcome, PipelineOutcome.FAILED)
+            self.assertIsNotNone(responses[1].error)
+            self.assertEqual(
+                responses[1].error.mutation_outcome, MutationOutcome.REJECTED
+            )
+            self.assertEqual(responses[1].error.bytes_sent, 0)
+            self.assertEqual(client.get(keys[0]), b"a")
+        server.join()
+
+    def test_batch_per_worker_pipeline_limit(self) -> None:
         server = FakeServer(worker_count=2)
         with Client.connect(
             ClientConfig(port=server.port, maximum_pipeline_requests=1)
@@ -522,11 +695,164 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(responses[len(keys) + index].value, key[::-1])
         server.join()
 
+    async def test_async_batch_cancel_preserves_sibling_results(self) -> None:
+        # Worker-0 PUT succeeds; Worker-1 stalls after accepting PUT. Cancelling the
+        # batch task must return the slot vector (sibling committed + stalled
+        # indeterminate), not bare CancelledError that discards siblings (§5 / §6.3).
+        server = FakeServer(worker_count=2, stall_on_put_workers={1})
+        async with await AsyncClient.connect(
+            ClientConfig(port=server.port, request_timeout=5.0)
+        ) as client:
+            keys: list[bytes | None] = [None, None]
+            candidate = 0
+            while any(key is None for key in keys):
+                key = f"acancel{candidate:08d}".encode()
+                worker = client.worker_for(key)
+                if keys[worker] is None:
+                    keys[worker] = key
+                candidate += 1
+            assert keys[0] is not None and keys[1] is not None
+            requests = [
+                PipelineRequest(PipelineOpcode.PUT, keys[0], b"a"),
+                PipelineRequest(PipelineOpcode.PUT, keys[1], b"b"),
+            ]
+            task = asyncio.create_task(client.execute_batch(requests))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            responses = await task
+            self.assertEqual(len(responses), 2)
+            self.assertTrue(responses[0].succeeded)
+            self.assertEqual(responses[0].outcome, PipelineOutcome.SUCCEEDED)
+            self.assertEqual(responses[1].outcome, PipelineOutcome.INDETERMINATE)
+            self.assertIsNotNone(responses[1].error)
+            assert responses[1].error is not None
+            self.assertGreater(responses[1].error.bytes_sent, 0)
+            self.assertEqual(responses[1].error.retryability, "reconcile_first")
+            self.assertEqual(
+                responses[1].error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+            self.assertEqual(await client.get(keys[0]), b"a")
+        server.join()
+
+    async def test_async_cancel_classifies_despite_cancel_during_reset(self) -> None:
+        # Post-send cancel must classify indeterminate before poison. If reset's
+        # wait_closed (or a hostile reset) raises CancelledError, the app must still
+        # get reconcile_first — not bare CancelledError / rejected (§6.3).
+        from glyphastore import async_client as ac_mod
+
+        server = FakeServer(stall_on_put=True)
+        async with await AsyncClient.connect(
+            ClientConfig(port=server.port, request_timeout=5.0)
+        ) as client:
+
+            async def reset_raises_cancel(self: ac_mod._Connection) -> None:
+                self.writer = None
+                self.reader = None
+                self.input.clear()
+                self.input_offset = 0
+                raise asyncio.CancelledError()
+
+            with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):
+                task = asyncio.create_task(client.put(b"key", b"value"))
+                await asyncio.sleep(0.05)
+                task.cancel()
+                result = await task
+            self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
+            assert result.error is not None
+            self.assertGreater(result.error.bytes_sent, 0)
+            self.assertEqual(result.error.retryability, "reconcile_first")
+            self.assertEqual(
+                result.error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+        server.join()
+
+    async def test_async_pipeline_cancel_classifies_despite_cancel_during_reset(
+        self,
+    ) -> None:
+        from glyphastore import async_client as ac_mod
+
+        server = FakeServer(stall_on_put=True)
+        async with await AsyncClient.connect(
+            ClientConfig(port=server.port, request_timeout=5.0)
+        ) as client:
+
+            async def reset_raises_cancel(self: ac_mod._Connection) -> None:
+                self.writer = None
+                self.reader = None
+                self.input.clear()
+                self.input_offset = 0
+                raise asyncio.CancelledError()
+
+            with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):
+                task = asyncio.create_task(
+                    client.execute_pipeline(
+                        [PipelineRequest(PipelineOpcode.PUT, b"key", b"value")]
+                    )
+                )
+                await asyncio.sleep(0.05)
+                task.cancel()
+                responses = await task
+            self.assertEqual(responses[0].outcome, PipelineOutcome.INDETERMINATE)
+            assert responses[0].error is not None
+            self.assertGreater(responses[0].error.bytes_sent, 0)
+            self.assertEqual(responses[0].error.retryability, "reconcile_first")
+            self.assertEqual(
+                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
+            )
+        server.join()
+
     async def test_async_disconnect_after_mutation_is_indeterminate(self) -> None:
         server = FakeServer(disconnect_on_put=True)
         async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
             result = await client.put(b"key", b"value")
             self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
+            self.assertIsNotNone(result.error)
+            assert result.error is not None
+            self.assertGreater(result.error.bytes_sent, 0)
+            self.assertEqual(result.error.retryability, "reconcile_first")
+            self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
+        server.join()
+
+    async def test_async_backup_does_not_blind_retry_after_bytes_sent(self) -> None:
+        # Online BACKUP is not idempotent to the same destination. Match sync /
+        # C++: lost OK after send → indeterminate / reconcile_first, one attempt.
+        server = FakeServer(drop_on_backup=True)
+        async with await AsyncClient.connect(
+            ClientConfig(port=server.port, request_timeout=0.2)
+        ) as client:
+            with self.assertRaises(TransportError) as raised:
+                await client.backup("/tmp/glyphastore-sdk-async-backup-drop")
+            error = raised.exception
+            self.assertGreater(error.bytes_sent, 0)
+            self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(error.retryability, "reconcile_first")
+            self.assertEqual(server.backup_requests, 1)
+        server.join()
+
+    async def test_async_backup_internal_error_is_reconcile_first(self) -> None:
+        from glyphastore import InternalError
+
+        server = FakeServer(internal_error_on_backup=True)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            with self.assertRaises(InternalError) as raised:
+                await client.backup("/tmp/glyphastore-sdk-async-backup-internal")
+            error = raised.exception
+            self.assertEqual(error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(error.retryability, "reconcile_first")
+            self.assertEqual(error.wire_status, int(Status.INTERNAL_ERROR))
+            self.assertEqual(server.backup_requests, 1)
+        server.join()
+
+    async def test_async_internal_error_mutation_is_indeterminate(self) -> None:
+        server = FakeServer(internal_error_on_put=True)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            result = await client.put(b"key", b"value")
+            self.assertEqual(result.outcome, MutationOutcome.INDETERMINATE)
+            assert result.error is not None
+            self.assertEqual(result.error.retryability, "reconcile_first")
+            self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
+            self.assertEqual(result.error.wire_status, int(Status.INTERNAL_ERROR))
+            self.assertGreater(result.error.bytes_sent, 0)
         server.join()
 
 

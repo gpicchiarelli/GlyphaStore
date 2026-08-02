@@ -182,6 +182,10 @@ auto ready_loss_reason_name(const ReadyLossReason reason) noexcept -> std::strin
         return "shutting_down";
     case ReadyLossReason::store_not_operational:
         return "store_not_operational";
+    case ReadyLossReason::pair_fail_closed:
+        return "pair_fail_closed";
+    case ReadyLossReason::admission_fenced:
+        return "admission_fenced";
     case ReadyLossReason::maintenance_emergency:
         return "maintenance_emergency";
     case ReadyLossReason::maintenance_fault:
@@ -199,6 +203,15 @@ auto classify_ready_loss(const Server& server) noexcept -> ReadyLossReason {
     }
     if (!server.store_operational()) {
         return ReadyLossReason::store_not_operational;
+    }
+    // Mirror Server::ready(): pair sticky fails READY while HEALTH/live may stay OK.
+    // Volatile sticky often leaves the Store catalog "operational" — without this
+    // probe, structured ready.reason would dishonestly report none.
+    if (!server.pair_writers_healthy()) {
+        return ReadyLossReason::pair_fail_closed;
+    }
+    if (!server.admissions_open()) {
+        return ReadyLossReason::admission_fenced;
     }
     const auto snapshot = server.maintenance_snapshot();
     if (snapshot.mutations_rejected) {

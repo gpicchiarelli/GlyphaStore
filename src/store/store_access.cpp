@@ -1,3 +1,4 @@
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/segment/record.hpp"
@@ -7,9 +8,12 @@
 #include "glyphastore/store/store.hpp"
 #include "glyphastore/store/value.hpp"
 #include "glyphastore/worker/topology.hpp"
+#include "glyphastore/worker/worker.hpp"
 #include "store/store_impl.hpp"
 #include "store/store_internal.hpp"
 
+#include <mutex>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -26,12 +30,24 @@ auto detail::StoreAccess::get_owned(Store& store, const std::size_t worker_index
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return fail(ErrorCode::resource_exhausted, "Store admissions are fenced");
+        }
         return store_detail::closed_store();
     }
     if (store.impl_->durable_runtime) {
         return store.impl_->durable_runtime->get(key, now_ns);
     }
-    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
+    auto& worker = store.impl_->volatile_runtime->workers.worker(worker_index);
+    // Exclusive Writer: Index find must quiesce hot_path_depth (mutex alone races
+    // unlocked put/erase_locked_published). Always take mutex_ here — get_owned is
+    // called without an outer Worker lock.
+    std::optional<Worker::ExclusiveIndexQuiesce> index_quiesce;
+    if (worker.exclusive_writer()) {
+        index_quiesce.emplace(worker, true);
+    }
+    const std::lock_guard worker_lock{worker.mutex_};
+    auto record = worker.get_locked(key, now_ns);
     if (!record) {
         return unexpected(record.error());
     }
@@ -47,6 +63,9 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return fail(ErrorCode::resource_exhausted, "Store admissions are fenced");
+        }
         return store_detail::closed_store();
     }
     if (store.impl_->durable_runtime) {
@@ -62,7 +81,13 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
         }
         return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
     }
-    auto record = store.impl_->volatile_runtime->workers.worker(worker_index).get_locked(key, now_ns);
+    auto& worker = store.impl_->volatile_runtime->workers.worker(worker_index);
+    std::optional<Worker::ExclusiveIndexQuiesce> index_quiesce;
+    if (worker.exclusive_writer()) {
+        index_quiesce.emplace(worker, true);
+    }
+    const std::lock_guard worker_lock{worker.mutex_};
+    auto record = worker.get_locked(key, now_ns);
     if (!record) {
         return unexpected(record.error());
     }
@@ -81,6 +106,9 @@ auto detail::StoreAccess::complete_get_owned(Store& store, const std::size_t wor
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return fail(ErrorCode::resource_exhausted, "Store admissions are fenced");
+        }
         return store_detail::closed_store();
     }
     if (!store.impl_->durable_runtime || !read.engaged_) {
@@ -146,6 +174,9 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return fail(ErrorCode::resource_exhausted, "Store admissions are fenced");
+        }
         return store_detail::closed_store();
     }
     if (!store.impl_->durable_runtime) {
@@ -225,10 +256,11 @@ auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t
         if (!*operation) {
             return store_detail::closed_store();
         }
-        if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
-            !rejected) {
-            return unexpected(rejected.error());
-        }
+    }
+    // Always enforce the emergency gate. caller_holds_guard only skips nested OperationGuard.
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+        !rejected) {
+        return unexpected(rejected.error());
     }
     if (!store.impl_->volatile_runtime) {
         return fail(ErrorCode::invalid_argument, "published volatile put requires a volatile Store");
@@ -256,10 +288,10 @@ auto detail::StoreAccess::erase_volatile_published(Store& store, const std::size
         if (!*operation) {
             return store_detail::closed_store();
         }
-        if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
-            !rejected) {
-            return unexpected(rejected.error());
-        }
+    }
+    if (auto rejected = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+        !rejected) {
+        return unexpected(rejected.error());
     }
     if (!store.impl_->volatile_runtime) {
         return fail(ErrorCode::invalid_argument, "published volatile erase requires a volatile Store");
@@ -286,6 +318,9 @@ auto detail::StoreAccess::put_durable(Store& store, const std::size_t worker_ind
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return rejected(Error{ErrorCode::resource_exhausted, "Store admissions are fenced"});
+        }
         return rejected(Error{ErrorCode::unavailable, "Store is closed"});
     }
     if (auto allowed = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
@@ -311,6 +346,9 @@ auto detail::StoreAccess::erase_durable(Store& store, const std::size_t worker_i
     }
     Store::Impl::OperationGuard operation{*store.impl_, worker_index};
     if (!operation) {
+        if (store.impl_->lifecycle.load(std::memory_order_acquire) == Store::Impl::LifecycleState::open) {
+            return rejected(Error{ErrorCode::resource_exhausted, "Store admissions are fenced"});
+        }
         return rejected(Error{ErrorCode::unavailable, "Store is closed"});
     }
     if (auto allowed = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
@@ -335,98 +373,180 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
                                                const std::span<const DurableMutationView> mutations)
     -> std::vector<DurableWriterBatchResult> {
     std::vector<DurableWriterBatchResult> results;
-    results.reserve(mutations.size());
-    const auto reject_remaining = [&](const Error& error) {
+    const auto reject_remaining = [&](const Error& error, const DurableMutationOutcome outcome) {
         while (results.size() < mutations.size()) {
-            results.push_back({.mutation = {.outcome = DurableMutationOutcome::not_committed,
+            results.push_back({.mutation = {.outcome = outcome,
                                             .sequence = std::nullopt,
                                             .error = error}});
         }
     };
-    if (mutations.empty()) {
-        return results;
-    }
-    if (worker_index >= store.worker_count()) {
-        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batch targets an invalid Worker"});
-        return results;
-    }
-    for (const auto& mutation : mutations) {
-        if (route_worker(mutation.key.hash, store.worker_count()) != worker_index) {
-            reject_remaining(
-                Error{ErrorCode::invalid_argument, "Writer batch contains a key owned by another Worker"});
+    const auto reject_remaining_not_committed = [&](const Error& error) {
+        reject_remaining(error, DurableMutationOutcome::not_committed);
+    };
+    try {
+        // Litmus: allocation / pre-mutate throw must stay known-not-committed — never
+        // escape to Writer catch with durable_mutate_entered already true.
+        if (glyphastore::fault::consume_fail(glyphastore::fault::Site::durable_batch_pre)) {
+            throw std::bad_alloc{};
+        }
+        results.reserve(mutations.size());
+        if (mutations.empty()) {
             return results;
         }
-    }
-    Store::Impl::OperationGuard operation{*store.impl_, worker_index};
-    if (!operation) {
-        reject_remaining(Error{ErrorCode::unavailable, "Store is closed"});
-        return results;
-    }
-    if (auto allowed = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
-        !allowed) {
-        reject_remaining(allowed.error());
-        return results;
-    }
-    if (!store.impl_->durable_runtime || !store.impl_->durable_runtime->writer_batch_config().has_value()) {
-        reject_remaining(Error{ErrorCode::invalid_argument, "Writer batching requires durable-group mode"});
-        return results;
-    }
-
-    for (const auto& mutation : mutations) {
-        if (!store.impl_->durable_runtime->healthy()) {
-            reject_remaining(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
-            break;
+        if (worker_index >= store.worker_count()) {
+            reject_remaining_not_committed(
+                Error{ErrorCode::invalid_argument, "Writer batch targets an invalid Worker"});
+            return results;
         }
-        const auto key_bytes = std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
-        DurableWriterBatchResult result;
-        for (unsigned attempt = 0; attempt < 2; ++attempt) {
-            result.mutation = store.impl_->durable_runtime->mutate(
-                key_bytes, mutation.value,
-                mutation.operation == MutationOperation::put ? Opcode::put : Opcode::erase, mutation.key.hash,
-                mutation.expire_at_ns, ValueType::bytes, 0, true);
-            if (!should_retry_durable_mutation(result.mutation, attempt)) {
+        for (const auto& mutation : mutations) {
+            if (route_worker(mutation.key.hash, store.worker_count()) != worker_index) {
+                reject_remaining_not_committed(Error{ErrorCode::invalid_argument,
+                                                     "Writer batch contains a key owned by another Worker"});
+                return results;
+            }
+        }
+        Store::Impl::OperationGuard operation{*store.impl_, worker_index};
+        if (!operation) {
+            reject_remaining_not_committed(Error{ErrorCode::unavailable, "Store is closed"});
+            return results;
+        }
+        if (auto allowed = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+            !allowed) {
+            reject_remaining_not_committed(allowed.error());
+            return results;
+        }
+        if (!store.impl_->durable_runtime ||
+            !store.impl_->durable_runtime->writer_batch_config().has_value()) {
+            reject_remaining_not_committed(
+                Error{ErrorCode::invalid_argument, "Writer batching requires durable-group mode"});
+            return results;
+        }
+
+        for (const auto& mutation : mutations) {
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+            // Litmus: arm the real emergency gate after the batch-entry check so
+            // later siblings exercise the per-mutate re-check (mid-batch TOCTOU).
+            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::durable_batch_gate)) {
+                if (auto* controller = store.impl_->maintenance.get(); controller != nullptr) {
+                    controller->publish_mutations_rejected(true);
+                }
+            }
+#endif
+            // Mid-batch / TOCTOU: gate may arm after the batch-entry probe.
+            if (auto allowed = store_detail::reject_if_maintenance_emergency(store.impl_->maintenance.get());
+                !allowed) {
+                reject_remaining_not_committed(allowed.error());
                 break;
             }
-            result.conflict_retried = true;
+            if (!store.impl_->durable_runtime->healthy()) {
+                reject_remaining_not_committed(
+                    Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+                break;
+            }
+            const auto key_bytes =
+                std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
+            DurableWriterBatchResult result;
+            for (unsigned attempt = 0; attempt < 2; ++attempt) {
+                result.mutation = store.impl_->durable_runtime->mutate(
+                    key_bytes, mutation.value,
+                    mutation.operation == MutationOperation::put ? Opcode::put : Opcode::erase,
+                    mutation.key.hash, mutation.expire_at_ns, ValueType::bytes, 0, true);
+                if (!should_retry_durable_mutation(result.mutation, attempt)) {
+                    break;
+                }
+                result.conflict_retried = true;
+            }
+            results.push_back(std::move(result));
+            const auto& last = results.back().mutation;
+            // Stop later siblings after sticky outcomes even if a path forgot to mark
+            // durable unhealthy (defense in depth; emitters should fail-close first).
+            if (!store.impl_->durable_runtime->healthy() ||
+                last.outcome == DurableMutationOutcome::indeterminate ||
+                (last.committed() && last.error.has_value())) {
+                if (store.impl_->durable_runtime->healthy()) {
+                    store.impl_->durable_runtime->mark_fail_closed();
+                }
+                reject_remaining(Error{ErrorCode::unavailable,
+                                       "durable Writer batch stopped after a sticky mutation failure"},
+                                 DurableMutationOutcome::not_committed);
+                break;
+            }
         }
-        results.push_back(std::move(result));
-        const auto& last = results.back().mutation;
-        // Stop later siblings after sticky outcomes even if a path forgot to mark
-        // durable unhealthy (defense in depth; emitters should fail-close first).
-        if (!store.impl_->durable_runtime->healthy() ||
-            last.outcome == DurableMutationOutcome::indeterminate ||
-            (last.committed() && last.error.has_value())) {
-            if (store.impl_->durable_runtime->healthy()) {
+
+        const auto committed = store.impl_->durable_runtime->commit_writer_batch(worker_index);
+        // Unify finalize: commit fail (orphan pending / flush-index error) and unhealthy
+        // no-op both keep success only for sequences already covered by durable_through
+        // (flushed + indexed). Blunt rewrite of every clean success would clear
+        // committed() for already-durable siblings → skip drain-snapshot and lie RAW.
+        if (!committed || !store.impl_->durable_runtime->healthy()) {
+            const auto through = store.impl_->durable_runtime->writer_durable_through(worker_index);
+            const auto finalize_error =
+                !committed ? committed.error()
+                           : Error{ErrorCode::unavailable,
+                                   "durable Writer batch abandoned before index publication"};
+            for (auto& result : results) {
+                if (!result.mutation.committed() || result.mutation.error) {
+                    continue;
+                }
+                if (!result.mutation.sequence || result.mutation.sequence->value > through.value) {
+                    result.mutation.outcome = DurableMutationOutcome::indeterminate;
+                    result.mutation.error = finalize_error;
+                }
+            }
+        }
+        return results;
+    } catch (const std::bad_alloc&) {
+        if (results.empty()) {
+            reject_remaining_not_committed(
+                Error{ErrorCode::resource_exhausted, "Writer batch allocation failed before mutate"});
+            return results;
+        }
+        bool store_boundary = false;
+        for (const auto& result : results) {
+            if (result.mutation.committed() ||
+                result.mutation.outcome == DurableMutationOutcome::indeterminate) {
+                store_boundary = true;
+                break;
+            }
+        }
+        if (store_boundary) {
+            if (store.impl_->durable_runtime && store.impl_->durable_runtime->healthy()) {
                 store.impl_->durable_runtime->mark_fail_closed();
             }
             reject_remaining(Error{ErrorCode::unavailable,
-                                   "durable Writer batch stopped after a sticky mutation failure"});
-            break;
+                                   "Writer batch allocation failed after mutate entry"},
+                             DurableMutationOutcome::indeterminate);
+        } else {
+            reject_remaining_not_committed(
+                Error{ErrorCode::resource_exhausted, "Writer batch allocation failed before mutate"});
         }
-    }
-
-    const auto committed = store.impl_->durable_runtime->commit_writer_batch(worker_index);
-    // Unify finalize: commit fail (orphan pending / flush-index error) and unhealthy
-    // no-op both keep success only for sequences already covered by durable_through
-    // (flushed + indexed). Blunt rewrite of every clean success would clear
-    // committed() for already-durable siblings → skip drain-snapshot and lie RAW.
-    if (!committed || !store.impl_->durable_runtime->healthy()) {
-        const auto through = store.impl_->durable_runtime->writer_durable_through(worker_index);
-        const auto finalize_error =
-            !committed ? committed.error()
-                       : Error{ErrorCode::unavailable,
-                               "durable Writer batch abandoned before index publication"};
-        for (auto& result : results) {
-            if (!result.mutation.committed() || result.mutation.error) {
-                continue;
-            }
-            if (!result.mutation.sequence || result.mutation.sequence->value > through.value) {
-                result.mutation.outcome = DurableMutationOutcome::indeterminate;
-                result.mutation.error = finalize_error;
+        return results;
+    } catch (...) {
+        if (results.empty()) {
+            reject_remaining_not_committed(
+                Error{ErrorCode::resource_exhausted, "Writer batch failure before mutate"});
+            return results;
+        }
+        bool store_boundary = false;
+        for (const auto& result : results) {
+            if (result.mutation.committed() ||
+                result.mutation.outcome == DurableMutationOutcome::indeterminate) {
+                store_boundary = true;
+                break;
             }
         }
+        if (store_boundary) {
+            if (store.impl_->durable_runtime && store.impl_->durable_runtime->healthy()) {
+                store.impl_->durable_runtime->mark_fail_closed();
+            }
+            reject_remaining(Error{ErrorCode::unavailable, "Writer batch failure after mutate entry"},
+                             DurableMutationOutcome::indeterminate);
+        } else {
+            reject_remaining_not_committed(
+                Error{ErrorCode::resource_exhausted, "Writer batch failure before mutate"});
+        }
+        return results;
     }
-    return results;
 }
 
 auto detail::StoreAccess::is_durable(const Store& store) noexcept -> bool {
@@ -458,6 +578,10 @@ auto detail::StoreAccess::maintenance_mutations_rejected(const Store& store) noe
 
 auto detail::StoreAccess::operational(const Store& store) noexcept -> bool {
     return store.impl_ != nullptr && store.impl_->operational();
+}
+
+auto detail::StoreAccess::admissions_open(const Store& store) noexcept -> bool {
+    return store.impl_ != nullptr && store.impl_->admissions_open();
 }
 
 void detail::StoreAccess::mark_fail_closed(Store& store) noexcept {

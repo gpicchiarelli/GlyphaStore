@@ -141,13 +141,34 @@ def _enrich(
         error.wire_status = wire_status
     indeterminate = error.mutation_outcome is MutationOutcome.INDETERMINATE
     mutation_sent = error.bytes_sent > 0 and error.mutation_outcome is not None
-    if error.mutation_outcome is not None and error.bytes_sent > 0 and error.category == "transport":
+    # Indeterminate always means reconcile_first — including transport failures after a
+    # full mutation send where bytes_sent was omitted (must not fall through to same_request).
+    if indeterminate:
+        error.retryability = "reconcile_first"
+    elif error.mutation_outcome is not None and error.bytes_sent > 0 and error.category == "transport":
         error.retryability = "reconcile_first"
     elif error.bytes_sent == 0 and error.category == "transport":
         error.retryability = "same_request"
     else:
         error.retryability = _retryability_for(error.category, mutation_sent, indeterminate)
     return error
+
+
+def _clone_error(error: GlyphaError) -> GlyphaError:
+    """Fresh error of the same type so per-pipeline-slot enrich does not share state."""
+    return type(error)(
+        error.message,
+        category=error.category,
+        wire_status=error.wire_status,
+    )
+
+
+def _pipeline_op_name(opcode: PipelineOpcode) -> str:
+    if opcode is PipelineOpcode.PUT:
+        return "put"
+    if opcode is PipelineOpcode.ERASE:
+        return "erase"
+    return "get"
 
 
 class MutationOutcome(Enum):
@@ -473,15 +494,33 @@ class Client:
             def mark_unresolved(first: int, error: GlyphaError, bytes_sent: int) -> None:
                 for index in range(first, len(normalized)):
                     opcode = normalized[index][0]
-                    mutation_may_have_arrived = (
-                        opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
-                        and bytes_sent > metadata[index][1]
+                    is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                    mutation_may_have_arrived = is_mutation and bytes_sent > metadata[index][1]
+                    pos_bytes = (
+                        bytes_sent - metadata[index][1]
+                        if bytes_sent > metadata[index][1]
+                        else 0
                     )
+                    mutation_outcome = None
+                    if is_mutation:
+                        mutation_outcome = (
+                            MutationOutcome.INDETERMINATE
+                            if mutation_may_have_arrived
+                            else MutationOutcome.REJECTED
+                        )
                     responses[index] = PipelineResponse(
                         PipelineOutcome.INDETERMINATE
                         if mutation_may_have_arrived
                         else PipelineOutcome.FAILED,
-                        error=error,
+                        error=_enrich(
+                            _clone_error(error),
+                            operation=_pipeline_op_name(opcode),
+                            request_id=metadata[index][0],
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=pos_bytes,
+                            mutation_outcome=mutation_outcome,
+                        ),
                     )
 
             try:
@@ -512,13 +551,27 @@ class Client:
                         PipelineOutcome.SUCCEEDED, value=response.value
                     )
                     continue
-                error = self._status_error(response.status)
+                is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                indeterminate = is_mutation and response.status is Status.INTERNAL_ERROR
+                mutation_outcome = None
+                if is_mutation:
+                    mutation_outcome = (
+                        MutationOutcome.INDETERMINATE
+                        if indeterminate
+                        else MutationOutcome.REJECTED
+                    )
                 responses[index] = PipelineResponse(
-                    PipelineOutcome.INDETERMINATE
-                    if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
-                    and response.status is Status.INTERNAL_ERROR
-                    else PipelineOutcome.FAILED,
-                    error=error,
+                    PipelineOutcome.INDETERMINATE if indeterminate else PipelineOutcome.FAILED,
+                    error=_enrich(
+                        self._status_error(response.status),
+                        operation=_pipeline_op_name(opcode),
+                        request_id=metadata[index][0],
+                        worker=worker,
+                        routing_epoch=self._routing_epoch,
+                        bytes_sent=len(output) - metadata[index][1],
+                        mutation_outcome=mutation_outcome,
+                        wire_status=int(response.status),
+                    ),
                 )
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                     self._healthy = False
@@ -564,7 +617,31 @@ class Client:
         ) -> tuple[list[int], list[PipelineResponse]]:
             indices = [index for index, _ in items]
             group_requests = [request for _, request in items]
-            return indices, self.execute_pipeline(group_requests, _deadline=shared_deadline)
+            try:
+                return indices, self.execute_pipeline(group_requests, _deadline=shared_deadline)
+            except GlyphaError as error:
+                # Match C++/Erlang: stamp this Worker's slots failed with rejected
+                # polarity (bytes_sent=0); keep sibling results.
+                failed = [
+                    PipelineResponse(
+                        PipelineOutcome.FAILED,
+                        error=_enrich(
+                            _clone_error(error),
+                            operation=_pipeline_op_name(request.opcode),
+                            worker=self.worker_for(bytes(request.key)),
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=0,
+                            mutation_outcome=(
+                                MutationOutcome.REJECTED
+                                if request.opcode
+                                in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                                else None
+                            ),
+                        ),
+                    )
+                    for _, request in items
+                ]
+                return indices, failed
 
         if len(groups) == 1:
             indices, group_responses = run_group(next(iter(groups.values())))
@@ -805,6 +882,8 @@ class Client:
                 raise Unavailable("client closed before read admission")
             last_error: GlyphaError = Unavailable("request was not attempted")
             for _ in range(2):
+                request_id: int | None = None
+                frame = b""
                 try:
                     self._ensure_connected(connection)
                     request_id = self._next_request_id()
@@ -819,18 +898,67 @@ class Client:
                     if response.status is not Status.OK:
                         if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                             self._healthy = False
+                        if opcode is Opcode.BACKUP and response.status is Status.INTERNAL_ERROR:
+                            # Fenced copy may already be committed — same polarity as C++.
+                            raise _enrich(
+                                self._status_error(response.status),
+                                operation="backup",
+                                request_id=request_id,
+                                worker=worker,
+                                routing_epoch=self._routing_epoch,
+                                bytes_sent=len(frame),
+                                mutation_outcome=MutationOutcome.INDETERMINATE,
+                            )
                         raise self._status_error(response.status)
                     return response.value
                 except (TransportError, _SendFailure) as error:
-                    last_error = error.error if isinstance(error, _SendFailure) else error
+                    if isinstance(error, _SendFailure):
+                        last_error = error.error
+                        bytes_sent = error.bytes_sent
+                    else:
+                        # Receive-side failure implies the BACKUP frame left the client.
+                        last_error = error
+                        bytes_sent = len(frame)
                     connection.reset()
+                    if opcode is Opcode.BACKUP and bytes_sent > 0:
+                        # Not idempotent to the same destination — same polarity as C++.
+                        raise _enrich(
+                            last_error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=bytes_sent,
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
                 except Unavailable as error:
                     connection.reset()
+                    if opcode is Opcode.BACKUP and len(frame) > 0:
+                        # Validate/metadata failure after a BACKUP response arrived.
+                        raise _enrich(
+                            error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
                     if not self._healthy:
                         raise
                     last_error = error
-                except ProtocolError:
+                except ProtocolError as error:
                     connection.reset()
+                    if opcode is Opcode.BACKUP and len(frame) > 0:
+                        raise _enrich(
+                            error,
+                            operation="backup",
+                            request_id=request_id,
+                            worker=worker,
+                            routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
+                            mutation_outcome=MutationOutcome.INDETERMINATE,
+                        ) from error
                     raise
             raise last_error
 
@@ -955,6 +1083,7 @@ class Client:
                             request_id=request_id,
                             worker=worker,
                             routing_epoch=self._routing_epoch,
+                            bytes_sent=len(frame),
                             mutation_outcome=MutationOutcome.INDETERMINATE,
                         ),
                     )
@@ -969,6 +1098,7 @@ class Client:
                                 request_id=request_id,
                                 worker=worker,
                                 routing_epoch=self._routing_epoch,
+                                bytes_sent=len(frame),
                                 mutation_outcome=MutationOutcome.INDETERMINATE,
                             ),
                         )
@@ -980,6 +1110,7 @@ class Client:
                     worker=worker,
                     routing_epoch=self._routing_epoch,
                     wire_status=int(response.status),
+                    bytes_sent=len(frame),
                 )
                 if response.status is Status.INTERNAL_ERROR:
                     return MutationResult(

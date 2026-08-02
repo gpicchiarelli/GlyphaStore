@@ -1,3 +1,4 @@
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/reactor.hpp"
@@ -6,6 +7,7 @@
 #include "system_error.hpp"
 
 #include <chrono>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -131,9 +133,19 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         std::vector<std::byte> init_identity;
         switch (decoded.frame.opcode) {
         case RequestOpcode::init:
-            current->initialized = true;
-            init_identity = encode_init_identity_value(get_worker_routing());
-            response.value = init_identity;
+            // Do not mark initialized until identity bytes exist — a throw after
+            // the flag left the connection half-initialized and fail-stopped the
+            // executor under memory pressure.
+            try {
+                if (glyphastore::fault::consume_fail(glyphastore::fault::Site::init_identity)) {
+                    throw std::bad_alloc{};
+                }
+                init_identity = encode_init_identity_value(get_worker_routing());
+                response.value = init_identity;
+                current->initialized = true;
+            } catch (const std::bad_alloc&) {
+                response.status = ResponseStatus::overloaded;
+            }
             break;
         case RequestOpcode::ping:
             response.value = decoded.frame.value;
@@ -181,6 +193,13 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             break;
         }
         case RequestOpcode::backup: {
+            // Wire v2: BACKUP is Bound-state only (not a pre-INIT lifecycle probe).
+            // Unbound BACKUP used to run the synchronous fenced path on any fresh
+            // connection when authz was disabled.
+            if (!current->initialized || !current->bound_worker.has_value()) {
+                response.status = ResponseStatus::not_bound;
+                break;
+            }
             if (lifecycle_probes_.backup == nullptr) {
                 response.status = ResponseStatus::unsupported;
                 break;
@@ -188,6 +207,16 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             try {
                 const auto destination = std::string_view{
                     reinterpret_cast<const char*>(decoded.frame.key.data()), decoded.frame.key.size()};
+                const auto value_budget = config_.maximum_output_bytes > kResponseHeaderBytes
+                                              ? config_.maximum_output_bytes - kResponseHeaderBytes
+                                              : std::size_t{0};
+                // Refuse before the fenced copy when the OK report cannot fit. OVERLOADED
+                // after a successful backup would falsely claim known-not-committed.
+                const auto estimated = reactor_detail::backup_ok_report_max_bytes(destination.size());
+                if (estimated > value_budget || estimated + kResponseHeaderBytes > kMaxFrameBytes) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
                 std::string report;
                 if (!lifecycle_probes_.backup(const_cast<void*>(lifecycle_probes_.context), destination,
                                               report)) {
@@ -199,20 +228,26 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                     immediate_response = false;
                     break;
                 }
-                const auto value_budget = config_.maximum_output_bytes > kResponseHeaderBytes
-                                              ? config_.maximum_output_bytes - kResponseHeaderBytes
-                                              : std::size_t{0};
                 if (report.size() > value_budget || report.size() + kResponseHeaderBytes > kMaxFrameBytes) {
-                    response.status = ResponseStatus::overloaded;
-                    break;
+                    // Backup already committed. Never OVERLOADED (rejected / not-committed).
+                    // Prefer a minimal OK that fits; otherwise INTERNAL_ERROR (reconcile).
+                    constexpr std::string_view kMinimalOk = "status=ok\n";
+                    if (kMinimalOk.size() <= value_budget &&
+                        kMinimalOk.size() + kResponseHeaderBytes <= kMaxFrameBytes) {
+                        response.value = reactor_detail::bytes(kMinimalOk);
+                    } else {
+                        response.status = ResponseStatus::internal_error;
+                    }
+                } else {
+                    response.value = std::as_bytes(std::span<const char>{report.data(), report.size()});
                 }
-                response.value = std::as_bytes(std::span<const char>{report.data(), report.size()});
                 if (auto queued = queue_response(token, response); !queued) {
                     return queued;
                 }
                 immediate_response = false;
             } catch (const std::bad_alloc&) {
-                response.status = ResponseStatus::overloaded;
+                // May have crossed the backup fence; do not claim known-not-committed.
+                response.status = ResponseStatus::internal_error;
             }
             break;
         }
@@ -297,7 +332,30 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     if (current->output_lease) {
         return fail(ErrorCode::corrupted_data, "connection handoff cannot transfer a scatter output lease");
     }
-    static_cast<void>(poller_.remove(current->socket.descriptor()));
+    if (auto removed = poller_.remove(current->socket.descriptor()); !removed) {
+        // Must not move a live socket that is still registered here — dual-poller
+        // ownership spins the source executor on stale tokens after handoff.
+        current->bound_worker.reset();
+        current->output.clear();
+        current->output_offset = 0;
+        current->output_lease.reset();
+        const ResponseView overloaded{.status = ResponseStatus::overloaded,
+                                      .request_id = request_id,
+                                      .owner_worker = static_cast<std::uint32_t>(target_worker),
+                                      .worker_count = static_cast<std::uint32_t>(mesh_.size()),
+                                      .routing_epoch = kRoutingEpoch};
+        if (auto queued = queue_response(token, overloaded); queued) {
+            current->close_after_flush = true;
+            current->input.clear();
+            current->input_offset = 0;
+            if (auto flushed = write_ready(token); !flushed) {
+                close_connection(token);
+            }
+            return {};
+        }
+        close_connection(token);
+        return {};
+    }
     if (current->input_offset > 0) {
         current->input.erase(current->input.begin(),
                              current->input.begin() + static_cast<std::ptrdiff_t>(current->input_offset));
@@ -468,6 +526,12 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (cached_now_ns == 0) {
             cached_now_ns = reactor_detail::current_time_ns();
         }
+        // Online backup fence: temporary refusal — OVERLOADED, not INTERNAL_ERROR
+        // (OperationGuard fail is bare unavailable without StoreAccess rewrite).
+        if (!detail::StoreAccess::admissions_open(store_)) {
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
         if (!local_read_generation_) {
             response.status = ResponseStatus::overloaded;
             break;
@@ -552,6 +616,14 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             response.status = ResponseStatus::overloaded;
             break;
         }
+        // Online backup (and close) fence: reject before enqueue. Writer OperationGuard
+        // failure is unavailable → wire INTERNAL_ERROR without rewrite on some paths;
+        // known-not-committed must be OVERLOADED (mirror maintenance emergency).
+        if (!detail::StoreAccess::admissions_open(store_)) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
         const auto admission_bytes =
             PairWriterPool::mutation_admission_bytes(request.key.size(), request.value.size());
         if (!admission_bytes || *admission_bytes > config_.durable_mutation_queue_bytes) {
@@ -586,6 +658,11 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             return {};
         }
         if (detail::StoreAccess::maintenance_mutations_rejected(store_)) {
+            pair_writers_.note_rejected(executor_id_);
+            response.status = ResponseStatus::overloaded;
+            break;
+        }
+        if (!detail::StoreAccess::admissions_open(store_)) {
             pair_writers_.note_rejected(executor_id_);
             response.status = ResponseStatus::overloaded;
             break;
@@ -711,7 +788,14 @@ auto Reactor::process_mutation_completions() -> Status {
         }
         mutation_bytes_outstanding_ -= completion->admission_bytes;
         if (!pair_writers_.release_payload(executor_id_, completion->payload_slot)) {
-            return fail(ErrorCode::corrupted_data, "mutation payload completion violated FIFO ownership");
+            // Out-of-order only while drain expiry is armed: abandoned queued work
+            // may complete ahead of an earlier in-flight Store mutation.
+            if (!pair_writers_.expire_remaining_armed()) {
+                return fail(ErrorCode::corrupted_data, "mutation payload completion violated FIFO ownership");
+            }
+            deferred_mutation_payloads_.push_back(completion->payload_slot);
+        } else {
+            flush_deferred_mutation_payloads();
         }
         auto* current = connection(completion->connection);
         if (current == nullptr) {
@@ -742,6 +826,15 @@ auto Reactor::process_mutation_completions() -> Status {
         }
     }
     return {};
+}
+
+void Reactor::flush_deferred_mutation_payloads() noexcept {
+    while (!deferred_mutation_payloads_.empty()) {
+        if (!pair_writers_.release_payload(executor_id_, deferred_mutation_payloads_.front())) {
+            return;
+        }
+        deferred_mutation_payloads_.erase(deferred_mutation_payloads_.begin());
+    }
 }
 
 } // namespace glyphastore::server

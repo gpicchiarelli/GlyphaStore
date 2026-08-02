@@ -11,6 +11,7 @@ start(Opts) ->
     ets:insert(Tab, {held, []}),
     ets:insert(Tab, {release_all, false}),
     ets:insert(Tab, {store_ops, 0}),
+    ets:insert(Tab, {bind_counts, #{}}),
     Pid = spawn(fun() -> server(Parent, Tab) end),
     receive
         {glyphastore_fake_server, ready, Port} ->
@@ -42,12 +43,15 @@ normalize_opts(Opts) ->
         status_on_get => maps:get(status_on_get, Opts, undefined),
         routing_epoch => maps:get(routing_epoch, Opts, 9),
         hold_gets => maps:get(hold_gets, Opts, false),
+        hold_puts => maps:get(hold_puts, Opts, false),
         record_ids => maps:get(record_ids, Opts, false),
         wrong_request_id => maps:get(wrong_request_id, Opts, false),
         wrong_owner => maps:get(wrong_owner, Opts, false),
         oversized_response => maps:get(oversized_response, Opts, false),
         mutate_epoch_after => maps:get(mutate_epoch_after, Opts, undefined),
-        mutate_workers_after => maps:get(mutate_workers_after, Opts, undefined)
+        mutate_workers_after => maps:get(mutate_workers_after, Opts, undefined),
+        internal_backup => maps:get(internal_error_on_backup, Opts, false),
+        fail_rebind_workers => maps:get(fail_rebind_workers, Opts, [])
     }.
 
 handle_control(Tab, get_request_ids) ->
@@ -127,8 +131,14 @@ ops(Tab) ->
     N.
 
 maybe_hold_get(Tab) ->
+    maybe_hold(Tab, hold_gets).
+
+maybe_hold_put(Tab) ->
+    maybe_hold(Tab, hold_puts).
+
+maybe_hold(Tab, Flag) ->
     Cfg = cfg(Tab),
-    case maps:get(hold_gets, Cfg) of
+    case maps:get(Flag, Cfg) of
         true ->
             case ets:lookup(Tab, release_all) of
                 [{release_all, true}] ->
@@ -182,8 +192,23 @@ handle_request(Socket, Tab, Bound, Store, Request) ->
             client_loop(Socket, Tab, Bound, Store);
         ?GS_OP_BIND ->
             NewBound = maps:get(target_worker, Request),
-            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{owner_worker => NewBound}),
-            client_loop(Socket, Tab, NewBound, Store);
+            [{bind_counts, Counts}] = ets:lookup(Tab, bind_counts),
+            Count = maps:get(NewBound, Counts, 0) + 1,
+            ets:insert(Tab, {bind_counts, Counts#{NewBound => Count}}),
+            FailWorkers = maps:get(fail_rebind_workers, Cfg, []),
+            case lists:member(NewBound, FailWorkers) andalso Count > 1 of
+                true ->
+                    %% Second+ BIND for this Worker: force reconnect failure (litmus).
+                    reply(Socket, Cfg, glyphastore_protocol:status_overloaded(), Request, Meta#{
+                        owner_worker => NewBound
+                    }),
+                    client_loop(Socket, Tab, Bound, Store);
+                false ->
+                    reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
+                        owner_worker => NewBound
+                    }),
+                    client_loop(Socket, Tab, NewBound, Store)
+            end;
         ?GS_OP_PUT ->
             case maps:get(drop, Cfg) of
                 true ->
@@ -196,6 +221,7 @@ handle_request(Socket, Tab, Bound, Store, Request) ->
                             }),
                             client_loop(Socket, Tab, Bound, Store);
                         false ->
+                            maybe_hold_put(Tab),
                             Key = maps:get(key, Request),
                             Value = maps:get(value, Request),
                             reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
@@ -249,10 +275,20 @@ handle_request(Socket, Tab, Bound, Store, Request) ->
             }),
             client_loop(Socket, Tab, Bound, Store);
         ?GS_OP_BACKUP ->
-            reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
-                value => <<"status=ok files=0 bytes=0">>
-            }),
-            client_loop(Socket, Tab, Bound, Store);
+            case maps:get(internal_backup, Cfg) of
+                true ->
+                    reply(Socket, Cfg, glyphastore_protocol:status_internal_error(), Request, Meta#{
+                        value => <<"report failed">>,
+                        owner_worker => Bound
+                    }),
+                    client_loop(Socket, Tab, Bound, Store);
+                false ->
+                    reply(Socket, Cfg, glyphastore_protocol:status_ok(), Request, Meta#{
+                        value => <<"status=ok files=0 bytes=0">>,
+                        owner_worker => Bound
+                    }),
+                    client_loop(Socket, Tab, Bound, Store)
+            end;
         _ ->
             reply(Socket, Cfg, glyphastore_protocol:status_unsupported(), Request, Meta),
             client_loop(Socket, Tab, Bound, Store)

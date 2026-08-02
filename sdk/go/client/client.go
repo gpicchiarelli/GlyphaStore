@@ -398,13 +398,37 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 	markUnresolved := func(first int, err error, bytesSent int) {
 		for index := first; index < len(normalized); index++ {
 			opcode := normalized[index].opcode
-			mutationMayHaveArrived := (opcode == PipelinePut || opcode == PipelineErase) &&
-				bytesSent > normalized[index].begin
+			isMut := opcode == PipelinePut || opcode == PipelineErase
+			mutationMayHaveArrived := isMut && bytesSent > normalized[index].begin
 			outcome := PipelineFailed
 			if mutationMayHaveArrived {
 				outcome = PipelineIndeterminate
 			}
-			responses[index] = PipelineResponse{Outcome: outcome, Err: err}
+			posBytes := 0
+			if bytesSent > normalized[index].begin {
+				posBytes = bytesSent - normalized[index].begin
+			}
+			enriched := err
+			if ge, ok := err.(*Error); ok {
+				op := "get"
+				switch opcode {
+				case PipelinePut:
+					op = "put"
+				case PipelineErase:
+					op = "erase"
+				}
+				annotated := annotate(ge, op, normalized[index].requestID, *worker, c.routingEpoch).
+					withBytesSent(posBytes)
+				if isMut {
+					mutOutcome := MutationRejected
+					if mutationMayHaveArrived {
+						mutOutcome = MutationIndeterminate
+					}
+					annotated = annotated.withMutation(mutOutcome)
+				}
+				enriched = annotated
+			}
+			responses[index] = PipelineResponse{Outcome: outcome, Err: enriched}
 		}
 	}
 
@@ -446,13 +470,29 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 			responses[index] = PipelineResponse{Outcome: PipelineSucceeded, Value: response.Value}
 			continue
 		}
-		err = statusError(response.Status)
+		isMut := item.opcode == PipelinePut || item.opcode == PipelineErase
+		indeterminate := isMut && response.Status == protocol.StatusInternalError
 		outcome := PipelineFailed
-		if (item.opcode == PipelinePut || item.opcode == PipelineErase) &&
-			response.Status == protocol.StatusInternalError {
+		if indeterminate {
 			outcome = PipelineIndeterminate
 		}
-		responses[index] = PipelineResponse{Outcome: outcome, Err: err}
+		op := "get"
+		switch item.opcode {
+		case PipelinePut:
+			op = "put"
+		case PipelineErase:
+			op = "erase"
+		}
+		statusErr := annotate(statusError(response.Status), op, item.requestID, *worker, c.routingEpoch).
+			withBytesSent(len(output) - item.begin)
+		if isMut {
+			mutOutcome := MutationRejected
+			if indeterminate {
+				mutOutcome = MutationIndeterminate
+			}
+			statusErr = statusErr.withMutation(mutOutcome)
+		}
+		responses[index] = PipelineResponse{Outcome: outcome, Err: statusErr}
 		if response.Status == protocol.StatusWrongOwner || response.Status == protocol.StatusNotBound {
 			c.healthy.Store(false)
 		}
@@ -506,7 +546,6 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	type result struct {
 		indices []int
 		resps   []PipelineResponse
-		err     error
 	}
 
 	runGroup := func(items []item) result {
@@ -517,15 +556,37 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 			reqs[i] = it.request
 		}
 		resps, err := c.executePipelineDeadline(reqs, deadline)
-		return result{indices: indices, resps: resps, err: err}
+		if err != nil {
+			// Match C++/Erlang: convert group-level pre-admission errors into
+			// per-index failed slots with rejected polarity (bytes_sent=0).
+			failed := make([]PipelineResponse, len(items))
+			for i, it := range items {
+				enriched := err
+				if ge, ok := err.(*Error); ok {
+					op := "get"
+					switch it.request.Opcode {
+					case PipelinePut:
+						op = "put"
+					case PipelineErase:
+						op = "erase"
+					}
+					worker, _ := c.WorkerFor(it.request.Key)
+					annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
+					if it.request.Opcode == PipelinePut || it.request.Opcode == PipelineErase {
+						annotated = annotated.withMutation(MutationRejected)
+					}
+					enriched = annotated
+				}
+				failed[i] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
+			}
+			return result{indices: indices, resps: failed}
+		}
+		return result{indices: indices, resps: resps}
 	}
 
 	if len(groups) == 1 {
 		for _, items := range groups {
 			out := runGroup(items)
-			if out.err != nil {
-				return nil, out.err
-			}
 			for i, index := range out.indices {
 				responses[index] = out.resps[i]
 			}
@@ -539,7 +600,6 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	outs := make([]groupOut, 0, len(groups))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
-	var firstErr error
 	for _, items := range groups {
 		items := items
 		wg.Add(1)
@@ -548,19 +608,10 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 			out := runGroup(items)
 			mu.Lock()
 			defer mu.Unlock()
-			if out.err != nil {
-				if firstErr == nil {
-					firstErr = out.err
-				}
-				return
-			}
 			outs = append(outs, groupOut{out: out})
 		}()
 	}
 	wg.Wait()
-	if firstErr != nil {
-		return nil, firstErr
-	}
 	for _, item := range outs {
 		for i, index := range item.out.indices {
 			responses[index] = item.out.resps[i]
@@ -837,14 +888,23 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 		response, err := c.exchange(conn, frame, deadline)
 		conn.encode = scratch[:0]
 		if err != nil {
+			bytesSent := len(frame)
 			if sf, ok := err.(*sendFailure); ok {
-				last = promoteSendFailure(sf, readOpName(opcode), requestID, worker, c.routingEpoch, false)
+				bytesSent = sf.bytesSent
+				last = promoteSendFailure(sf, readOpName(opcode), requestID, worker, c.routingEpoch,
+					opcode == protocol.OpcodeBackup && sf.bytesSent > 0)
 			} else if ge, ok := err.(*Error); ok {
 				last = annotate(ge, readOpName(opcode), requestID, worker, c.routingEpoch)
+				if opcode == protocol.OpcodeBackup {
+					last = last.(*Error).withBytesSent(bytesSent).withMutation(MutationIndeterminate)
+				}
 			} else {
 				last = err
 			}
 			conn.reset()
+			if opcode == protocol.OpcodeBackup && bytesSent > 0 {
+				return nil, last
+			}
 			if ge, ok := last.(*Error); ok && ge.Category == CategoryUnavailable && !c.healthy.Load() {
 				return nil, last
 			}
@@ -854,6 +914,10 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 			conn.reset()
 			if ge, ok := err.(*Error); ok {
 				ge = annotate(ge, readOpName(opcode), requestID, worker, c.routingEpoch)
+				if opcode == protocol.OpcodeBackup {
+					// Response arrived after send — fenced copy may already exist.
+					return nil, ge.withBytesSent(len(frame)).withMutation(MutationIndeterminate)
+				}
 				if ge.Category == CategoryUnavailable {
 					if !c.healthy.Load() {
 						return nil, ge
@@ -874,7 +938,12 @@ func (c *Client) read(opcode protocol.Opcode, key, value []byte, opts ...CallOpt
 			if response.Status == protocol.StatusWrongOwner || response.Status == protocol.StatusNotBound {
 				c.healthy.Store(false)
 			}
-			return nil, annotate(statusError(response.Status), readOpName(opcode), requestID, worker, c.routingEpoch)
+			statusErr := annotate(statusError(response.Status), readOpName(opcode), requestID, worker, c.routingEpoch)
+			if opcode == protocol.OpcodeBackup && response.Status == protocol.StatusInternalError {
+				// Fenced copy may already be committed — same polarity as C++.
+				return nil, statusErr.withBytesSent(len(frame)).withMutation(MutationIndeterminate)
+			}
+			return nil, statusErr
 		}
 		return response.Value, nil
 	}
@@ -954,25 +1023,26 @@ func (c *Client) mutate(opcode protocol.Opcode, key, value []byte, expireAtNs ui
 			}
 			conn.reset()
 			if ge, ok := err.(*Error); ok {
-				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
+				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withBytesSent(len(frame)).withMutation(MutationIndeterminate)}
 			}
 			return MutationResult{Outcome: MutationIndeterminate, Err: err}
 		}
 		if err := c.validateResponse(response, requestID, worker); err != nil {
 			conn.reset()
 			if ge, ok := err.(*Error); ok {
-				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
+				return MutationResult{Outcome: MutationIndeterminate, Err: annotate(ge, op, requestID, worker, c.routingEpoch).withBytesSent(len(frame)).withMutation(MutationIndeterminate)}
 			}
 			return MutationResult{Outcome: MutationIndeterminate, Err: err}
 		}
 		if response.Status == protocol.StatusOK {
 			if len(response.Value) != 0 {
 				conn.reset()
-				return MutationResult{Outcome: MutationIndeterminate, Err: protocolErr("mutation response value must be empty").withOp(op).withRequest(requestID, worker, c.routingEpoch).withMutation(MutationIndeterminate)}
+				return MutationResult{Outcome: MutationIndeterminate, Err: protocolErr("mutation response value must be empty").withOp(op).withRequest(requestID, worker, c.routingEpoch).withBytesSent(len(frame)).withMutation(MutationIndeterminate)}
 			}
 			return MutationResult{Outcome: MutationCommitted}
 		}
-		statusErr := annotate(statusError(response.Status), op, requestID, worker, c.routingEpoch)
+		statusErr := annotate(statusError(response.Status), op, requestID, worker, c.routingEpoch).
+			withBytesSent(len(frame))
 		if response.Status == protocol.StatusInternalError {
 			return MutationResult{Outcome: MutationIndeterminate, Err: statusErr.withMutation(MutationIndeterminate)}
 		}

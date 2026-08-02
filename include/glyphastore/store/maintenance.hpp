@@ -47,6 +47,8 @@ class MaintenanceController final {
     [[nodiscard]] auto thread_running() const noexcept -> bool;
     // Lock-free admission probe for Store::put/erase (memory_order_acquire).
     [[nodiscard]] auto mutations_rejected() const noexcept -> bool;
+    // Publish or clear the emergency mutation gate (eval path + litmus TOCTOU).
+    void publish_mutations_rejected(bool rejected) noexcept;
 
   private:
     void run();

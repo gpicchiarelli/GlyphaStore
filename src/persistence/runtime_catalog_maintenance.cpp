@@ -300,7 +300,7 @@ auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_work
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
-    const std::shared_lock catalog_lock{catalog_mutex_};
+    std::shared_lock catalog_lock{catalog_mutex_};
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
@@ -400,7 +400,17 @@ auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_work
 
         const auto candidate = *observation.compaction_candidate_worker;
         auto& worker = *workers_[candidate];
-        std::lock_guard worker_lock{worker.mutex};
+        // Drop the observation catalog lock before any exclusive-Writer depth wait
+        // (holding catalog across hot_path_depth wait deadlocks mutex-elided mutate).
+        // Also avoids a same-thread nested shared lock on catalog_mutex_.
+        catalog_lock.unlock();
+
+        // Exclusive durable_sync elides worker.mutex on mutate — same Index ownership
+        // protocol as compaction Phase A / prepare_get.
+        const bool elide_worker_mutex = options_.exclusive_writer && flusher_ == nullptr;
+        ExclusiveIndexQuiesce probe_gate{worker, elide_worker_mutex};
+
+        const std::lock_guard worker_lock{worker.mutex};
         const std::shared_lock probe_catalog_lock{catalog_mutex_};
         if (!healthy()) {
             return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
@@ -447,6 +457,7 @@ auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_work
             observation.candidate_unread_expired_sealed_record_bytes += entry.record.size.value;
         }
         observation.unread_ttl_probe_performed = true;
+        probe_gate.clear();
     }
     return observation;
 }
@@ -490,7 +501,16 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
         // Phase A: capture only owning state. No file operation is allowed in
         // this scope. The complete Index enumeration is currently necessary
         // because the replacement Index must retain active-Segment references.
+        //
+        // Exclusive durable_sync elides worker.mutex on mutate, so the mutex alone
+        // does not own the Index. ExclusiveIndexQuiesce arms the gate and drains
+        // hot_path_depth before enumerating; clear before Phase B so ordinary
+        // mutations continue during the unlocked build (Phase C re-arms for the
+        // Index swap).
         {
+            const bool elide_worker_mutex = options_.exclusive_writer && flusher_ == nullptr;
+            ExclusiveIndexQuiesce snapshot_gate{worker, elide_worker_mutex};
+
             std::unique_lock worker_lock{worker.mutex};
             if (worker.mutation_io_active) {
                 return failure(Error{ErrorCode::sequence_conflict,
@@ -536,6 +556,8 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                 }
                 source_pins.push_back(pin);
             }
+            // Drop the snapshot gate before Phase B so mutates proceed during build.
+            snapshot_gate.clear();
         }
 
         if (source_pins.empty()) {
@@ -726,8 +748,39 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             }
         }
 
-        worker.compaction_commit_active.store(true, std::memory_order_release);
-        if (options_.exclusive_writer) {
+        struct WorkerCommitGate final {
+            RuntimeWorker& worker;
+            bool active{true};
+
+            explicit WorkerCommitGate(RuntimeWorker& owner) noexcept : worker(owner) {
+                worker.arm_index_quiesce_gate();
+            }
+            ~WorkerCommitGate() {
+                if (!active) {
+                    return;
+                }
+                const std::lock_guard lock{worker.mutex};
+                worker.disarm_index_quiesce_gate();
+            }
+            void clear_locked() noexcept {
+                worker.disarm_index_quiesce_gate();
+                active = false;
+            }
+
+            WorkerCommitGate(const WorkerCommitGate&) = delete;
+            auto operator=(const WorkerCommitGate&) -> WorkerCommitGate& = delete;
+        } commit_gate{worker};
+        // Release every physical mutex before quiesce waits and the durable
+        // manifest write (durable-compaction.md). Holding catalog/worker across
+        // hot_path_depth wait deadlocks the exclusive Writer: mutate already
+        // entered the hot path, dropped catalog for append I/O, and needs shared
+        // catalog again to publish Index / drop depth.
+        catalog_lock.unlock();
+        worker_lock.unlock();
+
+        // Depth wait matches ExclusiveHotPathGuard: only the mutex-elided exclusive
+        // Writer path increments hot_path_depth. Flusher paths keep the Worker mutex.
+        if (options_.exclusive_writer && flusher_ == nullptr) {
             for (;;) {
                 const auto depth = worker.hot_path_depth.load(std::memory_order_acquire);
                 if (depth == 0) {
@@ -736,28 +789,43 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                 worker.hot_path_depth.wait(depth, std::memory_order_acquire);
             }
         }
-        struct WorkerCommitGate final {
-            RuntimeWorker& worker;
-            bool active{true};
 
-            explicit WorkerCommitGate(RuntimeWorker& owner) noexcept : worker(owner) {}
-            ~WorkerCommitGate() {
-                if (!active) {
-                    return;
-                }
-                const std::lock_guard lock{worker.mutex};
-                worker.compaction_commit_active.store(false, std::memory_order_release);
-                worker.compaction_commit_finished.notify_all();
+        worker_lock.lock();
+        worker.mutation_io_finished.wait(
+            worker_lock, [&] { return !worker.mutation_io_active || !healthy(); });
+        if (!healthy()) {
+            commit_gate.clear_locked();
+            worker_lock.unlock();
+            return abort_prepared(
+                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+        }
+        catalog_lock.lock();
+        sources_still_pinned = source_pins.size() == sources.size();
+        for (std::size_t source_index = 0; sources_still_pinned && source_index < sources.size();
+             ++source_index) {
+            const auto found = std::lower_bound(manifest_.segments.begin(), manifest_.segments.end(),
+                                                sources[source_index].segment_id,
+                                                [](const ManifestSegmentEntry& entry, const SegmentId id) {
+                                                    return entry.segment_id.value < id.value;
+                                                });
+            if (found == manifest_.segments.end() || *found != sources[source_index]) {
+                sources_still_pinned = false;
+                break;
             }
-            void clear_locked() noexcept {
-                worker.compaction_commit_active.store(false, std::memory_order_release);
-                active = false;
-                worker.compaction_commit_finished.notify_all();
-            }
-
-            WorkerCommitGate(const WorkerCommitGate&) = delete;
-            auto operator=(const WorkerCommitGate&) -> WorkerCommitGate& = delete;
-        } commit_gate{worker};
+            const auto catalog_index = static_cast<std::size_t>(found - manifest_.segments.begin());
+            sources_still_pinned = catalog_index < generation_pins_.size() &&
+                                   generation_pins_[catalog_index] == source_pins[source_index];
+        }
+        if (!healthy() || worker.mutation_io_active || manifest_ != snapshot ||
+            segments_.size() != snapshot.segments.size() ||
+            worker.next_sequence != snapshot_next_sequence || !worker.pending_group_mutations.empty() ||
+            worker.batch_closing || !sources_still_pinned) {
+            catalog_lock.unlock();
+            commit_gate.clear_locked();
+            worker_lock.unlock();
+            return abort_prepared(Error{ErrorCode::sequence_conflict,
+                                        "runtime state changed during durable compaction"});
+        }
         catalog_lock.unlock();
         worker_lock.unlock();
 
@@ -841,8 +909,10 @@ auto DurableRuntimeCatalog::snapshot_live_keys() -> Result<std::vector<std::stri
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
     }
     std::vector<std::string> keys;
+    const bool elide_worker_mutex = options_.exclusive_writer && flusher_ == nullptr;
     for (std::size_t worker_index = 0; worker_index < workers_.size(); ++worker_index) {
         auto& worker = *workers_[worker_index];
+        ExclusiveIndexQuiesce index_quiesce{worker, elide_worker_mutex};
         const std::lock_guard lock{worker.mutex};
         const std::shared_lock catalog_lock{catalog_mutex_};
         if (!healthy()) {

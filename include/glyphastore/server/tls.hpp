@@ -71,7 +71,10 @@ struct ClientTlsConfig {
 
 enum class TlsIoKind {
     ok,
+    // Deprecated umbrella: treat as needing both directions (safe for older callers).
     would_block,
+    want_read,
+    want_write,
     closed,
 };
 
@@ -79,6 +82,14 @@ struct TlsIoResult {
     TlsIoKind kind{TlsIoKind::ok};
     std::size_t bytes{};
 };
+
+[[nodiscard]] inline auto tls_io_blocked(const TlsIoKind kind) noexcept -> bool {
+    return kind == TlsIoKind::would_block || kind == TlsIoKind::want_read || kind == TlsIoKind::want_write;
+}
+
+[[nodiscard]] inline auto tls_io_needs_read(const TlsIoKind kind) noexcept -> bool {
+    return kind == TlsIoKind::want_read || kind == TlsIoKind::would_block;
+}
 
 class TlsSession;
 
@@ -144,6 +155,9 @@ class TlsSession final {
     // Stable mTLS principal (URI SAN → DNS SAN → CN). Empty when mTLS was not
     // required or the peer certificate had no usable identity.
     [[nodiscard]] auto peer_principal() const noexcept -> std::string_view;
+    // Bytes already decrypted and waiting in OpenSSL (SSL_pending). Used to decide
+    // post-accept drains when the poller will not see a fresh readable edge.
+    [[nodiscard]] auto pending() const noexcept -> std::size_t;
     [[nodiscard]] auto read(std::byte* data, std::size_t size) -> Result<TlsIoResult>;
     [[nodiscard]] auto write(const std::byte* data, std::size_t size) -> Result<TlsIoResult>;
 

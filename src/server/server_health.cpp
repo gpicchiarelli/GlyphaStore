@@ -36,7 +36,10 @@ auto Server::live() const noexcept -> bool {
 }
 
 auto Server::ready() const noexcept -> bool {
-    if (!pair_writers_ || !pair_writers_->healthy()) {
+    if (!pair_writers_healthy()) {
+        return false;
+    }
+    if (!admissions_open()) {
         return false;
     }
     return ServerHealth::ready(live(), stop_requested(), store_operational(), maintenance_snapshot());
@@ -44,6 +47,10 @@ auto Server::ready() const noexcept -> bool {
 
 auto Server::store_operational() const noexcept -> bool {
     return detail::StoreAccess::operational(*store_);
+}
+
+auto Server::admissions_open() const noexcept -> bool {
+    return detail::StoreAccess::admissions_open(*store_);
 }
 
 auto Server::maintenance_snapshot() const -> MaintenanceSnapshot {

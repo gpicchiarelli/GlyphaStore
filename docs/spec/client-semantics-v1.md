@@ -98,6 +98,13 @@ for mutations prefer `indeterminate` if any request bytes were written, else `re
 | `reconcile_first` | Must not blindly retry a mutation | `indeterminate`; disconnect after `bytes_sent > 0` |
 
 `retryability` reported to applications must be consistent with these classes.
+When `mutation_outcome` is already `indeterminate`, official clients must report
+`reconcile_first` even if `bytes_sent` was omitted or is still `0` (a post-send
+transport failure must not fall through to `same_request`).
+Per-slot pipeline / batch errors follow the same rule: an
+`indeterminate` mutation slot must expose `reconcile_first` (and a positive
+`bytes_sent` when the request frame left the client), not the bare category
+defaults (`same_request` / `new_attempt`).
 
 ## 5. Automatic client retries
 
@@ -117,7 +124,13 @@ Clients **must not** automatically retry:
 - unhealthy clients (routing epoch/count change, wrong owner on bound traffic).
 
 `execute_batch` is a client-side grouping helper: one pipeline per Worker, responses restored to
-caller order. It is not atomic across Workers.
+caller order. It is not atomic across Workers. After any Worker group has been admitted, a
+group-level failure must stamp that Worker's slots `failed` (or preserve already-classified
+pipeline slots) and still return sibling Worker results — it must not abort the whole call with
+a single error that discards committed or indeterminate siblings. A per-Worker connect/rebind
+failure before that group's send is likewise a group-level failure (`bytes_sent=0` →
+`failed`/`rejected` for that Worker's mutation slots, including portable `mutation_outcome`)
+and must not discard siblings that can still run.
 
 Reconnect after a transient failure must accept only the **original** `worker_count` and
 `routing_epoch`. A mismatch → `unavailable`, client unhealthy, no further automatic retry.
@@ -171,7 +184,18 @@ when the socket is closed. See [durable TCP daemon](../operations/durable-tcp-da
 Python `AsyncClient` and Ruby `AsyncClient`: if the awaiting task is cancelled, the implementation
 must poison/reset the Worker connection and not reuse buffered bytes for another logical request.
 Any future async SDK has the same obligation. Outcome classification for in-flight mutations
-follows §6.1 using `bytes_sent`.
+follows §6.1 using `bytes_sent`. After any request bytes were written, official async clients
+return an indeterminate `MutationResult` / pipeline slot with `reconcile_first` rather than
+leaving the application with only a bare cancel exception (`CancelledError` / `Async::Stop`).
+Classification must complete before any await that can re-raise cancel during connection
+poison/reset (e.g. Python `wait_closed`), so a second cancel cannot erase indeterminate
+polarity or fall through to known-unsent (`bytes_sent=0` / `rejected`).
+The same per-slot polarity applies when an official client’s outer request deadline kills
+in-flight pipeline / batch I/O after send may have occurred: return classified slot vectors,
+not a bare transport error that advertises `same_request`. Multi-Worker `execute_batch` outer
+cancel has the same sibling-preservation rule as §5: return the classified slot vector
+(completed Worker groups kept; in-flight groups classified) rather than aborting with a bare
+cancel that discards committed siblings.
 
 ### 6.4 Connect timeout
 

@@ -15,6 +15,8 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/unit/pair_read_generation_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/manifest_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_slot_pool_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/mutation_state_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/completion_policy_recovery_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_pressure_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/namespace_audit_tests.cpp

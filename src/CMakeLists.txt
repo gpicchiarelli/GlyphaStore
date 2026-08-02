@@ -53,6 +53,9 @@ add_library(glyphastore_core
     ${CMAKE_SOURCE_DIR}/src/segment/segment_header.cpp
     ${CMAKE_SOURCE_DIR}/src/store/maintenance.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_slot_pool.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_state.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/completion_policy.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_recovery.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp

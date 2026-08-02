@@ -16,6 +16,7 @@ all() ->
         fanout_down_before_result,
         fanout_result_before_down,
         fanout_timeout,
+        fanout_put_timeout_is_indeterminate,
         late_message_after_timeout,
         close_with_inflight_requests,
         single_connection_reconnect,
@@ -305,6 +306,38 @@ fanout_timeout(_Config) ->
         ],
         {ok, All} = glyphastore_client:execute_worker_pipelines(Client, Wave, #{timeout => 0.05}),
         2 = length(All),
+        %% GETs that left the client stay failed (not indeterminate).
+        failed = maps:get(outcome, lists:nth(1, lists:nth(1, All))),
+        failed = maps:get(outcome, lists:nth(1, lists:nth(2, All))),
+        ok = glyphastore_fake_server:control(Server, release_held),
+        glyphastore_client:close(Client)
+    after
+        glyphastore_fake_server:stop(Server)
+    end.
+
+%% 9b — outer fanout deadline after PUT send must not advertise same_request.
+fanout_put_timeout_is_indeterminate(_Config) ->
+    {ok, Server} = glyphastore_fake_server:start(#{workers => 2, hold_puts => true}),
+    try
+        {ok, Client} = connect(Server),
+        Keys = find_keys_for_workers(2),
+        Wave = [
+            [#{opcode => put, key => lists:nth(1, Keys), value => <<"a">>}],
+            [#{opcode => put, key => lists:nth(2, Keys), value => <<"b">>}]
+        ],
+        {ok, All} = glyphastore_client:execute_worker_pipelines(Client, Wave, #{timeout => 0.05}),
+        2 = length(All),
+        lists:foreach(
+            fun(Group) ->
+                Resp = lists:nth(1, Group),
+                indeterminate = maps:get(outcome, Resp),
+                Err = maps:get(error, Resp),
+                reconcile_first = maps:get(retryability, Err),
+                indeterminate = maps:get(mutation_outcome, Err),
+                true = maps:get(bytes_sent, Err) > 0
+            end,
+            All
+        ),
         ok = glyphastore_fake_server:control(Server, release_held),
         glyphastore_client:close(Client)
     after

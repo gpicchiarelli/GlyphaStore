@@ -39,6 +39,9 @@ auto Server::start() -> Status {
 }
 
 void Server::request_stop() noexcept {
+    // Refuse new BIND transfers before executors observe stop — otherwise a
+    // destination can exit idle_for_shutdown while a handoff cell still holds BIND OK.
+    mesh_.stop_accepting();
     if (stop_requested_.exchange(true, std::memory_order_acq_rel)) {
         return;
     }
@@ -118,6 +121,28 @@ void Server::run(const std::size_t executor_id) noexcept {
             }
             if (deadline.has_value() && std::chrono::steady_clock::now() >= *deadline) {
                 connection_drain_timed_out = true;
+                // Abandon pre-Store queued mutations and flush OVERLOADED while sockets
+                // still live. In-flight Store work stays open until hard close below.
+                pair_writers_->abandon_queued_mutations();
+                // Flush known-not-committed OVERLOADED while sockets live. Writer may
+                // still be leaving a coalescing wait after expire_remaining_ — give it
+                // a bounded window beyond the fixed queue-pop abandon path.
+                const auto flush_until =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+                while (std::chrono::steady_clock::now() < flush_until) {
+                    auto status = reactor.run_once(5);
+                    if (!status) {
+                        {
+                            const std::lock_guard lock{failure_mutex_};
+                            if (!failure_) {
+                                failure_ = std::move(status.error());
+                            }
+                        }
+                        failed_.store(true, std::memory_order_release);
+                        request_stop();
+                        return;
+                    }
+                }
                 reactor.close_all_connections();
                 break;
             }
@@ -138,6 +163,9 @@ void Server::run(const std::size_t executor_id) noexcept {
                 return;
             }
         }
+        // Defensive: a handoff that raced into the mesh after the last idle
+        // observation must not die with the socket on mesh teardown.
+        reactor.reject_pending_handoffs();
         if (connection_drain_timed_out) {
             shutdown_drain_timed_out_.store(true, std::memory_order_release);
         }

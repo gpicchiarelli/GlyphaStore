@@ -157,11 +157,19 @@ class ShardPairRuntime final {
     }
     // Stops admission and drains every admitted mutation before returning.
     // nullopt waits unbounded. A set deadline expires remaining queued (pre-Store)
-    // work as unavailable once it elapses (including a zero deadline, which arms
-    // expiry immediately); in-flight Store mutations are never cancelled.
+    // work as resource_exhausted once it elapses (including a zero deadline, which
+    // arms expiry immediately); in-flight Store mutations are never cancelled.
     // Returns unavailable if the deadline expired before Writers finished.
     [[nodiscard]] auto stop_and_drain(std::optional<std::chrono::milliseconds> deadline = std::nullopt)
         -> Status;
+    // Arms expire_remaining_ and completes every still-queued (pre-Store) async
+    // mutation as resource_exhausted so Reactors can flush wire OVERLOADED before
+    // hard-closing sockets. Safe while a Writer is blocked in Store: queue pops are
+    // serialized with the Writer consumer. Idempotent.
+    void abandon_queued_mutations() noexcept;
+    [[nodiscard]] auto expire_remaining_armed() const noexcept -> bool {
+        return expire_remaining_.load(std::memory_order_acquire);
+    }
 
     // Synchronous embedded mutation. Callable from any thread: the caller's key
     // and value stay borrowed for the whole call, the owning Writer linearizes

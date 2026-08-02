@@ -5,15 +5,18 @@
 #include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/persistence/store_verify.hpp"
 #include "glyphastore/segment/crc32c.hpp"
+#include "glyphastore/server/daemon_log.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <span>
 #include <string>
 #include <system_error>
@@ -299,6 +302,99 @@ GLYPHA_TEST("Store::backup_to copies while the Store remains open under writer f
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("gamma")) == "three");
 }
 
+GLYPHA_TEST("concurrent Store::backup_to re-fences admissions after compaction wait") {
+    // First backup resumes admissions when done; a second backup waiting on
+    // compaction_mutex must re-close+drain before copying — otherwise OK asserts a
+    // fenced snapshot while writers are already admitted.
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+
+    struct FenceProbe final {
+        std::atomic_bool stall_first_segment{true};
+        std::atomic_bool release_first{false};
+        std::atomic_int manifest_copies{0};
+        std::atomic_bool put_during_second_manifest{false};
+        glyphastore::Store* store{};
+
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& probe = *static_cast<FenceProbe*>(opaque);
+            if (operation == glyphastore::FilesystemOperation::copy_backup_segment) {
+                if (probe.stall_first_segment.exchange(false, std::memory_order_acq_rel)) {
+                    while (!probe.release_first.load(std::memory_order_acquire)) {
+                        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                    }
+                }
+                return {};
+            }
+            if (operation == glyphastore::FilesystemOperation::copy_backup_manifest) {
+                const auto which = probe.manifest_copies.fetch_add(1, std::memory_order_acq_rel);
+                if (which == 1 && probe.store != nullptr) {
+                    // Second backup's manifest copy: admissions must still be closed.
+                    const auto admitted = probe.store->put("during-second-backup", bytes("no"));
+                    probe.put_during_second_manifest.store(admitted.has_value(),
+                                                           std::memory_order_release);
+                }
+                return {};
+            }
+            return {};
+        }
+    } probe;
+
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = source,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.context = &probe, .before = &FenceProbe::before},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    probe.store = &store;
+    GLYPHA_REQUIRE(store.put("seed", bytes("v")).has_value());
+
+    std::error_code ec;
+    std::filesystem::create_directories(backup, ec);
+    GLYPHA_REQUIRE(!ec);
+
+    std::atomic_bool first_done{false};
+    std::atomic_bool second_done{false};
+    std::optional<glyphastore::Error> first_error;
+    std::optional<glyphastore::Error> second_error;
+
+    std::thread first{[&] {
+        auto backed = store.backup_to(backup / "first");
+        if (!backed) {
+            first_error = backed.error();
+        }
+        first_done.store(true, std::memory_order_release);
+    }};
+    while (probe.stall_first_segment.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+
+    std::thread second{[&] {
+        auto backed = store.backup_to(backup / "second");
+        if (!backed) {
+            second_error = backed.error();
+        }
+        second_done.store(true, std::memory_order_release);
+    }};
+    // Give the second backup time to reach compaction_mutex wait.
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    probe.release_first.store(true, std::memory_order_release);
+
+    first.join();
+    second.join();
+    GLYPHA_REQUIRE(!first_error.has_value());
+    GLYPHA_REQUIRE(!second_error.has_value());
+    GLYPHA_REQUIRE(probe.manifest_copies.load(std::memory_order_acquire) >= 2);
+    GLYPHA_REQUIRE(!probe.put_during_second_manifest.load(std::memory_order_acquire));
+    GLYPHA_REQUIRE(store.put("after-both", bytes("ok")).has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
 GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
     BackupTemporaryDirectory root;
     const auto source = root.path() / "source";
@@ -344,6 +440,112 @@ GLYPHA_TEST("Server::backup_to copies a live durable daemon catalog") {
     });
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("daemon-key")) == "daemon-value");
+}
+
+GLYPHA_TEST("Server READY fails while online backup fences admissions") {
+    // Wire/docs: READY requires Store admission open. backup_to close_admission must
+    // fail READY (and classify admission_fenced) while HEALTH/live stay up.
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+
+    struct StallBackup final {
+        std::atomic_bool entered{false};
+        std::atomic_bool release{false};
+
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& probe = *static_cast<StallBackup*>(opaque);
+            if (operation == glyphastore::FilesystemOperation::copy_backup_segment) {
+                probe.entered.store(true, std::memory_order_release);
+                while (!probe.release.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+            }
+            return {};
+        }
+    } stall;
+
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 4},
+        {.worker_config = {.explicit_count = 1},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = source,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.context = &stall, .before = &StallBackup::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    GLYPHA_REQUIRE(server.ready());
+    GLYPHA_REQUIRE(server.admissions_open());
+    GLYPHA_REQUIRE(server.live());
+
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    GLYPHA_REQUIRE(connected->put("seed", "v").committed());
+
+    std::error_code ec;
+    std::filesystem::create_directories(backup, ec);
+    GLYPHA_REQUIRE(!ec);
+
+    std::optional<glyphastore::Error> backup_error;
+    std::thread backup_thread{[&] {
+        auto backed = server.backup_to(backup / "fenced");
+        if (!backed) {
+            backup_error = backed.error();
+        }
+    }};
+    while (!stall.entered.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+
+    GLYPHA_REQUIRE(server.live());
+    GLYPHA_REQUIRE(!server.admissions_open());
+    GLYPHA_REQUIRE(!server.ready());
+    GLYPHA_REQUIRE(glyphastore::server::classify_ready_loss(server) ==
+                   glyphastore::server::ReadyLossReason::admission_fenced);
+
+    auto probe = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(probe.has_value());
+    // Fence is known-not-committed: wire OVERLOADED / rejected — not INTERNAL_ERROR /
+    // reconcile_first (mutation never entered Store append).
+    const auto fenced_put = probe->put("during-fence", "no");
+    GLYPHA_REQUIRE(!fenced_put.committed());
+    GLYPHA_REQUIRE(fenced_put.outcome == glyphastore::client::MutationOutcome::rejected);
+    GLYPHA_REQUIRE(fenced_put.error.has_value());
+    GLYPHA_REQUIRE(fenced_put.error->code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(fenced_put.error->mutation_outcome == "rejected" ||
+                   fenced_put.error->mutation_outcome.empty());
+    GLYPHA_REQUIRE(fenced_put.error->category != "indeterminate");
+    if (!fenced_put.error->retryability.empty()) {
+        GLYPHA_REQUIRE(fenced_put.error->retryability != "reconcile_first");
+    }
+    // Durable GET under the same fence must also be OVERLOADED, not INTERNAL_ERROR.
+    const auto fenced_get = probe->get("seed");
+    GLYPHA_REQUIRE(!fenced_get.has_value());
+    GLYPHA_REQUIRE(fenced_get.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(fenced_get.error().category != "indeterminate");
+    if (!fenced_get.error().retryability.empty()) {
+        GLYPHA_REQUIRE(fenced_get.error().retryability != "reconcile_first");
+    }
+
+    stall.release.store(true, std::memory_order_release);
+    backup_thread.join();
+    GLYPHA_REQUIRE(!backup_error.has_value());
+    GLYPHA_REQUIRE(server.admissions_open());
+    GLYPHA_REQUIRE(server.ready());
+    GLYPHA_REQUIRE(glyphastore::server::classify_ready_loss(server) ==
+                   glyphastore::server::ReadyLossReason::none);
+
+    // After the fence lifts, the seeded key is readable again.
+    auto after = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(after.has_value());
+    const auto seed = after->get("seed");
+    GLYPHA_REQUIRE(seed.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(seed->data()), seed->size()) == "v");
+
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
 }
 
 GLYPHA_TEST("Client::backup copies a live durable daemon catalog") {

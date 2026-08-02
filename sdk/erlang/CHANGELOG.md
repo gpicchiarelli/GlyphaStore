@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- BACKUP validate-response failure (mismatched `request_id` / metadata) enriches
+  `indeterminate` / `reconcile_first` with `bytes_sent=frame_len`. Litmus:
+  `set_wrong_request_id` after connect → BACKUP asserts `bytes_sent > 0`.
+- BACKUP wire `INTERNAL_ERROR` / receive-loss / crash / timeout stamp `bytes_sent`
+  to the request frame length (not `0` / known-unsent). Litmus: FakeServer
+  `internal_error_on_backup` asserts `bytes_sent > 0`.
+- Post-exchange mutate status / empty-OK-value / receive-loss paths stamp
+  `bytes_sent` to the request frame length (match C++/Perl). Litmus: PUT wire
+  `INTERNAL_ERROR` asserts `bytes_sent > 0`.
+- `execute_batch` / `execute_worker_pipelines`: connect/rebind failure stamps only
+  that Worker's planned slots (`failed` / `rejected`, `bytes_sent=0`) and still
+  fans out siblings — full slot vector, not bare `{error}`. Litmus: Worker-1
+  `fail_rebind` after conn kill → Worker-0 PUT succeeds + Worker-1 rejected.
+- I/O-child crash on pending BACKUP enriches `indeterminate` / `reconcile_first`
+  like the outer-deadline path (not bare transport / `same_request`).
+- Outer pipeline / fanout deadline and I/O-child crash return per-slot classified
+  vectors (mutations `indeterminate` / `reconcile_first`) instead of bare
+  `{error, transport}` or all-`failed` + `same_request`. Plan metadata retained on
+  pending and fanout children. Litmus: hold-on-PUT pipeline and worker-pipeline
+  timeout.
 - **OTP supervision:** `glyphastore_conn_sup` owns one `temporary` child per Worker with
   intensity 0 (never auto-restart). Conn crashes are monitored; the next request
   explicitly `replace_conn` + re-`INIT`/`BIND_WORKER` and verifies epoch/count (fail-closed).

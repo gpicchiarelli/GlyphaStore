@@ -87,12 +87,17 @@ func (e *Error) withRequest(requestID uint64, worker uint32, epoch uint64) *Erro
 func (e *Error) withBytesSent(n int) *Error {
 	out := e.clone()
 	out.BytesSent = n
-	out.Retryability = retryabilityFor(out.Category, n > 0 && out.hasMutation, out.hasMutation &&
-		(out.MutationOutcome == MutationIndeterminate || n > 0 && out.Category == CategoryTransport))
-	if out.hasMutation && n > 0 && out.Category == CategoryTransport {
+	indeterminate := out.hasMutation && out.MutationOutcome == MutationIndeterminate
+	// Indeterminate always means reconcile_first — including transport failures after a
+	// full mutation send where bytes_sent was omitted (must not fall through to same_request).
+	if indeterminate {
+		out.Retryability = RetryReconcileFirst
+	} else if out.hasMutation && n > 0 && out.Category == CategoryTransport {
 		out.Retryability = RetryReconcileFirst
 	} else if n == 0 && out.Category == CategoryTransport {
 		out.Retryability = RetrySameRequest
+	} else {
+		out.Retryability = retryabilityFor(out.Category, n > 0 && out.hasMutation, indeterminate)
 	}
 	return out
 }

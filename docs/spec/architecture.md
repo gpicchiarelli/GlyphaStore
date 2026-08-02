@@ -169,6 +169,9 @@ Operations admitted after closing begins fail with `unavailable`. `worker_count(
 ## 12. Related specifications
 
 - [Concurrency and Memory Model](concurrency-memory-model.md)
+- [Mutation lifecycle (as implemented)](mutation-lifecycle.md)
+- [Connection drain state machine (as implemented)](connection-drain-state-machine.md)
+- [Error taxonomy v1](error-taxonomy-v1.md)
 - [SwissTableIndex v1](index-v1.md)
 - [Wire Protocol v2](wire-protocol-v2.md)
 - [Persistence v1](persistence-v1.md)

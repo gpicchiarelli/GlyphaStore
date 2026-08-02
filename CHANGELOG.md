@@ -1,5 +1,372 @@
 ## [Unreleased]
 
+- Structural refactor (behavior-neutral, phase 0–2): document as-implemented mutation and
+  connection lifecycle (`docs/spec/mutation-lifecycle.md`,
+  `docs/spec/connection-drain-state-machine.md`); introduce typed `mutation_state`
+  (`CommitKnowledge`, `PublicationState`, `MutationLifecycle`, `decide_completion`) with
+  transition/characterization unit tests. Sync durable single-op path in
+  `ShardPairRuntime::run` mirrors the lifecycle in parallel (bools remain authoritative;
+  debug asserts check consistency). Fail-closed durable_sync litmus uses `Site::publish`
+  after commit+visibility (success ACK + sticky); before-hook throws stay
+  known-not-committed (`DurableSegmentFile::before`). Extract `completion_policy` /
+  `mutation_recovery`; sync durable single-op catch applies `plan_sync_durable_exception_*`
+  (drain / fail-closed / Status polarity unchanged).
+- `snapshot_published_reads` / `capture_published_read`: `ExclusiveIndexQuiesce` before
+  Index walk/find on exclusive durable_sync (mutex alone raced mutex-elided mutate
+  Index publish → sticky `corrupted_data`). Same protocol as `prepare_get`.
+- `flush_dirty_segments` (exclusive durable_sync, no flusher): `ExclusiveIndexQuiesce`
+  before dirty sync — mutex+CV alone raced mutex-elided mutate's `cached_file` /
+  `mutation_io_active` (lost wakeup / torn handle). Skip waiting on
+  `compaction_commit_active` while holding the quiesce gate (self-deadlock).
+  Litmus: mid-append PUT + concurrent `flush` → sibling `sequence_conflict`, flush
+  completes healthy.
+- Paired volatile exclusive Writer: `put`/`erase_locked_published` bump `hot_path_depth`
+  and reject while Index quiesce is armed; `Worker::compact` / `Store::verify_index` /
+  `get_owned` arm nest-safe quiesce and drain depth before Index touch (mutex alone
+  raced unlocked publish → UB / false `corrupted_data`). Litmus: `fault::arm_block(compact)`
+  + sibling PUT `sequence_conflict`.
+- Mutable Index GET (`prepare_get` / `complete_get` revalidate+TTL reclaim) and
+  `snapshot_live_keys`: `ExclusiveIndexQuiesce` (arm `compaction_commit_active` +
+  drain `hot_path_depth`) before Index touch on exclusive durable_sync. Mutex-only
+  walks raced mutex-elided mutate Index publish → sticky `corrupted_data`. Shared
+  helper also used by compaction Phase A and unread TTL probe; gate holders nest so
+  overlapping GET / Phase A/C cannot clear `compaction_commit_active` early.
+  Litmus: mid-append PUT + concurrent GET → sibling `sequence_conflict`, healthy.
+- `capture_published_read`: always take `worker.mutex` (match `snapshot_published_reads`).
+  Exclusive durable_sync elision raced compaction Phase A/C Index enumerate/swap and
+  could `fail_closed` after a committed PUT. Mutate still elides via `hot_path_depth`.
+  Litmus: warm GET under Phase A gate + sibling PUT `sequence_conflict`;
+  runtime stays healthy (capture shares the same Worker mutex).
+- Unread TTL maintenance probe (exclusive durable_sync): arm
+  `compaction_commit_active` and drain `hot_path_depth` before `index.entries()`,
+  after releasing the observation catalog lock (no nested shared lock / no catalog
+  hold across depth wait). Same Index-ownership hole as compaction Phase A.
+  Litmus: mid-append PUT holds depth → sibling PUT `sequence_conflict`, probe
+  completes healthy with expired sealed count.
+- Compaction Phase A (exclusive durable_sync): arm `compaction_commit_active` and
+  drain `hot_path_depth` before `index.entries()`. Mutex-only snapshot raced
+  mutex-elided mutates that share only the catalog lock (Index find/prepare/
+  publish). Gate clears before Phase B so mutates continue during build.
+  Litmus: mid-append PUT holds depth → sibling PUT `sequence_conflict`.
+- `rotate_active` post-I/O re-lock: use the mutex-elision predicate
+  (`exclusive_writer && flusher_ == nullptr`), not bare `exclusive_writer`.
+  Paired durable-group/periodic skipped `worker.mutex` when clearing
+  `mutation_io_active` / installing `active_segment`/`cached_file`, racing the
+  flusher and sibling mutates. Entry ownership check uses the same predicate.
+  Litmus: exclusive_writer + batch, mid-seal stall + same-Worker sibling PUT.
+- Compaction Phase C: release Worker/catalog mutexes **before** `hot_path_depth` /
+  `mutation_io_active` quiesce waits, then revalidate sequence / pins before
+  manifest publish. Holding catalog across the exclusive-Writer depth wait
+  deadlocked a mutate that already entered the hot path and needed shared
+  catalog after append. Mutation wins via finite `sequence_conflict` + rollback.
+  Litmus: exclusive durable_sync, compact intent stall + mid-append PUT.
+- Daemon GET under online backup admission fence: refuse as wire `OVERLOADED` (Reactor
+  pre-check + `operation_guard_failure` on prepare/complete GET), matching PUT/ERASE —
+  not bare `unavailable` → `INTERNAL_ERROR`. Litmus: StallBackup mid-copy concurrent
+  Client GET → `resource_exhausted`, key readable after fence lifts.
+- Daemon PUT/ERASE under online backup admission fence: reject **before** Writer enqueue as
+  wire `OVERLOADED` (mirror maintenance emergency). `try_submit` and exclusive
+  `put/erase_durable` also treat an open-lifecycle fence as `resource_exhausted`
+  (known not-committed) instead of bare `unavailable` → false `INTERNAL_ERROR` /
+  `reconcile_first`. Litmus: StallBackup mid-copy concurrent Client PUT → rejected /
+  `resource_exhausted`, not indeterminate.
+- `rotate_active` `ExclusiveHotPathPause`: enable only on the mutex-elided exclusive
+  Writer path (`exclusive_writer && flusher_ == nullptr`). Paired durable-group /
+  periodic keep the Worker mutex and never bump `hot_path_depth` — pausing there
+  underflowed depth to `UINT32_MAX` and deadlocked compaction's depth wait against
+  rotation's publication wait. Compaction depth wait uses the same predicate.
+  Litmus: exclusive_writer + batch flusher, rotation waiting on compaction intent.
+- `Store::put_batch` (non-paired / `legacy_mutex`): re-check the maintenance emergency
+  gate before each item put (not only at batch entry). Mid-batch / TOCTOU arming rejects
+  later siblings as `storage_exhausted` before append — matching single-op `put` and
+  `mutate_durable_batch`. Litmus: armed entry reject + `Site::put_batch_gate` mid-batch.
+- `classify_ready_loss`: observe paired Writer sticky health (`pair_fail_closed`).
+  `Server::ready()` already failed CLOSED when `pair_writers_` was unhealthy, but
+  structured `ready.reason` could report `none` — especially on volatile sticky where
+  the Store catalog stays `operational`. Litmus: volatile `Site::publish` sticky →
+  `ready()==false`, `live()==true`, `classify_ready_loss==pair_fail_closed`.
+- `StoreAccess::mutate_durable_batch`: re-check the maintenance emergency gate
+  before each sibling mutate (not only at batch entry). Mid-batch / TOCTOU arming
+  rejects later siblings as `not_committed` + `storage_exhausted` before append —
+  matching single-op StoreAccess paths and `maintenance-controller.md`. Litmus:
+  armed entry reject + `Site::durable_batch_gate` mid-batch TOCTOU.
+- Polish: Ruby `AsyncClient` classify-before-`reset!` on post-send cancel /
+  send-failure (mutate / BACKUP / pipeline), matching Python §6.3. Python
+  `AsyncClient.execute_batch` defensive path enriches escaped `GlyphaError` with
+  `mutation_outcome=rejected` / `bytes_sent=0`.
+- `rotate_active`: after seal (or already-sealed / durable create), create and
+  publish `not_published` failures preserve `exception_outcome` (`indeterminate`)
+  instead of demoting to `not_committed` → wire `OVERLOADED` with a healthy pair.
+  Litmus: warm PUT + `segment_full` + `preallocate_segment` reject → `unavailable`,
+  pair sticky.
+- `rotate_active`: after a committed seal (or durable replacement create), sealed /
+  replacement reader-open failures stamp `indeterminate` (via `exception_outcome`)
+  and fail-close — not `not_committed` → wire `OVERLOADED`. Litmus:
+  warm PUT + `segment_full` + `Site::segment_open` on sealed-reader → `unavailable`,
+  pair sticky.
+- Official clients (C++, Python sync/async, Go, Ruby sync/async, Perl, Erlang):
+  BACKUP post-exchange `validate_response` failure (mismatched `request_id` /
+  routing metadata / wrong Worker) enriches `indeterminate` / `reconcile_first`
+  with `bytes_sent=frame_len` — same polarity as BACKUP `INTERNAL_ERROR` and
+  PUT/ERASE validate-fail. Litmus: FakeServer wrong `request_id` on BACKUP OK.
+- `rotate_active`: publication-wait fail-closed and catch-all before a rotation
+  write boundary stamp `not_committed` (mirror `mutate()` fail-closed). Catch
+  upgrades to `indeterminate` only after a committed seal or indeterminate
+  create/publish. Avoids wire `INTERNAL_ERROR` / reconcile when the caller only
+  hit `segment_full`/`segment_sealed`. Litmus: `segment_full` + `Site::rotate`
+  pre-seal throw → `resource_exhausted`, pair healthy.
+- Durable Segment `open` / selected-commit mismatch **before** any Record append
+  (mutate path and `rotate_active` open of old active) stamps `not_committed`
+  instead of `indeterminate` — matches sealed-reader/replacement open and the
+  nearby “not_committed through open” comment. Avoids false sticky fail-close and
+  wire `INTERNAL_ERROR` / reconcile for `EMFILE`/`descriptor_exhausted`. Litmus:
+  `Site::segment_open` → `descriptor_exhausted`/`resource_exhausted`, pair healthy.
+- Python `AsyncClient`: classify post-send cancel (mutate / BACKUP / pipeline)
+  **before** `await reset()`, and make `reset()` cancel-safe around
+  `wait_closed` — a second `CancelledError` during close must not erase
+  indeterminate / `reconcile_first` or fall through to rejected/`bytes_sent=0`
+  (§6.3). Litmus: stall-on-PUT cancel with reset raising `CancelledError`.
+- Erlang / Perl clients: BACKUP wire `INTERNAL_ERROR` (and Erlang BACKUP
+  receive-loss / crash / timeout) stamp `bytes_sent` to the request frame length
+  (match C++/Python/Go/Ruby §4 — not `0` / known-unsent). Litmus: FakeServer
+  `internal_error_on_backup` asserts `bytes_sent > 0` + `reconcile_first`.
+- Official SDKs (Python sync/async, Go, Ruby sync/async, Erlang): post-exchange
+  mutate status / empty-OK-value / receive-loss paths stamp `bytes_sent` to the
+  request frame length (match C++/Perl §4). Litmus: PUT wire `INTERNAL_ERROR`
+  asserts `bytes_sent > 0` + `reconcile_first`.
+- `StoreAccess::mutate_durable_batch`: convert pre-mutate `bad_alloc` / unexpected
+  throws into per-slot `not_committed` + `resource_exhausted` (pair stays healthy)
+  instead of escaping to Writer catch after `durable_mutate_entered=true` (false
+  sticky + wire `INTERNAL_ERROR`). Post-entry throws still fill unfinished slots
+  indeterminate/`unavailable` and fail-close. Litmus: `Site::durable_batch_pre`.
+- Official SDKs (C++, Python sync/async, Go, Ruby sync/async, Perl): `execute_batch`
+  group-level pre-admission failure (`ensure_connected` / encode) stamps PUT/ERASE
+  slots with `mutation_outcome=rejected` and `bytes_sent=0` (matching Erlang
+  `mark_unresolved` / cancel paths). Sibling merge unchanged. Litmus: Worker-1
+  rebind fail → slot1 `rejected`.
+- Paired sync `put/erase_volatile_published` with `caller_holds_guard` still enforces
+  the maintenance emergency gate (`storage_exhausted`). Only the nested
+  `OperationGuard` RMW is skipped — closing the mid-batch / TOCTOU hole where
+  emergency could arm after `Store::put`/`put_batch` admission but before Writer
+  append. Litmus: `caller_holds_guard` under `mutations_rejected`.
+- Writer volatile sync/async: known-not-committed rewrite now applies to Store-mutate
+  failures that never crossed append (`invalid_reference` rotation →
+  `resource_exhausted` / wire `OVERLOADED`). Post-append Index failures stay
+  `unavailable` (sticky indeterminate) and are not demoted to OVERLOADED. Litmus:
+  `Site::rotate` pre-append + `Site::index_account` post-append.
+- Erlang client: `execute_batch` / `execute_worker_pipelines` connect/rebind failure
+  stamps only that Worker's planned slots (`failed` / `rejected`, `bytes_sent=0`)
+  and still fans out siblings — returns the full slot vector, not a bare `{error}`
+  that discarded sibling results. Litmus: Worker-1 `fail_rebind` after conn kill →
+  Worker-0 PUT succeeds + Worker-1 rejected.
+- Python `AsyncClient.backup` / `_read`: match sync / C++ / Ruby — after any BACKUP
+  bytes leave the client (transport/`_SendFailure`, wire `INTERNAL_ERROR`, or
+  cancel-after-send), raise enriched `indeterminate` / `reconcile_first` and do not
+  blind-retry the same destination. Litmus: FakeServer `drop_on_backup` /
+  `internal_error_on_backup` → one attempt + `reconcile_first`.
+- Erlang client: I/O-child crash on pending BACKUP enriches `indeterminate` /
+  `reconcile_first` like the outer-deadline path (not bare transport /
+  `same_request`).
+- Perl client: `_mutate` wire `INTERNAL_ERROR` / non-empty OK mutation value, and
+  multi-Worker `execute_worker_pipelines` / `execute_batch` fail + status paths,
+  enrich `mutation_outcome` / `bytes_sent` like single-Worker `execute_pipeline`
+  (and C++). Indeterminate slots no longer advertise bare `new_attempt` /
+  `same_request`. Litmus: FakeServer PUT `INTERNAL_ERROR` standalone + two-Worker
+  batch → `reconcile_first`.
+- Python / Ruby `AsyncClient.execute_batch`: outer cancel after multi-Worker admission
+  returns the classified slot vector (keep completed sibling Worker results; classify
+  in-flight groups) instead of bare `CancelledError` / `Async::Stop` that discarded
+  siblings (§5 / §6.3). Litmus: Worker-0 PUT succeeds, Worker-1 stall-on-PUT, cancel
+  the batch task → slot0 succeeded + slot1 indeterminate / `reconcile_first`.
+- Writer sync durable single-op fail-closed epilogue no longer overwrites a
+  resolved known-not-committed error (`resource_exhausted` → wire `OVERLOADED`)
+  to `unavailable` (wire `INTERNAL_ERROR` / reconcile) when the catalog goes
+  fail-closed and the drain snapshot fails. Matches catch / durable_group sync
+  polarity (keep definitive errors; only fill unresolved / demote unpublished
+  success). Litmus: armed `write_some_at` EIO + `Site::drain_snapshot` after
+  seed PUT.
+- Official SDKs (Python sync/async, Go, Ruby sync/async): `execute_batch` matches
+  C++ — a per-Worker group error stamps that Worker's slots `failed` and still
+  returns sibling Worker results (non-atomic batch). Previously the first group
+  error aborted the whole call and discarded committed sibling slots. Litmus:
+  force Worker-1 rebind failure after Worker-0 PUT succeeds.
+- Erlang client: outer pipeline / fanout deadline and I/O-child crash return
+  per-slot classified vectors (`mark_unresolved` with full planned bytes) —
+  mutations `indeterminate` / `reconcile_first` — instead of bare `{error,
+  transport}` or all-`failed` + `same_request`. Retains plan metadata on pending
+  and fanout children. Litmus: hold-on-PUT pipeline / worker-pipeline timeout.
+- Ruby `AsyncClient`: cancel after mutation send classifies indeterminate /
+  `reconcile_first` (mutate + pipeline), matching Python §6.3 — not bare
+  `Async::Stop`. BACKUP cancel after send likewise. Litmus: stall-on-PUT put /
+  pipeline cancel.
+- Official SDKs (Python sync/async, Go, Ruby sync/async, Perl, Erlang): pipeline /
+  batch per-slot errors now enrich like C++ (`bytes_sent`, `mutation_outcome`,
+  `retryability`). An indeterminate pipeline PUT/ERASE no longer leaves a bare
+  transport/`INTERNAL_ERROR` with `same_request` / `new_attempt`. Python async
+  pipeline cancel after send classifies unresolved slots. Litmus: disconnect /
+  INTERNAL_ERROR pipeline slots assert `reconcile_first`.
+- Official SDKs (Python sync/async, Go, Ruby sync/async, Perl, Erlang): enrich treats
+  `mutation_outcome=indeterminate` as `reconcile_first` even when `bytes_sent` was
+  omitted (historically `0`), so a post-send transport failure cannot advertise
+  `same_request`. Mutation receive-after-send paths also stamp `bytes_sent` to the
+  full frame size. Python AsyncClient: cancel after `write()` / after send classifies
+  indeterminate (client-semantics §6.3). Litmus: disconnect-after-PUT + enrich unit
+  tests for zero `bytes_sent` + indeterminate.
+- Writer sync single durable `catch (...)` never-Store-entered path stamps
+  `resource_exhausted` like `bad_alloc` / volatile / async, not `internal_error`.
+- Durable Segment `before()` hooks: convert throws to `resource_exhausted` Status
+  (known not committed). Runtime mutate no longer stamps `exception_outcome =
+  indeterminate` before open/append — a pre-`write_all_at` failure (including a
+  throwing `before(write_record)`) stays `not_committed` → Writer/wire `OVERLOADED`,
+  not false `INTERNAL_ERROR` / reconcile. Litmus: before-hook throw on first PUT;
+  same-key group second item pre-write throw → `resource_exhausted`.
+- Writer `catch (...)` never-Store-entered paths (sync volatile chunk / async single)
+  stamp `resource_exhausted` like `bad_alloc`, not `internal_error`.
+- Writer durable_group: keep the in-flight window through post-`mutate_durable_batch`
+  result classification (sync + async two-phase classify-then-stage). A throw after
+  mutate returns must stamp Store-entered siblings `unavailable`, not
+  `resource_exhausted` / wire `OVERLOADED` while drain still publishes them
+  (inverted RAW). `catch (...)` never-entered `before_mutate` is also
+  `resource_exhausted`. Litmus: `Site::post_mutate` after a three-key group mutate →
+  all `unavailable` + GET hits.
+- Writer durable_group catch: never-started later sub-batch placeholders stay
+  `resource_exhausted` (known not committed) instead of upgrading to `unavailable`
+  once an earlier sub-batch entered mutate. Only the in-flight sub-batch may become
+  `unavailable` (write boundary may have been crossed). Sync + async. Litmus: three
+  same-key `put_batch` items with throw on second write → first OK, second
+  `unavailable`, third `resource_exhausted`.
+- Shutdown drain deadline: abandon still-queued (pre-Store) PairWriter mutations as
+  `resource_exhausted` **before** hard-closing sockets, so clients observe wire
+  `OVERLOADED` (known not committed) instead of bare EOF / indeterminate. Payload
+  slot release that would violate FIFO while an earlier Store mutation is in flight
+  is deferred until in-order release succeeds; the OVERLOADED flush is not blocked.
+  Coalescing waits (`min_records` / burst) break immediately when expire is armed, and
+  durable_group later sub-batches re-check expire before Store entry so dequeued-but-
+  pre-Store work cannot outlive the deadline. In-flight Store work is still never
+  cancelled. Litmus: blocked durable sync + queued sibling; durable_group coalescing
+  hold alone → wire `OVERLOADED` + GET miss.
+- Official SDKs (Python sync/async, Go, Ruby sync/async, Perl, Erlang): map BACKUP wire
+  `INTERNAL_ERROR` to `reconcile_first` / indeterminate (same polarity as C++ after a
+  possible committed fenced copy). Avoids advertising `new_attempt` same-destination
+  retry that looks like the first backup failed. Litmus: FakeServer INTERNAL_ERROR on
+  BACKUP → reconcile_first and a single attempt where counted.
+- Wire BACKUP / `Client::backup`: after a successful `backup_to`, report formatting
+  failures keep wire `OK` with minimal `status=ok` (never probe `false` →
+  `INTERNAL_ERROR`). C++ client maps BACKUP wire `INTERNAL_ERROR` to
+  `reconcile_first` / indeterminate (not `new_attempt`). Litmus:
+  `Site::backup_report` → OK + restorable destination; client INTERNAL_ERROR mock →
+  `reconcile_first` and a single BACKUP.
+- Wire BACKUP: preflight OK-report fit against `maximum_output_bytes` / max frame
+  before the fenced catalog copy. A post-success report that still will not fit
+  returns minimal `status=ok` or `INTERNAL_ERROR` — never `OVERLOADED` (false
+  known-not-committed while the destination already holds the backup). Litmus:
+  tiny output budget → `OVERLOADED` and destination not created.
+- Writer: sync durable_group batch catch no longer upgrades never-Store-entered
+  siblings' `resource_exhausted` to `unavailable`. Keep mid-chunk fail-closed /
+  rewritten not-committed / sticky errors; only the pre-mutate placeholder may be
+  upgraded. Matches volatile sync catch (item prior) and async durable catch.
+  Litmus: same-key `put_batch` + `Site::index_account` + `Site::publish` → first OK,
+  second stays `resource_exhausted` through catch.
+- Writer: sync volatile catch after `store_mutated` no longer upgrades never-Store-
+  entered siblings to `unavailable`. Keep mid-chunk `resource_exhausted` (and other
+  known-not-committed errors); only unpublished Store-entered nodes stay
+  `unavailable`. Fault injection allows concurrent per-site `fail_once` arms.
+  Litmus: `Site::mutate` + `Site::publish` on two-key `put_batch` → first OK, second
+  remains `resource_exhausted` through catch.
+- Writer: sync volatile mid-chunk fail-closed stamps `resource_exhausted` (not
+  `unavailable`) for siblings that never entered Store after another lane sticky-
+  closes; sync incremental-merge backpressure matches async (`resource_exhausted`).
+  Avoids wire `INTERNAL_ERROR` / client `indeterminate` for known-not-committed
+  batch siblings. Litmus: `Site::mutate` after first same-shard put_batch item →
+  first OK + GET hit, second `resource_exhausted` + GET miss.
+- READY observes online backup admission fence: `Store::admissions_open` /
+  `Server::admissions_open` reflect `close_admission`; `ready()` and
+  `classify_ready_loss` (`admission_fenced`) fail while BACKUP holds the fence,
+  matching wire-protocol "Store admission open". HEALTH/live unchanged.
+  Litmus: stall `backup_to` mid-segment-copy → `ready()==false`, then OK after resume.
+- TLS post-accept drain: after adopting a TLS connection, call `read_ready` once
+  so application records already in OpenSSL after `SSL_accept` (TLS 1.3
+  coalescing) are processed without waiting for a fresh edge-triggered readable
+  event. Connection-local drain failures close the peer only (accept loop stays
+  up). `TlsSession::pending()` wraps `SSL_pending`. Litmus: `SSL_connect` then
+  immediate INIT → OK without a second client write.
+- TLS `SSL_write` `WANT_READ`: distinguish `want_read` / `want_write` on the wire
+  I/O result, keep read interest even after half-close, opportunistically
+  `SSL_read` then retry write once (edge-triggered pollers do not re-fire).
+  `read_ready` retries pending output on TLS block. Avoids stranded committed
+  ACKs that looked like client timeouts / indeterminate. Litmus:
+  `Site::tls_write_want_read` → PUT OK still delivered.
+- Shutdown BIND handoff drain: `ConnectionHandoffMesh::stop_accepting` on
+  `request_stop` (before executors observe stop), pending cells keep
+  `idle_for_shutdown` false, and force-close / post-drain
+  `reject_pending_handoffs` surfaces wire `OVERLOADED` instead of destroying
+  buffered BIND OK with bare EOF. Litmus: pending cross-Worker BIND +
+  `close_all_connections` → `OVERLOADED`; mesh unit coverage for stop/pending.
+- Writer: broaden known-not-committed wire rewrite — any Reactor `INTERNAL_ERROR`-bucket
+  code (`corrupted_data`, `internal_error`, `invalid_record`, …) becomes
+  `resource_exhausted` → wire `OVERLOADED` / client `rejected`. Codes already mapped
+  to rejected polarity are unchanged. Litmus: inject `write_record` `corrupted_data`
+  and `internal_error` → `OVERLOADED`, GET miss.
+- Writer: already-queued mutations rejected before Store entry after sticky fail-closed
+  stamp `resource_exhausted` (not `unavailable`). Catalog `not_committed`+`unavailable`
+  is rewritten the same way as known-not-committed `io_error`. Avoids wire
+  `INTERNAL_ERROR` / client `indeterminate` for siblings that never linearized.
+  Taxonomy §5 updated. Litmus: async same-key sibling completion is
+  `resource_exhausted`; wire two-connection same-key + `Site::capture` → first OK,
+  second `OVERLOADED`.
+- Writer: rewrite known-not-committed durable `ErrorCode::io_error` to
+  `resource_exhausted` before completion (sync/async single and batch). Pre-write
+  append rejects used to keep `io_error` → Reactor `INTERNAL_ERROR` → client
+  `indeterminate` / `reconcile_first` despite authoritative not-committed. Same
+  polarity as `segment_full` → wire `OVERLOADED`. Taxonomy §5 note updated.
+  Litmus: inject `write_record` `io_error` → wire `OVERLOADED`, GET miss.
+- Reactor BIND handoff: honor `poller_.remove` failures (retry `EINTR` in epoll/kqueue
+  backends). Do not move a socket that is still registered on the source Reactor —
+  dual registration spun the source executor on stale tokens. On remove failure,
+  replace buffered BIND OK with wire `OVERLOADED`, drain, and close locally.
+  Litmus: `Site::poller_remove` on cross-Worker BIND → `OVERLOADED`, target has
+  zero connections, peer closes.
+- `Store::backup_to`: after acquiring `compaction_mutex`, re-close admissions and
+  drain active operations before the catalog copy. A concurrent backup that waited
+  on the mutex used to copy after the first backup's `resume_admission_if_open`,
+  violating the fenced-snapshot guarantee while still returning OK. Litmus: stall
+  first backup mid-segment-copy, overlap a second backup, assert PUT is refused
+  during the second backup's manifest copy.
+- Reactor wire `BACKUP`: require successful `INIT` + `BIND_WORKER` before running the
+  fenced backup path (`NOT_BOUND` otherwise). Unbound BACKUP was not a documented
+  pre-handshake exemption and could stall a Reactor when authz was off. Spec
+  `wire-protocol-v2` Bound-state list updated. Litmus: raw BACKUP before INIT →
+  `NOT_BOUND` and no destination created; INIT+BIND+BACKUP still OK.
+- Official SDKs (Python sync/async, Go, Ruby sync/async, Perl, Erlang): do not
+  blind-retry wire `BACKUP` after any request bytes were sent — same polarity as
+  `Client::backup`. Lost OK then retry falsely failed with "destination not empty".
+  After send, return indeterminate / `reconcile_first`. Python litmus: drop-on-backup
+  FakeServer asserts one BACKUP frame.
+- `Client::backup`: do not blind-retry the generic `read()` loop after any request
+  bytes were sent. Online BACKUP is not idempotent to the same destination (requires
+  pristine dir); a lost OK then retry used to surface "destination not empty" as a
+  false failure. After send, return indeterminate / `reconcile_first` like in-flight
+  mutations. Litmus: mock accepts one BACKUP and drops the response — only one BACKUP
+  frame, error carries `mutation_outcome=indeterminate`.
+- Reactor `run_once` poller flags: handle `hangup` before raw `error`, and only
+  hard-close on `error` when `SO_ERROR` is sticky/non-zero (best-effort drain first).
+  Co-reported `EPOLLERR|EPOLLRDHUP` / kqueue `EV_EOF` used to error-close after a
+  partial writable flush and discard remaining decided bytes. Litmus: large PING
+  with small client `SO_RCVBUF` + `SHUT_WR` still delivers the full PING OK.
+- Reactor INIT: catch identity-value `std::bad_alloc` (`Site::init_identity`), leave
+  `initialized` false, and queue wire `OVERLOADED` instead of escaping to executor
+  fail-stop. No store work is committed on INIT. Litmus: INIT fault → `OVERLOADED`,
+  server stays live; a second connection completes INIT+BIND.
+- Reactor `read_ready` input append: catch `std::bad_alloc` (`Site::input_buffer`) and
+  input high-watermark overflow; isolate to the connection. If decided output is pending,
+  `close_after_flush` + drain via `write_ready` instead of returning Status that makes
+  `run_once` hard-close and discard the ACK. Litmus: large PING (small client `SO_RCVBUF`)
+  + follow-up with input-buffer fault still delivers PING OK; server stays live.
+- Reactor `queue_response` / scatter `queue_owned_response`: translate `std::bad_alloc`
+  (and `Site::response_queue` litmus) to `resource_exhausted` instead of escaping to
+  executor fail-stop. Mutation completions keep close-without-ACK polarity — no invented
+  `OVERLOADED` after a possibly committed write. Litmus: durable PUT + ACK-buffer fault →
+  empty wire / peer close, server stays live+healthy+ready, reconnect GET sees the value.
 - Pre-Store Writer lane expiry / merge-retire pressure / force-expire stamps
   `resource_exhausted` (wire `OVERLOADED`, known not committed) instead of
   `unavailable` (`INTERNAL_ERROR` / reconcile). Sticky/post-commit paths keep
@@ -165,11 +532,11 @@
   cross-shard groups run independently. Lab `store_put_batch` ~527 k ops/s vs
   single `store_put` ~372 k on Apple M4 (`macos-release`). FIFO within a batch
   is tested. Single-op PUT remains publish-bound.
-- Paired sync Writer: skip nested `OperationGuard` / maintenance re-check on
-  `put_volatile_published` when the embedded caller already holds admission
-  (`PublishedAdmission::caller_holds_guard`). Async path unchanged. No early ACK;
-  lab `store_put` remains publish-bound (~400 k ops/s on Apple M4). Rejected for
-  now: Delta COW freelist (measured regressions).
+- Paired sync Writer: skip nested `OperationGuard` on `put_volatile_published` when
+  the embedded caller already holds admission (`PublishedAdmission::caller_holds_guard`).
+  The maintenance emergency gate remains enforced on that path (not skipped). Async
+  path unchanged. No early ACK; lab `store_put` remains publish-bound (~400 k ops/s
+  on Apple M4). Rejected for now: Delta COW freelist (measured regressions).
 - Hot-path performance program (lab, macOS Apple Silicon): disableable phase
   attribution (`GLYPHASTORE_HOT_PATH_PHASES`), GET path consolidation + ReadLease
   without Writer wake + 64 B `OwnedValue` SSO, bounded adaptive spin / proportional

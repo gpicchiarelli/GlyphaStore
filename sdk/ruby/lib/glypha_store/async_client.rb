@@ -18,7 +18,9 @@ module GlyphaStore
   # Fiber-aware async client (wire v2 + client-semantics v1).
   #
   # Must be used inside an +Async+ reactor. Cancellation / task stop poisons the
-  # in-flight Worker connection (§6.3). Optional dependency: +async+ gem.
+  # in-flight Worker connection (§6.3). Mutations cancelled after any request
+  # bytes were written return indeterminate / reconcile_first (not bare
+  # +Async::Stop+). Optional dependency: +async+ gem.
   #
   #   require "glypha_store/async_client"
   #   Async do
@@ -139,35 +141,42 @@ module GlyphaStore
       if groups.length == 1
         groups.each_value do |items|
           reqs = items.map { |(_, r)| r }
-          resps = execute_pipeline_deadline(reqs, deadline)
+          begin
+            resps = execute_pipeline_deadline(reqs, deadline)
+          rescue Error => e
+            resps = failed_group_responses(items, e)
+          end
           items.each_with_index { |(index, _), i| responses[index] = resps[i] }
         end
         return responses
       end
 
       barrier = Async::Barrier.new
-      first_error = nil
-      error_mutex = Async::Semaphore.new(1)
       groups.each_value do |items|
         barrier.async do
           reqs = items.map { |(_, r)| r }
-          resps = execute_pipeline_deadline(reqs, deadline)
-          items.each_with_index { |(index, _), i| responses[index] = resps[i] }
-        rescue Error => e
-          error_mutex.acquire
           begin
-            first_error ||= e
-          ensure
-            error_mutex.release
+            resps = execute_pipeline_deadline(reqs, deadline)
+          rescue Error => e
+            resps = failed_group_responses(items, e)
+          rescue Async::Stop
+            # Cancel escaped pipeline (pre-send). After-send cancel is classified
+            # inside execute_pipeline_deadline. Pre-send → rejected failed slots.
+            cancelled = Error.transport("request cancelled")
+            resps = failed_group_responses(items, cancelled)
           end
+          items.each_with_index { |(index, _), i| responses[index] = resps[i] }
         end
       end
       begin
         barrier.wait
+      rescue Async::Stop
+        # Outer cancel must not discard sibling Worker results (§5 / §6.3).
+        # Children classify via pipeline cancel or the rescue above; return the
+        # slot vector instead of bare Async::Stop.
       ensure
         barrier.stop
       end
-      raise first_error if first_error
 
       responses
     end
@@ -178,6 +187,30 @@ module GlyphaStore
     end
 
     private
+
+    # Pre-admission group failure: bytes_sent=0 → rejected for PUT/ERASE.
+    def failed_group_responses(items, error)
+      items.map do |(_, request)|
+        is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(request.opcode)
+        op =
+          case request.opcode
+          when PipelineOpcode::PUT then "put"
+          when PipelineOpcode::ERASE then "erase"
+          else "get"
+          end
+        fields = {
+          operation: op,
+          worker: worker_for(request.key),
+          routing_epoch: @routing_epoch,
+          bytes_sent: 0
+        }
+        fields[:mutation_outcome] = MutationOutcome::REJECTED if is_mutation
+        PipelineResponse.new(
+          outcome: PipelineOutcome::FAILED,
+          error: error.base_copy.enrich(**fields)
+        )
+      end
+    end
 
     def bootstrap_all!
       first = Connection.new(0)
@@ -335,6 +368,12 @@ module GlyphaStore
 
           sent += n
         end
+      rescue Async::Stop
+        # write may have handed bytes to the transport; classify via bytes_sent (§6.3).
+        raise Client::SendFailure.new(
+          error: Error.transport("request send cancelled"),
+          bytes_sent: sent
+        )
       rescue Error => e
         raise Client::SendFailure.new(error: e, bytes_sent: sent)
       rescue SystemCallError, IOError => e
@@ -461,14 +500,57 @@ module GlyphaStore
           begin
             response = exchange!(conn, frame, deadline)
           rescue Client::SendFailure => e
-            last = promote_send_failure(e, op, request_id, worker, mutation: false)
+            backup_sent = opcode == Protocol::Opcode::BACKUP && e.bytes_sent.positive?
+            last = promote_send_failure(e, op, request_id, worker, mutation: backup_sent)
             conn.reset!
+            raise last if backup_sent
             raise last if last.category == Category::UNAVAILABLE && !healthy?
 
             next
+          rescue Async::Stop
+            # Classify before poison (match Python §6.3): reset! must not erase
+            # indeterminate / reconcile_first if close ever becomes awaitable.
+            if opcode == Protocol::Opcode::BACKUP
+              enriched = Error.transport("request cancelled after send").enrich(
+                operation: op,
+                request_id: request_id,
+                worker: worker,
+                routing_epoch: @routing_epoch,
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
+              raise enriched
+            end
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
+            raise
           rescue Error => e
             last = annotate!(e, op, request_id, worker)
-            conn.reset!
+            if opcode == Protocol::Opcode::BACKUP
+              last.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
+              raise last
+            end
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
             raise last if last.category == Category::UNAVAILABLE && !healthy?
 
             next
@@ -478,6 +560,13 @@ module GlyphaStore
           rescue Error => e
             conn.reset!
             annotated = annotate!(e, op, request_id, worker)
+            if opcode == Protocol::Opcode::BACKUP
+              annotated.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+              raise annotated
+            end
             raise annotated if annotated.category == Category::PROTOCOL
             raise annotated if annotated.category == Category::UNAVAILABLE && !healthy?
 
@@ -486,7 +575,15 @@ module GlyphaStore
           end
           if response.status != Protocol::Status::OK
             mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
-            raise annotate!(Error.from_status(response.status), op, request_id, worker)
+            error = annotate!(Error.from_status(response.status), op, request_id, worker)
+            if opcode == Protocol::Opcode::BACKUP && response.status == Protocol::Status::INTERNAL_ERROR
+              # Fenced copy may already be committed — same polarity as C++.
+              error.enrich(
+                bytes_sent: frame.bytesize,
+                mutation_outcome: MutationOutcome::INDETERMINATE
+              )
+            end
+            raise error
           end
           return response.value
         end
@@ -548,46 +645,86 @@ module GlyphaStore
           begin
             response = exchange!(conn, frame, deadline)
           rescue Client::SendFailure => e
-            conn.reset!
             promoted = promote_send_failure(e, op, request_id, worker, mutation: true)
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
             if e.bytes_sent.zero?
               next if attempt.zero?
 
               return MutationResult.new(outcome: MutationOutcome::REJECTED, error: promoted)
             end
             return MutationResult.new(outcome: MutationOutcome::INDETERMINATE, error: promoted)
+          rescue Async::Stop
+            # Classify before poison (match Python §6.3).
+            result = MutationResult.new(
+              outcome: MutationOutcome::INDETERMINATE,
+              error: Error.transport("request cancelled after send")
+                .enrich(
+                  operation: op,
+                  request_id: request_id,
+                  worker: worker,
+                  routing_epoch: @routing_epoch,
+                  bytes_sent: frame.bytesize,
+                  mutation_outcome: MutationOutcome::INDETERMINATE
+                )
+            )
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
+            return result
           rescue Error => e
-            conn.reset!
-            return MutationResult.new(
+            result = MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
               error: annotate!(e, op, request_id, worker)
-                .enrich(mutation_outcome: MutationOutcome::INDETERMINATE)
+                .enrich(bytes_sent: frame.bytesize, mutation_outcome: MutationOutcome::INDETERMINATE)
             )
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
+            return result
           end
           begin
             validate_response!(response, request_id, worker)
           rescue Error => e
-            conn.reset!
-            return MutationResult.new(
+            result = MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
               error: annotate!(e, op, request_id, worker)
-                .enrich(mutation_outcome: MutationOutcome::INDETERMINATE)
+                .enrich(bytes_sent: frame.bytesize, mutation_outcome: MutationOutcome::INDETERMINATE)
             )
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
+            return result
           end
           if response.status == Protocol::Status::OK
             unless response.value.empty?
-              conn.reset!
-              return MutationResult.new(
+              result = MutationResult.new(
                 outcome: MutationOutcome::INDETERMINATE,
                 error: Error.protocol("mutation response value must be empty")
                   .enrich(operation: op, request_id: request_id, worker: worker,
-                          routing_epoch: @routing_epoch,
+                          routing_epoch: @routing_epoch, bytes_sent: frame.bytesize,
                           mutation_outcome: MutationOutcome::INDETERMINATE)
               )
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
+              return result
             end
             return MutationResult.new(outcome: MutationOutcome::COMMITTED)
           end
           status_err = annotate!(Error.from_status(response.status), op, request_id, worker)
+            .enrich(bytes_sent: frame.bytesize)
           if response.status == Protocol::Status::INTERNAL_ERROR
             return MutationResult.new(
               outcome: MutationOutcome::INDETERMINATE,
@@ -666,48 +803,105 @@ module GlyphaStore
         mark_unresolved = lambda do |first, err, bytes_sent|
           (first...metadata.length).each do |index|
             opcode = metadata[index][:opcode]
-            mutation_arrived = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(opcode) &&
-                               bytes_sent > metadata[index][:begin]
+            is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(opcode)
+            mutation_arrived = is_mutation && bytes_sent > metadata[index][:begin]
+            pos_bytes = bytes_sent > metadata[index][:begin] ? bytes_sent - metadata[index][:begin] : 0
+            op =
+              case opcode
+              when PipelineOpcode::PUT then "put"
+              when PipelineOpcode::ERASE then "erase"
+              else "get"
+              end
+            enriched =
+              if err.is_a?(Error)
+                copy = err.base_copy
+                fields = {
+                  operation: op,
+                  request_id: metadata[index][:request_id],
+                  worker: worker,
+                  routing_epoch: @routing_epoch,
+                  bytes_sent: pos_bytes
+                }
+                if is_mutation
+                  fields[:mutation_outcome] =
+                    mutation_arrived ? MutationOutcome::INDETERMINATE : MutationOutcome::REJECTED
+                end
+                copy.enrich(**fields)
+              else
+                err
+              end
             responses[index] = PipelineResponse.new(
               outcome: mutation_arrived ? PipelineOutcome::INDETERMINATE : PipelineOutcome::FAILED,
-              error: err
+              error: enriched
             )
           end
         end
 
         completed = false
+        receive_index = 0
         begin
           begin
             send!(conn, output, deadline)
           rescue Client::SendFailure => e
-            conn.reset!
             mark_unresolved.call(0, e.error, e.bytes_sent)
             completed = true
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
             return responses
           rescue Error => e
-            conn.reset!
             mark_unresolved.call(0, e, 0)
             completed = true
+            begin
+              conn.reset!
+            rescue StandardError
+              nil
+            end
             return responses
           end
 
           metadata.each_with_index do |item, index|
+            receive_index = index
             begin
               response = receive_response!(conn, deadline)
             rescue Error => e
               sent_bytes = output.bytesize
-              conn.reset!
               mark_unresolved.call(index, e, sent_bytes)
               completed = true
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
+              return responses
+            rescue Async::Stop
+              sent_bytes = output.bytesize
+              mark_unresolved.call(
+                index,
+                Error.transport("request cancelled after send"),
+                sent_bytes
+              )
+              completed = true
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
               return responses
             end
             begin
               validate_response!(response, item[:request_id], worker)
             rescue Error => e
               sent_bytes = output.bytesize
-              conn.reset!
               mark_unresolved.call(index, e, sent_bytes)
               completed = true
+              begin
+                conn.reset!
+              rescue StandardError
+                nil
+              end
               return responses
             end
             if response.status == Protocol::Status::OK
@@ -723,15 +917,45 @@ module GlyphaStore
               responses[index] = PipelineResponse.new(outcome: PipelineOutcome::SUCCEEDED, value: response.value)
               next
             end
-            err = Error.from_status(response.status)
-            outcome = PipelineOutcome::FAILED
-            if [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode]) &&
-               response.status == Protocol::Status::INTERNAL_ERROR
-              outcome = PipelineOutcome::INDETERMINATE
+            is_mutation = [PipelineOpcode::PUT, PipelineOpcode::ERASE].include?(item[:opcode])
+            indeterminate = is_mutation && response.status == Protocol::Status::INTERNAL_ERROR
+            outcome = indeterminate ? PipelineOutcome::INDETERMINATE : PipelineOutcome::FAILED
+            op =
+              case item[:opcode]
+              when PipelineOpcode::PUT then "put"
+              when PipelineOpcode::ERASE then "erase"
+              else "get"
+              end
+            fields = {
+              operation: op,
+              request_id: item[:request_id],
+              worker: worker,
+              routing_epoch: @routing_epoch,
+              bytes_sent: output.bytesize - item[:begin],
+              wire_status: response.status
+            }
+            if is_mutation
+              fields[:mutation_outcome] =
+                indeterminate ? MutationOutcome::INDETERMINATE : MutationOutcome::REJECTED
             end
+            err = Error.from_status(response.status).enrich(**fields)
             responses[index] = PipelineResponse.new(outcome: outcome, error: err)
             mark_unhealthy! if [Protocol::Status::WRONG_OWNER, Protocol::Status::NOT_BOUND].include?(response.status)
           end
+          completed = true
+          responses
+        rescue Async::Stop
+          # Cancel after a completed pipeline send but outside a single receive rescue.
+          if completed
+            raise
+          end
+
+          conn.reset!
+          mark_unresolved.call(
+            receive_index,
+            Error.transport("request cancelled after send"),
+            output.bytesize
+          )
           completed = true
           responses
         ensure

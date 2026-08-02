@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,17 +32,23 @@ func mustEncodeInitIdentity(routing protocol.WorkerRouting) []byte {
 }
 
 type fakeServer struct {
-	workerCount        uint32
-	disconnectOnPut    bool
-	internalErrorOnPut bool
-	stallOnGet         bool
-	routing            protocol.WorkerRouting
-	tlsConfig          *tls.Config
-	ln                 net.Listener
-	values             map[string][]byte
-	valuesMu           sync.Mutex
-	wg                 sync.WaitGroup
-	stop               chan struct{}
+	workerCount           uint32
+	disconnectOnPut       bool
+	internalErrorOnPut    bool
+	internalErrorOnBackup bool
+	wrongRequestIdOnBackup bool
+	stallOnGet            bool
+	failRebindWorkers     map[uint32]struct{}
+	bindCounts            map[uint32]int
+	bindMu                sync.Mutex
+	routing               protocol.WorkerRouting
+	tlsConfig             *tls.Config
+	ln                    net.Listener
+	backupRequests        atomic.Uint32
+	values                map[string][]byte
+	valuesMu              sync.Mutex
+	wg                    sync.WaitGroup
+	stop                  chan struct{}
 }
 
 func startFakeServer(t *testing.T, workerCount uint32, disconnectOnPut, internalErrorOnPut bool) *fakeServer {
@@ -68,6 +75,8 @@ func startFakeServerTLS(t *testing.T, workerCount uint32, disconnectOnPut, inter
 		tlsConfig:          tlsConfig,
 		ln:                 ln,
 		values:             make(map[string][]byte),
+		bindCounts:         make(map[uint32]int),
+		failRebindWorkers:  make(map[uint32]struct{}),
 		stop:               make(chan struct{}),
 	}
 	s.wg.Add(1)
@@ -156,6 +165,14 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 		if req.TargetWorker >= s.workerCount {
 			return s.send(conn, protocol.StatusInvalidRequest, req.RequestID, 0, nil)
 		}
+		s.bindMu.Lock()
+		s.bindCounts[req.TargetWorker]++
+		count := s.bindCounts[req.TargetWorker]
+		_, failRebind := s.failRebindWorkers[req.TargetWorker]
+		s.bindMu.Unlock()
+		if failRebind && count > 1 {
+			return false
+		}
 		w := req.TargetWorker
 		*bound = &w
 		return s.send(conn, protocol.StatusOK, req.RequestID, w, nil)
@@ -217,6 +234,16 @@ func (s *fakeServer) handle(conn net.Conn, bound **uint32, req protocol.Request)
 			status = protocol.StatusNotFound
 		}
 		return s.send(conn, status, req.RequestID, ownerBound, nil)
+	case protocol.OpcodeBackup:
+		s.backupRequests.Add(1)
+		if s.internalErrorOnBackup {
+			return s.send(conn, protocol.StatusInternalError, req.RequestID, ownerBound, []byte("report failed"))
+		}
+		replyID := req.RequestID
+		if s.wrongRequestIdOnBackup {
+			replyID ^= 1
+		}
+		return s.send(conn, protocol.StatusOK, replyID, ownerBound, []byte("status=ok files=0 bytes=0"))
 	default:
 		return s.send(conn, protocol.StatusUnsupported, req.RequestID, ownerBound, nil)
 	}
@@ -275,6 +302,11 @@ func TestInternalErrorMutationIsIndeterminate(t *testing.T) {
 	if result.Outcome != client.MutationIndeterminate {
 		t.Fatalf("outcome=%s", result.Outcome)
 	}
+	ge, ok := result.Err.(*client.Error)
+	if !ok || ge.Retryability != client.RetryReconcileFirst ||
+		ge.MutationOutcome != client.MutationIndeterminate || ge.BytesSent == 0 {
+		t.Fatalf("enrichment: %+v", result.Err)
+	}
 }
 
 
@@ -318,6 +350,19 @@ func TestDisconnectAfterMutationIsIndeterminate(t *testing.T) {
 	result := c.Put([]byte("key"), []byte("value"), 0)
 	if result.Outcome != client.MutationIndeterminate {
 		t.Fatalf("outcome=%s err=%v", result.Outcome, result.Err)
+	}
+	ge, ok := result.Err.(*client.Error)
+	if !ok {
+		t.Fatalf("expected *client.Error, got %T", result.Err)
+	}
+	if ge.BytesSent <= 0 {
+		t.Fatalf("bytes_sent=%d want > 0", ge.BytesSent)
+	}
+	if ge.Retryability != client.RetryReconcileFirst {
+		t.Fatalf("retryability=%s", ge.Retryability)
+	}
+	if ge.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("mutation_outcome=%s", ge.MutationOutcome)
 	}
 }
 
@@ -377,6 +422,40 @@ func TestPipelineDisconnectClassifiesEachRequest(t *testing.T) {
 		responses[1].Outcome != client.PipelineFailed ||
 		responses[2].Outcome != client.PipelineIndeterminate {
 		t.Fatalf("unexpected outcomes: %+v", responses)
+	}
+	ge0, ok := responses[0].Err.(*client.Error)
+	if !ok || ge0.BytesSent <= 0 || ge0.Retryability != client.RetryReconcileFirst ||
+		ge0.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("PUT error enrichment: %+v", responses[0].Err)
+	}
+	ge2, ok := responses[2].Err.(*client.Error)
+	if !ok || ge2.Retryability != client.RetryReconcileFirst ||
+		ge2.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("ERASE error enrichment: %+v", responses[2].Err)
+	}
+}
+
+func TestPipelineInternalErrorMutationIsReconcileFirst(t *testing.T) {
+	server := startFakeServer(t, 1, false, true)
+	defer server.close()
+	c, err := client.Connect(client.Config{Port: server.port()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	responses, err := c.ExecutePipeline([]client.PipelineRequest{
+		{Opcode: client.PipelinePut, Key: []byte("key"), Value: []byte("value")},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if responses[0].Outcome != client.PipelineIndeterminate {
+		t.Fatalf("outcome=%s", responses[0].Outcome)
+	}
+	ge, ok := responses[0].Err.(*client.Error)
+	if !ok || ge.Retryability != client.RetryReconcileFirst ||
+		ge.MutationOutcome != client.MutationIndeterminate || ge.BytesSent == 0 {
+		t.Fatalf("enrichment: %+v", responses[0].Err)
 	}
 }
 
@@ -473,6 +552,55 @@ func TestMultiWorkerBootstrapAndBatch(t *testing.T) {
 	}
 }
 
+func TestBatchPreservesSiblingResultsWhenOneWorkerFails(t *testing.T) {
+	server := startFakeServer(t, 2, false, false)
+	server.failRebindWorkers[1] = struct{}{}
+	defer server.close()
+
+	c, err := client.Connect(client.Config{Port: server.port()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	keys := make([][]byte, 2)
+	for candidate := 0; keys[0] == nil || keys[1] == nil; candidate++ {
+		key := []byte("sib-" + strconv.Itoa(candidate))
+		owner, err := c.WorkerFor(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if keys[owner] == nil {
+			keys[owner] = key
+		}
+	}
+	c.ResetWorkerConnection(1)
+	responses, err := c.ExecuteBatch([]client.PipelineRequest{
+		{Opcode: client.PipelinePut, Key: keys[0], Value: []byte("a")},
+		{Opcode: client.PipelinePut, Key: keys[1], Value: []byte("b")},
+	})
+	if err != nil {
+		t.Fatalf("batch must return per-slot results, got error: %v", err)
+	}
+	if !responses[0].Succeeded() {
+		t.Fatalf("worker0 slot: %+v", responses[0])
+	}
+	if responses[1].Outcome != client.PipelineFailed || responses[1].Err == nil {
+		t.Fatalf("worker1 slot: %+v", responses[1])
+	}
+	ge, ok := responses[1].Err.(*client.Error)
+	if !ok {
+		t.Fatalf("worker1 error type: %T", responses[1].Err)
+	}
+	if ge.MutationOutcome != client.MutationRejected || ge.BytesSent != 0 {
+		t.Fatalf("worker1 rejected enrich: outcome=%s bytes=%d", ge.MutationOutcome, ge.BytesSent)
+	}
+	got, err := c.Get(keys[0])
+	if err != nil || string(got) != "a" {
+		t.Fatalf("sibling committed value: %q %v", got, err)
+	}
+}
+
 func TestPerCallTimeoutOverridesConfig(t *testing.T) {
 	server := startFakeServer(t, 1, false, false)
 	server.stallOnGet = true
@@ -553,6 +681,75 @@ func TestStructuredErrorFieldsOnInternalPut(t *testing.T) {
 	}
 	if ge.MutationOutcome != client.MutationIndeterminate {
 		t.Fatalf("mutation_outcome=%v", ge.MutationOutcome)
+	}
+}
+
+func TestBackupInternalErrorIsReconcileFirst(t *testing.T) {
+	server := startFakeServer(t, 1, false, false)
+	server.internalErrorOnBackup = true
+	defer server.close()
+	c, err := client.Connect(client.Config{
+		Host:           "127.0.0.1",
+		Port:           server.port(),
+		ConnectTimeout: time.Second,
+		RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Backup("/tmp/glyphastore-go-backup-internal")
+	if err == nil {
+		t.Fatal("expected backup INTERNAL_ERROR")
+	}
+	ge, ok := err.(*client.Error)
+	if !ok {
+		t.Fatalf("expected *client.Error, got %T", err)
+	}
+	if ge.Retryability != client.RetryReconcileFirst {
+		t.Fatalf("retryability=%v", ge.Retryability)
+	}
+	if ge.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("mutation_outcome=%v", ge.MutationOutcome)
+	}
+	if server.backupRequests.Load() != 1 {
+		t.Fatalf("backup_requests=%d", server.backupRequests.Load())
+	}
+}
+
+func TestBackupValidateFailureIsReconcileFirst(t *testing.T) {
+	server := startFakeServer(t, 1, false, false)
+	server.wrongRequestIdOnBackup = true
+	defer server.close()
+	c, err := client.Connect(client.Config{
+		Host:           "127.0.0.1",
+		Port:           server.port(),
+		ConnectTimeout: time.Second,
+		RequestTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	_, err = c.Backup("/tmp/glyphastore-go-backup-wrong-id")
+	if err == nil {
+		t.Fatal("expected backup validate failure")
+	}
+	ge, ok := err.(*client.Error)
+	if !ok {
+		t.Fatalf("expected *client.Error, got %T", err)
+	}
+	if ge.Retryability != client.RetryReconcileFirst {
+		t.Fatalf("retryability=%v", ge.Retryability)
+	}
+	if ge.MutationOutcome != client.MutationIndeterminate {
+		t.Fatalf("mutation_outcome=%v", ge.MutationOutcome)
+	}
+	if ge.BytesSent == 0 {
+		t.Fatal("expected bytes_sent > 0")
+	}
+	if server.backupRequests.Load() != 1 {
+		t.Fatalf("backup_requests=%d", server.backupRequests.Load())
 	}
 }
 

@@ -6,6 +6,7 @@
 #include "glyphastore/server/tls.hpp"
 #include "glyphastore/server/wakeup.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -43,12 +44,27 @@ class ConnectionHandoffMesh final {
 
     ConnectionHandoffMesh(const ConnectionHandoffMesh&) = delete;
     auto operator=(const ConnectionHandoffMesh&) -> ConnectionHandoffMesh& = delete;
-    ConnectionHandoffMesh(ConnectionHandoffMesh&&) noexcept = default;
-    auto operator=(ConnectionHandoffMesh&&) noexcept -> ConnectionHandoffMesh& = default;
+    ConnectionHandoffMesh(ConnectionHandoffMesh&& other) noexcept
+        : endpoints_(std::move(other.endpoints_)),
+          accepting_(other.accepting_.load(std::memory_order_relaxed)) {}
+    auto operator=(ConnectionHandoffMesh&& other) noexcept -> ConnectionHandoffMesh& {
+        if (this != &other) {
+            endpoints_ = std::move(other.endpoints_);
+            accepting_.store(other.accepting_.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        }
+        return *this;
+    }
 
     void register_wakeup(std::size_t executor, Wakeup& wakeup) noexcept;
+    // Refuse new handoffs (process stop). Queued cells remain until the target pops
+    // or reject_orphaned_handoff drains them — never silently destroy BIND OK.
+    void stop_accepting() noexcept;
+    [[nodiscard]] auto accepting() const noexcept -> bool {
+        return accepting_.load(std::memory_order_acquire);
+    }
     [[nodiscard]] auto try_handoff(std::size_t target_executor, ConnectionHandoff&& connection) -> bool;
     [[nodiscard]] auto try_pop(std::size_t executor) -> std::optional<ConnectionHandoff>;
+    [[nodiscard]] auto has_pending(std::size_t executor) const noexcept -> bool;
     [[nodiscard]] auto size() const noexcept -> std::size_t {
         return endpoints_.size();
     }
@@ -59,9 +75,11 @@ class ConnectionHandoffMesh final {
 
         BoundedMpscQueue<ConnectionHandoff> connections;
         Wakeup* wakeup{};
+        std::atomic<std::size_t> pending{};
     };
 
     std::vector<std::unique_ptr<Endpoint>> endpoints_;
+    std::atomic<bool> accepting_{true};
 };
 
 } // namespace glyphastore::server

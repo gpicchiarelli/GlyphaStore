@@ -124,9 +124,12 @@ class Reactor final {
     // Force-close every connection. Outstanding async completions are still
     // accounted when they arrive (stale generation discards the response).
     void close_all_connections() noexcept;
+    // Best-effort OVERLOADED for BIND handoffs still sitting only in the mesh
+    // (shutdown force-close / late race). Must not destroy buffered OK silently.
+    void reject_pending_handoffs() noexcept;
     [[nodiscard]] auto idle_for_shutdown() const noexcept -> bool {
         return active_connections_.load(std::memory_order_relaxed) == 0 && disk_reads_outstanding_ == 0 &&
-               mutations_outstanding_ == 0;
+               mutations_outstanding_ == 0 && !mesh_.has_pending(executor_id_);
     }
     // Cleartext listen port, or 0 when this reactor has no cleartext listener.
     [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t {
@@ -253,6 +256,7 @@ class Reactor final {
     [[nodiscard]] auto process_handoffs() -> Status;
     [[nodiscard]] auto process_disk_read_completions() -> Status;
     [[nodiscard]] auto process_mutation_completions() -> Status;
+    void flush_deferred_mutation_payloads() noexcept;
     [[nodiscard]] auto acquire_cold_read_lease(std::uint64_t epoch) noexcept -> bool;
     [[nodiscard]] auto release_cold_read_lease(std::uint64_t epoch) noexcept -> bool;
     [[nodiscard]] auto minimum_cold_read_epoch() const noexcept -> std::uint64_t;
@@ -315,6 +319,10 @@ class Reactor final {
     std::size_t disk_reads_outstanding_{};
     std::size_t mutations_outstanding_{};
     std::size_t mutation_bytes_outstanding_{};
+    // Drain-deadline abandon may complete a later FIFO payload while an earlier
+    // Store-entered mutation still owns the slot-pool head. Defer those releases
+    // until in-order release succeeds (still send OVERLOADED immediately).
+    std::vector<std::uint32_t> deferred_mutation_payloads_;
     bool shutting_down_{};
 };
 

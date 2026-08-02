@@ -138,8 +138,8 @@ Enable with `--log-format json` (or config). Stderr JSON-lines; common fields: `
 | `stopped` | optional `signal` | yes |
 | `executor_failure` | `error_code`, `error_message` | no |
 
-`ready.reason` ∈ `not_live`, `shutting_down`, `store_not_operational`, `maintenance_emergency`,
-`maintenance_fault`.
+`ready.reason` ∈ `not_live`, `shutting_down`, `store_not_operational`, `pair_fail_closed`,
+`admission_fenced`, `maintenance_emergency`, `maintenance_fault`.
 
 ### Security audit (related)
 

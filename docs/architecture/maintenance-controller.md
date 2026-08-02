@@ -58,8 +58,12 @@ In `background`, the controller:
    no-gain / copy budgets; record activation reason (`segment_pressure` / `free_space_pressure` /
    `emergency_capacity`).
 5. **Emergency mutation gate**: publish `mutations_rejected`; `Store::put` / `Store::erase` (and
-   exclusive `StoreAccess` paths) return `ErrorCode::storage_exhausted` with a stable message.
-   `get`, `flush`, `compact`, and `close` continue. No mutation queue.
+   exclusive `StoreAccess` paths, including paired sync `put/erase_volatile_published` with
+   `caller_holds_guard`, each sibling in `mutate_durable_batch`, and each item in non-paired
+   `Store::put_batch`) return `ErrorCode::storage_exhausted` with a stable message. `get`, `flush`,
+   `compact`, and `close` continue. No mutation queue. The sync Writer fast path skips only the
+   nested `OperationGuard` RMW — not this gate — so mid-batch / TOCTOU arming still rejects before
+   Store append.
 6. **Fail-closed on reclaim fault**: compact/observe faults **keep** an already-published emergency
    gate. While the gate is armed, auto-compact is **not** latched off — reclaim keeps retrying under
    budget. Non-emergency faults still disable auto-compact. `faulted` remains sticky for telemetry
@@ -88,7 +92,10 @@ conservatively live until GET, recovery, or compaction visits the Record. Under 
 emergency, an optional bounded probe (`unread_ttl_pressure_probe`, default on) reads sealed source
 Records for the round-robin candidate only and exports
 `candidate_unread_expired_sealed_record_{count,bytes}` plus `unread_ttl_probe_performed` in
-`MaintenanceObservation` / daemon `STATS`. Normal scheduling stays conservative by default
+`MaintenanceObservation` / daemon `STATS`. On the mutex-elided exclusive Writer path the probe arms
+`compaction_commit_active` and waits for `hot_path_depth == 0` before enumerating the Index (same
+ownership protocol as compaction Phase A), after releasing the observation catalog lock so it does
+not hold catalog across the depth wait. Normal scheduling stays conservative by default
 (`unread_ttl_normal_scheduling`, default off): unread expired sealed puts remain Index-live for the
 inclusive dead-byte threshold until GET, recovery, pressure, or an explicit `Store::compact()` visit.
 When normal scheduling is enabled, normal evaluations also probe and add unread expired bytes to

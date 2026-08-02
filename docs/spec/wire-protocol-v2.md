@@ -106,9 +106,15 @@ Manifest last), then resumes admissions before destination verify (optional CRC;
 is not a zero-impact hot snapshot. Under the secure profile it requires the `admin` capability.
 Success value is a bounded ASCII report including `files_copied`, `bytes_copied`, timing needles
 (`admission_fence_ns`, `catalog_copy_ns`, `destination_verify_ns`), and `segment_copy_workers`.
-Failed backups return `INTERNAL_ERROR` (optional ASCII reason in value). Official clients expose
-typed `backup` helpers (C++ and the Python/Go/Perl/Ruby/Erlang SDKs); the copy remains online
-fenced, not zero-impact hot I/O.
+If the OK report cannot fit the connection output / frame budget, the server returns `OVERLOADED`
+**before** running the fenced copy (known not committed). After a successful copy, fit failures must
+not become `OVERLOADED` (false rejected polarity); the server emits a minimal `status=ok` report or
+`INTERNAL_ERROR`. Report-formatting failures after a successful copy must still surface wire `OK`
+with at least `status=ok` (not `INTERNAL_ERROR`). Official clients treat BACKUP wire `INTERNAL_ERROR`
+as reconcile-first / indeterminate (not a safe same-destination retry). Failed backups return
+`INTERNAL_ERROR` (optional ASCII reason in value). Official clients expose typed `backup` helpers
+(C++ and the Python/Go/Perl/Ruby/Erlang SDKs); the copy remains online fenced, not zero-impact hot
+I/O.
 
 Unused fields must be canonical: empty payloads and zero/`kNoWorker` as listed above. Encoders and
 decoders reject non-canonical opcode-specific fields with `INVALID_REQUEST` (or an equivalent encode
@@ -141,7 +147,7 @@ stateDiagram-v2
     Connected --> Connected: PING / HEALTH / READY / STATS
     Initialized --> Initialized: INIT or PING or HEALTH or READY or STATS
     Initialized --> Bound: BIND_WORKER once
-    Bound --> Bound: PING / GET / PUT / ERASE / HEALTH / READY / STATS
+    Bound --> Bound: PING / GET / PUT / ERASE / BACKUP / HEALTH / READY / STATS
     Bound --> [*]: peer close, protocol failure, or server close
 ```
 
@@ -150,11 +156,11 @@ Current version-2 behavior is precise:
 - `PING`, `HEALTH`, `READY`, and `STATS` are accepted before initialization and binding;
 - repeated `INIT` is accepted and returns the same identification value;
 - `BIND_WORKER` requires successful initialization, a valid target, and no prior bind;
-- `GET`, `PUT`, and `ERASE` before binding return `NOT_BOUND`;
+- `GET`, `PUT`, `ERASE`, and `BACKUP` before binding return `NOT_BOUND`;
 - binding is permanent for the connection;
 - after binding, a key owned by another Worker returns `WRONG_OWNER`; the server does not forward that request.
 
-Clients should send `INIT`, read worker metadata, choose a Worker, and send exactly one `BIND_WORKER` before Store traffic.
+Clients should send `INIT`, read worker metadata, choose a Worker, and send exactly one `BIND_WORKER` before Store traffic (including online `BACKUP`).
 
 ## 7. Routing metadata
 

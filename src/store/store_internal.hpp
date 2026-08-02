@@ -82,6 +82,7 @@ class StoreAccess final {
     // PublishedAdmission::caller_holds_guard: Writer-only fast path when the submitting
     // thread already owns Store::Impl::OperationGuard for this shard (embedded sync
     // mutate). Skips a nested admission RMW; close() still waits on the caller's guard.
+    // The maintenance emergency gate is still checked — only the OperationGuard is skipped.
     // Async submissions must use check_admission — they have no outer OperationGuard.
     enum class PublishedAdmission : std::uint8_t { check_admission, caller_holds_guard };
 
@@ -121,6 +122,8 @@ class StoreAccess final {
     [[nodiscard]] static auto maintenance_mutations_rejected(const Store& store) noexcept -> bool;
     // True while the Store accepts new operations and any durable catalog remains healthy.
     [[nodiscard]] static auto operational(const Store& store) noexcept -> bool;
+    // True while begin_operation admissions are open (false during online backup fence).
+    [[nodiscard]] static auto admissions_open(const Store& store) noexcept -> bool;
     static void mark_fail_closed(Store& store) noexcept;
 
     [[nodiscard]] static auto worker(const Store& store, std::size_t index) noexcept -> const Worker&;

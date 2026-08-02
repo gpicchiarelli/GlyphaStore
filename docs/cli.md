@@ -73,8 +73,9 @@ listens.
 drains existing connections and admitted durable mutations (bounded by `--shutdown-drain-ms`, default
 30s; `0` waits unbounded), then closes the Store. Idle connections are closed once in-flight responses
 flush; new requests on draining connections are refused. Queued mutations that have not entered Store
-execution when the drain deadline expires complete as `unavailable`; in-flight Store work is never
-cancelled. A timed-out drain makes process exit fail closed (`join` returns an error).
+execution when the drain deadline expires complete as wire `OVERLOADED` (known not committed);
+in-flight Store work is never cancelled. A timed-out drain makes process exit fail closed (`join`
+returns an error).
 
 Wire-protocol `HEALTH` (opcode 7) and `READY` (opcode 8) probes are accepted before `INIT`/`BIND_WORKER`.
 `HEALTH` returns `OK` with value `GlyphaStore/live` while executors are live; `READY` returns `OK`

@@ -4,6 +4,7 @@
 #error "kqueue backend requires macOS, FreeBSD, or OpenBSD"
 #endif
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/server/socket.hpp"
 #include "system_error.hpp"
 
@@ -91,11 +92,17 @@ auto Poller::modify(const int descriptor, const std::uint64_t token, const IoInt
 }
 
 auto Poller::remove(const int descriptor) -> Status {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::poller_remove)) {
+        return fail(ErrorCode::io_error, "injected poller remove failure");
+    }
     std::array<struct kevent, 2> changes{};
     EV_SET(&changes[0], static_cast<std::uintptr_t>(descriptor), EVFILT_READ, EV_DELETE, 0, 0, nullptr);
     EV_SET(&changes[1], static_cast<std::uintptr_t>(descriptor), EVFILT_WRITE, EV_DELETE, 0, 0, nullptr);
-    if (::kevent(descriptor_, changes.data(), static_cast<int>(changes.size()), nullptr, 0, nullptr) != 0 &&
-        errno != ENOENT) {
+    int result = 0;
+    do {
+        result = ::kevent(descriptor_, changes.data(), static_cast<int>(changes.size()), nullptr, 0, nullptr);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0 && errno != ENOENT) {
         return system_error("kevent(delete)");
     }
     return {};

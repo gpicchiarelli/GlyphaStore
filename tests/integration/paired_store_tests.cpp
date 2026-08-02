@@ -1,14 +1,19 @@
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
 #include <atomic>
+#include <cerrno>
 #include <chrono>
+#include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
 #include <new>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -201,35 +206,17 @@ GLYPHA_TEST("paired Store put_batch preserves same-key FIFO within one batch") {
     GLYPHA_REQUIRE(store.close().has_value());
 }
 
+#if defined(GLYPHASTORE_FAULT_INJECTION)
 GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable I/O begins") {
-    // ADR 0036 V6 production seam: exception after entering durable mutate must sticky-fail
-    // the pair (no healthy runtime with unpublished committed bytes; no inverted RAW).
+    // ADR 0036 V6 durable_sync seam: Site::publish throws after commit + read-generation
+    // publish. Client keeps success ACK (RAW); pair sticky-fails. before(write_record)
+    // throws stay known-not-committed — see sibling "before-hook throw" litmus.
     auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-fc-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
     const std::filesystem::path root{writable.data()};
     const auto store_path = root / "store";
-
-    struct ThrowAfterArmedWrite final {
-        std::atomic_bool armed{false};
-        std::atomic_uint64_t writes{0};
-
-        static auto before(void* context, const glyphastore::FilesystemOperation operation)
-            -> glyphastore::Status {
-            auto* self = static_cast<ThrowAfterArmedWrite*>(context);
-            if (!self->armed.load(std::memory_order_acquire)) {
-                return {};
-            }
-            if (operation == glyphastore::FilesystemOperation::write_record) {
-                self->writes.fetch_add(1, std::memory_order_relaxed);
-                // Throw on the first armed durable record write: mutate has begun, so the
-                // Writer must sticky-fail-closed even if commit outcome is indeterminate.
-                throw std::bad_alloc{};
-            }
-            return {};
-        }
-    } thrower;
 
     auto opened = glyphastore::Store::open(
         {.worker_config = {.explicit_count = 1},
@@ -240,41 +227,33 @@ GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable 
          .storage_mode = glyphastore::StorageMode::durable_sync,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .filesystem_hooks = {.context = &thrower, .before = &ThrowAfterArmedWrite::before}});
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
     GLYPHA_REQUIRE(store.put("seed", bytes("ok")).has_value());
-    thrower.armed.store(true, std::memory_order_release);
 
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::publish);
     const std::string key_a = "fc-a";
     const std::string key_b = "fc-b";
-    const std::string value_a = "alpha";
-    const std::string value_b = "beta";
     const std::vector<glyphastore::Store::PutItem> items{
-        {.key = key_a, .value = bytes(value_a)},
-        {.key = key_b, .value = bytes(value_b)},
+        {.key = key_a, .value = bytes("alpha")},
+        {.key = key_b, .value = bytes("beta")},
     };
     const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
     GLYPHA_REQUIRE(statuses.size() == items.size());
-    bool saw_failure = false;
-    for (const auto& status : statuses) {
-        GLYPHA_REQUIRE(!status.has_value());
-        saw_failure = true;
-        GLYPHA_REQUIRE(status.error().code == glyphastore::ErrorCode::unavailable ||
-                       status.error().code == glyphastore::ErrorCode::resource_exhausted ||
-                       status.error().code == glyphastore::ErrorCode::internal_error);
-    }
-    GLYPHA_REQUIRE(saw_failure);
-    GLYPHA_REQUIRE(thrower.writes.load(std::memory_order_relaxed) >= 1U);
+    // First item: committed+published before throw → success ACK (no inverted RAW).
+    GLYPHA_REQUIRE(statuses[0].has_value());
+    // Second: never Store-entered after sticky → known not committed.
+    GLYPHA_REQUIRE(!statuses[1].has_value());
+    GLYPHA_REQUIRE(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted);
 
     auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
     GLYPHA_REQUIRE(runtime != nullptr);
     GLYPHA_REQUIRE(!runtime->healthy());
 
-    // Sticky fail-closed: sync mutate must refuse before enqueue (healthy_), not only
-    // after the Writer hits an already-unhealthy durable catalog. Prior published
-    // seed remains RAW via immutable generation GET.
     const auto late = store.put("fc-late", bytes("no"));
     GLYPHA_REQUIRE(!late.has_value());
     GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
@@ -284,11 +263,14 @@ GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable 
     GLYPHA_REQUIRE(
         std::string_view(reinterpret_cast<const char*>(seed_after->bytes.data()), seed_after->bytes.size()) ==
         "ok");
+    GLYPHA_REQUIRE(store.get(key_a).has_value());
+    GLYPHA_REQUIRE(!store.get(key_b).has_value());
 
     static_cast<void>(store.close());
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
 }
+#endif
 
 GLYPHA_TEST("paired durable sync Writer does not success-ACK abandoned unflushed batch siblings") {
     // Distinct keys in one mutate_durable_batch: A returns committed before flush/index,
@@ -464,10 +446,10 @@ GLYPHA_TEST("paired durable sync Writer keeps flushed siblings through orphan co
     std::filesystem::remove_all(root, ignored);
 }
 
-GLYPHA_TEST("paired durable sync Writer snapshot-publishes siblings before sticky fail-closed") {
-    // Sync durable_group same-key split: first sub-batch commits+indexes A, second
-    // hits write-boundary failure. A must keep success ACK and appear in the published
-    // generation via drain snapshot (even when durable already self-closed).
+GLYPHA_TEST("paired durable sync Writer snapshot-publishes committed sibling after later known-not-committed") {
+    // Sync durable_group same-key split: first sub-batch commits+indexes A; second hits
+    // before(write_record) throw (known not committed). A keeps success ACK and stays
+    // GET-visible. Pair stays healthy — sticky is for post-commit / Store-entered throws.
     auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-sib-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
@@ -527,21 +509,21 @@ GLYPHA_TEST("paired durable sync Writer snapshot-publishes siblings before stick
     GLYPHA_REQUIRE(statuses.size() == 2);
     GLYPHA_REQUIRE(statuses[0].has_value());
     GLYPHA_REQUIRE(!statuses[1].has_value());
+    GLYPHA_REQUIRE(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted);
     GLYPHA_REQUIRE(thrower.writes.load(std::memory_order_relaxed) >= 2U);
 
     auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
     GLYPHA_REQUIRE(runtime != nullptr);
-    GLYPHA_REQUIRE(!runtime->healthy());
+    GLYPHA_REQUIRE(runtime->healthy());
 
     const auto got = store.get(key);
     GLYPHA_REQUIRE(got.has_value());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
                    "alpha");
 
-    const auto late = store.put("sib-late", bytes("no"));
-    GLYPHA_REQUIRE(!late.has_value());
-    GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
-    GLYPHA_REQUIRE(late.error().message.find("fail-closed") != std::string::npos);
+    thrower.armed.store(false, std::memory_order_release);
+    const auto late = store.put("sib-late", bytes("yes"));
+    GLYPHA_REQUIRE(late.has_value());
 
     static_cast<void>(store.close());
     std::error_code ignored2;
@@ -549,9 +531,9 @@ GLYPHA_TEST("paired durable sync Writer snapshot-publishes siblings before stick
 }
 
 GLYPHA_TEST("paired durable sync Writer does not success-ACK unprocessed batch items after drain") {
-    // Same-key split commits+indexes the first sub-batch; the second sub-batch throws
-    // on write before a trailing distinct key is mutated. That trailing key must not
-    // success-ACK (default Status{} used to be preserved after drain).
+    // Same-key split: first sub-batch commits; second hits a pre-write before-hook throw;
+    // third never starts. Pre-write failures are known not committed (resource_exhausted),
+    // not unavailable / false indeterminate.
     auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-unproc-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
@@ -601,30 +583,95 @@ GLYPHA_TEST("paired durable sync Writer does not success-ACK unprocessed batch i
     thrower.armed.store(true, std::memory_order_release);
 
     const std::string key = "unproc-key";
-    const std::string key_c = "unproc-c";
     const std::vector<glyphastore::Store::PutItem> items{
         {.key = key, .value = bytes("alpha")},
         {.key = key, .value = bytes("beta")},
-        {.key = key_c, .value = bytes("gamma")},
+        {.key = key, .value = bytes("gamma")},
     };
     const auto statuses = store.put_batch(items);
     GLYPHA_REQUIRE(statuses.size() == 3);
     GLYPHA_REQUIRE(statuses[0].has_value());
     GLYPHA_REQUIRE(!statuses[1].has_value());
+    // before(write_record) throw never crossed the durable write boundary.
+    GLYPHA_REQUIRE(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted);
     GLYPHA_REQUIRE(!statuses[2].has_value());
+    GLYPHA_REQUIRE(statuses[2].error().code == glyphastore::ErrorCode::resource_exhausted);
     GLYPHA_REQUIRE(thrower.writes.load(std::memory_order_relaxed) >= 2U);
-
-    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
-    GLYPHA_REQUIRE(runtime != nullptr);
-    GLYPHA_REQUIRE(!runtime->healthy());
 
     const auto got = store.get(key);
     GLYPHA_REQUIRE(got.has_value());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
                    "alpha");
-    GLYPHA_REQUIRE(!store.get(key_c).has_value());
 
-    const auto late = store.put("unproc-late", bytes("no"));
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("paired durable sync single-op keeps known-not-committed after record write poison") {
+    // append_record: pwrite failure poisons the data directory and returns
+    // SegmentCommitOutcome::not_committed. Catalog goes fail-closed via
+    // !directory_.healthy(); Writer rewrites to resource_exhausted. When the
+    // fail-closed epilogue drain also fails (Site::drain_snapshot), the old
+    // epilogue overwrote that resolved error to unavailable (wire INTERNAL_ERROR).
+    // Keep known-not-committed polarity — matching catch / durable_group sync.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-write-poison-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    struct FailArmedRecordWrite final {
+        std::atomic_bool armed{false};
+
+        static auto write_some_at(void* context, const int descriptor,
+                                  const std::span<const std::byte> bytes, const std::uint64_t offset)
+            -> std::ptrdiff_t {
+            auto* self = static_cast<FailArmedRecordWrite*>(context);
+            if (self->armed.load(std::memory_order_acquire)) {
+                errno = EIO;
+                return -1;
+            }
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+    } io;
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.file_io = {.context = &io,
+                                          .write_some_at = &FailArmedRecordWrite::write_some_at}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    GLYPHA_REQUIRE(store.put("seed", bytes("ok")).has_value());
+    io.armed.store(true, std::memory_order_release);
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::drain_snapshot);
+
+    const auto put = store.put("poisoned", bytes("no"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(!store.get("poisoned").has_value());
+
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    GLYPHA_REQUIRE(!runtime->healthy());
+
+    const auto late = store.put("late", bytes("no"));
     GLYPHA_REQUIRE(!late.has_value());
     GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
 
@@ -632,10 +679,180 @@ GLYPHA_TEST("paired durable sync Writer does not success-ACK unprocessed batch i
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
 }
+#endif
+
+GLYPHA_TEST("durable before-hook throw before write_record is known not committed") {
+    // A throwing filesystem before(write_record) must not become indeterminate /
+    // INTERNAL_ERROR — the hook runs ahead of write_all_at.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-before-throw-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    struct ThrowOnWriteRecord final {
+        static auto before(void* /*context*/, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            if (operation == glyphastore::FilesystemOperation::write_record) {
+                throw std::runtime_error{"injected before-hook failure"};
+            }
+            return {};
+        }
+    };
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.before = &ThrowOnWriteRecord::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    const auto put = store.put("before-throw", bytes("no"));
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(!store.get("before-throw").has_value());
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("paired durable_group pre-mutate batch alloc stays known not committed") {
+    // Writer sets durable_mutate_entered before mutate_durable_batch. A throw from
+    // that call before any durable mutate must not escape as Writer catch sticky /
+    // unavailable (wire INTERNAL_ERROR). StoreAccess converts it to not_committed
+    // resource_exhausted and keeps the pair healthy.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-batch-pre-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 32,
+                           .max_bytes = 65'536,
+                           .max_wait_ms = 10,
+                           .min_records = 1},
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::durable_batch_pre);
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = "pre-a", .value = bytes("alpha")},
+        {.key = "pre-b", .value = bytes("beta")},
+    };
+    const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(statuses.size() == 2);
+    for (const auto& status : statuses) {
+        GLYPHA_REQUIRE(!status.has_value());
+        GLYPHA_REQUIRE(status.error().code == glyphastore::ErrorCode::resource_exhausted);
+        GLYPHA_REQUIRE(status.error().code != glyphastore::ErrorCode::unavailable);
+    }
+    GLYPHA_REQUIRE(!store.get("pre-a").has_value());
+    GLYPHA_REQUIRE(!store.get("pre-b").has_value());
+    GLYPHA_REQUIRE(runtime->healthy());
+
+    const auto retry = store.put("pre-a", bytes("ok"));
+    GLYPHA_REQUIRE(retry.has_value());
+    const auto got = store.get("pre-a");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "ok");
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+GLYPHA_TEST("paired durable_group post-mutate catch keeps Store-entered siblings unavailable") {
+    // mutate_durable_batch commits the sub-batch then Site::post_mutate throws before
+    // classification finishes. Those Store-entered items must not become
+    // resource_exhausted (wire OVERLOADED) while drain still makes them GET-visible.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-post-mutate-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 32,
+                           .max_bytes = 65'536,
+                           .max_wait_ms = 10,
+                           .min_records = 1},
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::post_mutate);
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = "pm-a", .value = bytes("alpha")},
+        {.key = "pm-b", .value = bytes("beta")},
+        {.key = "pm-c", .value = bytes("gamma")},
+    };
+    const auto statuses = store.put_batch(items);
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(statuses.size() == 3);
+    for (const auto& status : statuses) {
+        GLYPHA_REQUIRE(!status.has_value());
+        // Store-entered (mutate returned) → unavailable, never resource_exhausted/OVERLOADED.
+        GLYPHA_REQUIRE(status.error().code == glyphastore::ErrorCode::unavailable);
+        GLYPHA_REQUIRE(status.error().code != glyphastore::ErrorCode::resource_exhausted);
+    }
+
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    GLYPHA_REQUIRE(!runtime->healthy());
+
+    // Drain publishes Index authority; siblings must be GET-visible with non-OVERLOADED polarity.
+    for (const auto* key : {"pm-a", "pm-b", "pm-c"}) {
+        GLYPHA_REQUIRE(store.get(key).has_value());
+    }
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+#endif
 
 GLYPHA_TEST("paired durable sync catch drain does not success-ACK put-hit on pre-existing key") {
-    // Catch-path used to upgrade attempted puts solely because the key was already
-    // Index-visible from a prior successful put — false success ACK with unchanged value.
+    // Attempted put that fails before write must not success-ACK solely because the key
+    // was already Index-visible from a prior put (false ACK with unchanged value).
     auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-puthit-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
@@ -686,19 +903,384 @@ GLYPHA_TEST("paired durable sync catch drain does not success-ACK put-hit on pre
     const auto statuses = store.put_batch(items);
     GLYPHA_REQUIRE(statuses.size() == 1);
     GLYPHA_REQUIRE(!statuses[0].has_value());
-    GLYPHA_REQUIRE(statuses[0].error().code == glyphastore::ErrorCode::unavailable ||
-                   statuses[0].error().code == glyphastore::ErrorCode::resource_exhausted);
+    // before(write_record) throw is known not committed — not sticky unavailable.
+    GLYPHA_REQUIRE(statuses[0].error().code == glyphastore::ErrorCode::resource_exhausted);
 
     const auto got = store.get(key);
     GLYPHA_REQUIRE(got.has_value());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
                    "old");
 
-    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
-    GLYPHA_REQUIRE(runtime != nullptr);
-    GLYPHA_REQUIRE(!runtime->healthy());
-
     static_cast<void>(store.close());
     std::error_code ignored2;
     std::filesystem::remove_all(root, ignored2);
 }
+
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("paired volatile pre-append rotation failure is known not committed") {
+    // Pre-append invalid_reference (rotation/catalog) must rewrite to
+    // resource_exhausted → wire OVERLOADED — not INTERNAL_ERROR / reconcile.
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::rotate);
+    const auto put = store.put("pre-append", bytes("no"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::invalid_reference);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(!store.get("pre-append").has_value());
+    GLYPHA_REQUIRE(runtime->healthy());
+
+    const auto retry = store.put("pre-append", bytes("yes"));
+    GLYPHA_REQUIRE(retry.has_value());
+    const auto got = store.get("pre-append");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "yes");
+    static_cast<void>(store.close());
+}
+
+GLYPHA_TEST("paired durable pre-write rotation failure is known not committed") {
+    // rotate_active runs only after this PUT's append returned segment_full
+    // (not_committed). A throw before seal/create/publish must stay not_committed →
+    // resource_exhausted — not indeterminate sticky INTERNAL_ERROR.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-pre-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    struct SegmentFullOnce final {
+        std::size_t write_records{};
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& state = *static_cast<SegmentFullOnce*>(opaque);
+            if (operation != glyphastore::FilesystemOperation::write_record) {
+                return {};
+            }
+            ++state.write_records;
+            if (state.write_records == 1) {
+                return glyphastore::fail(glyphastore::ErrorCode::segment_full, "injected segment full");
+            }
+            return {};
+        }
+    } failure;
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.context = &failure, .before = &SegmentFullOnce::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::rotate);
+    const auto put = store.put("rot-pre", bytes("no"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(failure.write_records >= 1);
+    GLYPHA_REQUIRE(!store.get("rot-pre").has_value());
+    GLYPHA_REQUIRE(runtime->healthy());
+
+    const auto retry = store.put("rot-pre", bytes("yes"));
+    GLYPHA_REQUIRE(retry.has_value());
+    const auto got = store.get("rot-pre");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "yes");
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+GLYPHA_TEST("paired durable post-seal rotation reader-open is sticky indeterminate") {
+    // After rotate_active commits a seal, sealed-reader open failure must stay
+    // indeterminate / unavailable (fail-closed) — not known-not-committed OVERLOADED.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-seal-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    struct SegmentFullOnSecond final {
+        std::size_t write_records{};
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& state = *static_cast<SegmentFullOnSecond*>(opaque);
+            if (operation != glyphastore::FilesystemOperation::write_record) {
+                return {};
+            }
+            ++state.write_records;
+            if (state.write_records == 2) {
+                return glyphastore::fail(glyphastore::ErrorCode::segment_full, "injected segment full");
+            }
+            return {};
+        }
+    } failure;
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.context = &failure, .before = &SegmentFullOnSecond::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    const auto warm = store.put("rot-seal-warm", bytes("warm"));
+    GLYPHA_REQUIRE(warm.has_value());
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::segment_open);
+    const auto put = store.put("rot-seal", bytes("no"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(failure.write_records >= 2);
+    GLYPHA_REQUIRE(!store.get("rot-seal").has_value());
+    GLYPHA_REQUIRE(!runtime->healthy());
+
+    const auto late = store.put("rot-seal-late", bytes("no"));
+    GLYPHA_REQUIRE(!late.has_value());
+    GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+GLYPHA_TEST("paired durable post-seal rotation create reject is sticky indeterminate") {
+    // After rotate_active commits a seal, a pre-rename create reject (not_published)
+    // must stay indeterminate / unavailable — not known-not-committed OVERLOADED.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-create-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    struct SegmentFullThenCreateReject final {
+        std::size_t write_records{};
+        std::size_t preallocates{};
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& state = *static_cast<SegmentFullThenCreateReject*>(opaque);
+            if (operation == glyphastore::FilesystemOperation::write_record) {
+                ++state.write_records;
+                if (state.write_records == 2) {
+                    return glyphastore::fail(glyphastore::ErrorCode::segment_full, "injected segment full");
+                }
+                return {};
+            }
+            if (operation == glyphastore::FilesystemOperation::preallocate_segment) {
+                ++state.preallocates;
+                // Only reject replacement create during rotation (after segment_full),
+                // not bootstrap Segment creation.
+                if (state.write_records >= 2) {
+                    return glyphastore::fail(glyphastore::ErrorCode::io_error, "injected create reject");
+                }
+                return {};
+            }
+            return {};
+        }
+    } failure;
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.context = &failure, .before = &SegmentFullThenCreateReject::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    const auto warm = store.put("rot-create-warm", bytes("warm"));
+    GLYPHA_REQUIRE(warm.has_value());
+
+    const auto put = store.put("rot-create", bytes("no"));
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(failure.write_records >= 2);
+    GLYPHA_REQUIRE(failure.preallocates >= 1);
+    GLYPHA_REQUIRE(!store.get("rot-create").has_value());
+    GLYPHA_REQUIRE(!runtime->healthy());
+
+    const auto late = store.put("rot-create-late", bytes("no"));
+    GLYPHA_REQUIRE(!late.has_value());
+    GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+GLYPHA_TEST("paired durable pre-append segment open failure is known not committed") {
+    // DurableSegmentFile::open before any Record write must stay not_committed →
+    // resource_exhausted / wire OVERLOADED — not indeterminate sticky INTERNAL_ERROR.
+    auto pattern =
+        (std::filesystem::temp_directory_path() / "glyphastore-paired-seg-open-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+    const auto store_path = root / "store";
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = store_path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::segment_open);
+    const auto put = store.put("seg-open", bytes("no"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::descriptor_exhausted ||
+                   put.error().code == glyphastore::ErrorCode::resource_exhausted);
+    GLYPHA_REQUIRE(put.error().code != glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(!store.get("seg-open").has_value());
+    GLYPHA_REQUIRE(runtime->healthy());
+
+    const auto retry = store.put("seg-open", bytes("yes"));
+    GLYPHA_REQUIRE(retry.has_value());
+    const auto got = store.get("seg-open");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "yes");
+
+    static_cast<void>(store.close());
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
+GLYPHA_TEST("paired volatile post-append index failure stays indeterminate") {
+    // After append, Index publication failure must stay unavailable (sticky) —
+    // rewrite_known_not_committed must not demote it to OVERLOADED.
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    glyphastore::fault::reset();
+    glyphastore::fault::fail_once(glyphastore::fault::Site::index_account);
+    const auto put = store.put("post-append", bytes("orphan"));
+    glyphastore::fault::reset();
+    GLYPHA_REQUIRE(!put.has_value());
+    GLYPHA_REQUIRE(put.error().code == glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(!store.get("post-append").has_value());
+    GLYPHA_REQUIRE(!runtime->healthy());
+
+    const auto late = store.put("late", bytes("no"));
+    GLYPHA_REQUIRE(!late.has_value());
+    GLYPHA_REQUIRE(late.error().code == glyphastore::ErrorCode::unavailable);
+    static_cast<void>(store.close());
+}
+
+GLYPHA_TEST("paired volatile exclusive compact gates Index publish") {
+    // Exclusive Writer put/erase_locked_published elides mutex_; compact must arm
+    // Index quiesce + drain hot_path_depth before Index touch. Sibling put under
+    // the gate sees sequence_conflict (rewritten to resource_exhausted on the
+    // paired wire) — never a torn Index vs unlocked publish.
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("seed", bytes("ok")).has_value());
+
+    glyphastore::fault::reset();
+    glyphastore::fault::arm_block(glyphastore::fault::Site::compact);
+    glyphastore::Result<glyphastore::CompactionResult> compacted{
+        glyphastore::fail(glyphastore::ErrorCode::internal_error, "unset")};
+    std::thread compactor{[&] { compacted = store.compact(); }};
+    GLYPHA_REQUIRE(glyphastore::fault::wait_until_blocked(glyphastore::fault::Site::compact));
+
+    bool saw_gate{};
+    const auto gate_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    for (std::uint32_t attempt = 0; std::chrono::steady_clock::now() < gate_deadline; ++attempt) {
+        const auto key = std::string{"gated-"} + std::to_string(attempt);
+        const auto put = store.put(key, bytes("x"));
+        if (!put.has_value() &&
+            (put.error().code == glyphastore::ErrorCode::sequence_conflict ||
+             put.error().code == glyphastore::ErrorCode::resource_exhausted)) {
+            saw_gate = true;
+            break;
+        }
+        GLYPHA_REQUIRE(put.has_value());
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    GLYPHA_REQUIRE(saw_gate);
+
+    glyphastore::fault::release_block(glyphastore::fault::Site::compact);
+    compactor.join();
+    glyphastore::fault::reset();
+
+    GLYPHA_REQUIRE(compacted.has_value());
+    GLYPHA_REQUIRE(store.put("after", bytes("y")).has_value());
+    GLYPHA_REQUIRE(store.verify_index().has_value());
+    static_cast<void>(store.close());
+}
+#endif

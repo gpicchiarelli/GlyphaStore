@@ -37,6 +37,41 @@ class ClientTest < Minitest::Test
     assert_equal GlyphaStore::Protocol::Status::INTERNAL_ERROR, result.error.wire_status
     assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, result.error.retryability
     assert_equal "put", result.error.operation
+    assert_operator result.error.bytes_sent, :>, 0
+    client.close
+  ensure
+    server&.join
+  end
+
+  def test_backup_internal_error_is_reconcile_first
+    server = FakeServer.new(internal_error_on_backup: true)
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    err = assert_raises(GlyphaStore::Error) do
+      client.backup("/tmp/glyphastore-ruby-backup-internal")
+    end
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, err.mutation_outcome
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, err.retryability
+    assert_equal GlyphaStore::Protocol::Status::INTERNAL_ERROR, err.wire_status
+    assert_equal 1, server.backup_requests
+    client.close
+  ensure
+    server&.join
+  end
+
+  def test_backup_validate_failure_is_reconcile_first
+    server = FakeServer.new(wrong_request_id_on_backup: true)
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    err = assert_raises(GlyphaStore::Error) do
+      client.backup("/tmp/glyphastore-ruby-backup-wrong-id")
+    end
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, err.mutation_outcome
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, err.retryability
+    assert_operator err.bytes_sent, :>, 0
+    assert_equal 1, server.backup_requests
     client.close
   ensure
     server&.join
@@ -122,6 +157,38 @@ class ClientTest < Minitest::Test
     server&.join
   end
 
+  def test_batch_preserves_sibling_results_when_one_worker_fails
+    server = FakeServer.new(workers: 2, fail_rebind_workers: [1])
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    keys = [nil, nil]
+    candidate = 0
+    while keys.any?(&:nil?)
+      key = format("sib%08d", candidate).b
+      w = client.worker_for(key)
+      keys[w] ||= key
+      candidate += 1
+    end
+    client.instance_variable_get(:@connections)[1].reset!
+    responses = client.execute_batch(
+      [
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::PUT, key: keys[0], value: "a".b),
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::PUT, key: keys[1], value: "b".b)
+      ]
+    )
+    assert_equal 2, responses.length
+    assert responses[0].succeeded?
+    assert_equal GlyphaStore::PipelineOutcome::FAILED, responses[1].outcome
+    assert responses[1].error
+    assert_equal GlyphaStore::MutationOutcome::REJECTED, responses[1].error.mutation_outcome
+    assert_equal 0, responses[1].error.bytes_sent
+    assert_equal "a".b, client.get(keys[0])
+    client.close
+  ensure
+    server&.join
+  end
+
   def test_rejects_non_positive_timeout
     server = FakeServer.new
     client = GlyphaStore::Client.connect(
@@ -151,6 +218,53 @@ class ClientTest < Minitest::Test
     assert_equal GlyphaStore::PipelineOutcome::SUCCEEDED, responses[0].outcome
     assert_equal GlyphaStore::PipelineOutcome::FAILED, responses[1].outcome
     assert_equal GlyphaStore::PipelineOutcome::INDETERMINATE, responses[2].outcome
+    assert responses[2].error
+    assert_operator responses[2].error.bytes_sent, :>, 0
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, responses[2].error.retryability
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, responses[2].error.mutation_outcome
+    client.close
+  ensure
+    server&.join
+  end
+
+  def test_pipeline_disconnect_before_put_reply_is_reconcile_first
+    server = FakeServer.new(disconnect_on_put: true)
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    responses = client.execute_pipeline(
+      [
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::PUT, key: "k".b, value: "v".b),
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::GET, key: "k".b),
+        GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::ERASE, key: "k".b)
+      ]
+    )
+    assert_equal GlyphaStore::PipelineOutcome::INDETERMINATE, responses[0].outcome
+    assert_equal GlyphaStore::PipelineOutcome::FAILED, responses[1].outcome
+    assert_equal GlyphaStore::PipelineOutcome::INDETERMINATE, responses[2].outcome
+    assert responses[0].error
+    assert_operator responses[0].error.bytes_sent, :>, 0
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, responses[0].error.retryability
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, responses[0].error.mutation_outcome
+    client.close
+  ensure
+    server&.join
+  end
+
+  def test_pipeline_internal_error_mutation_is_reconcile_first
+    server = FakeServer.new(internal_error_on_put: true)
+    client = GlyphaStore::Client.connect(
+      GlyphaStore::ClientConfig.defaults.tap { |c| c.port = server.port }
+    )
+    responses = client.execute_pipeline(
+      [GlyphaStore::PipelineRequest.new(opcode: GlyphaStore::PipelineOpcode::PUT, key: "k".b, value: "v".b)]
+    )
+    assert_equal GlyphaStore::PipelineOutcome::INDETERMINATE, responses[0].outcome
+    assert responses[0].error
+    assert_equal GlyphaStore::Retryability::RECONCILE_FIRST, responses[0].error.retryability
+    assert_equal GlyphaStore::MutationOutcome::INDETERMINATE, responses[0].error.mutation_outcome
+    assert_equal GlyphaStore::Protocol::Status::INTERNAL_ERROR, responses[0].error.wire_status
+    assert_operator responses[0].error.bytes_sent, :>, 0
     client.close
   ensure
     server&.join

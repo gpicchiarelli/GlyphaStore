@@ -214,7 +214,9 @@ struct WorkerConnection {
             if (!written) {
                 return ExchangeFailure{written.error(), sent};
             }
-            if (written->kind == server::TlsIoKind::would_block) {
+            if (written->kind == server::TlsIoKind::would_block ||
+                written->kind == server::TlsIoKind::want_read ||
+                written->kind == server::TlsIoKind::want_write) {
                 auto ready =
                     wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
@@ -263,7 +265,9 @@ struct WorkerConnection {
             if (!read) {
                 return unexpected(read.error());
             }
-            if (read->kind == server::TlsIoKind::would_block) {
+            if (read->kind == server::TlsIoKind::would_block ||
+                read->kind == server::TlsIoKind::want_read ||
+                read->kind == server::TlsIoKind::want_write) {
                 auto ready =
                     wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
@@ -518,7 +522,9 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
             if (!read) {
                 return ExchangeFailure{read.error(), request_bytes_sent};
             }
-            if (read->kind == server::TlsIoKind::would_block) {
+            if (read->kind == server::TlsIoKind::would_block ||
+                read->kind == server::TlsIoKind::want_read ||
+                read->kind == server::TlsIoKind::want_write) {
                 auto ready =
                     wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
                 if (ready) {
@@ -959,9 +965,16 @@ class Client::Impl final {
                 })) {
                 auto executed = run_job(job);
                 if (!executed) {
-                    for (const auto index : job.original_indices) {
+                    for (std::size_t offset = 0; offset < job.original_indices.size(); ++offset) {
+                        const auto index = job.original_indices[offset];
+                        const auto& request = job.requests[offset];
                         responses[index].outcome = PipelineOutcome::failed;
-                        responses[index].error = executed.error();
+                        // Group-level pre-admission failure (connect/encode): bytes_sent=0 →
+                        // mutation_outcome=rejected, matching mark_unresolved / Erlang.
+                        responses[index].error = enrich_error(
+                            executed.error(), operation_name(request.opcode), std::nullopt,
+                            worker_for(request.key), routing_epoch_, 0, std::nullopt,
+                            is_mutation(request.opcode), false);
                     }
                     return responses;
                 }
@@ -979,9 +992,14 @@ class Client::Impl final {
         for (auto& item : active) {
             auto executed = item.future.get();
             if (!executed) {
-                for (const auto index : item.job->original_indices) {
+                for (std::size_t offset = 0; offset < item.job->original_indices.size(); ++offset) {
+                    const auto index = item.job->original_indices[offset];
+                    const auto& request = item.job->requests[offset];
                     responses[index].outcome = PipelineOutcome::failed;
-                    responses[index].error = executed.error();
+                    responses[index].error = enrich_error(
+                        executed.error(), operation_name(request.opcode), std::nullopt,
+                        worker_for(request.key), routing_epoch_, 0, std::nullopt,
+                        is_mutation(request.opcode), false);
                 }
                 continue;
             }
@@ -1133,14 +1151,30 @@ class Client::Impl final {
             }
             auto result = exchange(connection, *encoded, config_, *deadline);
             if (auto* failure = std::get_if<ExchangeFailure>(&result)) {
+                connection.reset();
+                if (opcode == server::RequestOpcode::backup && failure->request_bytes_sent > 0) {
+                    // Backup is not idempotent to the same destination. A lost OK after a
+                    // completed backup would make a blind retry fail with "destination not
+                    // empty" and falsely claim the backup never succeeded — treat like a
+                    // mutation with bytes in flight (indeterminate / reconcile_first).
+                    return unexpected(enrich_error(failure->error, operation, request_id, worker,
+                                                   routing_epoch_, failure->request_bytes_sent,
+                                                   std::nullopt, true, true));
+                }
                 last_error = enrich_error(failure->error, operation, request_id, worker, routing_epoch_,
                                           failure->request_bytes_sent);
-                connection.reset();
                 continue;
             }
             auto& response = std::get<OwnedResponse>(result);
             if (auto valid = validate_response(response, request_id, worker); !valid) {
                 connection.reset();
+                // BACKUP response arrived after send — fenced copy may already exist.
+                // Same polarity as mutate validate-fail / BACKUP INTERNAL_ERROR.
+                if (opcode == server::RequestOpcode::backup) {
+                    return unexpected(enrich_error(valid.error(), operation, request_id, worker,
+                                                   routing_epoch_, encoded->size(), std::nullopt, true,
+                                                   true));
+                }
                 return unexpected(enrich_error(valid.error(), operation, request_id, worker, routing_epoch_,
                                                encoded->size()));
             }
@@ -1148,6 +1182,15 @@ class Client::Impl final {
                 if (response.status == server::ResponseStatus::wrong_owner ||
                     response.status == server::ResponseStatus::not_bound) {
                     healthy_.store(false, std::memory_order_release);
+                }
+                // BACKUP INTERNAL_ERROR may mean the fenced copy already committed (e.g. report
+                // formatting failed after backup_to). Same-destination retry is not safe —
+                // treat like bytes-in-flight indeterminate / reconcile_first.
+                if (opcode == server::RequestOpcode::backup &&
+                    response.status == server::ResponseStatus::internal_error) {
+                    return unexpected(enrich_error(response_error(response.status), operation, request_id,
+                                                   worker, routing_epoch_, encoded->size(),
+                                                   static_cast<std::uint16_t>(response.status), true, true));
                 }
                 return unexpected(enrich_error(response_error(response.status), operation, request_id, worker,
                                                routing_epoch_, encoded->size(),

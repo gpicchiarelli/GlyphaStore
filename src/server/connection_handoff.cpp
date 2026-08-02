@@ -16,12 +16,20 @@ void ConnectionHandoffMesh::register_wakeup(const std::size_t executor, Wakeup& 
     endpoints_[executor]->wakeup = &wakeup;
 }
 
+void ConnectionHandoffMesh::stop_accepting() noexcept {
+    accepting_.store(false, std::memory_order_release);
+}
+
 auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, ConnectionHandoff&& connection)
     -> bool {
+    if (!accepting_.load(std::memory_order_acquire)) {
+        return false;
+    }
     auto& endpoint = *endpoints_[target_executor];
     if (!endpoint.connections.try_push(std::move(connection))) {
         return false;
     }
+    endpoint.pending.fetch_add(1U, std::memory_order_release);
     if (endpoint.wakeup != nullptr) {
         static_cast<void>(endpoint.wakeup->notify());
     }
@@ -29,7 +37,16 @@ auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, Conne
 }
 
 auto ConnectionHandoffMesh::try_pop(const std::size_t executor) -> std::optional<ConnectionHandoff> {
-    return endpoints_[executor]->connections.try_pop();
+    auto& endpoint = *endpoints_[executor];
+    auto handoff = endpoint.connections.try_pop();
+    if (handoff.has_value()) {
+        endpoint.pending.fetch_sub(1U, std::memory_order_release);
+    }
+    return handoff;
+}
+
+auto ConnectionHandoffMesh::has_pending(const std::size_t executor) const noexcept -> bool {
+    return endpoints_[executor]->pending.load(std::memory_order_acquire) != 0;
 }
 
 } // namespace glyphastore::server

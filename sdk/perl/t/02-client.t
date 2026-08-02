@@ -12,8 +12,9 @@ use lib "$FindBin::Bin/../lib";
 use GlyphaStore::Client;
 use GlyphaStore::Error;
 use GlyphaStore::Protocol qw(
-    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER
+    OP_INIT OP_PING OP_GET OP_PUT OP_ERASE OP_BIND_WORKER OP_BACKUP
     STATUS_OK STATUS_NOT_FOUND STATUS_NOT_BOUND STATUS_INVALID_REQUEST STATUS_WRONG_OWNER
+    STATUS_INTERNAL_ERROR
     decode_request encode_response worker_for
 );
 
@@ -138,6 +139,15 @@ sub start_server {
                             close($handle);
                             next;
                         }
+                        if ($options{internal_error_on_put}) {
+                            send_response($handle,
+                                status => STATUS_INTERNAL_ERROR,
+                                request_id => $request->{request_id},
+                                owner_worker => $owner,
+                                worker_count => $worker_count,
+                                routing_epoch => 9);
+                            next;
+                        }
                         send_response($handle,
                             status => STATUS_OK,
                             request_id => $request->{request_id},
@@ -181,6 +191,27 @@ sub start_server {
                             owner_worker => $owner,
                             worker_count => $worker_count,
                             routing_epoch => 9);
+                    } elsif ($opcode == OP_BACKUP) {
+                        if ($options{internal_error_on_backup}) {
+                            send_response($handle,
+                                status => STATUS_INTERNAL_ERROR,
+                                request_id => $request->{request_id},
+                                value => 'report failed',
+                                owner_worker => $owner,
+                                worker_count => $worker_count,
+                                routing_epoch => 9);
+                        } else {
+                            my $reply_id = $options{wrong_request_id_on_backup}
+                                ? ($request->{request_id} ^ 1)
+                                : $request->{request_id};
+                            send_response($handle,
+                                status => STATUS_OK,
+                                request_id => $reply_id,
+                                value => 'status=ok files=0 bytes=0',
+                                owner_worker => $owner,
+                                worker_count => $worker_count,
+                                routing_epoch => 9);
+                        }
                     }
                 }
             }
@@ -249,6 +280,45 @@ $responses = $client->execute_pipeline([
 is($responses->[0]->{outcome}, 'indeterminate', 'sent PUT is indeterminate after disconnect');
 is($responses->[1]->{outcome}, 'failed', 'unresolved GET is failed');
 is($responses->[2]->{outcome}, 'indeterminate', 'sent ERASE is indeterminate');
+ok($responses->[0]->{error}->bytes_sent > 0, 'pipeline PUT exposes bytes_sent');
+is($responses->[0]->{error}->retryability, 'reconcile_first', 'pipeline PUT is reconcile_first');
+is($responses->[0]->{error}->mutation_outcome, 'indeterminate', 'pipeline PUT mutation_outcome');
+is($responses->[2]->{error}->retryability, 'reconcile_first', 'pipeline ERASE is reconcile_first');
+$client->close;
+waitpid($pid, 0);
+
+($port, $pid) = start_server(internal_error_on_put => 1);
+$client = GlyphaStore::Client->connect(port => $port);
+my $ie = $client->put('key', 'value');
+is($ie->{outcome}, 'indeterminate', 'PUT INTERNAL_ERROR is indeterminate');
+ok(ref($ie->{error}) eq 'GlyphaStore::Error', 'INTERNAL_ERROR error is structured');
+is($ie->{error}->mutation_outcome, 'indeterminate', 'PUT INTERNAL_ERROR mutation_outcome');
+is($ie->{error}->retryability, 'reconcile_first', 'PUT INTERNAL_ERROR is reconcile_first');
+ok($ie->{error}->bytes_sent > 0, 'PUT INTERNAL_ERROR exposes bytes_sent');
+is($ie->{error}->wire_status, STATUS_INTERNAL_ERROR, 'PUT INTERNAL_ERROR wire_status');
+$client->close;
+waitpid($pid, 0);
+
+($port, $pid) = start_server(worker_count => 2, internal_error_on_put => 1);
+$client = GlyphaStore::Client->connect(port => $port);
+my @ie_keys = (undef, undef);
+my $candidate = 0;
+while (!defined($ie_keys[0]) || !defined($ie_keys[1])) {
+    my $key = sprintf('ie%08d', $candidate++);
+    my $w = $client->worker_for($key);
+    $ie_keys[$w] //= $key;
+}
+my $ie_batch = $client->execute_batch([
+    { opcode => 'put', key => $ie_keys[0], value => 'a' },
+    { opcode => 'put', key => $ie_keys[1], value => 'b' },
+]);
+is(scalar(@$ie_batch), 2, 'INTERNAL_ERROR batch length');
+for my $slot (@$ie_batch) {
+    is($slot->{outcome}, 'indeterminate', 'batch INTERNAL_ERROR slot indeterminate');
+    is($slot->{error}->mutation_outcome, 'indeterminate', 'batch INTERNAL_ERROR mutation_outcome');
+    is($slot->{error}->retryability, 'reconcile_first', 'batch INTERNAL_ERROR reconcile_first');
+    ok($slot->{error}->bytes_sent > 0, 'batch INTERNAL_ERROR bytes_sent');
+}
 $client->close;
 waitpid($pid, 0);
 
@@ -454,6 +524,37 @@ SKIP: {
 {
     my $overloaded = GlyphaStore::Error->new('overloaded', 'server is overloaded');
     is($overloaded->retryability, 'never', 'overloaded retryability is never');
+}
+
+{
+    my ($backup_port, $backup_pid) = start_server(internal_error_on_backup => 1);
+    my $backup_client = GlyphaStore::Client->connect(port => $backup_port);
+    my $ok = eval { $backup_client->backup('/tmp/glyphastore-perl-backup-internal'); 1 };
+    my $error = $@;
+    ok(!$ok, 'BACKUP INTERNAL_ERROR raises');
+    isa_ok($error, 'GlyphaStore::Error');
+    is($error->mutation_outcome, 'indeterminate', 'BACKUP INTERNAL_ERROR is indeterminate');
+    is($error->retryability, 'reconcile_first', 'BACKUP INTERNAL_ERROR is reconcile_first');
+    is($error->wire_status, STATUS_INTERNAL_ERROR, 'BACKUP INTERNAL_ERROR wire_status');
+    ok($error->bytes_sent > 0, 'BACKUP INTERNAL_ERROR exposes bytes_sent');
+    $backup_client->close;
+    kill 'TERM', $backup_pid;
+    waitpid($backup_pid, 0);
+}
+
+{
+    my ($backup_port, $backup_pid) = start_server(wrong_request_id_on_backup => 1);
+    my $backup_client = GlyphaStore::Client->connect(port => $backup_port);
+    my $ok = eval { $backup_client->backup('/tmp/glyphastore-perl-backup-wrong-id'); 1 };
+    my $error = $@;
+    ok(!$ok, 'BACKUP validate failure raises');
+    isa_ok($error, 'GlyphaStore::Error');
+    is($error->mutation_outcome, 'indeterminate', 'BACKUP validate failure is indeterminate');
+    is($error->retryability, 'reconcile_first', 'BACKUP validate failure is reconcile_first');
+    ok($error->bytes_sent > 0, 'BACKUP validate failure exposes bytes_sent');
+    $backup_client->close;
+    kill 'TERM', $backup_pid;
+    waitpid($backup_pid, 0);
 }
 
 done_testing;

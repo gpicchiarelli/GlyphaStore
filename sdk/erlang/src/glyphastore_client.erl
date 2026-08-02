@@ -415,6 +415,7 @@ launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Att
                             conn => Conn1,
                             request_id => RequestId,
                             attempts => Attempts,
+                            frame_bytes => byte_size(Frame),
                             meta => Meta
                         }
                     );
@@ -480,6 +481,7 @@ launch_mutate(Op, OpName, Key, Value, Expire, Deadline, Worker, Conn, From, Stat
                             conn => Conn1,
                             request_id => RequestId,
                             attempts => Attempts,
+                            frame_bytes => byte_size(Frame),
                             meta => Meta
                         }
                     );
@@ -532,7 +534,8 @@ launch_pipeline(Plan, Deadline, Worker, Conn, From, State, Count) ->
                     deadline => Deadline,
                     worker => Worker,
                     conn => Conn1,
-                    meta => Meta
+                    meta => Meta,
+                    plan => Plan
                 }
             );
         {{error, Err}, State1} ->
@@ -565,24 +568,15 @@ dispatch_batch(Requests, Opts, From, State) ->
 
 launch_batch(Groups, Deadline, From, State, Count) ->
     Responses0 = array:new(Count, {default, failed_response()}),
+    Merge = fun(_Worker, Items, GroupResponses, Acc) ->
+        merge_group_by_index(Acc, Items, GroupResponses)
+    end,
     case prepare_batch_groups(Groups, State, []) of
         {ok, Prepared, State1} ->
-            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
-                {ok, State2} ->
-                    fanout_prepared(
-                        Prepared,
-                        Deadline,
-                        From,
-                        State2,
-                        fun(_Worker, Items, GroupResponses, Acc) ->
-                            merge_group_by_index(Acc, Items, GroupResponses)
-                        end,
-                        Responses0,
-                        batch
-                    );
-                {{error, Err}, State2} ->
-                    {reply, {error, Err}, State2}
-            end;
+            %% Per-Worker connect like Python/Go execute_pipeline: a rebind failure
+            %% stamps only that Worker's slots and still fans out siblings.
+            {Ready, Acc1, State2} = connect_prepared_groups(Prepared, Responses0, Merge, State1),
+            fanout_prepared(Ready, Deadline, From, State2, Merge, Acc1, batch);
         {error, Err} ->
             {reply, {error, Err}, State}
     end.
@@ -601,23 +595,16 @@ dispatch_worker_pipelines(Batches, Opts, From, State) when is_list(Batches) ->
                 {ok, Deadline} ->
                     case plan_worker_pipelines(Batches, 0, State, []) of
                         {ok, Prepared, State1} ->
-                            case ensure_workers_connected([W || {W, _, _} <- Prepared], State1) of
-                                {ok, State2} ->
-                                    Empty = array:new(WC, {default, []}),
-                                    fanout_prepared(
-                                        Prepared,
-                                        Deadline,
-                                        From,
-                                        State2,
-                                        fun(Worker, _Items, GroupResponses, Acc) ->
-                                            array:set(Worker, GroupResponses, Acc)
-                                        end,
-                                        Empty,
-                                        worker_pipelines
-                                    );
-                                {{error, Err}, State2} ->
-                                    {reply, {error, Err}, State2}
-                            end;
+                            Empty = array:new(WC, {default, []}),
+                            Merge = fun(Worker, _Items, GroupResponses, Acc) ->
+                                array:set(Worker, GroupResponses, Acc)
+                            end,
+                            {Ready, Acc1, State2} = connect_prepared_groups(
+                                Prepared, Empty, Merge, State1
+                            ),
+                            fanout_prepared(
+                                Ready, Deadline, From, State2, Merge, Acc1, worker_pipelines
+                            );
                         {error, Err} ->
                             {reply, {error, Err}, State}
                     end;
@@ -825,19 +812,42 @@ fail_pending_crash(Pending, _Reason, State) ->
     From = maps:get(from, Pending),
     case maps:get(type, Pending) of
         read ->
-            finish_reply(
-                From,
-                {error, annotate(glyphastore_error:transport(<<"worker I/O process crashed">>), maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State)},
+            Ann0 = annotate(
+                glyphastore_error:transport(<<"worker I/O process crashed">>),
+                maps:get(op_name, Pending),
+                maps:get(request_id, Pending, undefined),
+                maps:get(worker, Pending),
                 State
-            );
+            ),
+            %% Match timeout / send-failure: BACKUP after launch is not same-destination
+            %% idempotent — crash mid-receive must not advertise same_request.
+            Ann = case maps:get(opcode, Pending, undefined) of
+                Opcode when Opcode =:= glyphastore_protocol:opcode_backup() ->
+                    FrameBytes = maps:get(frame_bytes, Pending, 1),
+                    enrich_mutation(glyphastore_error:enrich(Ann0, #{bytes_sent => FrameBytes}), indeterminate);
+                _ ->
+                    Ann0
+            end,
+            finish_reply(From, {error, Ann}, State);
         mutate ->
+            FrameBytes = maps:get(frame_bytes, Pending, 1),
             Err = enrich_mutation(
-                annotate(glyphastore_error:transport(<<"worker I/O process crashed">>), maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                glyphastore_error:enrich(
+                    annotate(glyphastore_error:transport(<<"worker I/O process crashed">>), maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                    #{bytes_sent => FrameBytes}
+                ),
                 indeterminate
             ),
             finish_reply(From, #{outcome => indeterminate, error => Err}, State);
         pipeline ->
-            finish_reply(From, {error, glyphastore_error:transport(<<"worker I/O process crashed">>)}, State)
+            finish_reply(
+                From,
+                pipeline_outer_failure_reply(
+                    Pending,
+                    glyphastore_error:transport(<<"worker I/O process crashed">>)
+                ),
+                State
+            )
     end.
 
 fail_pending_timeout(Pending, State) ->
@@ -845,20 +855,28 @@ fail_pending_timeout(Pending, State) ->
     Err = glyphastore_error:transport(<<"request deadline expired">>),
     case maps:get(type, Pending) of
         read ->
-            finish_reply(
-                From,
-                {error, annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State)},
-                State
-            );
+            Ann0 = annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+            Ann = case maps:get(opcode, Pending, undefined) of
+                Opcode when Opcode =:= glyphastore_protocol:opcode_backup() ->
+                    FrameBytes = maps:get(frame_bytes, Pending, 1),
+                    enrich_mutation(glyphastore_error:enrich(Ann0, #{bytes_sent => FrameBytes}), indeterminate);
+                _ ->
+                    Ann0
+            end,
+            finish_reply(From, {error, Ann}, State);
         mutate ->
             %% Timeout while waiting: bytes may have been sent → indeterminate.
+            FrameBytes = maps:get(frame_bytes, Pending, 1),
             Ann = enrich_mutation(
-                annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                glyphastore_error:enrich(
+                    annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+                    #{bytes_sent => FrameBytes}
+                ),
                 indeterminate
             ),
             finish_reply(From, #{outcome => indeterminate, error => Ann}, State);
         pipeline ->
-            finish_reply(From, {error, Err}, State)
+            finish_reply(From, pipeline_outer_failure_reply(Pending, Err), State)
     end.
 
 complete_read(Pending, {crash, _C, _R, _S}, State) ->
@@ -874,27 +892,50 @@ complete_read(Pending, {ok, IoResult}, State) ->
     Deadline = maps:get(deadline, Pending),
     Attempts = maps:get(attempts, Pending),
     From = maps:get(from, Pending),
+    FrameBytes = maps:get(frame_bytes, Pending, 1),
     case IoResult of
         {ok, Response} ->
-            {Reply, State1} = handle_read_response(Response, OpName, RequestId, Worker, Conn, State),
+            {Reply, State1} = handle_read_response(Response, OpName, RequestId, Worker, Conn, FrameBytes, State),
             finish_reply(From, Reply, State1);
         {error, SF = #{send_failure := true}} ->
             glyphastore_conn:reset(Conn),
-            Err = promote_send_sf(SF, OpName, RequestId, Worker, State, false),
-            case Attempts > 1 andalso retryable_read(Err, State) of
+            Bytes = maps:get(bytes_sent, SF, 0),
+            IsBackup = Opcode =:= glyphastore_protocol:opcode_backup(),
+            case IsBackup andalso Bytes > 0 of
                 true ->
-                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                    Err = enrich_mutation(promote_send_sf(SF, OpName, RequestId, Worker, State, true), indeterminate),
+                    finish_reply(From, {error, Err}, State);
                 false ->
-                    finish_reply(From, {error, Err}, State)
+                    Err = promote_send_sf(SF, OpName, RequestId, Worker, State, false),
+                    case Attempts > 1 andalso retryable_read(Err, State) of
+                        true ->
+                            launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                        false ->
+                            finish_reply(From, {error, Err}, State)
+                    end
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            Ann = annotate(Err, OpName, RequestId, Worker, State),
-            case Attempts > 1 andalso retryable_read(Ann, State) of
+            IsBackup = Opcode =:= glyphastore_protocol:opcode_backup(),
+            case IsBackup of
                 true ->
-                    launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                    %% Receive loss after send — do not blind-retry BACKUP.
+                    Ann = enrich_mutation(
+                        glyphastore_error:enrich(
+                            annotate(Err, OpName, RequestId, Worker, State),
+                            #{bytes_sent => FrameBytes}
+                        ),
+                        indeterminate
+                    ),
+                    finish_reply(From, {error, Ann}, State);
                 false ->
-                    finish_reply(From, {error, Ann}, State)
+                    Ann = annotate(Err, OpName, RequestId, Worker, State),
+                    case Attempts > 1 andalso retryable_read(Ann, State) of
+                        true ->
+                            launch_read(Opcode, OpName, Key, Value, Deadline, Worker, Conn, From, State, Attempts - 1);
+                        false ->
+                            finish_reply(From, {error, Ann}, State)
+                    end
             end
     end.
 
@@ -912,9 +953,10 @@ complete_mutate(Pending, {ok, IoResult}, State) ->
     Deadline = maps:get(deadline, Pending),
     Attempts = maps:get(attempts, Pending),
     From = maps:get(from, Pending),
+    FrameBytes = maps:get(frame_bytes, Pending, 1),
     case IoResult of
         {ok, Response} ->
-            {Reply, State1} = handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State),
+            {Reply, State1} = handle_mutate_response(Response, OpName, RequestId, Worker, Conn, FrameBytes, State),
             finish_reply(From, Reply, State1);
         {error, SF = #{send_failure := true}} ->
             glyphastore_conn:reset(Conn),
@@ -930,7 +972,10 @@ complete_mutate(Pending, {ok, IoResult}, State) ->
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
-            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State), indeterminate),
+            Ann = enrich_mutation(
+                glyphastore_error:enrich(annotate(Err, OpName, RequestId, Worker, State), #{bytes_sent => FrameBytes}),
+                indeterminate
+            ),
             finish_reply(From, #{outcome => indeterminate, error => Ann}, State)
     end.
 
@@ -945,7 +990,8 @@ complete_pipeline(Pending, {ok, {ok, Responses, Healthy}}, State) ->
     finish_reply(maps:get(from, Pending), {ok, Responses}, State1);
 complete_pipeline(Pending, {ok, {error, Err}}, State) ->
     maybe_reset_conn(Pending),
-    finish_reply(maps:get(from, Pending), {error, Err}, State).
+    %% I/O may have started; classify per-slot like an outer kill (§6.1).
+    finish_reply(maps:get(from, Pending), pipeline_outer_failure_reply(Pending, Err), State).
 
 %% ---------------------------------------------------------------------------
 %% Pipeline I/O (runs in delegated process; returns {ok, Responses, Healthy})
@@ -1024,8 +1070,26 @@ fold_pipeline_responses([Response | RestResp], [{RequestId, Req, Begin} | RestMe
                                 State#state.healthy}
                     end;
                 Status ->
-                    Err = status_err(Status, pipeline_op(Req), RequestId, Worker, State),
+                    OpName = pipeline_op(Req),
                     Outcome = pipeline_status_outcome(Req, Status),
+                    IsMut = maps:get(op, Req) =:= put orelse maps:get(op, Req) =:= erase,
+                    Fields0 = #{bytes_sent => SentBytes - Begin},
+                    Fields =
+                        case IsMut of
+                            true ->
+                                Fields0#{
+                                    mutation_outcome =>
+                                        case Outcome of
+                                            indeterminate -> indeterminate;
+                                            _ -> rejected
+                                        end
+                                };
+                            false ->
+                                Fields0
+                        end,
+                    Err = glyphastore_error:enrich(
+                        status_err(Status, OpName, RequestId, Worker, State), Fields
+                    ),
                     Responses1 = array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
                     State1 = maybe_unhealthy_state(Status, State),
                     fold_pipeline_responses(
@@ -1068,7 +1132,18 @@ fanout_prepared([{Worker, Items, Plan}], Deadline, From, State, Merge, Acc, Kind
                 worker_pipelines -> {ok, array:to_list(Acc1), Healthy}
             end
         end,
-        #{type => pipeline, deadline => Deadline, worker => Worker, conn => Conn, meta => Meta}
+        #{
+            type => pipeline,
+            deadline => Deadline,
+            worker => Worker,
+            conn => Conn,
+            meta => Meta,
+            plan => Plan,
+            items => Items,
+            merge => Merge,
+            acc => Acc,
+            kind => Kind
+        }
     );
 fanout_prepared(Prepared, Deadline, From, State, Merge, Acc0, Kind) ->
     Client = self(),
@@ -1088,7 +1163,15 @@ fanout_prepared(Prepared, Deadline, From, State, Merge, Acc0, Kind) ->
             end),
             Pid ! {start, Mon},
             {
-                ChAcc#{Mon => #{worker => Worker, items => Items, pid => Pid, conn => Conn}},
+                ChAcc#{
+                    Mon => #{
+                        worker => Worker,
+                        items => Items,
+                        plan => Plan,
+                        pid => Pid,
+                        conn => Conn
+                    }
+                },
                 MonAcc#{Mon => Tag}
             }
         end,
@@ -1158,14 +1241,11 @@ handle_fanout_down(Tag, Mon, Reason, Pending, State) ->
                     glyphastore_conn:reset(maps:get(conn, Child)),
                     Worker = maps:get(worker, Child),
                     Items = maps:get(items, Child),
-                    CrashResponses = [
-                        #{
-                            outcome => failed,
-                            error => glyphastore_error:transport(<<"worker I/O process crashed">>)
-                        }
-                     || _ <- lists:seq(1, max(1, length(Items)))
-                    ],
-                    %% Prefer indeterminate for mutation-heavy pipelines when crash is mid-flight.
+                    Plan = maps:get(plan, Child),
+                    CrashResponses = classify_pipeline_after_io(
+                        Plan,
+                        glyphastore_error:transport(<<"worker I/O process crashed">>)
+                    ),
                     Acc1 = (maps:get(merge, Pending))(Worker, Items, CrashResponses, maps:get(acc, Pending)),
                     Pending1 = Pending#{children := Children1, acc := Acc1},
                     State1 = State#state{
@@ -1204,8 +1284,9 @@ fanout_timeout_reply(Pending, Acc) ->
         fun(_Mon, Child, A) ->
             Worker = maps:get(worker, Child),
             Items = maps:get(items, Child),
-            Failed = [#{outcome => failed, error => Err} || _ <- Items],
-            (maps:get(merge, Pending))(Worker, Items, Failed, A)
+            Plan = maps:get(plan, Child),
+            Classified = classify_pipeline_after_io(Plan, Err),
+            (maps:get(merge, Pending))(Worker, Items, Classified, A)
         end,
         Acc,
         Children
@@ -1230,7 +1311,7 @@ finish_fanout(Tag, _Pending, State) ->
             finish_reply(maps:get(from, P), Reply, State1)
     end.
 
-handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
+handle_read_response(Response, OpName, RequestId, Worker, Conn, FrameBytes, State) ->
     case validate_response(Response, RequestId, Worker, State) of
         ok ->
             case maps:get(status, Response) of
@@ -1239,15 +1320,38 @@ handle_read_response(Response, OpName, RequestId, Worker, Conn, State) ->
                 Status ->
                     Err = status_err(Status, OpName, RequestId, Worker, State),
                     {State1, Final} = apply_unhealthy(Status, Err, State),
-                    {{error, Final}, State1}
+                    %% BACKUP INTERNAL_ERROR may mean the fenced copy already committed.
+                    Final1 =
+                        case {OpName, Status} of
+                            {<<"backup">>, ?GS_ST_INTERNAL} ->
+                                enrich_mutation(
+                                    glyphastore_error:enrich(Final, #{bytes_sent => FrameBytes}),
+                                    indeterminate
+                                );
+                            _ ->
+                                Final
+                        end,
+                    {{error, Final1}, State1}
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
             State1 = mark_unhealthy_if_metadata(Err, State),
-            {{error, annotate(Err, OpName, RequestId, Worker, State1)}, State1}
+            Ann0 = annotate(Err, OpName, RequestId, Worker, State1),
+            %% BACKUP validate failure after a framed response — fenced copy may exist.
+            Ann =
+                case OpName of
+                    <<"backup">> ->
+                        enrich_mutation(
+                            glyphastore_error:enrich(Ann0, #{bytes_sent => FrameBytes}),
+                            indeterminate
+                        );
+                    _ ->
+                        Ann0
+                end,
+            {{error, Ann}, State1}
     end.
 
-handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State) ->
+handle_mutate_response(Response, OpName, RequestId, Worker, Conn, FrameBytes, State) ->
     case validate_response(Response, RequestId, Worker, State) of
         ok ->
             case maps:get(status, Response) of
@@ -1257,29 +1361,47 @@ handle_mutate_response(Response, OpName, RequestId, Worker, Conn, State) ->
                         _ ->
                             glyphastore_conn:reset(Conn),
                             Err = enrich_mutation(
-                                annotate(
-                                    glyphastore_error:protocol(<<"mutation response value must be empty">>),
-                                    OpName,
-                                    RequestId,
-                                    Worker,
-                                    State
+                                glyphastore_error:enrich(
+                                    annotate(
+                                        glyphastore_error:protocol(<<"mutation response value must be empty">>),
+                                        OpName,
+                                        RequestId,
+                                        Worker,
+                                        State
+                                    ),
+                                    #{bytes_sent => FrameBytes}
                                 ),
                                 indeterminate
                             ),
                             {#{outcome => indeterminate, error => Err}, State}
                     end;
                 ?GS_ST_INTERNAL ->
-                    Err = enrich_mutation(status_err(?GS_ST_INTERNAL, OpName, RequestId, Worker, State), indeterminate),
+                    Err = enrich_mutation(
+                        glyphastore_error:enrich(
+                            status_err(?GS_ST_INTERNAL, OpName, RequestId, Worker, State),
+                            #{bytes_sent => FrameBytes}
+                        ),
+                        indeterminate
+                    ),
                     {#{outcome => indeterminate, error => Err}, State};
                 Status ->
-                    Err = enrich_mutation(status_err(Status, OpName, RequestId, Worker, State), rejected),
+                    Err = enrich_mutation(
+                        glyphastore_error:enrich(
+                            status_err(Status, OpName, RequestId, Worker, State),
+                            #{bytes_sent => FrameBytes}
+                        ),
+                        rejected
+                    ),
                     {State1, Final} = apply_unhealthy(Status, Err, State),
                     {#{outcome => rejected, error => Final}, State1}
             end;
         {error, Err} ->
             glyphastore_conn:reset(Conn),
             State1 = mark_unhealthy_if_metadata(Err, State),
-            Ann = enrich_mutation(annotate(Err, OpName, RequestId, Worker, State1), indeterminate),
+            Ann = enrich_mutation(
+                glyphastore_error:enrich(annotate(Err, OpName, RequestId, Worker, State1), #{bytes_sent => FrameBytes}),
+                indeterminate
+            ),
             {#{outcome => indeterminate, error => Ann}, State1}
     end.
 
@@ -1457,17 +1579,6 @@ plan_pipeline_for_worker_items([Req | Rest], ExpectedWorker, StateAcc, Need, Acc
             end
     end.
 
-ensure_workers_connected([], State) ->
-    {ok, State};
-ensure_workers_connected([Worker | Rest], State) ->
-    Conn = maps:get(Worker, State#state.workers, undefined),
-    case ensure_connected(Conn, Worker, State) of
-        {ok, State1} ->
-            ensure_workers_connected(Rest, State1);
-        {{error, Err}, State1} ->
-            {{error, Err}, State1}
-    end.
-
 build_group_plan(Items, State) ->
     build_group_plan(Items, State, 0, []).
 
@@ -1500,6 +1611,36 @@ merge_group_by_index(Responses, Items, GroupResponses) ->
         Responses,
         lists:zip(Items, GroupResponses)
     ).
+
+%% Per-Worker connect/bootstrap before fan-out. A failure stamps only that
+%% Worker's planned slots (bytes_sent=0 → failed/rejected) and leaves siblings
+%% ready to send — matching Python/Go/Ruby execute_batch group isolation.
+connect_prepared_groups(Prepared, Acc0, MergeFun, State0) ->
+    {ReadyRev, Acc, State} =
+        lists:foldl(
+            fun({Worker, Items, Plan}, {ReadyAcc, AccIn, St}) ->
+                Conn = maps:get(Worker, St#state.workers, undefined),
+                case ensure_connected(Conn, Worker, St) of
+                    {ok, St1} ->
+                        {[{Worker, Items, Plan} | ReadyAcc], AccIn, St1};
+                    {{error, Err}, St1} ->
+                        Group = array:to_list(
+                            mark_unresolved(
+                                array:new(length(Plan), {default, failed_response()}),
+                                0,
+                                Err,
+                                0,
+                                metadata_from_plan(Plan)
+                            )
+                        ),
+                        AccOut = MergeFun(Worker, Items, Group, AccIn),
+                        {ReadyAcc, AccOut, St1}
+                end
+            end,
+            {[], Acc0, State0},
+            Prepared
+        ),
+    {lists:reverse(ReadyRev), Acc, State}.
 
 read_op(get, Key) -> {glyphastore_protocol:opcode_get(), <<"get">>, Key};
 read_op(ping, _) -> {glyphastore_protocol:opcode_ping(), <<"ping">>, <<>>};
@@ -1783,30 +1924,93 @@ pipeline_status_outcome(Req, Status) ->
 pipeline_op(Req) ->
     atom_to_binary(maps:get(op, Req), utf8).
 
-%% Match Go/Python: per-request classification — mutation indeterminate only when
-%% bytes_sent > that request's begin_offset (zero-byte send failures stay failed).
+%% Match C++: per-request classification with enriched retryability / mutation_outcome.
+%% Mutation indeterminate only when bytes_sent > that request's begin_offset.
 mark_unresolved(Responses, Start, Err, BytesSent, Metadata) ->
     mark_unresolved_from(Start, Metadata, Responses, Err, BytesSent).
 
 mark_unresolved_from(_Idx, [], Responses, _Err, _BytesSent) ->
     Responses;
-mark_unresolved_from(Idx, [{_Id, Req, Begin} | Rest], Responses, Err, BytesSent) ->
+mark_unresolved_from(Idx, [{Id, Req, Begin} | Rest], Responses, Err, BytesSent) ->
     Op = maps:get(op, Req),
+    IsMut = Op =:= put orelse Op =:= erase,
+    Arrived = IsMut andalso BytesSent > Begin,
     Outcome =
-        case (Op =:= put orelse Op =:= erase) andalso BytesSent > Begin of
+        case Arrived of
             true -> indeterminate;
             false -> failed
         end,
+    PosBytes =
+        case BytesSent > Begin of
+            true -> BytesSent - Begin;
+            false -> 0
+        end,
+    Fields0 = #{
+        operation => atom_to_binary(Op, utf8),
+        request_id => Id,
+        bytes_sent => PosBytes
+    },
+    Fields =
+        case IsMut of
+            true ->
+                Fields0#{
+                    mutation_outcome =>
+                        case Arrived of
+                            true -> indeterminate;
+                            false -> rejected
+                        end
+                };
+            false ->
+                Fields0
+        end,
+    Enriched = glyphastore_error:enrich(Err, Fields),
     mark_unresolved_from(
         Idx + 1,
         Rest,
-        array:set(Idx, #{outcome => Outcome, error => Err}, Responses),
+        array:set(Idx, #{outcome => Outcome, error => Enriched}, Responses),
         Err,
         BytesSent
     ).
 
 metadata_from_plan(Plan) ->
     [{maps:get(request_id, I), maps:get(req, I), maps:get(begin_offset, I)} || I <- Plan].
+
+pipeline_plan_bytes(Plan) ->
+    lists:sum([byte_size(maps:get(frame, I)) || I <- Plan]).
+
+%% Outer kill / deadline after I/O may have started: treat the full planned payload as
+%% may-have-sent so mutations become indeterminate / reconcile_first (§6.1).
+classify_pipeline_after_io(Plan, Err) ->
+    Count = length(Plan),
+    Responses = array:new(Count, {default, failed_response()}),
+    array:to_list(
+        mark_unresolved(
+            Responses,
+            0,
+            Err,
+            pipeline_plan_bytes(Plan),
+            metadata_from_plan(Plan)
+        )
+    ).
+
+pipeline_outer_failure_reply(Pending, Err) ->
+    Plan = maps:get(plan, Pending, []),
+    GroupResponses = classify_pipeline_after_io(Plan, Err),
+    case maps:is_key(merge, Pending) of
+        true ->
+            Acc1 = (maps:get(merge, Pending))(
+                maps:get(worker, Pending),
+                maps:get(items, Pending),
+                GroupResponses,
+                maps:get(acc, Pending)
+            ),
+            case maps:get(kind, Pending) of
+                batch -> {ok, array:to_list(Acc1)};
+                worker_pipelines -> {ok, array:to_list(Acc1)}
+            end;
+        false ->
+            {ok, GroupResponses}
+    end.
 
 build_tls_options(TLS, Host) ->
     case code:ensure_loaded(ssl) of

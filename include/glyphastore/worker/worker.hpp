@@ -8,6 +8,7 @@
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/vacuum/vacuum.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -56,7 +57,8 @@ class Worker final {
         -> Result<std::optional<VacuumStats>>;
 
     // Paired exclusive Writer (ADR 0032): ordinary put/erase publication must not
-    // acquire mutex_. Compaction and verify_index still take it.
+    // acquire mutex_. Compaction / verify_index observe hot_path_depth + the Index
+    // quiesce gate instead (mutex alone does not serialize with unlocked publish).
     void set_exclusive_writer(bool exclusive) noexcept {
         exclusive_writer_ = exclusive;
     }
@@ -65,6 +67,58 @@ class Worker final {
     }
 
   private:
+    struct ExclusiveHotPathGuard final {
+        Worker* worker{};
+
+        explicit ExclusiveHotPathGuard(Worker* owner) noexcept : worker(owner) {
+            if (worker != nullptr) {
+                worker->hot_path_depth_.fetch_add(1U, std::memory_order_acq_rel);
+            }
+        }
+        ~ExclusiveHotPathGuard() {
+            if (worker == nullptr) {
+                return;
+            }
+            if (worker->hot_path_depth_.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+                worker->hot_path_depth_.notify_all();
+            }
+        }
+        ExclusiveHotPathGuard(const ExclusiveHotPathGuard&) = delete;
+        auto operator=(const ExclusiveHotPathGuard&) -> ExclusiveHotPathGuard& = delete;
+    };
+
+    struct ExclusiveIndexQuiesce final {
+        Worker& worker;
+        bool armed{};
+
+        explicit ExclusiveIndexQuiesce(Worker& owner, const bool enable) noexcept : worker(owner) {
+            if (!enable) {
+                return;
+            }
+            worker.arm_index_quiesce_gate();
+            armed = true;
+            for (;;) {
+                const auto depth = worker.hot_path_depth_.load(std::memory_order_acquire);
+                if (depth == 0) {
+                    break;
+                }
+                worker.hot_path_depth_.wait(depth, std::memory_order_acquire);
+            }
+        }
+        void clear() noexcept {
+            if (!armed) {
+                return;
+            }
+            armed = false;
+            worker.disarm_index_quiesce_gate();
+        }
+        ~ExclusiveIndexQuiesce() {
+            clear();
+        }
+        ExclusiveIndexQuiesce(const ExclusiveIndexQuiesce&) = delete;
+        auto operator=(const ExclusiveIndexQuiesce&) -> ExclusiveIndexQuiesce& = delete;
+    };
+
     [[nodiscard]] auto get_locked(const HashedKey& key, std::uint64_t now_ns) -> Result<RecordView>;
     [[nodiscard]] auto put_locked(const HashedKey& key, std::span<const std::byte> value,
                                   std::uint64_t expire_at_ns) -> Status;
@@ -82,6 +136,17 @@ class Worker final {
     [[nodiscard]] auto read_ref(const RecordRef& ref) const -> Result<RecordView>;
     [[nodiscard]] auto publish(const HashedKey& key, const RecordRef& ref, Segment& segment) -> Status;
 
+    void arm_index_quiesce_gate() noexcept {
+        if (index_quiesce_holders_.fetch_add(1U, std::memory_order_acq_rel) == 0U) {
+            index_quiesce_active_.store(true, std::memory_order_release);
+        }
+    }
+    void disarm_index_quiesce_gate() noexcept {
+        if (index_quiesce_holders_.fetch_sub(1U, std::memory_order_acq_rel) == 1U) {
+            index_quiesce_active_.store(false, std::memory_order_release);
+        }
+    }
+
     WorkerId id_;
     GlobalSegmentManager& manager_;
     Index index_;
@@ -91,6 +156,10 @@ class Worker final {
     std::unordered_map<SegmentId, Segment*> owned_by_id_;
     mutable std::mutex mutex_;
     bool exclusive_writer_{};
+    // Exclusive Writer Index ownership (mirror durable ExclusiveIndexQuiesce).
+    std::atomic_bool index_quiesce_active_{};
+    std::atomic_uint32_t index_quiesce_holders_{};
+    std::atomic_uint32_t hot_path_depth_{};
 
     friend class Store;
     friend class detail::StoreAccess;

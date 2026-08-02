@@ -1,5 +1,6 @@
 #include "glyphastore/server/reactor.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/peercred.hpp"
@@ -11,6 +12,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -263,6 +265,17 @@ void Reactor::close_all_connections() noexcept {
         }
         close_connection(token);
     }
+    reject_pending_handoffs();
+}
+
+void Reactor::reject_pending_handoffs() noexcept {
+    while (auto handoff = mesh_.try_pop(executor_id_)) {
+        // Accept-flood fillers without BIND OK may silently close; BIND cells must
+        // surface OVERLOADED (same contract as adopt-slot exhaustion).
+        if (handoff->bound_worker.has_value() || !handoff->output.empty()) {
+            reject_orphaned_handoff(std::move(*handoff));
+        }
+    }
 }
 
 auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
@@ -471,6 +484,16 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
             close_connection(token);
         }
     }
+    // TLS accept/handoff: application records may already sit in OpenSSL's buffer
+    // after SSL_accept (TLS 1.3 coalescing) with no fresh edge-triggered readable
+    // event. Drain once before returning to the poller — same class as WANT_READ
+    // stranded-ACK. Connection-local failures must not fail the accept loop.
+    if (auto* adopted = connection(token);
+        adopted != nullptr && adopted->tls && !adopted->peer_read_closed) {
+        if (auto drained = read_ready(token); !drained) {
+            close_connection(token);
+        }
+    }
     return {};
 }
 
@@ -534,23 +557,33 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
         pending > config_.maximum_output_bytes - *encoded_size) {
         return fail(ErrorCode::record_too_large, "connection output high watermark exceeded");
     }
-    if (current->output_offset > 0) {
-        current->output.erase(current->output.begin(),
-                              current->output.begin() + static_cast<std::ptrdiff_t>(current->output_offset));
-        current->output_offset = 0;
+    try {
+        if (glyphastore::fault::consume_fail(glyphastore::fault::Site::response_queue)) {
+            throw std::bad_alloc{};
+        }
+        if (current->output_offset > 0) {
+            current->output.erase(current->output.begin(),
+                                  current->output.begin() +
+                                      static_cast<std::ptrdiff_t>(current->output_offset));
+            current->output_offset = 0;
+        }
+        const auto output_offset = current->output.size();
+        current->output.resize(output_offset + *encoded_size);
+        auto destination = std::span<std::byte>{current->output}.subspan(output_offset, *encoded_size);
+        if (auto encoded = encode_response(destination, response); !encoded) {
+            current->output.resize(output_offset);
+            return unexpected(encoded.error());
+        }
+        if (abuse_ && !current->principal.empty() && !response.value.empty()) {
+            abuse_->record_principal_response_bytes(current->principal, response.value.size(),
+                                                    std::chrono::steady_clock::now());
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        // Per-connection isolation: do not escalate to executor fail-stop. Mutation
+        // completions already close without inventing OVERLOADED (may be committed).
+        return fail(ErrorCode::resource_exhausted, "response queue allocation failed");
     }
-    const auto output_offset = current->output.size();
-    current->output.resize(output_offset + *encoded_size);
-    auto destination = std::span<std::byte>{current->output}.subspan(output_offset, *encoded_size);
-    if (auto encoded = encode_response(destination, response); !encoded) {
-        current->output.resize(output_offset);
-        return unexpected(encoded.error());
-    }
-    if (abuse_ && !current->principal.empty() && !response.value.empty()) {
-        abuse_->record_principal_response_bytes(current->principal, response.value.size(),
-                                                std::chrono::steady_clock::now());
-    }
-    return {};
 }
 
 auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView response, OwnedValue value)
@@ -581,25 +614,33 @@ auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView res
         pending > config_.maximum_output_bytes - *encoded_size) {
         return fail(ErrorCode::record_too_large, "connection output high watermark exceeded");
     }
-    if (current->output_offset > 0) {
-        current->output.erase(current->output.begin(),
-                              current->output.begin() + static_cast<std::ptrdiff_t>(current->output_offset));
-        current->output_offset = 0;
+    try {
+        if (glyphastore::fault::consume_fail(glyphastore::fault::Site::response_queue)) {
+            throw std::bad_alloc{};
+        }
+        if (current->output_offset > 0) {
+            current->output.erase(current->output.begin(),
+                                  current->output.begin() +
+                                      static_cast<std::ptrdiff_t>(current->output_offset));
+            current->output_offset = 0;
+        }
+        LeasedOutput leased;
+        if (auto encoded = encode_response_header(leased.header, response); !encoded) {
+            return unexpected(encoded.error());
+        }
+        const auto value_bytes = value.bytes.size();
+        leased.value = std::move(value);
+        current->output_lease.emplace(std::move(leased));
+        output_scatter_responses_.fetch_add(1U, std::memory_order_relaxed);
+        output_scatter_bytes_.fetch_add(value_bytes, std::memory_order_relaxed);
+        if (abuse_ && !current->principal.empty()) {
+            abuse_->record_principal_response_bytes(current->principal, value_bytes,
+                                                    std::chrono::steady_clock::now());
+        }
+        return {};
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, "owned response queue allocation failed");
     }
-    LeasedOutput leased;
-    if (auto encoded = encode_response_header(leased.header, response); !encoded) {
-        return unexpected(encoded.error());
-    }
-    const auto value_bytes = value.bytes.size();
-    leased.value = std::move(value);
-    current->output_lease.emplace(std::move(leased));
-    output_scatter_responses_.fetch_add(1U, std::memory_order_relaxed);
-    output_scatter_bytes_.fetch_add(value_bytes, std::memory_order_relaxed);
-    if (abuse_ && !current->principal.empty()) {
-        abuse_->record_principal_response_bytes(current->principal, value_bytes,
-                                                std::chrono::steady_clock::now());
-    }
-    return {};
 }
 
 auto Reactor::update_connection_interest(const ConnectionToken token) -> Status {
@@ -643,7 +684,13 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             if (!received) {
                 return unexpected(received.error());
             }
-            if (received->kind == TlsIoKind::would_block) {
+            if (received->kind == TlsIoKind::want_read || received->kind == TlsIoKind::want_write ||
+                received->kind == TlsIoKind::would_block) {
+                // SSL_write may be waiting on a readable TLS record. Retry decided
+                // output before returning to the edge-triggered poller.
+                if (has_pending_output(*current)) {
+                    return write_ready(token);
+                }
                 return {};
             }
             if (received->kind == TlsIoKind::closed) {
@@ -677,12 +724,36 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
         }
         const auto buffered = current->input.size() - current->input_offset;
+        // Isolate input-buffer failures to this connection. Returning Status error
+        // lets run_once hard-close and discard any already-decided output; throwing
+        // fail-stops the executor. Drain decided bytes first when present.
+        const auto isolate_input_failure = [&]() -> Status {
+            current = connection(token);
+            if (current == nullptr) {
+                return {};
+            }
+            if (has_pending_output(*current)) {
+                current->close_after_flush = true;
+                current->input.clear();
+                current->input_offset = 0;
+                return write_ready(token);
+            }
+            close_connection(token);
+            return {};
+        };
         if (received_size > config_.maximum_input_bytes ||
             buffered > config_.maximum_input_bytes - received_size) {
-            return fail(ErrorCode::record_too_large, "connection input high watermark exceeded");
+            return isolate_input_failure();
         }
-        current->input.insert(current->input.end(), buffer.begin(),
-                              buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
+        try {
+            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::input_buffer)) {
+                throw std::bad_alloc{};
+            }
+            current->input.insert(current->input.end(), buffer.begin(),
+                                  buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
+        } catch (const std::bad_alloc&) {
+            return isolate_input_failure();
+        }
         touch_activity(*current, std::chrono::steady_clock::now());
         if (auto processed = process_frames(token); !processed) {
             // Mirror write_ready: a decided response (abuse OVERLOADED / authz deny)
@@ -735,12 +806,80 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 if (!written) {
                     return unexpected(written.error());
                 }
-                if (written->kind == TlsIoKind::would_block) {
+                if (written->kind == TlsIoKind::want_read) {
+                    // Opportunistic SSL_read: OpenSSL may need to consume a control
+                    // record before SSL_write can proceed. Do not rely solely on an
+                    // edge-triggered readable notification (especially after half-close
+                    // previously armed write-only interest).
+                    std::array<std::byte, 16U * 1024U> tls_scratch{};
+                    auto received = current->tls->read(tls_scratch.data(), tls_scratch.size());
+                    if (received && received->kind == TlsIoKind::ok && received->bytes > 0) {
+                        const auto buffered = current->input.size() - current->input_offset;
+                        if (received->bytes <= config_.maximum_input_bytes &&
+                            buffered <= config_.maximum_input_bytes - received->bytes) {
+                            try {
+                                current->input.insert(
+                                    current->input.end(), tls_scratch.begin(),
+                                    tls_scratch.begin() + static_cast<std::ptrdiff_t>(received->bytes));
+                            } catch (const std::bad_alloc&) {
+                                current->close_after_flush = true;
+                                current->input.clear();
+                                current->input_offset = 0;
+                            }
+                        }
+                        continue;
+                    }
+                    if (received && received->kind == TlsIoKind::closed) {
+                        current->peer_read_closed = true;
+                    }
+                    // Always keep read interest for WANT_READ, even after half-close.
+                    const auto interest = IoInterest::read | IoInterest::write;
+                    if (auto modified =
+                            poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                        !modified) {
+                        return modified;
+                    }
+                    current->write_armed = true;
+                    // One immediate retry covers fail-once injection and sockets that
+                    // are already readable/writable without a fresh ET edge. A second
+                    // WANT_READ with no drain progress returns to the poller below.
+                    written = current->tls->write(data, requested_size);
+                    if (!written) {
+                        return unexpected(written.error());
+                    }
+                    if (written->kind == TlsIoKind::ok) {
+                        written_size = written->bytes;
+                    } else if (written->kind == TlsIoKind::closed) {
+                        return fail(ErrorCode::io_error, "TLS write closed by peer");
+                    } else if (tls_io_blocked(written->kind)) {
+                        would_block = true;
+                    } else {
+                        return fail(ErrorCode::io_error, "TLS write returned an unexpected status");
+                    }
+                } else if (tls_io_blocked(written->kind)) {
                     would_block = true;
                 } else if (written->kind == TlsIoKind::closed) {
                     return fail(ErrorCode::io_error, "TLS write closed by peer");
                 } else {
                     written_size = written->bytes;
+                }
+                if (would_block) {
+                    // want_write / would_block / persistent want_read: keep write armed;
+                    // keep read unless half-closed *and* OpenSSL only asked for write.
+                    const bool needs_read = tls_io_needs_read(written->kind) ||
+                                            (!current->peer_read_closed && !scatter);
+                    if (current->write_armed && !needs_read) {
+                        return {};
+                    }
+                    const auto interest =
+                        needs_read ? (IoInterest::read | IoInterest::write) : IoInterest::write;
+                    if (auto modified =
+                            poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                        !modified) {
+                        return modified;
+                    }
+                    current->write_armed = true;
+                    return {};
                 }
             } else if (!scatter) {
                 const auto* data = current->output.data() + current->output_offset;
@@ -948,10 +1087,9 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
                 continue;
             }
         }
-        if (connection(token) != nullptr && has_flag(event.flags, IoFlags::error)) {
-            close_connection(token);
-            continue;
-        }
+        // Hangup before raw error: EPOLLERR|EPOLLRDHUP and kqueue EV_EOF(+EV_ERROR)
+        // co-report. The old error-first hard-close skipped hangup drain and could
+        // discard decided bytes left after a partial writable flush (EAGAIN).
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
             if (!has_pending_output(*current) && !current->request_in_flight &&
@@ -960,6 +1098,32 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
             } else if (auto drained = write_ready(token); !drained) {
                 close_connection(token);
             }
+            continue;
+        }
+        if (connection(token) != nullptr && has_flag(event.flags, IoFlags::error)) {
+            auto* current = connection(token);
+            int so_error = 0;
+            if (current != nullptr && current->socket.valid()) {
+                socklen_t length = sizeof(so_error);
+                if (::getsockopt(current->socket.descriptor(), SOL_SOCKET, SO_ERROR, &so_error, &length) !=
+                    0) {
+                    so_error = errno;
+                }
+            }
+            if (so_error == 0) {
+                // Spurious co-report without a sticky socket error — do not discard
+                // decided output; wait for writable/hangup.
+                continue;
+            }
+            // Terminal SO_ERROR: best-effort one more drain, then release the slot.
+            if (current != nullptr &&
+                (has_pending_output(*current) || current->input_offset < current->input.size())) {
+                static_cast<void>(write_ready(token));
+            }
+            if (connection(token) != nullptr) {
+                close_connection(token);
+            }
+            continue;
         }
     }
     enforce_timeouts(std::chrono::steady_clock::now());

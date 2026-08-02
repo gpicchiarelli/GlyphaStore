@@ -33,8 +33,10 @@ Restore is the same verified copy from a backup directory into a new empty desti
 An open durable Store may copy its catalog into an empty destination without releasing the
 data-directory lock:
 
-1. Fence new Store admissions (in-flight ops drain; concurrent `put`/`get` see `unavailable` briefly
-   during flush + catalog copy only).
+1. Fence new Store admissions (in-flight ops drain; concurrent embedded `put`/`get` see
+   `unavailable` briefly during flush + catalog copy only). On the daemon wire path, PUT/ERASE/GET
+   during the fence are refused **before Store entry** as `OVERLOADED` (temporary admission pause —
+   not `INTERNAL_ERROR` / reconcile).
 2. Flush durable state.
 3. Hold the catalog exclusive lock; structurally verify + copy Manifest catalog Segments (bounded
    parallel) then `manifest.glypha` last (no source CRC under the fence).

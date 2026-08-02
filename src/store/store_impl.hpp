@@ -335,6 +335,16 @@ struct Store::Impl {
         return !durable_runtime || durable_runtime->healthy();
     }
 
+    // True while new begin_operation admissions are accepted. Online backup fences
+    // this independently of durable catalog health (READY must observe the fence).
+    [[nodiscard]] auto admissions_open() const noexcept -> bool {
+        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
+            return false;
+        }
+        // close_admission stamps every shard; shard 0 is sufficient to observe the fence.
+        return (active_operations[0].state.load(std::memory_order_acquire) & kAdmissionClosed) == 0;
+    }
+
     [[nodiscard]] auto close() -> Status {
         auto expected = LifecycleState::open;
         if (!lifecycle.compare_exchange_strong(expected, LifecycleState::closing, std::memory_order_acq_rel,

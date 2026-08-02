@@ -338,6 +338,11 @@ auto MaintenanceController::mutations_rejected() const noexcept -> bool {
     return mutations_rejected_.load(std::memory_order_acquire);
 }
 
+void MaintenanceController::publish_mutations_rejected(const bool rejected) noexcept {
+    std::lock_guard lock{mutex_};
+    publish_mutations_rejected_locked(rejected);
+}
+
 void MaintenanceController::publish_mutations_rejected_locked(const bool rejected) noexcept {
     // Once stop is requested, never re-arm the gate (in-flight eval must not undo request_stop).
     if (stop_requested_) {

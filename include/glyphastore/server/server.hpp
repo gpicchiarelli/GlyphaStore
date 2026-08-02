@@ -55,7 +55,12 @@ class Server final {
     [[nodiscard]] auto pair_writer_stats() const -> std::vector<PairWriterStats>;
     [[nodiscard]] auto durable_batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto healthy() const noexcept -> bool {
-        return !failed_.load(std::memory_order_acquire) && pair_writers_ && pair_writers_->healthy();
+        return !failed_.load(std::memory_order_acquire) && pair_writers_healthy();
+    }
+    // Paired Writer pool sticky health (READY / classify_ready_loss). Independent of
+    // process liveness (`live`) and of durable catalog `store_operational`.
+    [[nodiscard]] auto pair_writers_healthy() const noexcept -> bool {
+        return pair_writers_ != nullptr && pair_writers_->healthy();
     }
     [[nodiscard]] auto stop_requested() const noexcept -> bool {
         return stop_requested_.load(std::memory_order_acquire);
@@ -65,10 +70,12 @@ class Server final {
     }
     // Process liveness: started and no executor failure has been recorded.
     [[nodiscard]] auto live() const noexcept -> bool;
-    // Traffic readiness: live, not shutting down, Store admission open, durable catalog healthy,
-    // and maintenance is not in emergency or a sticky faulted state.
+    // Traffic readiness: live, not shutting down, pair Writers healthy, Store admission open,
+    // durable catalog healthy, and maintenance is not in emergency or a sticky faulted state.
     [[nodiscard]] auto ready() const noexcept -> bool;
     [[nodiscard]] auto store_operational() const noexcept -> bool;
+    // False while online backup (or close) has closed begin_operation admissions.
+    [[nodiscard]] auto admissions_open() const noexcept -> bool;
     [[nodiscard]] auto maintenance_snapshot() const -> MaintenanceSnapshot;
     [[nodiscard]] auto first_failure() const -> std::optional<Error>;
     // Bounded ASCII admin report (version, live/ready, connections, lane/batch, maintenance).

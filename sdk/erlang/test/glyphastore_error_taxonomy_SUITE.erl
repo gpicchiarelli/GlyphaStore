@@ -5,7 +5,7 @@
 -include_lib("common_test/include/ct.hrl").
 
 %% Mirrors tests/fixtures/error_taxonomy_v1.json (GS-PROTO-ERROR-001).
-all() -> [wire_status_matrix].
+all() -> [wire_status_matrix, indeterminate_enrich_ignores_zero_bytes_sent].
 
 wire_status_matrix(_Config) ->
     lists:foreach(fun(Case) -> check_case(Case) end, cases()).
@@ -36,4 +36,16 @@ check_case({Id, Status, Category, ReadRetry, MutOutcome, MutRetry, Unhealthy}) -
     WantUnhealthy = (Status =:= 6) orelse (Status =:= 7),
     Unhealthy = WantUnhealthy,
     ct:pal("ok ~p", [Id]),
+    ok.
+
+indeterminate_enrich_ignores_zero_bytes_sent(_Config) ->
+    %% Receive-after-send paths historically omitted bytes_sent; transport+0 must not
+    %% advertise same_request when mutation_outcome is already indeterminate.
+    Err = glyphastore_error:enrich(
+        glyphastore_error:transport(<<"socket closed">>),
+        #{mutation_outcome => indeterminate}
+    ),
+    0 = maps:get(bytes_sent, Err),
+    reconcile_first = maps:get(retryability, Err),
+    indeterminate = maps:get(mutation_outcome, Err),
     ok.

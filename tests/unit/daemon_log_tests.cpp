@@ -118,4 +118,8 @@ GLYPHA_TEST("daemon ready loss classification names are stable") {
                    "maintenance_emergency");
     GLYPHA_REQUIRE(glyphastore::server::ready_loss_reason_name(
                        glyphastore::server::ReadyLossReason::maintenance_fault) == "maintenance_fault");
+    GLYPHA_REQUIRE(glyphastore::server::ready_loss_reason_name(
+                       glyphastore::server::ReadyLossReason::admission_fenced) == "admission_fenced");
+    GLYPHA_REQUIRE(glyphastore::server::ready_loss_reason_name(
+                       glyphastore::server::ReadyLossReason::pair_fail_closed) == "pair_fail_closed");
 }

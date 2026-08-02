@@ -22,6 +22,7 @@
 #include <optional>
 #include <ranges>
 #include <span>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -96,6 +97,10 @@ auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_
         }
     }};
     {
+        // Exclusive durable_sync mutate elides worker.mutex — quiesce depth before
+        // Index find / deferred TTL so verify_index and catalog GET cannot race
+        // insert_or_assign and sticky fail_closed on a torn pin view.
+        ExclusiveIndexQuiesce index_quiesce{worker, options_.exclusive_writer && flusher_ == nullptr};
         const auto wait_started = timing_now();
         const std::lock_guard worker_lock{worker.mutex};
         const auto locked_at = timing_now();
@@ -203,6 +208,10 @@ auto DurableRuntimeCatalog::snapshot_published_reads(const std::size_t worker_in
     }
 
     auto& worker = *workers_[worker_index];
+    // Exclusive durable_sync mutate elides worker.mutex — quiesce depth before
+    // Index enumeration so snapshot cannot race insert_or_assign / Index move
+    // and sticky fail_closed on a torn pin view (same protocol as prepare_get).
+    ExclusiveIndexQuiesce index_quiesce{worker, options_.exclusive_writer && flusher_ == nullptr};
     const std::lock_guard worker_lock{worker.mutex};
     const std::shared_lock catalog_lock{catalog_mutex_};
     if (!allow_fail_closed && !healthy()) {
@@ -275,17 +284,13 @@ auto DurableRuntimeCatalog::capture_published_read(const std::size_t worker_inde
     }
 
     auto& worker = *workers_[worker_index];
-    std::unique_lock worker_lock{worker.mutex, std::defer_lock};
-    if (!options_.exclusive_writer || flusher_ != nullptr) {
-        worker_lock.lock();
-    } else {
-#ifndef NDEBUG
-        if (!worker_lock.try_lock()) {
-            worker_lock.lock();
-        }
-        worker_lock.unlock();
-#endif
-    }
+    // Always take worker.mutex (match snapshot_published_reads) so capture
+    // serializes with compaction Phase A/C Index enumerate/swap. Exclusive
+    // durable_sync mutate also elides the mutex via hot_path_depth — quiesce
+    // depth before Index find so off-Writer / concurrent snapshot paths cannot
+    // sticky fail_closed on a torn pin view after a committed PUT.
+    ExclusiveIndexQuiesce index_quiesce{worker, options_.exclusive_writer && flusher_ == nullptr};
+    const std::lock_guard worker_lock{worker.mutex};
     const std::shared_lock catalog_lock{catalog_mutex_};
     if (!healthy()) {
         return fail(ErrorCode::unavailable, "durable runtime is fail-closed");
@@ -428,6 +433,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdRead
         // captured by prepare_get(). No file I/O or CRC work holds either lock.
         bool still_current{};
         {
+            ExclusiveIndexQuiesce index_quiesce{worker, options_.exclusive_writer && flusher_ == nullptr};
             const auto wait_started = timing_now();
             const std::lock_guard worker_lock{worker.mutex};
             const auto locked_at = timing_now();
@@ -489,6 +495,8 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdRead
                 // Visitor not_found is validated expiry only. Defer Index reclaim
                 // while verifying the exact RecordRef when the backlog drains.
                 {
+                    ExclusiveIndexQuiesce index_quiesce{worker,
+                                                       options_.exclusive_writer && flusher_ == nullptr};
                     const auto wait_started = timing_now();
                     const std::lock_guard worker_lock{worker.mutex};
                     const auto locked_at = timing_now();
@@ -563,8 +571,13 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
     //     allocation.
     // No RecordRef, file, or Segment generation crosses phase 1 without the
     // exact shared generation pin captured below.
+    // Mutex elision matches mutate / ExclusiveHotPathPause: only exclusive
+    // durable_sync (no background flusher) skips worker.mutex. Paired
+    // durable-group/periodic share Worker state with the flusher and must
+    // re-lock before touching mutation_io_active / cached_file / active_segment.
+    const bool elide_worker_mutex = options_.exclusive_writer && flusher_ == nullptr;
     GS_FAULT_SITE(rotate);
-    if (!worker_lock.owns_lock() && !options_.exclusive_writer) {
+    if (!worker_lock.owns_lock() && !elide_worker_mutex) {
         return mutation_failure(
             DurableMutationOutcome::indeterminate,
             Error{ErrorCode::internal_error, "rotation requires the owning Worker mutex"});
@@ -591,9 +604,12 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
         if (worker_lock.owns_lock()) {
             worker_lock.unlock();
         }
-        // Exclusive Writer: drop hot_path_depth while blocked on another
-        // publisher (compaction). Compaction waits for depth==0 before the
-        // Index swap; keeping depth here deadlocks against that wait.
+        // Exclusive Writer (mutex-elided durable_sync only): drop hot_path_depth while
+        // blocked on another publisher (compaction). Compaction waits for depth==0
+        // before the Index swap; keeping depth here deadlocks against that wait.
+        // Paired durable-group/periodic keep the Worker mutex (flusher shares state)
+        // and never increment depth — pausing here would underflow to UINT32_MAX and
+        // deadlock compaction's depth wait against this publication wait.
         struct ExclusiveHotPathPause final {
             RuntimeWorker* worker{};
             bool paused{};
@@ -615,18 +631,20 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
             }
             ExclusiveHotPathPause(const ExclusiveHotPathPause&) = delete;
             auto operator=(const ExclusiveHotPathPause&) -> ExclusiveHotPathPause& = delete;
-        } hot_path_pause{&worker, options_.exclusive_writer};
+        } hot_path_pause{&worker, elide_worker_mutex};
         {
             std::unique_lock wait_lock{manifest_publication_mutex_};
             manifest_publication_changed_.wait(wait_lock, [&] {
                 return (!compaction_publication_active_ && !rotation_publication_active_) || !healthy();
             });
         }
-        if (!options_.exclusive_writer) {
-            worker_lock.lock();
+        if (!elide_worker_mutex) {
+            if (!worker_lock.owns_lock()) {
+                worker_lock.lock();
+            }
         }
         if (!healthy()) {
-            return mutation_failure(DurableMutationOutcome::indeterminate,
+            return mutation_failure(DurableMutationOutcome::not_committed,
                                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
         }
         if (worker.next_sequence != observed_next_sequence) {
@@ -757,7 +775,15 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
     std::shared_ptr<const RuntimeSegmentGeneration> replacement_generation;
     DurableMutationResult io_result{
         .outcome = DurableMutationOutcome::not_committed, .sequence = std::nullopt, .error = std::nullopt};
+    // Caller entered rotate only after this mutation's append returned not_committed
+    // (segment_full / segment_sealed). Keep catch polarity not_committed until rotation
+    // itself crosses a durable write boundary (committed seal / indeterminate create or
+    // publish). Matches mutate() fail-closed and pre-append open polarity.
+    auto exception_outcome = DurableMutationOutcome::not_committed;
     try {
+        if (glyphastore::fault::consume_fail(glyphastore::fault::Site::rotate)) {
+            throw std::runtime_error{"injected pre-write rotation failure"};
+        }
         if (auto available = require_durable_available_space(
                 directory_, kSegmentSizeBytes + *next_manifest_bytes, options_.limits);
             !available) {
@@ -768,7 +794,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                     DurableSegmentFile::open(directory_, old_identity, SegmentFileOpenMode::read_write);
                 if (!opened || opened->selected_commit() != old_selected) {
                     io_result = mutation_failure(
-                        DurableMutationOutcome::indeterminate,
+                        DurableMutationOutcome::not_committed,
                         opened ? Error{ErrorCode::corrupted_data, "active Segment changed after reservation"}
                                : opened.error());
                 } else {
@@ -786,7 +812,16 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                                 ? DurableMutationOutcome::indeterminate
                                 : DurableMutationOutcome::not_committed,
                             sealed.error.value_or(Error{ErrorCode::io_error, "Segment seal failed"}));
+                        if (sealed.outcome == SegmentCommitOutcome::indeterminate) {
+                            exception_outcome = DurableMutationOutcome::indeterminate;
+                        }
+                    } else {
+                        exception_outcome = DurableMutationOutcome::indeterminate;
                     }
+                } else {
+                    // Already sealed (e.g. partial prior rotation): later create/publish
+                    // failures must not demote to known-not-committed / OVERLOADED.
+                    exception_outcome = DurableMutationOutcome::indeterminate;
                 }
                 sealed_selected = active_file->selected_commit();
             }
@@ -794,8 +829,10 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 auto sealed_reader =
                     DurableSegmentFile::open(directory_, old_identity, SegmentFileOpenMode::read_only);
                 if (!sealed_reader || sealed_reader->selected_commit() != sealed_selected) {
+                    // After a committed seal this attempt, reader-open miss is sticky
+                    // indeterminate — not known-not-committed / OVERLOADED.
                     io_result = mutation_failure(
-                        DurableMutationOutcome::not_committed,
+                        exception_outcome,
                         sealed_reader ? Error{ErrorCode::corrupted_data,
                                               "sealed Segment changed before generation-pin preparation"}
                                       : sealed_reader.error());
@@ -813,12 +850,17 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 ScopeExit observe_create{[&]() noexcept { create_ns = steady_elapsed_ns(create_started); }};
                 created = DurableSegmentFile::create(directory_, replacement_identity);
                 if (!created.durable()) {
-                    io_result =
-                        mutation_failure(created.outcome == SegmentFileCreationOutcome::indeterminate
-                                             ? DurableMutationOutcome::indeterminate
-                                             : DurableMutationOutcome::not_committed,
-                                         created.error.value_or(Error{
-                                             ErrorCode::io_error, "replacement Segment creation failed"}));
+                    if (created.outcome == SegmentFileCreationOutcome::indeterminate) {
+                        exception_outcome = DurableMutationOutcome::indeterminate;
+                    }
+                    // Preserve post-seal exception_outcome — do not demote not_published
+                    // create rejects to known-not-committed after a durable seal.
+                    io_result = mutation_failure(
+                        exception_outcome,
+                        created.error.value_or(
+                            Error{ErrorCode::io_error, "replacement Segment creation failed"}));
+                } else {
+                    exception_outcome = DurableMutationOutcome::indeterminate;
                 }
             }
             if (!io_result.error) {
@@ -826,8 +868,9 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 auto replacement_reader = DurableSegmentFile::open(directory_, replacement_identity,
                                                                    SegmentFileOpenMode::read_only);
                 if (!replacement_reader || replacement_reader->selected_commit() != replacement_selected) {
+                    // Durable create already succeeded — reader-open miss is sticky.
                     io_result = mutation_failure(
-                        DurableMutationOutcome::not_committed,
+                        exception_outcome,
                         replacement_reader
                             ? Error{ErrorCode::corrupted_data,
                                     "new active Segment changed before generation-pin preparation"}
@@ -848,12 +891,14 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 const auto published =
                     directory_.publish_manifest(*next_manifest, options_.limits.max_manifest_bytes);
                 if (!published.durable()) {
-                    io_result =
-                        mutation_failure(published.outcome == ManifestPublicationOutcome::indeterminate
-                                             ? DurableMutationOutcome::indeterminate
-                                             : DurableMutationOutcome::not_committed,
-                                         published.error.value_or(Error{
-                                             ErrorCode::io_error, "rotation manifest publication failed"}));
+                    if (published.outcome == ManifestPublicationOutcome::indeterminate) {
+                        exception_outcome = DurableMutationOutcome::indeterminate;
+                    }
+                    // Preserve post-seal / post-create exception_outcome for not_published.
+                    io_result = mutation_failure(
+                        exception_outcome,
+                        published.error.value_or(
+                            Error{ErrorCode::io_error, "rotation manifest publication failed"}));
                 } else {
                     io_result = {.outcome = DurableMutationOutcome::committed,
                                  .sequence = std::nullopt,
@@ -862,17 +907,19 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
             }
         }
     } catch (const std::bad_alloc&) {
-        // Rotation starts only after an append attempt reached the persistent
-        // write boundary. Unexpected failures in this phase are conservative.
-        io_result =
-            mutation_failure(DurableMutationOutcome::indeterminate, Error{ErrorCode::resource_exhausted, {}});
+        io_result = mutation_failure(exception_outcome, Error{ErrorCode::resource_exhausted, {}});
     } catch (...) {
-        io_result =
-            mutation_failure(DurableMutationOutcome::indeterminate, Error{ErrorCode::internal_error, {}});
+        io_result = mutation_failure(exception_outcome, Error{ErrorCode::internal_error, {}});
     }
 
-    if (!options_.exclusive_writer) {
-        worker_lock.lock();
+    // Same predicate as mutate post-append: exclusive+flusher must re-take the
+    // Worker mutex before clearing mutation_io_active or installing active_segment /
+    // cached_file — otherwise the flusher (or a sibling mutate waiting on
+    // mutation_io_finished) races non-atomic Worker fields.
+    if (!elide_worker_mutex) {
+        if (!worker_lock.owns_lock()) {
+            worker_lock.lock();
+        }
     }
     catalog_lock.lock();
     const auto clear_reservation = [&]() noexcept {
@@ -1222,16 +1269,18 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             }
 
             std::uint32_t offset{};
-            // From the first persistent write until coherent runtime publication,
-            // an unexpected exception has a conservative indeterminate outcome.
-            exception_outcome = DurableMutationOutcome::indeterminate;
+            // Keep exception_outcome as not_committed through open + append. before-hooks and
+            // Record writes that never start are known not committed; append's own outcome
+            // (or a later Index/publication boundary) upgrades to indeterminate when needed.
+            // Segment open / selected-commit mismatch before append does not write a Record —
+            // same polarity as sealed-reader / replacement open (not_committed, not sticky).
             try {
                 if (!io_file) {
                     auto opened =
                         DurableSegmentFile::open(directory_, identity, SegmentFileOpenMode::read_write);
                     if (!opened || opened->selected_commit() != expected_selected) {
                         appended = {
-                            .outcome = SegmentCommitOutcome::indeterminate,
+                            .outcome = SegmentCommitOutcome::not_committed,
                             .error = opened ? Error{ErrorCode::corrupted_data,
                                                     "active Segment changed after I/O reservation"}
                                             : opened.error(),
@@ -1245,12 +1294,19 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     appended = batch_enabled || deferred_commit
                                    ? io_file->append_record(encoded_record)
                                    : io_file->append(encoded_record, options_.commit_sync);
+                    if (appended.outcome == SegmentCommitOutcome::indeterminate) {
+                        exception_outcome = DurableMutationOutcome::indeterminate;
+                    }
                 }
             } catch (const std::bad_alloc&) {
-                appended = {.outcome = SegmentCommitOutcome::indeterminate,
+                appended = {.outcome = exception_outcome == DurableMutationOutcome::indeterminate
+                                           ? SegmentCommitOutcome::indeterminate
+                                           : SegmentCommitOutcome::not_committed,
                             .error = Error{ErrorCode::resource_exhausted, {}}};
             } catch (...) {
-                appended = {.outcome = SegmentCommitOutcome::indeterminate,
+                appended = {.outcome = exception_outcome == DurableMutationOutcome::indeterminate
+                                           ? SegmentCommitOutcome::indeterminate
+                                           : SegmentCommitOutcome::not_committed,
                             .error = Error{ErrorCode::internal_error, {}}};
             }
 

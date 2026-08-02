@@ -1,5 +1,6 @@
 #include "glyphastore/persistence/segment_file.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "system_error.hpp"
@@ -260,6 +261,9 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
 
 auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
                               const SegmentFileOpenMode mode) -> Result<DurableSegmentFile> {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::segment_open)) {
+        return fail(ErrorCode::descriptor_exhausted, "injected Segment open failure");
+    }
     if (!directory.healthy()) {
         return fail(ErrorCode::io_error, "cannot open a Segment through a poisoned data directory");
     }
@@ -346,7 +350,15 @@ auto DurableSegmentFile::before(const FilesystemOperation operation) const -> St
     if (!hooks_.before) {
         return {};
     }
-    return hooks_.before(hooks_.context, operation);
+    // before() runs ahead of the matching write/sync — known not committed whether the
+    // hook returns Status or throws (see segment-filesystem.md / error-taxonomy-v1).
+    try {
+        return hooks_.before(hooks_.context, operation);
+    } catch (const std::bad_alloc&) {
+        return fail(ErrorCode::resource_exhausted, "filesystem before-hook allocation failed");
+    } catch (...) {
+        return fail(ErrorCode::resource_exhausted, "filesystem before-hook failed");
+    }
 }
 
 void DurableSegmentFile::after(const FilesystemOperation operation) const noexcept {

@@ -9,6 +9,7 @@
 #include <arpa/inet.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -232,6 +233,308 @@ class OverloadedPutServer final {
     int listener_{-1};
     std::uint16_t port_{};
     std::thread thread_;
+};
+
+class BackupDropResponseServer final {
+  public:
+    BackupDropResponseServer() {
+        listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        GLYPHA_REQUIRE(listener_ >= 0);
+        int yes = 1;
+        GLYPHA_REQUIRE(::setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        GLYPHA_REQUIRE(::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        socklen_t length = sizeof(address);
+        GLYPHA_REQUIRE(::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+        port_ = ntohs(address.sin_port);
+        GLYPHA_REQUIRE(::listen(listener_, 8) == 0);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~BackupDropResponseServer() {
+        stop_.store(true, std::memory_order_release);
+        // Unblock accept.
+        const auto probe = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port = htons(port_);
+            static_cast<void>(::connect(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)));
+            static_cast<void>(::close(probe));
+        }
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        static_cast<void>(::close(listener_));
+    }
+
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t {
+        return port_;
+    }
+
+    [[nodiscard]] auto backup_requests() const noexcept -> std::uint32_t {
+        return backup_requests_.load(std::memory_order_acquire);
+    }
+
+  private:
+    void run() noexcept {
+        while (!stop_.load(std::memory_order_acquire)) {
+            const auto descriptor = ::accept(listener_, nullptr, nullptr);
+            if (descriptor < 0) {
+                return;
+            }
+            if (stop_.load(std::memory_order_acquire)) {
+                static_cast<void>(::close(descriptor));
+                return;
+            }
+            const auto reply = [&](const glyphastore::server::ResponseView& response) {
+                auto encoded = glyphastore::server::encode_response(response);
+                return encoded && send_all(descriptor, *encoded);
+            };
+            auto init_frame = receive_request(descriptor);
+            auto init = glyphastore::server::decode_request(init_frame);
+            if (!init || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = init->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7,
+                                 .value = bytes("GlyphaStore/2")})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto bind_frame = receive_request(descriptor);
+            auto bind = glyphastore::server::decode_request(bind_frame);
+            if (!bind || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = bind->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto backup_frame = receive_request(descriptor);
+            auto backup = glyphastore::server::decode_request(backup_frame);
+            if (backup && backup->frame.opcode == glyphastore::server::RequestOpcode::backup) {
+                backup_requests_.fetch_add(1U, std::memory_order_acq_rel);
+            }
+            // Drop the response so the client observes transport loss after send.
+            static_cast<void>(::close(descriptor));
+        }
+    }
+
+    int listener_{-1};
+    std::uint16_t port_{};
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<std::uint32_t> backup_requests_{0};
+};
+
+class BackupInternalErrorServer final {
+  public:
+    BackupInternalErrorServer() {
+        listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        GLYPHA_REQUIRE(listener_ >= 0);
+        int yes = 1;
+        GLYPHA_REQUIRE(::setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        GLYPHA_REQUIRE(::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        socklen_t length = sizeof(address);
+        GLYPHA_REQUIRE(::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+        port_ = ntohs(address.sin_port);
+        GLYPHA_REQUIRE(::listen(listener_, 8) == 0);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~BackupInternalErrorServer() {
+        stop_.store(true, std::memory_order_release);
+        const auto probe = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port = htons(port_);
+            static_cast<void>(::connect(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)));
+            static_cast<void>(::close(probe));
+        }
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        static_cast<void>(::close(listener_));
+    }
+
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t {
+        return port_;
+    }
+
+    [[nodiscard]] auto backup_requests() const noexcept -> std::uint32_t {
+        return backup_requests_.load(std::memory_order_acquire);
+    }
+
+  private:
+    void run() noexcept {
+        while (!stop_.load(std::memory_order_acquire)) {
+            const auto descriptor = ::accept(listener_, nullptr, nullptr);
+            if (descriptor < 0) {
+                return;
+            }
+            if (stop_.load(std::memory_order_acquire)) {
+                static_cast<void>(::close(descriptor));
+                return;
+            }
+            const auto reply = [&](const glyphastore::server::ResponseView& response) {
+                auto encoded = glyphastore::server::encode_response(response);
+                return encoded && send_all(descriptor, *encoded);
+            };
+            auto init_frame = receive_request(descriptor);
+            auto init = glyphastore::server::decode_request(init_frame);
+            if (!init || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = init->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7,
+                                 .value = bytes("GlyphaStore/2")})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto bind_frame = receive_request(descriptor);
+            auto bind = glyphastore::server::decode_request(bind_frame);
+            if (!bind || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = bind->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto backup_frame = receive_request(descriptor);
+            auto backup = glyphastore::server::decode_request(backup_frame);
+            if (backup && backup->frame.opcode == glyphastore::server::RequestOpcode::backup) {
+                backup_requests_.fetch_add(1U, std::memory_order_acq_rel);
+                static_cast<void>(reply({.status = glyphastore::server::ResponseStatus::internal_error,
+                                         .request_id = backup->frame.request_id,
+                                         .owner_worker = 0,
+                                         .worker_count = 1,
+                                         .routing_epoch = 7,
+                                         .value = bytes("report failed")}));
+            }
+            static_cast<void>(::close(descriptor));
+        }
+    }
+
+    int listener_{-1};
+    std::uint16_t port_{};
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<std::uint32_t> backup_requests_{0};
+};
+
+class BackupWrongRequestIdServer final {
+  public:
+    BackupWrongRequestIdServer() {
+        listener_ = ::socket(AF_INET, SOCK_STREAM, 0);
+        GLYPHA_REQUIRE(listener_ >= 0);
+        int yes = 1;
+        GLYPHA_REQUIRE(::setsockopt(listener_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == 0);
+        sockaddr_in address{};
+        address.sin_family = AF_INET;
+        address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        address.sin_port = 0;
+        GLYPHA_REQUIRE(::bind(listener_, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0);
+        socklen_t length = sizeof(address);
+        GLYPHA_REQUIRE(::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) == 0);
+        port_ = ntohs(address.sin_port);
+        GLYPHA_REQUIRE(::listen(listener_, 8) == 0);
+        thread_ = std::thread([this] { run(); });
+    }
+
+    ~BackupWrongRequestIdServer() {
+        stop_.store(true, std::memory_order_release);
+        const auto probe = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (probe >= 0) {
+            sockaddr_in address{};
+            address.sin_family = AF_INET;
+            address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+            address.sin_port = htons(port_);
+            static_cast<void>(::connect(probe, reinterpret_cast<sockaddr*>(&address), sizeof(address)));
+            static_cast<void>(::close(probe));
+        }
+        if (thread_.joinable()) {
+            thread_.join();
+        }
+        static_cast<void>(::close(listener_));
+    }
+
+    [[nodiscard]] auto port() const noexcept -> std::uint16_t {
+        return port_;
+    }
+
+    [[nodiscard]] auto backup_requests() const noexcept -> std::uint32_t {
+        return backup_requests_.load(std::memory_order_acquire);
+    }
+
+  private:
+    void run() noexcept {
+        while (!stop_.load(std::memory_order_acquire)) {
+            const auto descriptor = ::accept(listener_, nullptr, nullptr);
+            if (descriptor < 0) {
+                return;
+            }
+            if (stop_.load(std::memory_order_acquire)) {
+                static_cast<void>(::close(descriptor));
+                return;
+            }
+            const auto reply = [&](const glyphastore::server::ResponseView& response) {
+                auto encoded = glyphastore::server::encode_response(response);
+                return encoded && send_all(descriptor, *encoded);
+            };
+            auto init_frame = receive_request(descriptor);
+            auto init = glyphastore::server::decode_request(init_frame);
+            if (!init || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = init->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7,
+                                 .value = bytes("GlyphaStore/2")})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto bind_frame = receive_request(descriptor);
+            auto bind = glyphastore::server::decode_request(bind_frame);
+            if (!bind || !reply({.status = glyphastore::server::ResponseStatus::ok,
+                                 .request_id = bind->frame.request_id,
+                                 .owner_worker = 0,
+                                 .worker_count = 1,
+                                 .routing_epoch = 7})) {
+                static_cast<void>(::close(descriptor));
+                continue;
+            }
+            auto backup_frame = receive_request(descriptor);
+            auto backup = glyphastore::server::decode_request(backup_frame);
+            if (backup && backup->frame.opcode == glyphastore::server::RequestOpcode::backup) {
+                backup_requests_.fetch_add(1U, std::memory_order_acq_rel);
+                static_cast<void>(reply({.status = glyphastore::server::ResponseStatus::ok,
+                                         .request_id = backup->frame.request_id ^ 1U,
+                                         .owner_worker = 0,
+                                         .worker_count = 1,
+                                         .routing_epoch = 7,
+                                         .value = bytes("status=ok files=0 bytes=0")}));
+            }
+            static_cast<void>(::close(descriptor));
+        }
+    }
+
+    int listener_{-1};
+    std::uint16_t port_{};
+    std::thread thread_;
+    std::atomic<bool> stop_{false};
+    std::atomic<std::uint32_t> backup_requests_{0};
 };
 
 class RunningServer final {
@@ -498,7 +801,57 @@ GLYPHA_TEST("C++ client pipeline preserves indeterminate mutation outcomes after
     GLYPHA_REQUIRE((*executed)[0].error.has_value());
     GLYPHA_REQUIRE((*executed)[1].error.has_value());
     GLYPHA_REQUIRE((*executed)[2].error.has_value());
+    GLYPHA_REQUIRE((*executed)[0].error->bytes_sent > 0);
+    GLYPHA_REQUIRE((*executed)[0].error->retryability == "reconcile_first");
+    GLYPHA_REQUIRE((*executed)[0].error->mutation_outcome == "indeterminate");
+    GLYPHA_REQUIRE((*executed)[2].error->retryability == "reconcile_first");
+    GLYPHA_REQUIRE((*executed)[2].error->mutation_outcome == "indeterminate");
     GLYPHA_REQUIRE(client.healthy());
+}
+
+GLYPHA_TEST("C++ client does not blind-retry BACKUP after request bytes were sent") {
+    // Online BACKUP requires a pristine destination. Retrying after a lost OK would
+    // hit "destination not empty" and falsely report failure of a completed backup.
+    BackupDropResponseServer server;
+    auto connected = glyphastore::client::Client::connect(
+        {.port = server.port(), .request_timeout_ms = 200});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+    auto backed = client.backup("/tmp/glyphastore-backup-drop-litmus");
+    GLYPHA_REQUIRE(!backed.has_value());
+    GLYPHA_REQUIRE(backed.error().bytes_sent > 0);
+    GLYPHA_REQUIRE(backed.error().mutation_outcome == "indeterminate");
+    GLYPHA_REQUIRE(backed.error().retryability == "reconcile_first");
+    GLYPHA_REQUIRE(server.backup_requests() == 1);
+}
+
+GLYPHA_TEST("C++ client treats BACKUP INTERNAL_ERROR as reconcile_first") {
+    // Wire INTERNAL_ERROR after a possible committed fenced copy must not advertise
+    // new_attempt (same-destination retry would look like the first backup failed).
+    BackupInternalErrorServer server;
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+    auto backed = client.backup("/tmp/glyphastore-backup-internal-error-litmus");
+    GLYPHA_REQUIRE(!backed.has_value());
+    GLYPHA_REQUIRE(backed.error().mutation_outcome == "indeterminate");
+    GLYPHA_REQUIRE(backed.error().retryability == "reconcile_first");
+    GLYPHA_REQUIRE(server.backup_requests() == 1);
+}
+
+GLYPHA_TEST("C++ client treats BACKUP validate failure as reconcile_first") {
+    // A framed BACKUP response with a mismatched request_id still means the fenced
+    // copy may already exist — same polarity as INTERNAL_ERROR / mutate validate-fail.
+    BackupWrongRequestIdServer server;
+    auto connected = glyphastore::client::Client::connect({.port = server.port()});
+    GLYPHA_REQUIRE(connected.has_value());
+    auto client = std::move(*connected);
+    auto backed = client.backup("/tmp/glyphastore-backup-wrong-id-litmus");
+    GLYPHA_REQUIRE(!backed.has_value());
+    GLYPHA_REQUIRE(backed.error().bytes_sent > 0);
+    GLYPHA_REQUIRE(backed.error().mutation_outcome == "indeterminate");
+    GLYPHA_REQUIRE(backed.error().retryability == "reconcile_first");
+    GLYPHA_REQUIRE(server.backup_requests() == 1);
 }
 
 GLYPHA_TEST("C++ client rejects non-positive request timeout override") {

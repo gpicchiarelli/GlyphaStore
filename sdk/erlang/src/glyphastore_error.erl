@@ -142,8 +142,12 @@ enrich(Err, Fields) ->
     MutationOutcome = maps:get(mutation_outcome, Err1, undefined),
     Indeterminate = MutationOutcome =:= indeterminate,
     MutationSent = (BytesSent > 0) andalso (MutationOutcome =/= undefined),
+    %% Indeterminate always means reconcile_first — including transport failures after a
+    %% full mutation send where bytes_sent was omitted (must not fall through to same_request).
     Retry =
         case {Category, BytesSent, MutationOutcome} of
+            {_, _, indeterminate} ->
+                reconcile_first;
             {transport, 0, _} ->
                 same_request;
             {transport, _, _} when MutationOutcome =/= undefined ->

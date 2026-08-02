@@ -84,3 +84,19 @@ func TestErrorTaxonomyWireStatusMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestIndeterminateEnrichIgnoresZeroBytesSent(t *testing.T) {
+	// Receive-after-send paths historically omitted bytes_sent; transport+0 must not
+	// advertise same_request when mutation_outcome is already indeterminate.
+	err := transport("socket closed").withMutation(MutationIndeterminate)
+	if err.BytesSent != 0 {
+		t.Fatalf("bytes_sent=%d", err.BytesSent)
+	}
+	if err.Retryability != RetryReconcileFirst {
+		t.Fatalf("retryability=%s after withMutation", err.Retryability)
+	}
+	err = err.withBytesSent(0)
+	if err.Retryability != RetryReconcileFirst {
+		t.Fatalf("retryability=%s after withBytesSent(0)", err.Retryability)
+	}
+}

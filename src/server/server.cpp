@@ -1,11 +1,13 @@
 #include "glyphastore/server/server.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "server/server_builder.hpp"
 #include "server/server_runtime.hpp"
 #include "server/server_stats.hpp"
 #include "store/store_internal.hpp"
 
 #include <filesystem>
+#include <new>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -34,6 +36,50 @@ namespace {
     }
 }
 
+[[nodiscard]] auto format_backup_ok_report(const DurableStoreBackupReport& report) -> std::string {
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::backup_report)) {
+        throw std::bad_alloc{};
+    }
+    const auto destination = report.destination.string();
+    std::string out;
+    out.reserve(256U + destination.size());
+    out.append("status=ok\n");
+    out.append("destination=");
+    out.append(destination);
+    out.push_back('\n');
+    out.append("files_copied=");
+    out.append(std::to_string(report.files_copied));
+    out.push_back('\n');
+    out.append("bytes_copied=");
+    out.append(std::to_string(report.bytes_copied));
+    out.push_back('\n');
+    out.append("admission_fence_ns=");
+    out.append(std::to_string(report.admission_fence_ns));
+    out.push_back('\n');
+    out.append("catalog_copy_ns=");
+    out.append(std::to_string(report.catalog_copy_ns));
+    out.push_back('\n');
+    out.append("destination_verify_ns=");
+    out.append(std::to_string(report.destination_verify_ns));
+    out.push_back('\n');
+    out.append("segment_copy_workers=");
+    out.append(std::to_string(report.segment_copy_workers));
+    out.push_back('\n');
+    out.append("source_crc_scanned=");
+    out.push_back(report.source_crc_scanned ? '1' : '0');
+    out.push_back('\n');
+    out.append("destination_crc_scanned=");
+    out.push_back(report.destination_crc_scanned ? '1' : '0');
+    out.push_back('\n');
+    out.append("source_segments=");
+    out.append(std::to_string(report.source_verification.segments.size()));
+    out.push_back('\n');
+    out.append("destination_segments=");
+    out.append(std::to_string(report.destination_verification.segments.size()));
+    out.push_back('\n');
+    return out;
+}
+
 [[nodiscard]] auto probe_server_backup(void* context, const std::string_view destination,
                                        std::string& out) noexcept -> bool {
     try {
@@ -44,18 +90,13 @@ namespace {
                                                  : std::string{report.error().message};
             return false;
         }
-        out = "status=ok\ndestination=" + report->destination.string() +
-              "\nfiles_copied=" + std::to_string(report->files_copied) +
-              "\nbytes_copied=" + std::to_string(report->bytes_copied) +
-              "\nadmission_fence_ns=" + std::to_string(report->admission_fence_ns) +
-              "\ncatalog_copy_ns=" + std::to_string(report->catalog_copy_ns) +
-              "\ndestination_verify_ns=" + std::to_string(report->destination_verify_ns) +
-              "\nsegment_copy_workers=" + std::to_string(report->segment_copy_workers) +
-              "\nsource_crc_scanned=" + std::string{report->source_crc_scanned ? "1" : "0"} +
-              "\ndestination_crc_scanned=" + std::string{report->destination_crc_scanned ? "1" : "0"} +
-              "\nsource_segments=" + std::to_string(report->source_verification.segments.size()) +
-              "\ndestination_segments=" + std::to_string(report->destination_verification.segments.size()) +
-              '\n';
+        // Backup already committed. Report formatting must not flip success → false
+        // (wire INTERNAL_ERROR / client new_attempt while the destination holds the copy).
+        try {
+            out = format_backup_ok_report(*report);
+        } catch (...) {
+            out = "status=ok\n";
+        }
         return true;
     } catch (const std::exception& exception) {
         out = exception.what();

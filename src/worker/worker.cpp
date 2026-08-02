@@ -1,5 +1,6 @@
 #include "glyphastore/worker/worker.hpp"
 
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 
@@ -8,6 +9,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <type_traits>
+#include <utility>
 
 namespace glyphastore {
 namespace {
@@ -25,6 +27,13 @@ static_assert(std::is_nothrow_swappable_v<std::unordered_map<SegmentId, Segment*
         return fail(ErrorCode::corrupted_data, "record is not accounted as live");
     }
     return {};
+}
+
+// Append already consumed Segment bytes: Index/publication failure is indeterminate
+// for wire polarity (must not map to OVERLOADED / known-not-committed).
+[[nodiscard]] auto indeterminate_after_append(Error error) -> Error {
+    error.code = ErrorCode::unavailable;
+    return error;
 }
 
 } // namespace
@@ -84,6 +93,11 @@ auto Worker::next_sequence() -> SequenceNumber {
 }
 
 auto Worker::append_record(const RecordInput& input) -> Result<RecordRef> {
+    // Litmus: pre-append rotation/catalog failure (invalid_reference) must stay
+    // known-not-committed at the Writer — not wire INTERNAL_ERROR / reconcile.
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::rotate)) {
+        return fail(ErrorCode::invalid_reference, "injected volatile rotation failure before append");
+    }
     auto ref = active_->append(input);
     if (!ref && ref.error().code == ErrorCode::segment_full) {
         auto sealed = active_;
@@ -202,6 +216,12 @@ auto Worker::erase(const HashedKey& key) -> Status {
 
 auto Worker::compact(const std::uint64_t now_ns, const VacuumPolicy policy)
     -> Result<std::optional<VacuumStats>> {
+    // Exclusive Writer: mutex alone does not own the Index — arm the quiesce gate and
+    // drain hot_path_depth before taking mutex_ (do not hold mutex across the wait).
+    ExclusiveIndexQuiesce index_quiesce{*this, exclusive_writer_};
+    // Litmus: hold the gate after depth drain so a sibling exclusive put observes
+    // sequence_conflict (mutex-only compact raced unlocked Index publish).
+    GS_FAULT_BLOCK(compact);
     const std::lock_guard lock{mutex_};
     const VacuumPlanner planner{policy};
     const auto candidates = planner.candidates(owned_);
@@ -328,10 +348,12 @@ auto Worker::put_locked(const HashedKey& key, const std::span<const std::byte> v
 
 auto Worker::put_locked_published(const HashedKey& key, const std::span<const std::byte> value,
                                   const std::uint64_t expire_at_ns) -> Result<WorkerMutationPublication> {
+    ExclusiveHotPathGuard hot_path{exclusive_writer_ ? this : nullptr};
 #ifndef NDEBUG
     if (exclusive_writer_) {
         // Paired exclusive Writer must not hold mutex_ on the hot path. Compaction
-        // and verify still take it; if they race, wait then release before mutating.
+        // and verify still take it after Index quiesce; if they race, wait then
+        // release before mutating.
         std::unique_lock lock{mutex_, std::defer_lock};
         if (!lock.try_lock()) {
             lock.lock();
@@ -340,6 +362,10 @@ auto Worker::put_locked_published(const HashedKey& key, const std::span<const st
         assert(!lock.owns_lock());
     }
 #endif
+    if (exclusive_writer_ && index_quiesce_active_.load(std::memory_order_acquire)) {
+        return fail(ErrorCode::sequence_conflict,
+                    "volatile mutation conflicts with Index quiesce (compact/verify)");
+    }
     const RecordInput input{
         .sequence = next_sequence(),
         .opcode = Opcode::put,
@@ -353,8 +379,13 @@ auto Worker::put_locked_published(const HashedKey& key, const std::span<const st
         return unexpected(ref.error());
     }
     const auto segment = active_;
+    // Litmus / post-append: Index publication crossed the append boundary.
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::index_account)) {
+        return unexpected(
+            Error{ErrorCode::unavailable, "injected volatile post-append index publication failure"});
+    }
     if (auto visible = publish(key, *ref, *segment); !visible) {
-        return unexpected(visible.error());
+        return unexpected(indeterminate_after_append(visible.error()));
     }
     return WorkerMutationPublication{.record = *ref, .segment = segment, .opcode = Opcode::put};
 }
@@ -368,6 +399,7 @@ auto Worker::erase_locked(const HashedKey& key) -> Status {
 }
 
 auto Worker::erase_locked_published(const HashedKey& key) -> Result<WorkerMutationPublication> {
+    ExclusiveHotPathGuard hot_path{exclusive_writer_ ? this : nullptr};
 #ifndef NDEBUG
     if (exclusive_writer_) {
         std::unique_lock lock{mutex_, std::defer_lock};
@@ -378,6 +410,10 @@ auto Worker::erase_locked_published(const HashedKey& key) -> Result<WorkerMutati
         assert(!lock.owns_lock());
     }
 #endif
+    if (exclusive_writer_ && index_quiesce_active_.load(std::memory_order_acquire)) {
+        return fail(ErrorCode::sequence_conflict,
+                    "volatile mutation conflicts with Index quiesce (compact/verify)");
+    }
     const auto existing = index_.find(key);
     if (!existing) {
         return fail(ErrorCode::not_found, "key is not present");
@@ -401,12 +437,12 @@ auto Worker::erase_locked_published(const HashedKey& key) -> Result<WorkerMutati
         return unexpected(ref.error());
     }
     if (auto dead = previous_segment->mark_dead(*existing); !dead) {
-        return unexpected(dead.error());
+        return unexpected(indeterminate_after_append(dead.error()));
     }
     const auto mutation = index_.erase(key);
     if (mutation.previous != existing) {
         static_cast<void>(previous_segment->mark_live(*existing));
-        return fail(ErrorCode::corrupted_data, "index changed during record removal");
+        return fail(ErrorCode::unavailable, "index changed during record removal");
     }
     const auto segment = active_;
     maybe_retire(*previous_segment);
