@@ -35,6 +35,9 @@
 - Shutdown-deadline `close_all_connections`: best-effort `write_ready` before hard
   close so a decided ACK the kernel can accept is not discarded when drain times out
   (join still reports drain failure).
+- BIND orphan-handoff best-effort OVERLOADED `send` uses `reactor_detail::send_flags()`
+  (`MSG_NOSIGNAL` on Linux), matching the hot write path — a peer-reset during reject
+  must not raise SIGPIPE.
 - Catalog flush-after-abandon gates use sticky `healthy_` (not `healthy()`):
   `close()` sets `closed_` before the final flush, and `healthy()` is false while
   closed — the old gate skipped deferred `sync_record` and returned success,

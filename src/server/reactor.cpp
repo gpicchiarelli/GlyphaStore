@@ -506,8 +506,8 @@ void Reactor::reject_orphaned_handoff(ConnectionHandoff handoff,
             offset += written->bytes;
             continue;
         }
-        const auto sent =
-            ::send(handoff.socket.descriptor(), encoded->data() + offset, encoded->size() - offset, 0);
+        const auto sent = ::send(handoff.socket.descriptor(), encoded->data() + offset,
+                                 encoded->size() - offset, reactor_detail::send_flags());
         if (sent <= 0) {
             break;
         }
