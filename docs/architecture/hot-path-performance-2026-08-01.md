@@ -27,6 +27,9 @@ Optional compile-time counters (`-DGLYPHASTORE_HOT_PATH_PHASES=ON`):
 - Preallocated `alignas(64)` atomic buckets; no global mutex; no hot-path logging
 - Dump via `GLYPHASTORE_HOT_PATH_PHASE_REPORT=1` at process exit
 - Default builds keep macros as no-ops
+- TCP reports only additive leaf spans: decode, route, store operation, response
+  encode, transport write call, and poller update. In particular, `socket_write`
+  does not include pipeline resumption or request dispatch.
 
 ### Cost map (lab, phases ON; relative %)
 
@@ -41,7 +44,37 @@ enabled (absolute ns include timer overhead; use **percentages** for attribution
 | PUT | `ack` | ~93% | Caller wait for Writer apply+publish |
 | PUT | `enqueue` | ~4% | Sync list push + wake |
 | PUT | `admit` | ~3% | Submission admission |
-| TCP | decode / dispatch / store_op / encode / write | instrumented | See phase dump after server benches |
+| TCP | `socket_write` | ~76% | `send` / `sendmsg` / TLS write call only |
+| TCP | `store_op` | ~11% | Local GET or mutation submission; excludes response encode |
+| TCP | `poller_update` | ~10% | kqueue/epoll interest modification |
+| TCP | decode / route / encode | ~3% | Additive remainder of instrumented leaf spans |
+
+The TCP shares above are from a same-machine Apple Silicon lab run with phase
+instrumentation enabled: volatile read-after-write, one Worker, one client,
+pipeline 128, 200k PUT+GET pairs, two warmups and seven measured repeats. They
+are diagnostic attribution, not release evidence or a production claim.
+
+### Redundant poller-transition removal (2026-08-25)
+
+Async store submission used to modify poller interest inside `execute_local`.
+Both callers then reconciled that interest before any intervening poller wait:
+`read_ready` immediately flushed queued output, while `write_ready` performed
+its own final transition. Interest ownership now remains with those callers.
+No queue, acknowledgement point, request ordering, output watermark, or wire
+outcome changed.
+
+In the instrumented pipeline-128 workload, poller-update samples fell from
+about 3.59M to 1.79M across warmups plus measured runs. A non-instrumented
+Release A/B, alternated to reduce order bias, measured:
+
+| Run | Baseline | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 228,212 ops/s | 241,696 ops/s | +5.9% |
+| B (reverse order) | 229,004 ops/s | 243,526 ops/s | +6.3% |
+
+Pipeline 1 remained effectively flat in a shorter check (47,011 vs 47,278
+ops/s, +0.6%). These local figures are advisory and retain the same-machine,
+non-isolated benchmark limitations.
 
 ## Hot-path diagram (embedded paired)
 
@@ -119,9 +152,12 @@ Quantitative targets:
    lease vs sync atomics.
 3. PUT: adaptive spin before park (bounded); Writer short spin before park;
    proportional reclaim (skip empty / non-quiescent; quantum reclaim).
-4. TCP: phase scopes; clock comment / single sample per `process_frames` turn;
-   encode/write scopes. p128 improvement attributed to reduced GET↔Writer wake
+4. TCP: additive leaf phase scopes; clock comment / single sample per
+   `process_frames` turn; encode, socket-write, and poller-update scopes. p128
+   improvement attributed to reduced GET↔Writer wake
    storms under pipelined load plus encode/write path hygiene — **not** queue widening.
+5. TCP: removed redundant async-submission poller modifications; the read/write
+   caller remains the sole owner of the next interest transition.
 
 ## Rejected optimizations
 

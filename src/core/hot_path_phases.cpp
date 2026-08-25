@@ -162,7 +162,8 @@ auto format_report() -> std::string {
         [](const std::size_t index) { return snapshot_put(static_cast<PutPhase>(index)); },
         static_cast<std::size_t>(PutPhase::count));
     append_section(
-        out, "[TCP]", [](const std::size_t index) { return tcp_phase_name(static_cast<TcpPhase>(index)); },
+        out, "[TCP leaf phases; additive]",
+        [](const std::size_t index) { return tcp_phase_name(static_cast<TcpPhase>(index)); },
         [](const std::size_t index) { return snapshot_tcp(static_cast<TcpPhase>(index)); },
         static_cast<std::size_t>(TcpPhase::count));
     return out;
@@ -173,12 +174,17 @@ PhaseScope::PhaseScope(void (*observe)(std::uint8_t, std::uint64_t) noexcept,
     : observe_(observe), phase_(phase), start_ns_(enabled() ? now_ns() : 0) {}
 
 PhaseScope::~PhaseScope() {
+    finish();
+}
+
+void PhaseScope::finish() noexcept {
     if (observe_ == nullptr || start_ns_ == 0) {
         return;
     }
     const auto end = now_ns();
     const auto elapsed = end >= start_ns_ ? end - start_ns_ : 0U;
     observe_(phase_, elapsed);
+    start_ns_ = 0;
 }
 
 } // namespace glyphastore::hot_path

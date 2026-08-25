@@ -654,7 +654,11 @@ auto Reactor::update_connection_interest(const ConnectionToken token) -> Status 
     if (has_pending_output(*current)) {
         interest = interest | IoInterest::write;
     }
-    if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest); !modified) {
+    auto modified = [&] {
+        GS_PHASE_TCP(poller_update);
+        return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+    }();
+    if (!modified) {
         return modified;
     }
     current->write_armed = has_interest(interest, IoInterest::write);
@@ -803,7 +807,6 @@ void Reactor::prepare_input_append(Connection& current, const std::size_t additi
 }
 
 auto Reactor::write_ready(const ConnectionToken token) -> Status {
-    GS_PHASE_TCP(write);
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
@@ -820,7 +823,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 }
                 const auto* data = current->output.data() + current->output_offset;
                 requested_size = current->output.size() - current->output_offset;
-                auto written = current->tls->write(data, requested_size);
+                auto written = [&] {
+                    GS_PHASE_TCP(socket_write);
+                    return current->tls->write(data, requested_size);
+                }();
                 if (!written) {
                     return unexpected(written.error());
                 }
@@ -853,16 +859,21 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                     }
                     // Always keep read interest for WANT_READ, even after half-close.
                     const auto interest = IoInterest::read | IoInterest::write;
-                    if (auto modified =
-                            poller_.modify(current->socket.descriptor(), token.encode(), interest);
-                        !modified) {
+                    auto modified = [&] {
+                        GS_PHASE_TCP(poller_update);
+                        return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                    }();
+                    if (!modified) {
                         return modified;
                     }
                     current->write_armed = true;
                     // One immediate retry covers fail-once injection and sockets that
                     // are already readable/writable without a fresh ET edge. A second
                     // WANT_READ with no drain progress returns to the poller below.
-                    written = current->tls->write(data, requested_size);
+                    written = [&] {
+                        GS_PHASE_TCP(socket_write);
+                        return current->tls->write(data, requested_size);
+                    }();
                     if (!written) {
                         return unexpected(written.error());
                     }
@@ -892,9 +903,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                     }
                     const auto interest =
                         needs_read ? (IoInterest::read | IoInterest::write) : IoInterest::write;
-                    if (auto modified =
-                            poller_.modify(current->socket.descriptor(), token.encode(), interest);
-                        !modified) {
+                    auto modified = [&] {
+                        GS_PHASE_TCP(poller_update);
+                        return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                    }();
+                    if (!modified) {
                         return modified;
                     }
                     current->write_armed = true;
@@ -903,8 +916,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
             } else if (!scatter) {
                 const auto* data = current->output.data() + current->output_offset;
                 requested_size = current->output.size() - current->output_offset;
-                const auto written =
-                    ::send(current->socket.descriptor(), data, requested_size, reactor_detail::send_flags());
+                const auto written = [&] {
+                    GS_PHASE_TCP(socket_write);
+                    return ::send(current->socket.descriptor(), data, requested_size,
+                                  reactor_detail::send_flags());
+                }();
                 if (written > 0) {
                     written_size = static_cast<std::size_t>(written);
                 } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -937,8 +953,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 msghdr message{};
                 message.msg_iov = vectors.data();
                 message.msg_iovlen = static_cast<decltype(message.msg_iovlen)>(count);
-                const auto written =
-                    ::sendmsg(current->socket.descriptor(), &message, reactor_detail::send_flags());
+                const auto written = [&] {
+                    GS_PHASE_TCP(socket_write);
+                    return ::sendmsg(current->socket.descriptor(), &message, reactor_detail::send_flags());
+                }();
                 if (written > 0) {
                     written_size = static_cast<std::size_t>(written);
                 } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
@@ -961,8 +979,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 const auto interest = current->peer_read_closed || scatter
                                           ? IoInterest::write
                                           : IoInterest::read | IoInterest::write;
-                if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), interest);
-                    !modified) {
+                auto modified = [&] {
+                    GS_PHASE_TCP(poller_update);
+                    return poller_.modify(current->socket.descriptor(), token.encode(), interest);
+                }();
+                if (!modified) {
                     return modified;
                 }
                 current->write_armed = true;
@@ -1040,8 +1061,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         if (!current->write_armed) {
             return {};
         }
-        if (auto modified = poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
-            !modified) {
+        auto modified = [&] {
+            GS_PHASE_TCP(poller_update);
+            return poller_.modify(current->socket.descriptor(), token.encode(), IoInterest::read);
+        }();
+        if (!modified) {
             return modified;
         }
         current->write_armed = false;
