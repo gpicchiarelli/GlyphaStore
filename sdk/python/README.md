@@ -84,3 +84,7 @@ benchmark:
 python3 benchmarks/client_benchmark.py --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 ```
+
+Use `--execution batch` to benchmark `execute_batch()` grouping and fan-out directly, and
+`--runtime async --execution batch` for `AsyncClient`. Benchmark keys are assigned with the
+routing identity negotiated from the running server, including keyed SipHash configurations.

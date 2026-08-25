@@ -57,7 +57,9 @@ class GlyphaError(Exception):
         self.operation = operation
         indeterminate = mutation_outcome is MutationOutcome.INDETERMINATE
         self.retryability = retryability or _retryability_for(
-            self.category, bytes_sent > 0 and mutation_outcome is not None, indeterminate
+            self.category,
+            bytes_sent > 0 and mutation_outcome is not None,
+            indeterminate,
         )
 
 
@@ -145,7 +147,11 @@ def _enrich(
     # full mutation send where bytes_sent was omitted (must not fall through to same_request).
     if indeterminate:
         error.retryability = "reconcile_first"
-    elif error.mutation_outcome is not None and error.bytes_sent > 0 and error.category == "transport":
+    elif (
+        error.mutation_outcome is not None
+        and error.bytes_sent > 0
+        and error.category == "transport"
+    ):
         error.retryability = "reconcile_first"
     elif error.bytes_sent == 0 and error.category == "transport":
         error.retryability = "same_request"
@@ -401,11 +407,7 @@ class Client:
         timeout: float | None = None,
     ) -> bytes:
         # Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
-        path = (
-            destination.encode("utf-8")
-            if isinstance(destination, str)
-            else bytes(destination)
-        )
+        path = destination.encode("utf-8") if isinstance(destination, str) else bytes(destination)
         if not path:
             raise InvalidArgument("backup destination must be non-empty")
         return self._read(Opcode.BACKUP, path, b"", timeout=timeout)
@@ -433,31 +435,43 @@ class Client:
         requests: Sequence[PipelineRequest],
         *,
         timeout: float | None = None,
-        _deadline: float | None = None,
     ) -> list[PipelineResponse]:
         """Execute one ordered, non-atomic pipeline on a single Worker connection."""
+        return self._execute_pipeline(requests, timeout=timeout)
+
+    def _execute_pipeline(
+        self,
+        requests: Sequence[PipelineRequest],
+        *,
+        timeout: float | None = None,
+        deadline_override: float | None = None,
+        routed_worker: int | None = None,
+    ) -> list[PipelineResponse]:
         if not requests:
             return []
         if not self._healthy:
             raise Unavailable("client is closed or routing metadata changed")
         if len(requests) > self._config.maximum_pipeline_requests:
             raise InvalidArgument("pipeline exceeds the configured request limit")
-        deadline = _deadline if _deadline is not None else self._request_deadline(timeout)
+        deadline = (
+            deadline_override if deadline_override is not None else self._request_deadline(timeout)
+        )
 
         normalized: list[tuple[PipelineOpcode, bytes, bytes, int]] = []
         frames: list[bytes] = []
         metadata: list[tuple[int, int]] = []
         output_size = 0
-        worker: int | None = None
+        worker = routed_worker
         for request in requests:
             if not isinstance(request.opcode, PipelineOpcode):
                 raise InvalidArgument("pipeline request contains an invalid opcode")
             key, value = bytes(request.key), bytes(request.value)
-            request_worker = self.worker_for(key)
-            if worker is None:
-                worker = request_worker
-            elif request_worker != worker:
-                raise InvalidArgument("every pipeline key must route to the same Worker")
+            if routed_worker is None:
+                request_worker = self.worker_for(key)
+                if worker is None:
+                    worker = request_worker
+                elif request_worker != worker:
+                    raise InvalidArgument("every pipeline key must route to the same Worker")
             if request.opcode in (PipelineOpcode.GET, PipelineOpcode.ERASE) and (
                 value or request.expire_at_ns != 0
             ):
@@ -497,9 +511,7 @@ class Client:
                     is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
                     mutation_may_have_arrived = is_mutation and bytes_sent > metadata[index][1]
                     pos_bytes = (
-                        bytes_sent - metadata[index][1]
-                        if bytes_sent > metadata[index][1]
-                        else 0
+                        bytes_sent - metadata[index][1] if bytes_sent > metadata[index][1] else 0
                     )
                     mutation_outcome = None
                     if is_mutation:
@@ -556,9 +568,7 @@ class Client:
                 mutation_outcome = None
                 if is_mutation:
                     mutation_outcome = (
-                        MutationOutcome.INDETERMINATE
-                        if indeterminate
-                        else MutationOutcome.REJECTED
+                        MutationOutcome.INDETERMINATE if indeterminate else MutationOutcome.REJECTED
                     )
                 responses[index] = PipelineResponse(
                     PipelineOutcome.INDETERMINATE if indeterminate else PipelineOutcome.FAILED,
@@ -608,17 +618,29 @@ class Client:
             bucket = groups.setdefault(worker, [])
             if len(bucket) >= self._config.maximum_pipeline_requests:
                 raise InvalidArgument("batch exceeds the configured per-Worker request limit")
-            bucket.append((index, request))
+            # Freeze bytes at admission: the trusted Worker and encoded key must
+            # describe the same snapshot even for mutable buffer inputs.
+            bucket.append(
+                (
+                    index,
+                    PipelineRequest(request.opcode, key, value, request.expire_at_ns),
+                )
+            )
 
         responses: list[PipelineResponse | None] = [None] * len(requests)
 
         def run_group(
+            worker: int,
             items: list[tuple[int, PipelineRequest]],
         ) -> tuple[list[int], list[PipelineResponse]]:
             indices = [index for index, _ in items]
             group_requests = [request for _, request in items]
             try:
-                return indices, self.execute_pipeline(group_requests, _deadline=shared_deadline)
+                return indices, self._execute_pipeline(
+                    group_requests,
+                    deadline_override=shared_deadline,
+                    routed_worker=worker,
+                )
             except GlyphaError as error:
                 # Match C++/Erlang: stamp this Worker's slots failed with rejected
                 # polarity (bytes_sent=0); keep sibling results.
@@ -628,13 +650,12 @@ class Client:
                         error=_enrich(
                             _clone_error(error),
                             operation=_pipeline_op_name(request.opcode),
-                            worker=self.worker_for(bytes(request.key)),
+                            worker=worker,
                             routing_epoch=self._routing_epoch,
                             bytes_sent=0,
                             mutation_outcome=(
                                 MutationOutcome.REJECTED
-                                if request.opcode
-                                in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                                if request.opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
                                 else None
                             ),
                         ),
@@ -644,19 +665,24 @@ class Client:
                 return indices, failed
 
         if len(groups) == 1:
-            indices, group_responses = run_group(next(iter(groups.values())))
+            worker, items = next(iter(groups.items()))
+            indices, group_responses = run_group(worker, items)
             for index, response in zip(indices, group_responses, strict=True):
                 responses[index] = response
         else:
             with concurrent.futures.ThreadPoolExecutor(max_workers=len(groups)) as pool:
-                futures = [pool.submit(run_group, items) for items in groups.values()]
+                futures = [
+                    pool.submit(run_group, worker, items) for worker, items in groups.items()
+                ]
                 for future in concurrent.futures.as_completed(futures):
                     indices, group_responses = future.result()
                     for index, response in zip(indices, group_responses, strict=True):
                         responses[index] = response
 
-        return [response if response is not None else PipelineResponse(PipelineOutcome.FAILED)
-                for response in responses]
+        return [
+            response if response is not None else PipelineResponse(PipelineOutcome.FAILED)
+            for response in responses
+        ]
 
     def close(self) -> None:
         self._healthy = False
@@ -709,9 +735,7 @@ class Client:
         deadline = _deadline_after(self._config.request_timeout)
         try:
             init_id = self._next_request_id()
-            response = self._exchange(
-                connection, encode_request(Opcode.INIT, init_id), deadline
-            )
+            response = self._exchange(connection, encode_request(Opcode.INIT, init_id), deadline)
             if (
                 response.status is not Status.OK
                 or response.request_id != init_id
@@ -757,9 +781,7 @@ class Client:
 
     def _ensure_connected(self, connection: _Connection) -> None:
         if connection.socket is None:
-            self._bootstrap(
-                connection, (self._worker_count, self._routing_epoch, self._routing)
-            )
+            self._bootstrap(connection, (self._worker_count, self._routing_epoch, self._routing))
 
     def _send(self, connection: _Connection, frame: bytes, deadline: float) -> None:
         assert connection.socket is not None
