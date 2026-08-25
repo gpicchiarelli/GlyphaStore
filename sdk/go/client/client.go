@@ -514,6 +514,25 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	if err != nil {
 		return nil, err
 	}
+	if c.workerCount == 1 {
+		if len(requests) > c.cfg.MaximumPipelineRequests {
+			return nil, invalidArgument("batch exceeds the configured per-Worker request limit")
+		}
+		for _, request := range requests {
+			if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
+				return nil, invalidArgument("batch request contains an invalid opcode")
+			}
+			if (request.Opcode == PipelineGet || request.Opcode == PipelineErase) &&
+				(len(request.Value) != 0 || request.ExpireAtNs != 0) {
+				return nil, invalidArgument("GET and ERASE batch requests cannot carry PUT fields")
+			}
+		}
+		responses, err := c.executePipelineDeadline(requests, deadline)
+		if err != nil {
+			return c.failedBatchGroup(requests, err), nil
+		}
+		return responses, nil
+	}
 
 	type workerGroup struct {
 		requests []PipelineRequest
@@ -562,29 +581,7 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	runGroup := func(group *workerGroup) []PipelineResponse {
 		resps, err := c.executePipelineDeadline(group.requests, deadline)
 		if err != nil {
-			// Match C++/Erlang: convert group-level pre-admission errors into
-			// per-index failed slots with rejected polarity (bytes_sent=0).
-			failed := make([]PipelineResponse, len(group.requests))
-			for i, request := range group.requests {
-				enriched := err
-				if ge, ok := err.(*Error); ok {
-					op := "get"
-					switch request.Opcode {
-					case PipelinePut:
-						op = "put"
-					case PipelineErase:
-						op = "erase"
-					}
-					worker, _ := c.WorkerFor(request.Key)
-					annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
-					if request.Opcode == PipelinePut || request.Opcode == PipelineErase {
-						annotated = annotated.withMutation(MutationRejected)
-					}
-					enriched = annotated
-				}
-				failed[i] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
-			}
-			return failed
+			return c.failedBatchGroup(group.requests, err)
 		}
 		return resps
 	}
@@ -621,6 +618,32 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	}
 	wg.Wait()
 	return responses, nil
+}
+
+// Group-level pre-admission failures become positional failed slots with
+// bytes_sent=0 and rejected mutation polarity, matching C++ and Erlang.
+func (c *Client) failedBatchGroup(requests []PipelineRequest, err error) []PipelineResponse {
+	failed := make([]PipelineResponse, len(requests))
+	for index, request := range requests {
+		enriched := err
+		if ge, ok := err.(*Error); ok {
+			op := "get"
+			switch request.Opcode {
+			case PipelinePut:
+				op = "put"
+			case PipelineErase:
+				op = "erase"
+			}
+			worker, _ := c.WorkerFor(request.Key)
+			annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
+			if request.Opcode == PipelinePut || request.Opcode == PipelineErase {
+				annotated = annotated.withMutation(MutationRejected)
+			}
+			enriched = annotated
+		}
+		failed[index] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
+	}
+	return failed
 }
 
 // Close marks the client unhealthy and closes every Worker connection.

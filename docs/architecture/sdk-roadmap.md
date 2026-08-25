@@ -82,6 +82,12 @@ allocations (−6.4%) and from about 26.25 KiB to 25.55 KiB (−2.7%), while thr
 within noise. Lazily preallocating parallel request/index vectors then removed the second request
 copy: 73 to 61 allocations (−16.4%) and about 25.55 KiB to 16.40 KiB (−35.8%), again with flat
 throughput. The benchmark is opt-in and requires a live daemon via `GLYPHASTORE_BENCH_PORT`.
+Moving the two local batch closures into private helpers reduced the four-Worker case from 61 to 55
+allocations but raised repeat median latency from about 306–308 µs to about 315 µs; that candidate
+was reverted. A dedicated one-Worker fast path was retained: it removes grouping/fan-out and reduced
+the 8-pair live benchmark from 16 to 10 allocations (−37.5%) and 4,112 to 1,664 B/op (−59.5%). Host
+throughput samples were too noisy to claim a speedup; the acceptance is limited to removed work and
+stable allocation evidence, with positional admission-failure semantics covered by a unit test.
 
 Configurable connections per Worker remains measurement-gated for every SDK. It may improve
 same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.

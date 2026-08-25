@@ -8,6 +8,8 @@
   negotiated from the server, including keyed SipHash configurations.
 - Replace per-call batch maps, copied staging requests and mutexed result collection with lazily
   preallocated Worker-indexed request/index vectors and disjoint positional result writes.
+- Bypass grouping and fan-out for one-Worker batches while preserving positional pre-admission
+  failures and the configured per-Worker request limit.
 
 ## 0.1.0
 
