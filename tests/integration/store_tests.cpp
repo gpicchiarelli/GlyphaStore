@@ -1082,7 +1082,7 @@ GLYPHA_TEST("durable_group preserves explicitly ordered same-key put and erase")
         const bool put_admitted = paired->stats()[0].sync_admitted == 1;
 
         glyphastore::Status erased = glyphastore::fail(glyphastore::ErrorCode::not_found, "not tried");
-        while (!put_completed.load()) {
+        while (!put_completed.load(std::memory_order_acquire)) {
             erased = store.erase("same-key");
             if (erased.has_value() || erased.error().code != glyphastore::ErrorCode::not_found) {
                 break;
@@ -1090,6 +1090,12 @@ GLYPHA_TEST("durable_group preserves explicitly ordered same-key put and erase")
             std::this_thread::yield();
         }
         putter.join();
+        if (!erased && erased.error().code == glyphastore::ErrorCode::not_found) {
+            // The PUT may complete after the loop condition is sampled but before
+            // the first ERASE attempt. Completion publishes the key; retry once
+            // after the acquire instead of asserting on the "not tried" sentinel.
+            erased = store.erase("same-key");
+        }
         GLYPHA_REQUIRE(put_admitted);
         GLYPHA_REQUIRE(!put_failed.load());
         GLYPHA_REQUIRE(erased.has_value());
