@@ -79,7 +79,9 @@ to keep this decision reproducible, and its workload uses the routing identity n
 Worker-indexed batch groups and disjoint positional result writes were retained: end-to-end
 `benchmem` at four Workers and eight PUT/GET pairs per Worker reduced one batch call from 78 to 73
 allocations (−6.4%) and from about 26.25 KiB to 25.55 KiB (−2.7%), while throughput remained flat
-within noise. The benchmark is opt-in and requires a live daemon via `GLYPHASTORE_BENCH_PORT`.
+within noise. Lazily preallocating parallel request/index vectors then removed the second request
+copy: 73 to 61 allocations (−16.4%) and about 25.55 KiB to 16.40 KiB (−35.8%), again with flat
+throughput. The benchmark is opt-in and requires a live daemon via `GLYPHASTORE_BENCH_PORT`.
 
 Configurable connections per Worker remains measurement-gated for every SDK. It may improve
 same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.

@@ -103,8 +103,8 @@ default FNV routing.
 - One write deadline per send and one read deadline per exchange (or per pipeline receive phase)
 - `DecodeResponseView` + `OwnBytes` avoid allocating empty values; GET payloads are copied once
 - One TCP connection and `sync.Mutex` per Worker; `ExecuteBatch` fans out one goroutine per Worker
-- `ExecuteBatch` uses Worker-indexed bounded groups and writes disjoint caller-order result slots,
-  avoiding a result-collection mutex and per-group index vectors
+- `ExecuteBatch` uses lazily preallocated, Worker-indexed request/index vectors and writes disjoint
+  caller-order result slots, avoiding request recopying and a result-collection mutex
 - Atomic request IDs and fail-closed health (no nested lock under connection mutex)
 - Pipeline ownership validation hashes every key once; the first key is not routed twice
 - Prefer pipeline depth around **8–32** pairs for peak Go throughput; depth 128 often regresses

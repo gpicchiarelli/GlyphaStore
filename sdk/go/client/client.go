@@ -515,12 +515,20 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		return nil, err
 	}
 
-	type item struct {
-		index   int
-		request PipelineRequest
+	type workerGroup struct {
+		requests []PipelineRequest
+		indices  []int
 	}
-	groups := make([][]item, c.workerCount)
+	groups := make([]workerGroup, c.workerCount)
 	activeGroups := 0
+	workerCount := int(c.workerCount)
+	capacityHint := len(requests) / workerCount
+	if len(requests)%workerCount != 0 {
+		capacityHint++
+	}
+	if capacityHint > c.cfg.MaximumPipelineRequests {
+		capacityHint = c.cfg.MaximumPipelineRequests
+	}
 	for index, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
 			return nil, invalidArgument("batch request contains an invalid opcode")
@@ -533,14 +541,17 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		if err != nil {
 			return nil, err
 		}
-		bucket := groups[worker]
-		if len(bucket) >= c.cfg.MaximumPipelineRequests {
+		group := &groups[worker]
+		if len(group.requests) >= c.cfg.MaximumPipelineRequests {
 			return nil, invalidArgument("batch exceeds the configured per-Worker request limit")
 		}
-		if len(bucket) == 0 {
+		if len(group.requests) == 0 {
 			activeGroups++
+			group.requests = make([]PipelineRequest, 0, capacityHint)
+			group.indices = make([]int, 0, capacityHint)
 		}
-		groups[worker] = append(bucket, item{index: index, request: request})
+		group.requests = append(group.requests, request)
+		group.indices = append(group.indices, index)
 	}
 
 	responses := make([]PipelineResponse, len(requests))
@@ -548,29 +559,25 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		responses[i] = PipelineResponse{Outcome: PipelineFailed}
 	}
 
-	runGroup := func(items []item) []PipelineResponse {
-		reqs := make([]PipelineRequest, len(items))
-		for i, it := range items {
-			reqs[i] = it.request
-		}
-		resps, err := c.executePipelineDeadline(reqs, deadline)
+	runGroup := func(group *workerGroup) []PipelineResponse {
+		resps, err := c.executePipelineDeadline(group.requests, deadline)
 		if err != nil {
 			// Match C++/Erlang: convert group-level pre-admission errors into
 			// per-index failed slots with rejected polarity (bytes_sent=0).
-			failed := make([]PipelineResponse, len(items))
-			for i, it := range items {
+			failed := make([]PipelineResponse, len(group.requests))
+			for i, request := range group.requests {
 				enriched := err
 				if ge, ok := err.(*Error); ok {
 					op := "get"
-					switch it.request.Opcode {
+					switch request.Opcode {
 					case PipelinePut:
 						op = "put"
 					case PipelineErase:
 						op = "erase"
 					}
-					worker, _ := c.WorkerFor(it.request.Key)
+					worker, _ := c.WorkerFor(request.Key)
 					annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
-					if it.request.Opcode == PipelinePut || it.request.Opcode == PipelineErase {
+					if request.Opcode == PipelinePut || request.Opcode == PipelineErase {
 						annotated = annotated.withMutation(MutationRejected)
 					}
 					enriched = annotated
@@ -582,17 +589,18 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		return resps
 	}
 
-	applyGroup := func(items []item) {
-		groupResponses := runGroup(items)
-		for i, it := range items {
-			responses[it.index] = groupResponses[i]
+	applyGroup := func(group *workerGroup) {
+		groupResponses := runGroup(group)
+		for i, index := range group.indices {
+			responses[index] = groupResponses[i]
 		}
 	}
 
 	if activeGroups == 1 {
-		for _, items := range groups {
-			if len(items) != 0 {
-				applyGroup(items)
+		for index := range groups {
+			group := &groups[index]
+			if len(group.requests) != 0 {
+				applyGroup(group)
 				break
 			}
 		}
@@ -600,16 +608,16 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	}
 
 	var wg sync.WaitGroup
-	for _, items := range groups {
-		if len(items) == 0 {
+	for index := range groups {
+		group := &groups[index]
+		if len(group.requests) == 0 {
 			continue
 		}
-		items := items
 		wg.Add(1)
-		go func() {
+		go func(group *workerGroup) {
 			defer wg.Done()
-			applyGroup(items)
-		}()
+			applyGroup(group)
+		}(group)
 	}
 	wg.Wait()
 	return responses, nil

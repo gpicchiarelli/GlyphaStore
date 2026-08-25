@@ -6,8 +6,8 @@
   ownership validation; subsequent keys retain the same single-Worker check.
 - Add a mixed-owner `ExecuteBatch` benchmark mode and generate keys with the routing identity
   negotiated from the server, including keyed SipHash configurations.
-- Replace per-call batch maps, index vectors and mutexed result collection with Worker-indexed
-  groups and disjoint positional result writes.
+- Replace per-call batch maps, copied staging requests and mutexed result collection with lazily
+  preallocated Worker-indexed request/index vectors and disjoint positional result writes.
 
 ## 0.1.0
 
