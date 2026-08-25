@@ -821,8 +821,9 @@ fail_pending_crash(Pending, _Reason, State) ->
             ),
             %% Match timeout / send-failure: BACKUP after launch is not same-destination
             %% idempotent — crash mid-receive must not advertise same_request.
+            BackupOpcode = glyphastore_protocol:opcode_backup(),
             Ann = case maps:get(opcode, Pending, undefined) of
-                Opcode when Opcode =:= glyphastore_protocol:opcode_backup() ->
+                BackupOpcode ->
                     FrameBytes = maps:get(frame_bytes, Pending, 1),
                     enrich_mutation(glyphastore_error:enrich(Ann0, #{bytes_sent => FrameBytes}), indeterminate);
                 _ ->
@@ -856,8 +857,9 @@ fail_pending_timeout(Pending, State) ->
     case maps:get(type, Pending) of
         read ->
             Ann0 = annotate(Err, maps:get(op_name, Pending), maps:get(request_id, Pending, undefined), maps:get(worker, Pending), State),
+            BackupOpcode = glyphastore_protocol:opcode_backup(),
             Ann = case maps:get(opcode, Pending, undefined) of
-                Opcode when Opcode =:= glyphastore_protocol:opcode_backup() ->
+                BackupOpcode ->
                     FrameBytes = maps:get(frame_bytes, Pending, 1),
                     enrich_mutation(glyphastore_error:enrich(Ann0, #{bytes_sent => FrameBytes}), indeterminate);
                 _ ->
