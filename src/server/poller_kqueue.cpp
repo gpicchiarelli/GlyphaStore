@@ -28,7 +28,12 @@ namespace {
 
 void set_change(struct kevent& change, const int descriptor, const int16_t filter, const bool enabled,
                 const std::uint64_t token) noexcept {
-    const auto flags = static_cast<std::uint16_t>(EV_ADD | EV_CLEAR | (enabled ? EV_ENABLE : EV_DISABLE));
+    // Reads drain to EAGAIN under EV_CLEAR. Writes are dispatched once: after the
+    // Reactor consumes that notification, an EAGAIN path explicitly re-enables
+    // the filter. This prevents a permanently writable socket from spinning while
+    // keeping slow-output progress independent of platform-specific edge details.
+    const auto delivery = filter == EVFILT_WRITE ? EV_DISPATCH : EV_CLEAR;
+    const auto flags = static_cast<std::uint16_t>(EV_ADD | delivery | (enabled ? EV_ENABLE : EV_DISABLE));
     EV_SET(&change, static_cast<std::uintptr_t>(descriptor), filter, flags, 0, 0, token_pointer(token));
 }
 

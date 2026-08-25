@@ -41,7 +41,8 @@ as the public API contract.
 The server selects its readiness backend at compile time:
 
 - Linux: edge-triggered `epoll`;
-- macOS, FreeBSD, and OpenBSD: `kqueue` with `EV_CLEAR`.
+- macOS, FreeBSD, and OpenBSD: `kqueue` with `EV_CLEAR` reads and one-shot
+  `EV_DISPATCH` writes, re-enabled only when a drain reaches `EAGAIN`.
 
 All accepted sockets are non-blocking and close-on-exec. Read and write handlers drain the socket
 until `EAGAIN`. Each shard pair’s Reader is the sole owner of its connection sockets and
