@@ -27,9 +27,11 @@ Related: [sdk-roadmap](sdk-roadmap.md), per-SDK `PACKAGING.md` under `sdk/*/`, r
 
 CI job `sdk-clients` runs version lock, language tests, and package scripts for
 Python/Perl/Go/Ruby/Erlang.
-The Perl package script additionally installs its normalized tarball into an isolated prefix and
-runs the complete Perl suite from a separate test tree, proving that the installed modules—not the
-source checkout—satisfy conformance.
+The Python package script installs its wheel and normalized sdist into separate virtual environments;
+the Perl package script installs its normalized tarball into an isolated prefix. Both run their
+complete suites from separate test trees, proving that the installed modules—not the source
+checkout—satisfy conformance. Tar normalization suppresses macOS AppleDouble/xattr members so a
+nominally reproducible sdist retains its single-root installable layout.
 The `install-consumer` job covers CMake install + external consumer smokes (requires OpenSSL when
 the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the package config).
 

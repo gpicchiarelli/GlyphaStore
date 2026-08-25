@@ -10,6 +10,10 @@ fi
 
 archive="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
 epoch="${SOURCE_DATE_EPOCH:-0}"
+# macOS archive tools otherwise preserve extended attributes as AppleDouble `._*` members. Those
+# members break the single-root layout expected by Python sdist installers and harm reproducibility.
+export COPYFILE_DISABLE=1
+export COPY_EXTENDED_ATTRIBUTES_DISABLE=1
 
 stamp_files() {
   local root="$1"
@@ -28,6 +32,9 @@ trap cleanup EXIT
 
 mkdir -p "$work/src"
 tar -xzf "$archive" -C "$work/src"
+# GNU tar exposes AppleDouble members as ordinary files; BSD tar may translate them back to xattrs.
+# The environment above prevents the latter, while this removes the former.
+find "$work/src" -type f -name '._*' -delete
 stamp_files "$work/src"
 
 top=""

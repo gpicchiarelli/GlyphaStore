@@ -48,8 +48,8 @@ complete before that matrix passes.
 
 Source-tree interoperability is implemented. Still required:
 
-- install every built package artifact and rerun conformance from the installed copy (Perl is now
-  covered by its package script; the remaining SDK artifacts are still open);
+- install every built package artifact and rerun conformance from the installed copy (Python wheel
+  and sdist plus the Perl tarball are now covered; the remaining SDK artifacts are still open);
 - test supported old-client/new-server combinations under the 0.x compatibility policy;
 - publish checksums, provenance and SBOMs with tagged artifacts;
 - record registry publication state rather than saying “install from registry” unconditionally.

@@ -45,15 +45,28 @@ for sdist in "$sdk/dist"/*.tar.gz; do
 done
 shopt -u nullglob
 
-"$python" -m venv "$work/venv"
-# shellcheck disable=SC1091
-source "$work/venv/bin/activate"
-python -m pip install --disable-pip-version-check -q --upgrade pip
-python -m pip install --disable-pip-version-check -q "$sdk/dist"/glyphastore-*.whl
-python - <<'PY'
+shopt -s nullglob
+wheels=("$sdk/dist"/glyphastore-*.whl)
+sdists=("$sdk/dist"/glyphastore-*.tar.gz)
+shopt -u nullglob
+if [[ "${#wheels[@]}" -ne 1 || "${#sdists[@]}" -ne 1 ]]; then
+  echo "expected exactly one Python wheel and one sdist" >&2
+  exit 1
+fi
+
+cp -R "$sdk/tests" "$work/tests"
+
+verify_installed_artifact() {
+  local label="$1" artifact="$2" venv="$3"
+  "$python" -m venv "$venv"
+  "$venv/bin/python" -m pip install --disable-pip-version-check -q --upgrade pip
+  "$venv/bin/python" -m pip install --disable-pip-version-check -q --no-deps "$artifact"
+  "$venv/bin/python" - "$label" <<'PY'
 import glyphastore
+import sys
 from importlib.metadata import metadata, version
 
+label = sys.argv[1]
 assert glyphastore.__version__ == version("glyphastore")
 meta = metadata("glyphastore")
 license_files = {p for p in (meta.get_all("License-File") or [])}
@@ -61,11 +74,16 @@ license_files = {p for p in (meta.get_all("License-File") or [])}
 names = {p.split("/")[-1] for p in license_files} | license_files
 for required in ("LICENSE", "NOTICE"):
     if required not in names and not any(required in p for p in license_files):
-        raise SystemExit(f"missing license file in wheel metadata: {required}")
-print(f"installed glyphastore {glyphastore.__version__} (LICENSE/NOTICE present)")
+        raise SystemExit(f"missing license file in installed {label} metadata: {required}")
+print(f"installed {label} glyphastore {glyphastore.__version__} (LICENSE/NOTICE present)")
 PY
+  (
+    cd "$work"
+    PYTHONPATH= "$venv/bin/python" -m unittest discover -s "$work/tests" -v
+  )
+  echo "Installed Python $label conformance OK ($artifact)"
+}
 
-cp -R "$sdk/tests" "$work/tests"
-cd "$work"
-PYTHONPATH= python -m unittest discover -s "$work/tests" -v
+verify_installed_artifact wheel "${wheels[0]}" "$work/wheel-venv"
+verify_installed_artifact sdist "${sdists[0]}" "$work/sdist-venv"
 echo "Python packaging verification OK ($sdk/dist)"

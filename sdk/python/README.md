@@ -67,7 +67,7 @@ pip install ./sdk/python
 ./scripts/test-python-client.sh
 ```
 
-Packaging verification (sdist, wheel, `twine check`, install-from-wheel tests):
+Packaging verification (sdist, wheel, `twine check`, isolated install tests for both artifacts):
 
 ```bash
 ./scripts/package-python-client.sh
