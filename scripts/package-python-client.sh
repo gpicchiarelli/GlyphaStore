@@ -79,7 +79,8 @@ print(f"installed {label} glyphastore {glyphastore.__version__} (LICENSE/NOTICE 
 PY
   (
     cd "$work"
-    PYTHONPATH= "$venv/bin/python" -m unittest discover -s "$work/tests" -v
+    PYTHONPATH= PYTHONWARNINGS="error::ResourceWarning${PYTHONWARNINGS:+,$PYTHONWARNINGS}" \
+      "$venv/bin/python" -m unittest discover -s "$work/tests" -v
   )
   echo "Installed Python $label conformance OK ($artifact)"
 }

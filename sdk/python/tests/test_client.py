@@ -746,10 +746,12 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
 
             async def reset_raises_cancel(self: ac_mod._Connection) -> None:
-                self.writer = None
+                writer, self.writer = self.writer, None
                 self.reader = None
                 self.input.clear()
                 self.input_offset = 0
+                if writer is not None:
+                    writer.close()
                 raise asyncio.CancelledError()
 
             with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):
@@ -777,10 +779,12 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
 
             async def reset_raises_cancel(self: ac_mod._Connection) -> None:
-                self.writer = None
+                writer, self.writer = self.writer, None
                 self.reader = None
                 self.input.clear()
                 self.input_offset = 0
+                if writer is not None:
+                    writer.close()
                 raise asyncio.CancelledError()
 
             with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):

@@ -25,7 +25,7 @@ The script:
 2. Builds an sdist and a wheel with `python -m build`
 3. Runs `twine check` on the artifacts
 4. Installs the wheel and normalized sdist into separate clean temporary environments
-5. Runs the complete unittest suite against each installed artifact
+5. Runs the complete unittest suite against each installed artifact with `ResourceWarning` fatal
 
 ## Manual build
 
