@@ -256,8 +256,8 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     controller.bind_compact([compact_calls, observed_copy_limit](const std::optional<std::size_t>,
                                                                  const std::uint64_t max_copy_bytes)
                                 -> glyphastore::Result<glyphastore::CompactionResult> {
-        compact_calls->fetch_add(1, std::memory_order_relaxed);
         observed_copy_limit->store(max_copy_bytes, std::memory_order_relaxed);
+        compact_calls->fetch_add(1, std::memory_order_release);
         return glyphastore::CompactionResult{};
     });
     controller.start();
@@ -276,10 +276,10 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     controller.request_evaluate();
     const auto equal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (std::chrono::steady_clock::now() < equal_deadline &&
-           compact_calls->load(std::memory_order_relaxed) < 1) {
+           compact_calls->load(std::memory_order_acquire) < 1) {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
-    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 1);
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_acquire) == 1);
     GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 1'000);
 
     candidate_live_bytes->store(1'001, std::memory_order_relaxed);
@@ -287,10 +287,10 @@ GLYPHA_TEST("normal copy budget preflights one candidate and pressure bypasses i
     controller.request_evaluate();
     const auto pressure_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (std::chrono::steady_clock::now() < pressure_deadline &&
-           compact_calls->load(std::memory_order_relaxed) < 2) {
+           compact_calls->load(std::memory_order_acquire) < 2) {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
-    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 2);
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_acquire) == 2);
     GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 0);
     GLYPHA_REQUIRE(controller.snapshot().pressure == glyphastore::MaintenancePressureLevel::pressure);
     controller.stop();
@@ -365,8 +365,8 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
     controller.bind_compact([compact_calls, observed_copy_limit](const std::optional<std::size_t>,
                                                                  const std::uint64_t max_copy_bytes)
                                 -> glyphastore::Result<glyphastore::CompactionResult> {
-        compact_calls->fetch_add(1, std::memory_order_relaxed);
         observed_copy_limit->store(max_copy_bytes, std::memory_order_relaxed);
+        compact_calls->fetch_add(1, std::memory_order_release);
         return glyphastore::CompactionResult{
             .compacted = true,
             .records_copied = 1,
@@ -377,10 +377,10 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
 
     const auto first_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (std::chrono::steady_clock::now() < first_deadline &&
-           compact_calls->load(std::memory_order_relaxed) < 1) {
+           compact_calls->load(std::memory_order_acquire) < 1) {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
-    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 1);
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_acquire) == 1);
     GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 500);
     GLYPHA_REQUIRE(controller.snapshot().rate_window_bytes_copied == 400);
 
@@ -399,10 +399,10 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
     controller.request_evaluate();
     const auto pressure_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (std::chrono::steady_clock::now() < pressure_deadline &&
-           compact_calls->load(std::memory_order_relaxed) < 2) {
+           compact_calls->load(std::memory_order_acquire) < 2) {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
-    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 2);
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_acquire) == 2);
     GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 0);
     GLYPHA_REQUIRE(controller.snapshot().pressure == glyphastore::MaintenancePressureLevel::pressure);
     controller.stop();
