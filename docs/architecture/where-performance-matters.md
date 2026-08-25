@@ -110,11 +110,13 @@ after; the smaller gain confirms that pure-Perl SipHash rounds, rather than rout
 dominate that profile. The benchmark now connects before generating keys and therefore exercises
 the routing identity actually advertised by the server.
 
-Four nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
+Five nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
 an outer readiness event, join-at-end frame assembly, an intermediate flat response decoder, and
-parallel request-id/frame-offset arrays in place of per-request metadata pairs. The first three
-regressed by roughly 2–4%; flattened metadata varied from a small gain to a 4.3% regression when
-run order was reversed. Perl's existing scalar copy-on-write, incremental concatenation, and small
+parallel request-id/frame-offset arrays in place of per-request metadata pairs. Replacing FNV's
+`unpack C*` byte list with an indexed `vec` loop was also rejected after an isolated Perl 5.44 run
+measured about 452 k versus 479 k hashes/s (roughly -6%). The first three candidates regressed by
+roughly 2–4%; flattened metadata varied from a small gain to a 4.3% regression when run order was
+reversed. Perl's existing scalar copy-on-write, incremental concatenation, byte unpacking, and small
 array representation were cheaper or more stable than the alternatives in this profile.
 
 ## Lab hot-path evidence

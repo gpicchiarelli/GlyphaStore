@@ -13,4 +13,6 @@ Revision history for Perl distribution GlyphaStore
           connected clients reuse the routing identity validated during INIT.
         - Brutal Perl::Critic (severity 1) enforced via .perlcriticrc,
           scripts/test-perl-client.sh, and CI.
+        - Packaging installs the normalized tarball into an isolated prefix and
+          reruns conformance without access to the distribution source lib/.
         - Request deadlines use CLOCK_MONOTONIC; thread/fork contract documented.

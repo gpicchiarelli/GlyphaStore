@@ -30,6 +30,8 @@ The script:
 3. Runs `make disttest` (configure, build, and test from the tarball)
 4. Builds `GlyphaStore-VERSION.tar.gz`
 5. Checks that `META.json` declares the expected provides and BSD license
+6. Normalizes and extracts the final tarball, installs it under an isolated prefix, and reruns all
+   tests from a separate directory that cannot resolve the distribution's source `lib/`
 
 ## Manual build
 

@@ -67,6 +67,8 @@ cd sdk/perl && perl Makefile.PL && make && make test && make install
 `./scripts/test-perl-client.sh` runs **Perl::Critic at severity 1** (brutal) against
 `lib/` using `.perlcriticrc`, then the unit tests. Install the develop tools with
 `cpanm --installdeps --with-develop .` from `sdk/perl/`, or `cpanm Perl::Critic Perl::Tidy`.
+The packaging script also installs the normalized tarball under an isolated prefix and reruns the
+suite away from its source tree, preventing local `lib/` files from masking packaging defects.
 
 `GlyphaStore::Protocol` exposes the full bidirectional codec and FNV-1a Worker routing. See
 [PACKAGING.md](PACKAGING.md) for PAUSE/MetaCPAN upload steps.
