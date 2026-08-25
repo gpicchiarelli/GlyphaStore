@@ -73,7 +73,10 @@ void emit_human_listen(const std::string_view program, const glyphastore::server
             std::cout << " auth_unix=peercred";
         }
     }
-    std::cout << '\n';
+    // The listen line is also the machine-readable readiness handoff used by
+    // launchers when stdout is redirected to a file. Flush it explicitly: BSD
+    // stdio is fully buffered in that mode, so a bare newline is not sufficient.
+    std::cout << '\n' << std::flush;
 }
 
 void observe_lifecycle(const glyphastore::server::Server& server, glyphastore::server::DaemonLog& log,
