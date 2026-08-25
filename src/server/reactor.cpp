@@ -1081,6 +1081,11 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
             }
         }
         if (connection(token) != nullptr && has_flag(event.flags, IoFlags::writable)) {
+            // The edge that justified write_armed has now been consumed. Clear the
+            // logical arm before draining so an EAGAIN path explicitly rearms the
+            // native poller instead of assuming that a fresh kqueue notification is
+            // still pending.
+            connection(token)->write_armed = false;
             if (auto written = write_ready(token); !written) {
                 close_connection(token);
                 continue;

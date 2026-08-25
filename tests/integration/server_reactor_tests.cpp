@@ -148,7 +148,7 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
     for (const auto& key : keys) {
         auto value = generation->get({.key = key, .hash = glyphastore::hash_key(key)}, 0);
         GLYPHA_REQUIRE(value.has_value());
-        GLYPHA_REQUIRE(text(value->bytes) == "value");
+        GLYPHA_REQUIRE(text(value->view()) == "value");
     }
 
     // Four versions of one existing key must start a second merge even though
@@ -420,8 +420,8 @@ GLYPHA_TEST("paired Writer preserves same-shard FIFO while compaction publicatio
     GLYPHA_REQUIRE(stats.size() == 1);
     GLYPHA_REQUIRE(compacted.has_value());
     GLYPHA_REQUIRE(compacted->has_value());
-    GLYPHA_REQUIRE(text(store.get("retry-after-lease")->bytes) == "first");
-    GLYPHA_REQUIRE(text(store.get("progress-during-lease")->bytes) == "second");
+    GLYPHA_REQUIRE(text(store.get("retry-after-lease")->view()) == "first");
+    GLYPHA_REQUIRE(text(store.get("progress-during-lease")->view()) == "second");
 
     GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
     GLYPHA_REQUIRE(store.close().has_value());
@@ -522,7 +522,7 @@ GLYPHA_TEST("paired Reader refreshes compacted durable pins and retires the old 
     auto borrowed_value =
         glyphastore::detail::StoreAccess::complete_get_owned(store, 0, std::move(*pending_read->cold));
     GLYPHA_REQUIRE(borrowed_value.has_value());
-    GLYPHA_REQUIRE(text(borrowed_value->bytes) == "current");
+    GLYPHA_REQUIRE(text(borrowed_value->view()) == "current");
 
     const auto* released_generation = (*executor)->adopt_read_generation(0);
     GLYPHA_REQUIRE(released_generation == refreshed_generation);
@@ -1075,6 +1075,22 @@ GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded
     });
     GLYPHA_REQUIRE(second.has_value());
     GLYPHA_REQUIRE(send_all(second_socket, *second));
+
+    // send_all only proves kernel admission. Wait until the second mutation has
+    // consumed the remaining bounded lane slot before asserting that the next
+    // connection is rejected; slow OpenBSD runners can otherwise schedule the
+    // responsive socket first.
+    bool lane_full = false;
+    const auto admission_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < admission_deadline) {
+        const auto stats = server.pair_writer_stats();
+        if (stats.size() == 1 && stats[0].payload_slots_in_use == 2) {
+            lane_full = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    GLYPHA_REQUIRE(lane_full);
 
     // The per-Worker admission budget is now exhausted. Rejection and the
     // following non-storage request are both handled while fsync is suspended.
