@@ -85,6 +85,8 @@ object-heavy synchronous calls:
 - `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
 - `execute_batch` hashes each key exactly once while grouping, reuses that validated ownership while
   encoding, overlaps the Worker pipelines, then restores caller order.
+- Worker routing reuses the immutable identity validated during `INIT`; arbitrary routing hashes
+  passed to the public protocol helpers are still normalized and checked on every call.
 
 Those choices reduce syscalls and expose server parallelism. They do **not** make the current Perl
 path allocation-free: public requests and results are hash references, encoded frames are assembled
@@ -111,6 +113,7 @@ adapter may improve application concurrency without improving single-pipeline CP
 ```bash
 # Sequential and concurrent matrix from the repository root:
 ./scripts/benchmark_perl_client.sh
+# Set WORKER_HASH_SEED to run the same matrix with the server's keyed SipHash routing.
 
 # One configuration (default overlaps Workers when workers > 1):
 perl sdk/perl/benchmarks/client_benchmark.pl --port 7379 --workers 4 \

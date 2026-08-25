@@ -60,9 +60,11 @@ commit, routing mode, Worker/client counts, pipeline depth, value size, operatio
 TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
 where the harness exposes latency; do not infer a language limit from one pipeline depth.
 
-For Perl specifically, the next work is profile-led. Measure scalar/hash allocation, frame copies,
-buffer compaction, parser cost, `IO::Select`, syscalls and cross-Worker overlap before choosing an
-implementation technique. Reduce pure-Perl allocation/copy costs first; evaluate a narrow XS
+For Perl specifically, the next work is profile-led. Client routing now reuses the normalized INIT
+identity, and the benchmark can generate both default-FNV and keyed-SipHash workloads. Continue to
+measure scalar/hash allocation, frame copies, buffer compaction, parser cost, `IO::Select`, syscalls
+and cross-Worker overlap before choosing an implementation technique. Reduce pure-Perl
+allocation/copy costs first; evaluate a narrow XS
 codec/routing kernel only if profiles show that boundary dominates. XS is not assumed to be the only
 large lever. See the [Perl README](../../sdk/perl/README.md).
 

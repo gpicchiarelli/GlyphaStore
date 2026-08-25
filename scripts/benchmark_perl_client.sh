@@ -12,6 +12,7 @@ host="127.0.0.1"
 ops="${OPS:-100000}"
 warmup="${WARMUP:-1}"
 repeats="${REPEATS:-7}"
+worker_hash_seed="${WORKER_HASH_SEED:-}"
 
 prefer_bins=(
   "$root/build/macos-native-release"
@@ -45,13 +46,18 @@ export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
   echo "ops=$ops warmup=$warmup repeats=$repeats"
   echo "workload=ordered PUT/GET pipeline read-after-write, value_size=64"
   echo "storage_mode=volatile"
+  echo "worker_hash_seed=${worker_hash_seed:-default-fnv}"
   echo "note=publishes sequential, execute_worker_pipelines, and execute_batch modes"
 } >"$outdir/environment.txt"
 
 start_server() {
   local workers="$1" port_file="$2" log_file="$3"
+  local routing_args=()
+  if [[ -n "$worker_hash_seed" ]]; then
+    routing_args=(--worker-hash-seed "$worker_hash_seed")
+  fi
   "$daemon" --bind "$host" --port 0 --workers "$workers" \
-    --storage-mode volatile --executor-affinity --quiet \
+    --storage-mode volatile --executor-affinity "${routing_args[@]}" --quiet \
     >"$log_file" 2>&1 &
   local pid=$!
   echo "$pid" >"${port_file}.pid"
@@ -247,7 +253,7 @@ the pure-Perl client.
 ./scripts/benchmark_perl_client.sh
 ```
 
-Optional: `OPS`, `WARMUP`, `REPEATS`, `GLYPHASTORED`, `PERL`.
+Optional: `OPS`, `WARMUP`, `REPEATS`, `WORKER_HASH_SEED`, `GLYPHASTORED`, `PERL`.
 """,
     encoding="utf-8",
 )

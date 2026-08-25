@@ -101,6 +101,15 @@ same-server A/B pairs on Perl 5.44, four Workers and pipeline 128 measured about
 `--batch` mode and the Perl matrix records it separately. This is local advisory evidence, not a
 release capacity claim.
 
+The connected-client routing path now also reuses the normalized identity accepted during `INIT`,
+rather than allocating and validating a new routing hash for every key. Public protocol helpers
+retain full validation, and dedicated client tests cover both default FNV and keyed SipHash routing.
+Alternated same-server FNV runs at four Workers and pipeline 128 measured 74.0–74.5 k ops/s before
+and 79.5–79.9 k ops/s after (about +7–8%). A keyed SipHash check measured 9.09 k before and 9.19 k
+after; the smaller gain confirms that pure-Perl SipHash rounds, rather than routing-state setup,
+dominate that profile. The benchmark now connects before generating keys and therefore exercises
+the routing identity actually advertised by the server.
+
 Four nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
 an outer readiness event, join-at-end frame assembly, an intermediate flat response decoder, and
 parallel request-id/frame-offset arrays in place of per-request metadata pairs. The first three

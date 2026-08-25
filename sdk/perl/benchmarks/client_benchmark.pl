@@ -41,6 +41,14 @@ my $use_concurrent = defined($options{concurrent})
     ? ($options{concurrent} ? 1 : 0)
     : ($options{workers} > 1 ? 1 : 0);
 
+my $client = GlyphaStore::Client->connect(
+    host                      => $options{host},
+    port                      => $options{port},
+    maximum_pipeline_requests => $options{pipeline} * 2,
+);
+die "server Worker count does not match --workers\n"
+    if $client->worker_count != $options{workers};
+
 my @requests = map { [] } 1 .. $options{workers};
 my @remaining = map {
     int($options{ops} / $options{workers})
@@ -49,7 +57,7 @@ my @remaining = map {
 my $candidate = 0;
 while (grep { $_ } @remaining) {
     my $key = sprintf('perl-bench-%012d', $candidate);
-    my $owner = GlyphaStore::Protocol::worker_for($key, $options{workers});
+    my $owner = $client->worker_for($key);
     if ($remaining[$owner]) {
         my $value = chr($candidate & 0xFF) x 64;
         push @{$requests[$owner]}, { opcode => 'put', key => $key, value => $value };
@@ -71,14 +79,6 @@ for my $worker_requests (@requests) {
     $max_rounds = @worker_batches if @worker_batches > $max_rounds;
     push @batches, \@worker_batches;
 }
-
-my $client = GlyphaStore::Client->connect(
-    host                      => $options{host},
-    port                      => $options{port},
-    maximum_pipeline_requests => $batch_frames,
-);
-die "server Worker count does not match --workers\n"
-    if $client->worker_count != $options{workers};
 
 sub validate_batch {
     my ($batch, $responses) = @_;

@@ -398,7 +398,14 @@ sub _normalize_routing {
 sub hash_key_routing {
     my ($key, $routing) = @_;
     my $state = _normalize_routing($routing);
-    $key = _require_bytes($key, 'key');
+    return hash_key_routing_prevalidated($key, $state);
+}
+
+# Client bootstrap already validates and freezes this state. This internal fast-path entry point
+# avoids allocating a fresh normalized routing hash for every request; callers must not expose an
+# unvalidated state through it.
+sub hash_key_routing_prevalidated {
+    my ($key, $state) = @_;
     if ($state->{algorithm} == ROUTING_ALG_SIPHASH24_V1) {
         return siphash24($key, $state->{seed}, _xor64($state->{seed}, WORKER_ROUTING_SIP_KEY1_XOR));
     }

@@ -134,7 +134,8 @@ sub healthy       { return $_[0]->{healthy} ? 1 : 0 }
 
 sub worker_for {
     my ($self, $key) = @_;
-    return GlyphaStore::Protocol::worker_for($key, $self->{worker_count}, $self->{routing});
+    return GlyphaStore::Protocol::hash_key_routing_prevalidated($key, $self->{routing})
+        % $self->{worker_count};
 }
 
 sub _next_request_id {

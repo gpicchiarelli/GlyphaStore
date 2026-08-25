@@ -50,6 +50,7 @@ sub send_response {
 sub start_server {
     my (%options) = @_;
     my $worker_count = $options{worker_count} // 1;
+    my $routing = $options{routing};
     my $listener = IO::Socket::INET->new(
         LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp',
         Listen => $worker_count, ReuseAddr => 1)
@@ -86,7 +87,7 @@ sub start_server {
                         send_response($handle,
                             status => STATUS_OK,
                             request_id => $request->{request_id},
-                            value => GlyphaStore::Protocol::encode_init_identity(),
+                            value => GlyphaStore::Protocol::encode_init_identity($routing),
                             owner_worker => 0,
                             worker_count => $worker_count,
                             routing_epoch => 9);
@@ -123,7 +124,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_PUT) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -155,7 +156,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_GET) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -173,7 +174,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_ERASE) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -354,6 +355,21 @@ for my $key (@keys) {
     is($client->get($key), $value, "multi-worker GET $key");
     is(worker_for($key, 2), $owners{$key}, "routing stays stable for $key");
 }
+$client->close;
+waitpid($pid, 0);
+
+my $keyed_routing = {
+    algorithm => GlyphaStore::Protocol::ROUTING_ALG_SIPHASH24_V1(),
+    seed => 1_229_801_703_532_086_340,
+};
+($port, $pid) = start_server(worker_count => 2, routing => $keyed_routing);
+$client = GlyphaStore::Client->connect(port => $port);
+my $keyed_key = 'tenant-a/orders/1';
+is($client->worker_for($keyed_key), worker_for($keyed_key, 2, $keyed_routing),
+    'client Worker routing reuses the validated keyed INIT identity');
+is($client->put($keyed_key, 'keyed-value')->{outcome}, 'committed',
+    'keyed-routing client sends PUT to the selected Worker');
+is($client->get($keyed_key), 'keyed-value', 'keyed-routing client reads from the selected Worker');
 $client->close;
 waitpid($pid, 0);
 
