@@ -195,6 +195,8 @@ auto Server::stats_report() const -> Result<std::string> {
             .output_scatter_bytes = reactor->output_scatter_bytes(),
             .output_scatter_partial_writes = reactor->output_scatter_partial_writes(),
             .output_scatter_completions = reactor->output_scatter_completions(),
+            .input_buffer_compactions = reactor->input_buffer_compactions(),
+            .input_buffer_bytes_moved = reactor->input_buffer_bytes_moved(),
         });
     }
     if (!reactors_.empty()) {

@@ -57,7 +57,8 @@ treat unknown keys as forward-compatible.
 
 `version`, `live`, `ready`, `executors`, `connections_active`, `connections_adopted`,
 `output_scatter_responses`, `output_scatter_bytes`, `output_scatter_partial_writes`,
-`output_scatter_completions`, `tls_enabled`, `tls_mtls`, `tls_crl`, `tls_ocsp_fail_closed`,
+`output_scatter_completions`, `input_buffer_compactions`, `input_buffer_bytes_moved`, `tls_enabled`,
+`tls_mtls`, `tls_crl`, `tls_ocsp_fail_closed`,
 `authz_enabled`, `authz_principals`, `auth_accepts`, `auth_denies`, `authz_denies`, `tls_errors`
 
 Abuse (Phase 5): `abuse_accepts_rejected`, `abuse_idle_closed`, `abuse_request_timeout_closed`,

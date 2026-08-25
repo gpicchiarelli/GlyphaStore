@@ -13,6 +13,7 @@
 #include <arpa/inet.h>
 #include <array>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -23,7 +24,9 @@
 #include <limits>
 #include <mutex>
 #include <netinet/in.h>
+#include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <sys/socket.h>
 #include <thread>
@@ -31,6 +34,31 @@
 #include <vector>
 
 using namespace glyphastore::test::server_reactor_support;
+
+namespace {
+
+[[nodiscard]] auto stats_counter(const std::string_view report, const std::string_view name)
+    -> std::optional<std::uint64_t> {
+    const auto marker = report.find(name);
+    if (marker == std::string_view::npos || marker + name.size() >= report.size() ||
+        report[marker + name.size()] != '=') {
+        return std::nullopt;
+    }
+    const auto newline = report.find('\n', marker);
+    if (newline == std::string_view::npos) {
+        return std::nullopt;
+    }
+    const auto first = report.data() + marker + name.size() + 1U;
+    const auto last = report.data() + newline;
+    std::uint64_t value{};
+    const auto parsed = std::from_chars(first, last, value);
+    if (parsed.ec != std::errc{} || parsed.ptr != last) {
+        return std::nullopt;
+    }
+    return value;
+}
+
+} // namespace
 
 GLYPHA_TEST("durable cold GET pipeline remains contiguous to preserve read overlap") {
     ServerTemporaryDirectory temporary;
@@ -94,6 +122,57 @@ GLYPHA_TEST("durable cold GET pipeline remains contiguous to preserve read overl
     GLYPHA_REQUIRE(report.has_value());
     GLYPHA_REQUIRE(report->find("output_scatter_responses=0\n") != std::string::npos);
     GLYPHA_REQUIRE(report->find("output_scatter_completions=0\n") != std::string::npos);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("deep mutation pipeline keeps input compaction linear") {
+    constexpr std::size_t kRequests = 128;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .maximum_input_bytes = 64U * 1024U});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    std::vector<std::byte> pipeline;
+    pipeline.reserve(16U * 1024U);
+    for (std::size_t index = 0; index < kRequests; ++index) {
+        const auto key = std::string{"sliding-pipeline-"} + std::to_string(index);
+        const auto value = std::string{"value-"} + std::to_string(index);
+        const auto request = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::put,
+            .request_id = 1'000U + index,
+            .key = bytes(key),
+            .value = bytes(value),
+        });
+        GLYPHA_REQUIRE(request.has_value());
+        pipeline.insert(pipeline.end(), request->begin(), request->end());
+    }
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+
+    for (std::size_t index = 0; index < kRequests; ++index) {
+        const auto frame = receive_response(socket);
+        const auto response = glyphastore::server::decode_response(frame);
+        GLYPHA_REQUIRE(response.has_value());
+        GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::ok);
+        GLYPHA_REQUIRE(response->frame.request_id == 1'000U + index);
+    }
+
+    const auto report = server.stats_report();
+    GLYPHA_REQUIRE(report.has_value());
+    const auto compactions = stats_counter(*report, "input_buffer_compactions");
+    const auto bytes_moved = stats_counter(*report, "input_buffer_bytes_moved");
+    GLYPHA_REQUIRE(compactions.has_value());
+    GLYPHA_REQUIRE(bytes_moved.has_value());
+    // Capacity growth can trigger a bounded append-time compaction when TCP splits
+    // the pipeline. It must never return to one suffix memmove per completion.
+    GLYPHA_REQUIRE(*compactions < kRequests / 4U);
+    GLYPHA_REQUIRE(*bytes_moved <= pipeline.size() * 2U);
 
     static_cast<void>(::close(socket));
     server.request_stop();

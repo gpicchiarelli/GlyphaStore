@@ -748,6 +748,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             if (glyphastore::fault::consume_fail(glyphastore::fault::Site::input_buffer)) {
                 throw std::bad_alloc{};
             }
+            prepare_input_append(*current, received_size);
             current->input.insert(current->input.end(), buffer.begin(),
                                   buffer.begin() + static_cast<std::ptrdiff_t>(received_size));
         } catch (const std::bad_alloc&) {
@@ -781,6 +782,24 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
         }
     }
+}
+
+void Reactor::prepare_input_append(Connection& current, const std::size_t additional_bytes) {
+    if (current.input_offset == 0 || additional_bytes == 0) {
+        return;
+    }
+    const auto physical_room = current.input.capacity() - current.input.size();
+    const bool would_reallocate = additional_bytes > physical_room;
+    const bool would_cross_limit = current.input.size() > config_.maximum_input_bytes - additional_bytes;
+    if (!would_reallocate && !would_cross_limit) {
+        return;
+    }
+    const auto remaining = current.input.size() - current.input_offset;
+    current.input.erase(current.input.begin(),
+                        current.input.begin() + static_cast<std::ptrdiff_t>(current.input_offset));
+    current.input_offset = 0;
+    input_buffer_compactions_.fetch_add(1U, std::memory_order_relaxed);
+    input_buffer_bytes_moved_.fetch_add(remaining, std::memory_order_relaxed);
 }
 
 auto Reactor::write_ready(const ConnectionToken token) -> Status {
@@ -817,6 +836,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                         if (received->bytes <= config_.maximum_input_bytes &&
                             buffered <= config_.maximum_input_bytes - received->bytes) {
                             try {
+                                prepare_input_append(*current, received->bytes);
                                 current->input.insert(current->input.end(), tls_scratch.begin(),
                                                       tls_scratch.begin() +
                                                           static_cast<std::ptrdiff_t>(received->bytes));

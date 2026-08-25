@@ -286,10 +286,6 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         if (!current->request_in_flight) {
             current->partial_request_since = {};
         }
-    } else if (current->input_offset > 0) {
-        current->input.erase(current->input.begin(),
-                             current->input.begin() + static_cast<std::ptrdiff_t>(current->input_offset));
-        current->input_offset = 0;
     }
     return {};
 }

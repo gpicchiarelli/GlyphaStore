@@ -375,9 +375,11 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   mutations after transport loss) are specified in [wire protocol v2 §8.1 and §10.1](spec/wire-protocol-v2.md)
   and [client semantics v1 §5](spec/client-semantics-v1.md). Protocol versioning remains independent
   from persistence v1.
-- Avoid repeated vector erasure/memmove on input/output queues; use ring/slab buffers with bounded
-  high/low watermarks and prove behavior under partial frames, slow readers, pipelining, and
-  malicious maximum-size frames.
+- Input buffering uses a sliding consumed-prefix cursor and compacts only before an append that
+  would otherwise reallocate or cross the configured byte watermark. Deep asynchronous
+  pipelines therefore avoid one suffix memmove per completion; `input_buffer_compactions` and
+  `input_buffer_bytes_moved` expose the residual work. Output still uses a contiguous cursor plus
+  one bounded scatter lease; a bounded multi-extent output queue remains measurement-gated.
 
 ### Security and storage namespace
 

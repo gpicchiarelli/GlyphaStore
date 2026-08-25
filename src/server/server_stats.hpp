@@ -22,6 +22,8 @@ struct ExecutorStats final {
     std::uint64_t output_scatter_bytes{};
     std::uint64_t output_scatter_partial_writes{};
     std::uint64_t output_scatter_completions{};
+    std::uint64_t input_buffer_compactions{};
+    std::uint64_t input_buffer_bytes_moved{};
 };
 
 // Consistent point-in-time view used by ServerStatsReporter. Collection of
