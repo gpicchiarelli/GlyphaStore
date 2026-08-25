@@ -813,8 +813,7 @@ GLYPHA_TEST("C++ client does not blind-retry BACKUP after request bytes were sen
     // Online BACKUP requires a pristine destination. Retrying after a lost OK would
     // hit "destination not empty" and falsely report failure of a completed backup.
     BackupDropResponseServer server;
-    auto connected = glyphastore::client::Client::connect(
-        {.port = server.port(), .request_timeout_ms = 200});
+    auto connected = glyphastore::client::Client::connect({.port = server.port(), .request_timeout_ms = 200});
     GLYPHA_REQUIRE(connected.has_value());
     auto client = std::move(*connected);
     auto backed = client.backup("/tmp/glyphastore-backup-drop-litmus");

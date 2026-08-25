@@ -95,7 +95,8 @@ struct Options {
             std::cout
                 << "usage: glyphastore_benchmarks [--suite] [--random] [--pin-cpu] [--latency]\n"
                 << "       [--filter all|index-all|index|index-insert|index-replace|index-find-hit|\n"
-                << "                index-find-miss|index-churn-miss|index-erase|store-put|store-put-batch|store-get|\n"
+                << "                "
+                   "index-find-miss|index-churn-miss|index-erase|store-put|store-put-batch|store-get|\n"
                 << "                store-put-get|\n"
                 << "                store-read-after-write|store-parallel-put|store-parallel-get|\n"
                 << "                store-parallel-read-after-write|store-parallel-all|\n"

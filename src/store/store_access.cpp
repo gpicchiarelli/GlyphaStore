@@ -275,8 +275,7 @@ auto detail::StoreAccess::put_volatile_published(Store& store, const std::size_t
 }
 
 auto detail::StoreAccess::erase_volatile_published(Store& store, const std::size_t worker_index,
-                                                   const HashedKey& key,
-                                                   const PublishedAdmission admission)
+                                                   const HashedKey& key, const PublishedAdmission admission)
     -> Result<VolatileMutationPublication> {
     if (worker_index >= store.worker_count() ||
         route_worker(key.hash, store.worker_count()) != worker_index) {
@@ -375,9 +374,7 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
     std::vector<DurableWriterBatchResult> results;
     const auto reject_remaining = [&](const Error& error, const DurableMutationOutcome outcome) {
         while (results.size() < mutations.size()) {
-            results.push_back({.mutation = {.outcome = outcome,
-                                            .sequence = std::nullopt,
-                                            .error = error}});
+            results.push_back({.mutation = {.outcome = outcome, .sequence = std::nullopt, .error = error}});
         }
     };
     const auto reject_remaining_not_committed = [&](const Error& error) {
@@ -443,8 +440,7 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
                     Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
                 break;
             }
-            const auto key_bytes =
-                std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
+            const auto key_bytes = std::as_bytes(std::span{mutation.key.key.data(), mutation.key.key.size()});
             DurableWriterBatchResult result;
             for (unsigned attempt = 0; attempt < 2; ++attempt) {
                 result.mutation = store.impl_->durable_runtime->mutate(
@@ -458,6 +454,22 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
             }
             results.push_back(std::move(result));
             const auto& last = results.back().mutation;
+            // A later known-not-committed sibling cannot make an earlier,
+            // still-unflushed member of the same Writer sub-batch independently
+            // successful. Abandon the pending prefix fail-closed; finalize below
+            // preserves only sequences already covered by durable_through.
+            if (last.outcome == DurableMutationOutcome::not_committed &&
+                store.impl_->durable_runtime->healthy()) {
+                const auto through = store.impl_->durable_runtime->writer_durable_through(worker_index);
+                const auto has_unflushed_prefix = std::any_of(
+                    results.begin(), std::prev(results.end()), [&](const DurableWriterBatchResult& prior) {
+                        return prior.mutation.committed() && !prior.mutation.error &&
+                               prior.mutation.sequence && prior.mutation.sequence->value > through.value;
+                    });
+                if (has_unflushed_prefix) {
+                    store.impl_->durable_runtime->mark_fail_closed();
+                }
+            }
             // Stop later siblings after sticky outcomes even if a path forgot to mark
             // durable unhealthy (defense in depth; emitters should fail-close first).
             if (!store.impl_->durable_runtime->healthy() ||
@@ -513,9 +525,9 @@ auto detail::StoreAccess::mutate_durable_batch(Store& store, const std::size_t w
             if (store.impl_->durable_runtime && store.impl_->durable_runtime->healthy()) {
                 store.impl_->durable_runtime->mark_fail_closed();
             }
-            reject_remaining(Error{ErrorCode::unavailable,
-                                   "Writer batch allocation failed after mutate entry"},
-                             DurableMutationOutcome::indeterminate);
+            reject_remaining(
+                Error{ErrorCode::unavailable, "Writer batch allocation failed after mutate entry"},
+                DurableMutationOutcome::indeterminate);
         } else {
             reject_remaining_not_committed(
                 Error{ErrorCode::resource_exhausted, "Writer batch allocation failed before mutate"});

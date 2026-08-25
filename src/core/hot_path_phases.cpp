@@ -58,15 +58,14 @@ void append_section(std::string& out, const char* title, const auto& name_fn, co
     char line[192];
     for (std::size_t index = 0; index < count; ++index) {
         const auto snap = snap_fn(index);
-        const auto mean = snap.samples == 0 ? 0.0 : static_cast<double>(snap.total_ns) /
-                                                        static_cast<double>(snap.samples);
-        const auto pct = section_total == 0
-                             ? 0.0
-                             : (100.0 * static_cast<double>(snap.total_ns) /
-                                static_cast<double>(section_total));
-        std::snprintf(line, sizeof(line),
-                      "  %-14s samples=%llu total_ns=%llu mean_ns=%.2f pct=%.1f\n", name_fn(index),
-                      static_cast<unsigned long long>(snap.samples),
+        const auto mean =
+            snap.samples == 0 ? 0.0 : static_cast<double>(snap.total_ns) / static_cast<double>(snap.samples);
+        const auto pct =
+            section_total == 0
+                ? 0.0
+                : (100.0 * static_cast<double>(snap.total_ns) / static_cast<double>(section_total));
+        std::snprintf(line, sizeof(line), "  %-14s samples=%llu total_ns=%llu mean_ns=%.2f pct=%.1f\n",
+                      name_fn(index), static_cast<unsigned long long>(snap.samples),
                       static_cast<unsigned long long>(snap.total_ns), mean, pct);
         out += line;
     }
@@ -154,24 +153,16 @@ auto format_report() -> std::string {
     out += "GlyphaStore hot-path phase attribution (lab instrumentation)\n";
     out += "Claim ceiling: architectural prototype / same-machine lab evidence only.\n";
     append_section(
-        out, "[GET]",
-        [](const std::size_t index) {
-            return get_phase_name(static_cast<GetPhase>(index));
-        },
+        out, "[GET]", [](const std::size_t index) { return get_phase_name(static_cast<GetPhase>(index)); },
         [](const std::size_t index) { return snapshot_get(static_cast<GetPhase>(index)); },
         static_cast<std::size_t>(GetPhase::count));
     append_section(
         out, "[PUT/ERASE]",
-        [](const std::size_t index) {
-            return put_phase_name(static_cast<PutPhase>(index));
-        },
+        [](const std::size_t index) { return put_phase_name(static_cast<PutPhase>(index)); },
         [](const std::size_t index) { return snapshot_put(static_cast<PutPhase>(index)); },
         static_cast<std::size_t>(PutPhase::count));
     append_section(
-        out, "[TCP]",
-        [](const std::size_t index) {
-            return tcp_phase_name(static_cast<TcpPhase>(index));
-        },
+        out, "[TCP]", [](const std::size_t index) { return tcp_phase_name(static_cast<TcpPhase>(index)); },
         [](const std::size_t index) { return snapshot_tcp(static_cast<TcpPhase>(index)); },
         static_cast<std::size_t>(TcpPhase::count));
     return out;

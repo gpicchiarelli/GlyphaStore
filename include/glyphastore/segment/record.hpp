@@ -51,8 +51,8 @@ inline constexpr std::uint16_t kEncodedRecordHeaderSize = 56;
 // encoded_record_size(input) for the same input (Segment::append uses this to
 // avoid a second size/validation pass). Debug builds assert the match.
 [[nodiscard]] auto encode_record(std::span<std::byte> out, const RecordInput& input) -> Status;
-[[nodiscard]] auto encode_record(std::span<std::byte> out, const RecordInput& input,
-                                 std::size_t encoded_size) -> Status;
+[[nodiscard]] auto encode_record(std::span<std::byte> out, const RecordInput& input, std::size_t encoded_size)
+    -> Status;
 [[nodiscard]] auto encode_record(const RecordInput& input) -> Result<std::vector<std::byte>>;
 [[nodiscard]] auto decode_record(std::span<const std::byte> bytes, bool verify_checksum = true)
     -> Result<RecordView>;

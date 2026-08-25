@@ -127,8 +127,7 @@ void Server::run(const std::size_t executor_id) noexcept {
                 // Flush known-not-committed OVERLOADED while sockets live. Writer may
                 // still be leaving a coalescing wait after expire_remaining_ — give it
                 // a bounded window beyond the fixed queue-pop abandon path.
-                const auto flush_until =
-                    std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
+                const auto flush_until = std::chrono::steady_clock::now() + std::chrono::milliseconds{100};
                 while (std::chrono::steady_clock::now() < flush_until) {
                     auto status = reactor.run_once(5);
                     if (!status) {

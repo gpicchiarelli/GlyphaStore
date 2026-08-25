@@ -1,5 +1,5 @@
-#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/fault_injection.hpp"
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/persistence/store_backup.hpp"
 #include "glyphastore/server/connection_handoff.hpp"
@@ -1158,8 +1158,8 @@ GLYPHA_TEST("BIND_WORKER handoff saturation returns overloaded then closes") {
     glyphastore::server::ConnectionHandoffMesh mesh{2, 1};
     auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
     GLYPHA_REQUIRE(disk_reads.has_value());
-    auto pair_writers = glyphastore::server::PairWriterPool::create(
-        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    auto pair_writers = glyphastore::server::PairWriterPool::create(**store, 2, 8, kTestMutationArenaBytes,
+                                                                    std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(pair_writers.has_value());
     GLYPHA_REQUIRE((*pair_writers)->start().has_value());
 
@@ -1256,8 +1256,8 @@ GLYPHA_TEST("shutdown force-close rejects pending BIND handoff with OVERLOADED")
     glyphastore::server::ConnectionHandoffMesh mesh{2, 8};
     auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
     GLYPHA_REQUIRE(disk_reads.has_value());
-    auto pair_writers = glyphastore::server::PairWriterPool::create(
-        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    auto pair_writers = glyphastore::server::PairWriterPool::create(**store, 2, 8, kTestMutationArenaBytes,
+                                                                    std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(pair_writers.has_value());
     GLYPHA_REQUIRE((*pair_writers)->start().has_value());
 
@@ -1316,8 +1316,8 @@ GLYPHA_TEST("BIND_WORKER destination slot exhaustion returns overloaded then clo
     glyphastore::server::ConnectionHandoffMesh mesh{2, 8};
     auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
     GLYPHA_REQUIRE(disk_reads.has_value());
-    auto pair_writers = glyphastore::server::PairWriterPool::create(
-        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    auto pair_writers = glyphastore::server::PairWriterPool::create(**store, 2, 8, kTestMutationArenaBytes,
+                                                                    std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(pair_writers.has_value());
     GLYPHA_REQUIRE((*pair_writers)->start().has_value());
 
@@ -1350,8 +1350,7 @@ GLYPHA_TEST("BIND_WORKER destination slot exhaustion returns overloaded then clo
     };
     GLYPHA_REQUIRE(mesh.try_handoff(1, std::move(filler)));
     const auto adopt_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-    while ((*reactor1)->active_connections() == 0 &&
-           std::chrono::steady_clock::now() < adopt_deadline) {
+    while ((*reactor1)->active_connections() == 0 && std::chrono::steady_clock::now() < adopt_deadline) {
         static_cast<void>((*reactor1)->run_once(5));
     }
     GLYPHA_REQUIRE((*reactor1)->active_connections() == 1);
@@ -1423,8 +1422,8 @@ GLYPHA_TEST("BIND_WORKER poller remove failure returns overloaded without dual r
     glyphastore::server::ConnectionHandoffMesh mesh{2, 8};
     auto disk_reads = glyphastore::server::DiskReadExecutor::create(**store, 2, 8);
     GLYPHA_REQUIRE(disk_reads.has_value());
-    auto pair_writers = glyphastore::server::PairWriterPool::create(
-        **store, 2, 8, kTestMutationArenaBytes, std::chrono::milliseconds{0});
+    auto pair_writers = glyphastore::server::PairWriterPool::create(**store, 2, 8, kTestMutationArenaBytes,
+                                                                    std::chrono::milliseconds{0});
     GLYPHA_REQUIRE(pair_writers.has_value());
     GLYPHA_REQUIRE((*pair_writers)->start().has_value());
 
@@ -1922,7 +1921,8 @@ GLYPHA_TEST("durable not-committed INTERNAL_ERROR-bucket codes surface as wire O
         const auto socket = connect_to(server.port());
         GLYPHA_REQUIRE(socket >= 0);
         GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
-        const auto key = bytes(std::string{"bucket-not-committed-"} + std::to_string(index));
+        const auto key_text = std::string{"bucket-not-committed-"} + std::to_string(index);
+        const auto key = bytes(key_text);
         const auto put = glyphastore::server::encode_request({
             .opcode = glyphastore::server::RequestOpcode::put,
             .request_id = 200U + static_cast<std::uint64_t>(index),

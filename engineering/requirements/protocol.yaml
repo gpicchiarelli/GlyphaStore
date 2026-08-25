@@ -8,6 +8,7 @@ requirements:
     and covered by golden fixtures across official codecs.
   autorita:
   - docs/spec/wire-protocol-v2.md
+  - docs/spec/connection-drain-state-machine.md
   - docs/spec/client-semantics-v1.md
   - docs/spec/error-taxonomy-v1.md
   - docs/spec/tcp-client-conformance-v1.md

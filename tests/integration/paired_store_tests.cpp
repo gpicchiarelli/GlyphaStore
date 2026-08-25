@@ -178,8 +178,8 @@ GLYPHA_TEST("paired Store put_batch publishes once per shard and keeps RAW") {
     for (std::size_t index = 0; index < items.size(); ++index) {
         const auto got = store.get(keys[index]);
         GLYPHA_REQUIRE(got.has_value());
-        GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                       values[index]);
+        GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()),
+                                        got->bytes.size()) == values[index]);
     }
     GLYPHA_REQUIRE(store.close().has_value());
 }
@@ -218,16 +218,15 @@ GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable 
     const std::filesystem::path root{writable.data()};
     const auto store_path = root / "store";
 
-    auto opened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::paired,
-         .paired = {.async_lane_capacity = 8,
-                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
-                    .reader_epoch_lease = true},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .storage_mode = glyphastore::StorageMode::durable_sync,
+                                            .data_directory = store_path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -260,9 +259,8 @@ GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable 
     GLYPHA_REQUIRE(late.error().message.find("fail-closed") != std::string::npos);
     const auto seed_after = store.get("seed");
     GLYPHA_REQUIRE(seed_after.has_value());
-    GLYPHA_REQUIRE(
-        std::string_view(reinterpret_cast<const char*>(seed_after->bytes.data()), seed_after->bytes.size()) ==
-        "ok");
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(seed_after->bytes.data()),
+                                    seed_after->bytes.size()) == "ok");
     GLYPHA_REQUIRE(store.get(key_a).has_value());
     GLYPHA_REQUIRE(!store.get(key_b).has_value());
 
@@ -275,8 +273,7 @@ GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable 
 GLYPHA_TEST("paired durable sync Writer does not success-ACK abandoned unflushed batch siblings") {
     // Distinct keys in one mutate_durable_batch: A returns committed before flush/index,
     // B fails and clears pending_group. A must not keep a clean success ACK (RAW lie).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-unflush-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-unflush-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -312,10 +309,7 @@ GLYPHA_TEST("paired durable sync Writer does not success-ACK abandoned unflushed
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
          .filesystem_hooks = {.context = &thrower, .before = &ThrowOnSecondArmedWrite::before}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -362,8 +356,7 @@ GLYPHA_TEST("paired durable sync Writer keeps flushed siblings through orphan co
     // Same Writer batch: A alone hits max_bytes → flush+index (durable_through), B appends
     // unflushed, C throws on write_record. commit_writer_batch fails (orphaned pending).
     // A must keep success ACK and appear in the published generation; B/C must not.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-orphan-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-orphan-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -399,10 +392,7 @@ GLYPHA_TEST("paired durable sync Writer keeps flushed siblings through orphan co
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 256,
-                           .max_wait_ms = 60'000,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 256, .max_wait_ms = 60'000, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
          .filesystem_hooks = {.context = &thrower, .before = &ThrowOnThirdArmedWrite::before}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -446,7 +436,8 @@ GLYPHA_TEST("paired durable sync Writer keeps flushed siblings through orphan co
     std::filesystem::remove_all(root, ignored);
 }
 
-GLYPHA_TEST("paired durable sync Writer snapshot-publishes committed sibling after later known-not-committed") {
+GLYPHA_TEST(
+    "paired durable sync Writer snapshot-publishes committed sibling after later known-not-committed") {
     // Sync durable_group same-key split: first sub-batch commits+indexes A; second hits
     // before(write_record) throw (known not committed). A keeps success ACK and stays
     // GET-visible. Pair stays healthy — sticky is for post-commit / Store-entered throws.
@@ -486,10 +477,7 @@ GLYPHA_TEST("paired durable sync Writer snapshot-publishes committed sibling aft
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
          .filesystem_hooks = {.context = &thrower, .before = &ThrowOnSecondArmedWrite::before}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -570,10 +558,7 @@ GLYPHA_TEST("paired durable sync Writer does not success-ACK unprocessed batch i
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
          .filesystem_hooks = {.context = &thrower, .before = &ThrowOnSecondArmedWrite::before}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -627,9 +612,8 @@ GLYPHA_TEST("paired durable sync single-op keeps known-not-committed after recor
     struct FailArmedRecordWrite final {
         std::atomic_bool armed{false};
 
-        static auto write_some_at(void* context, const int descriptor,
-                                  const std::span<const std::byte> bytes, const std::uint64_t offset)
-            -> std::ptrdiff_t {
+        static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                                  const std::uint64_t offset) -> std::ptrdiff_t {
             auto* self = static_cast<FailArmedRecordWrite*>(context);
             if (self->armed.load(std::memory_order_acquire)) {
                 errno = EIO;
@@ -650,8 +634,8 @@ GLYPHA_TEST("paired durable sync single-op keeps known-not-committed after recor
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
-         .filesystem_hooks = {.file_io = {.context = &io,
-                                          .write_some_at = &FailArmedRecordWrite::write_some_at}}});
+         .filesystem_hooks = {
+             .file_io = {.context = &io, .write_some_at = &FailArmedRecordWrite::write_some_at}}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -702,17 +686,16 @@ GLYPHA_TEST("durable before-hook throw before write_record is known not committe
         }
     };
 
-    auto opened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::paired,
-         .paired = {.async_lane_capacity = 8,
-                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
-                    .reader_epoch_lease = true},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
-         .filesystem_hooks = {.before = &ThrowOnWriteRecord::before}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .storage_mode = glyphastore::StorageMode::durable_sync,
+                                            .data_directory = store_path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+                                            .filesystem_hooks = {.before = &ThrowOnWriteRecord::before}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
 
@@ -732,8 +715,7 @@ GLYPHA_TEST("paired durable_group pre-mutate batch alloc stays known not committ
     // that call before any durable mutate must not escape as Writer catch sticky /
     // unavailable (wire INTERNAL_ERROR). StoreAccess converts it to not_committed
     // resource_exhausted and keeps the pair healthy.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-batch-pre-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-batch-pre-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -749,10 +731,7 @@ GLYPHA_TEST("paired durable_group pre-mutate batch alloc stays known not committ
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
@@ -810,10 +789,7 @@ GLYPHA_TEST("paired durable_group post-mutate catch keeps Store-entered siblings
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
@@ -885,10 +861,7 @@ GLYPHA_TEST("paired durable sync catch drain does not success-ACK put-hit on pre
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
          .filesystem_hooks = {.context = &thrower, .before = &ThrowOnFirstArmedWrite::before}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -955,8 +928,7 @@ GLYPHA_TEST("paired durable pre-write rotation failure is known not committed") 
     // rotate_active runs only after this PUT's append returned segment_full
     // (not_committed). A throw before seal/create/publish must stay not_committed →
     // resource_exhausted — not indeterminate sticky INTERNAL_ERROR.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-pre-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-pre-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -1021,8 +993,7 @@ GLYPHA_TEST("paired durable pre-write rotation failure is known not committed") 
 GLYPHA_TEST("paired durable post-seal rotation reader-open is sticky indeterminate") {
     // After rotate_active commits a seal, sealed-reader open failure must stay
     // indeterminate / unavailable (fail-closed) — not known-not-committed OVERLOADED.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-seal-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-seal-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -1087,8 +1058,7 @@ GLYPHA_TEST("paired durable post-seal rotation reader-open is sticky indetermina
 GLYPHA_TEST("paired durable post-seal rotation create reject is sticky indeterminate") {
     // After rotate_active commits a seal, a pre-rename create reject (not_published)
     // must stay indeterminate / unavailable — not known-not-committed OVERLOADED.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-create-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-rot-create-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
@@ -1161,24 +1131,22 @@ GLYPHA_TEST("paired durable post-seal rotation create reject is sticky indetermi
 GLYPHA_TEST("paired durable pre-append segment open failure is known not committed") {
     // DurableSegmentFile::open before any Record write must stay not_committed →
     // resource_exhausted / wire OVERLOADED — not indeterminate sticky INTERNAL_ERROR.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-paired-seg-open-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-seg-open-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
     const std::filesystem::path root{writable.data()};
     const auto store_path = root / "store";
 
-    auto opened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::paired,
-         .paired = {.async_lane_capacity = 8,
-                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
-                    .reader_epoch_lease = true},
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                                                       .reader_epoch_lease = true},
+                                            .storage_mode = glyphastore::StorageMode::durable_sync,
+                                            .data_directory = store_path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
@@ -1263,9 +1231,8 @@ GLYPHA_TEST("paired volatile exclusive compact gates Index publish") {
     for (std::uint32_t attempt = 0; std::chrono::steady_clock::now() < gate_deadline; ++attempt) {
         const auto key = std::string{"gated-"} + std::to_string(attempt);
         const auto put = store.put(key, bytes("x"));
-        if (!put.has_value() &&
-            (put.error().code == glyphastore::ErrorCode::sequence_conflict ||
-             put.error().code == glyphastore::ErrorCode::resource_exhausted)) {
+        if (!put.has_value() && (put.error().code == glyphastore::ErrorCode::sequence_conflict ||
+                                 put.error().code == glyphastore::ErrorCode::resource_exhausted)) {
             saw_gate = true;
             break;
         }

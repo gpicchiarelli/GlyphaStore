@@ -104,8 +104,7 @@ class PairReadGeneration {
     // Generation + embedded DeltaState are co-allocated in the .cpp via a private
     // derived helper. delta_ points into that storage for the object's lifetime.
     PairReadGeneration(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
-                       const DeltaState* delta, std::uint64_t epoch,
-                       std::uint64_t visible_through) noexcept;
+                       const DeltaState* delta, std::uint64_t epoch, std::uint64_t visible_through) noexcept;
     void bind_delta(const DeltaState* delta) noexcept {
         delta_ = delta;
     }

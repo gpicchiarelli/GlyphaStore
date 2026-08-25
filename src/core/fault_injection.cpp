@@ -178,9 +178,8 @@ void release_block(const Site site) noexcept {
 auto wait_until_blocked(const Site site, const std::chrono::milliseconds timeout) -> bool {
     auto& block = config().block;
     std::unique_lock lock{block.mutex};
-    return block.condition.wait_for(lock, timeout, [&] {
-        return block.blocked && block.site == static_cast<std::uint8_t>(site);
-    });
+    return block.condition.wait_for(
+        lock, timeout, [&] { return block.blocked && block.site == static_cast<std::uint8_t>(site); });
 }
 
 void maybe_block(const Site site) noexcept {

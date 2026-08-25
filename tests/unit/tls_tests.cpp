@@ -1,7 +1,7 @@
+#include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "glyphastore/server/tls.hpp"
-#include "glyphastore/core/fault_injection.hpp"
 #include "test.hpp"
 
 #include <algorithm>

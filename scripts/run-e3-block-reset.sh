@@ -429,14 +429,22 @@ arm_reset_linux_flakey() {
 }
 
 arm_reset_macos() {
-  if hdiutil detach -force "$disk_id" >/dev/null 2>&1; then
-    mounted="no"
-    disk_id=""
-    reset_confirmed_global="yes"
-    printf 'yes'
-  else
-    printf 'no'
-  fi
+  local attempt
+  # hdiutil can transiently report the APFS image busy even with -force on
+  # hosted macOS. The worker remains SIGSTOP'd throughout: confirm an actual
+  # below-process detach, but do not turn a failed detach into evidence.
+  for attempt in 1 2 3; do
+    if hdiutil detach -force "$disk_id" >/dev/null 2>&1; then
+      mounted="no"
+      disk_id=""
+      reset_confirmed_global="yes"
+      printf 'yes'
+      return
+    fi
+    record_command "hdiutil detach -force <disk> retry $attempt/3"
+    sleep 0.2
+  done
+  printf 'no'
 }
 
 perform_reset() {

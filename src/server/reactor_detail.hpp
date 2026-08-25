@@ -74,19 +74,18 @@ inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
 [[nodiscard]] inline auto backup_ok_report_max_bytes(const std::size_t destination_bytes) noexcept
     -> std::size_t {
     constexpr std::size_t kMaxUint64Digits = 20;
-    constexpr std::size_t kFixed =
-        10 +  // status=ok\n
-        13 +  // destination=\n (path added below)
-        13 + kMaxUint64Digits + 1 +  // files_copied=
-        13 + kMaxUint64Digits + 1 +  // bytes_copied=
-        19 + kMaxUint64Digits + 1 +  // admission_fence_ns=
-        16 + kMaxUint64Digits + 1 +  // catalog_copy_ns=
-        22 + kMaxUint64Digits + 1 +  // destination_verify_ns=
-        21 + kMaxUint64Digits + 1 +  // segment_copy_workers=
-        21 +                         // source_crc_scanned=0|1\n
-        26 +                         // destination_crc_scanned=0|1\n
-        16 + kMaxUint64Digits + 1 +  // source_segments=
-        21 + kMaxUint64Digits + 1;   // destination_segments=
+    constexpr std::size_t kFixed = 10 +                        // status=ok\n
+                                   13 +                        // destination=\n (path added below)
+                                   13 + kMaxUint64Digits + 1 + // files_copied=
+                                   13 + kMaxUint64Digits + 1 + // bytes_copied=
+                                   19 + kMaxUint64Digits + 1 + // admission_fence_ns=
+                                   16 + kMaxUint64Digits + 1 + // catalog_copy_ns=
+                                   22 + kMaxUint64Digits + 1 + // destination_verify_ns=
+                                   21 + kMaxUint64Digits + 1 + // segment_copy_workers=
+                                   21 +                        // source_crc_scanned=0|1\n
+                                   26 +                        // destination_crc_scanned=0|1\n
+                                   16 + kMaxUint64Digits + 1 + // source_segments=
+                                   21 + kMaxUint64Digits + 1;  // destination_segments=
     return kFixed + destination_bytes;
 }
 

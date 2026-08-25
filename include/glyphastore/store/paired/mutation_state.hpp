@@ -109,8 +109,7 @@ struct CompletionDecision final {
 // Pure characterization of as-implemented completion polarity (mutation-lifecycle.md §4).
 // Does not perform Store I/O or wire encoding.
 [[nodiscard]] auto decide_completion(const DurableDecision& durable,
-                                     const PublicationDecision& publication) noexcept
-    -> CompletionDecision;
+                                     const PublicationDecision& publication) noexcept -> CompletionDecision;
 
 class MutationLifecycle final {
   public:

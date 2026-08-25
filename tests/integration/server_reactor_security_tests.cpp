@@ -445,8 +445,8 @@ GLYPHA_TEST("half-close drains pipelined mutations before teardown") {
     const auto probe = connect_to(server.port());
     GLYPHA_REQUIRE(probe >= 0);
     GLYPHA_REQUIRE(initialize_and_bind(probe, 0, 1));
-    for (const auto& [id, key, want] : {std::tuple{50ULL, "half-close-a", "one"},
-                                        std::tuple{51ULL, "half-close-b", "two"}}) {
+    for (const auto& [id, key, want] :
+         {std::tuple{50ULL, "half-close-a", "one"}, std::tuple{51ULL, "half-close-b", "two"}}) {
         const auto get = glyphastore::server::encode_request({
             .opcode = glyphastore::server::RequestOpcode::get,
             .request_id = id,
@@ -936,7 +936,9 @@ GLYPHA_TEST("partial request timeout drains prior decided response before close"
 
     std::vector<std::byte> received;
     received.reserve(kPayload + 64);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    // OpenBSD's deliberately tiny receive window can need several retransmit
+    // intervals under QEMU before the complete 64 KiB decided response drains.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
     while (std::chrono::steady_clock::now() < deadline) {
         std::array<std::byte, 16U * 1024U> chunk{};
         const auto n = ::recv(socket, chunk.data(), chunk.size(), 0);
@@ -996,7 +998,7 @@ GLYPHA_TEST("half-close with pending large response drains before poller teardow
     GLYPHA_REQUIRE(send_all(socket, *ping));
 
     bool saw_response = false;
-    const auto peek_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    const auto peek_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
     while (std::chrono::steady_clock::now() < peek_deadline) {
         char byte{};
         const auto peeked = ::recv(socket, &byte, 1, MSG_PEEK);
@@ -1018,7 +1020,7 @@ GLYPHA_TEST("half-close with pending large response drains before poller teardow
 
     std::vector<std::byte> received;
     received.reserve(kPayload + 64);
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{3};
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
     while (std::chrono::steady_clock::now() < deadline) {
         std::array<std::byte, 16U * 1024U> chunk{};
         const auto n = ::recv(socket, chunk.data(), chunk.size(), 0);

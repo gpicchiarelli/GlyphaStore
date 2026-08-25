@@ -24,7 +24,10 @@ jobs:
           python-version: "3.13"
 
       - name: Install build tools
-        run: python -m pip install --disable-pip-version-check cmake ninja
+        run: |
+          python -m pip install --disable-pip-version-check cmake ninja
+          sudo apt-get update
+          sudo apt-get install -y llvm
 
       - name: Configure PGO instrumentation build
         env:

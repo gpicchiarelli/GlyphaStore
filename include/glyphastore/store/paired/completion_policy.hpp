@@ -13,8 +13,7 @@ namespace glyphastore::store::paired {
 
 // Wire-facing code for a decided non-success completion (Reactor maps these further).
 // Success completions must not call this — they produce an empty Status.
-[[nodiscard]] constexpr auto wire_error_code_for(const CompletionDecision::Kind kind) noexcept
-    -> ErrorCode {
+[[nodiscard]] constexpr auto wire_error_code_for(const CompletionDecision::Kind kind) noexcept -> ErrorCode {
     switch (kind) {
     case CompletionDecision::Kind::known_not_committed:
         return ErrorCode::resource_exhausted;

@@ -488,8 +488,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     // after SSL_accept (TLS 1.3 coalescing) with no fresh edge-triggered readable
     // event. Drain once before returning to the poller — same class as WANT_READ
     // stranded-ACK. Connection-local failures must not fail the accept loop.
-    if (auto* adopted = connection(token);
-        adopted != nullptr && adopted->tls && !adopted->peer_read_closed) {
+    if (auto* adopted = connection(token); adopted != nullptr && adopted->tls && !adopted->peer_read_closed) {
         if (auto drained = read_ready(token); !drained) {
             close_connection(token);
         }
@@ -592,7 +591,7 @@ auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView res
     if (current == nullptr) {
         return fail(ErrorCode::not_found, "owned response targets a stale connection");
     }
-    response.value = value.bytes;
+    response.value = value.view();
     // One lease deliberately provides one bounded slow-output pin. If another
     // request is already buffered, keep the contiguous path so a pipelined
     // connection can overlap its next cold read instead of being serialized by
@@ -818,9 +817,9 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                         if (received->bytes <= config_.maximum_input_bytes &&
                             buffered <= config_.maximum_input_bytes - received->bytes) {
                             try {
-                                current->input.insert(
-                                    current->input.end(), tls_scratch.begin(),
-                                    tls_scratch.begin() + static_cast<std::ptrdiff_t>(received->bytes));
+                                current->input.insert(current->input.end(), tls_scratch.begin(),
+                                                      tls_scratch.begin() +
+                                                          static_cast<std::ptrdiff_t>(received->bytes));
                             } catch (const std::bad_alloc&) {
                                 current->close_after_flush = true;
                                 current->input.clear();
@@ -866,8 +865,8 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 if (would_block) {
                     // want_write / would_block / persistent want_read: keep write armed;
                     // keep read unless half-closed *and* OpenSSL only asked for write.
-                    const bool needs_read = tls_io_needs_read(written->kind) ||
-                                            (!current->peer_read_closed && !scatter);
+                    const bool needs_read =
+                        tls_io_needs_read(written->kind) || (!current->peer_read_closed && !scatter);
                     if (current->write_armed && !needs_read) {
                         return {};
                     }

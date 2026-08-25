@@ -1321,8 +1321,8 @@ GLYPHA_TEST("durable mutation queue deadline rejects only before Store execution
 GLYPHA_TEST("volatile pair sticky fails READY with pair_fail_closed reason") {
     // Store catalog stays operational on volatile sticky; ready() already fails on
     // pair_writers_->healthy(), but classify_ready_loss must not report none.
-    auto opened = glyphastore::server::Server::create(
-        {.port = 0, .maximum_connections = 4, .worker_count = 1});
+    auto opened =
+        glyphastore::server::Server::create({.port = 0, .maximum_connections = 4, .worker_count = 1});
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
     GLYPHA_REQUIRE(server.start().has_value());

@@ -496,7 +496,7 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdRead
                 // while verifying the exact RecordRef when the backlog drains.
                 {
                     ExclusiveIndexQuiesce index_quiesce{worker,
-                                                       options_.exclusive_writer && flusher_ == nullptr};
+                                                        options_.exclusive_writer && flusher_ == nullptr};
                     const auto wait_started = timing_now();
                     const std::lock_guard worker_lock{worker.mutex};
                     const auto locked_at = timing_now();
@@ -856,9 +856,8 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                     // Preserve post-seal exception_outcome — do not demote not_published
                     // create rejects to known-not-committed after a durable seal.
                     io_result = mutation_failure(
-                        exception_outcome,
-                        created.error.value_or(
-                            Error{ErrorCode::io_error, "replacement Segment creation failed"}));
+                        exception_outcome, created.error.value_or(Error{
+                                               ErrorCode::io_error, "replacement Segment creation failed"}));
                 } else {
                     exception_outcome = DurableMutationOutcome::indeterminate;
                 }
@@ -896,9 +895,8 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                     }
                     // Preserve post-seal / post-create exception_outcome for not_published.
                     io_result = mutation_failure(
-                        exception_outcome,
-                        published.error.value_or(
-                            Error{ErrorCode::io_error, "rotation manifest publication failed"}));
+                        exception_outcome, published.error.value_or(Error{
+                                               ErrorCode::io_error, "rotation manifest publication failed"}));
                 } else {
                     io_result = {.outcome = DurableMutationOutcome::committed,
                                  .sequence = std::nullopt,
@@ -1526,8 +1524,7 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     }
                     if (prepared_hot_record.empty()) {
                         worker.erase_hot_record(hashed);
-                    } else if (auto hot_published =
-                                   worker.publish_hot_record(prepared_hot_record, reference);
+                    } else if (auto hot_published = worker.publish_hot_record(prepared_hot_record, reference);
                                !hot_published) {
                         healthy_.store(false, std::memory_order_release);
                         return {.outcome = DurableMutationOutcome::committed,
@@ -1538,8 +1535,8 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
                             .sequence = committed_sequence,
-                            .error = Error{ErrorCode::resource_exhausted,
-                                           "Index accounting allocation failed"}};
+                            .error =
+                                Error{ErrorCode::resource_exhausted, "Index accounting allocation failed"}};
                 } catch (...) {
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
@@ -1569,8 +1566,8 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,
                             .sequence = committed_sequence,
-                            .error = Error{ErrorCode::resource_exhausted,
-                                           "Index accounting allocation failed"}};
+                            .error =
+                                Error{ErrorCode::resource_exhausted, "Index accounting allocation failed"}};
                 } catch (...) {
                     healthy_.store(false, std::memory_order_release);
                     return {.outcome = DurableMutationOutcome::committed,

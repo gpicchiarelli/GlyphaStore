@@ -2,7 +2,7 @@ Status: descriptive of as-implemented Reactor connection drain / close lifecycle
 Applies to: `Reactor::Connection`, BIND handoff, half-close, close-after-flush, shutdown
 Owner: networking maintainers
 Last reviewed: 2026-08-02
-Requirement: `GS-REACTOR-CONN-LIFECYCLE-001`
+Requirement: `GS-PROTO-WIRE-001`
 
 # Connection drain state machine (as implemented)
 

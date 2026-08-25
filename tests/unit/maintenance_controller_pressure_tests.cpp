@@ -255,9 +255,8 @@ GLYPHA_TEST("caller_holds_guard still rejects maintenance emergency") {
     glyphastore::StoreConfig config{};
     config.worker_config.explicit_count = 1;
     config.concurrency = glyphastore::StoreConcurrencyMode::paired;
-    config.paired = {.async_lane_capacity = 8,
-                     .async_lane_payload_bytes = 1U * 1024U * 1024U,
-                     .reader_epoch_lease = true};
+    config.paired = {
+        .async_lane_capacity = 8, .async_lane_payload_bytes = 1U * 1024U * 1024U, .reader_epoch_lease = true};
     config.maintenance.mode = glyphastore::MaintenanceMode::background;
     config.maintenance.min_eval_interval_ms = 60'000;
     config.maintenance.max_eval_interval_ms = 60'000;
@@ -300,8 +299,7 @@ GLYPHA_TEST("caller_holds_guard still rejects maintenance emergency") {
     GLYPHA_REQUIRE(!(**store).get(key).has_value());
 
     const auto erased = glyphastore::detail::StoreAccess::erase_volatile_published(
-        **store, 0, hashed,
-        glyphastore::detail::StoreAccess::PublishedAdmission::caller_holds_guard);
+        **store, 0, hashed, glyphastore::detail::StoreAccess::PublishedAdmission::caller_holds_guard);
     GLYPHA_REQUIRE(!erased.has_value());
     GLYPHA_REQUIRE(erased.error().code == glyphastore::ErrorCode::storage_exhausted);
 
@@ -326,10 +324,7 @@ GLYPHA_TEST("mutate_durable_batch rejects under maintenance emergency") {
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
@@ -361,8 +356,7 @@ GLYPHA_TEST("mutate_durable_batch rejects under maintenance emergency") {
         GLYPHA_REQUIRE(result.mutation.outcome == glyphastore::DurableMutationOutcome::not_committed);
         GLYPHA_REQUIRE(result.mutation.error.has_value());
         GLYPHA_REQUIRE(result.mutation.error->code == glyphastore::ErrorCode::storage_exhausted);
-        GLYPHA_REQUIRE(result.mutation.error->message ==
-                       glyphastore::kMaintenanceEmergencyMutationMessage);
+        GLYPHA_REQUIRE(result.mutation.error->message == glyphastore::kMaintenanceEmergencyMutationMessage);
     }
     GLYPHA_REQUIRE(!store.get(key_a).has_value());
     GLYPHA_REQUIRE(!store.get(key_b).has_value());
@@ -388,10 +382,7 @@ GLYPHA_TEST("mutate_durable_batch mid-batch TOCTOU rejects later siblings") {
          .storage_mode = glyphastore::StorageMode::durable_group,
          .data_directory = store_path,
          .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .durable_group = {.max_records = 32,
-                           .max_bytes = 65'536,
-                           .max_wait_ms = 10,
-                           .min_records = 1},
+         .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
          .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
@@ -425,8 +416,7 @@ GLYPHA_TEST("mutate_durable_batch mid-batch TOCTOU rejects later siblings") {
     GLYPHA_REQUIRE(results[1].mutation.outcome == glyphastore::DurableMutationOutcome::not_committed);
     GLYPHA_REQUIRE(results[1].mutation.error.has_value());
     GLYPHA_REQUIRE(results[1].mutation.error->code == glyphastore::ErrorCode::storage_exhausted);
-    GLYPHA_REQUIRE(results[1].mutation.error->message ==
-                   glyphastore::kMaintenanceEmergencyMutationMessage);
+    GLYPHA_REQUIRE(results[1].mutation.error->message == glyphastore::kMaintenanceEmergencyMutationMessage);
     GLYPHA_REQUIRE(store.maintenance_snapshot().mutations_rejected);
 
     const auto got_a = store.get(key_a);
@@ -434,13 +424,13 @@ GLYPHA_TEST("mutate_durable_batch mid-batch TOCTOU rejects later siblings") {
     GLYPHA_REQUIRE(!store.get(key_b).has_value());
     GLYPHA_REQUIRE(store.close().has_value());
 
-    auto reopened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-         .storage_mode = glyphastore::StorageMode::durable_group,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
+                                  .storage_mode = glyphastore::StorageMode::durable_group,
+                                  .data_directory = store_path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                  .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE((*reopened)->get(key_a).has_value());
     GLYPHA_REQUIRE(!(*reopened)->get(key_b).has_value());
@@ -452,21 +442,19 @@ GLYPHA_TEST("mutate_durable_batch mid-batch TOCTOU rejects later siblings") {
 
 GLYPHA_TEST("put_batch rejects under maintenance emergency") {
     // Batch-entry gate on the non-paired put_batch path.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-put-batch-gate-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-put-batch-gate-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
     const std::filesystem::path root{writable.data()};
     const auto store_path = root / "store";
 
-    auto opened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
+                                            .storage_mode = glyphastore::StorageMode::durable_sync,
+                                            .data_directory = store_path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(store);
@@ -495,21 +483,19 @@ GLYPHA_TEST("put_batch rejects under maintenance emergency") {
 #if defined(GLYPHASTORE_FAULT_INJECTION)
 GLYPHA_TEST("put_batch mid-batch TOCTOU rejects later siblings") {
     // Non-paired put_batch: gate arms after item 0; item 1+ must reject before append.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-put-batch-toctou-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-put-batch-toctou-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
     const std::filesystem::path root{writable.data()};
     const auto store_path = root / "store";
 
-    auto opened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
+                                            .storage_mode = glyphastore::StorageMode::durable_sync,
+                                            .data_directory = store_path,
+                                            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+                                            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
     GLYPHA_REQUIRE(!store.maintenance_snapshot().mutations_rejected);
@@ -535,13 +521,13 @@ GLYPHA_TEST("put_batch mid-batch TOCTOU rejects later siblings") {
     GLYPHA_REQUIRE(!store.get("toctou-b").has_value());
     GLYPHA_REQUIRE(store.close().has_value());
 
-    auto reopened = glyphastore::Store::open(
-        {.worker_config = {.explicit_count = 1},
-         .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
-         .storage_mode = glyphastore::StorageMode::durable_sync,
-         .data_directory = store_path,
-         .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
-         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
+    auto reopened =
+        glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                  .concurrency = glyphastore::StoreConcurrencyMode::legacy_mutex,
+                                  .storage_mode = glyphastore::StorageMode::durable_sync,
+                                  .data_directory = store_path,
+                                  .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+                                  .maintenance = {.mode = glyphastore::MaintenanceMode::disabled}});
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE((*reopened)->get("toctou-a").has_value());
     GLYPHA_REQUIRE(!(*reopened)->get("toctou-b").has_value());

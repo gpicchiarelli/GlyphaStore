@@ -4,15 +4,15 @@
 
 using glyphastore::store::paired::CommitKnowledge;
 using glyphastore::store::paired::CompletionDecision;
-using glyphastore::store::paired::DurableDecision;
-using glyphastore::store::paired::PublicationDecision;
-using glyphastore::store::paired::PublicationState;
-using glyphastore::store::paired::SyncDurableExceptionContext;
-using glyphastore::store::paired::SyncDurableExceptionStatusKind;
 using glyphastore::store::paired::decide_completion;
+using glyphastore::store::paired::DurableDecision;
 using glyphastore::store::paired::plan_sync_durable_exception_recovery;
 using glyphastore::store::paired::plan_sync_durable_exception_status;
+using glyphastore::store::paired::PublicationDecision;
+using glyphastore::store::paired::PublicationState;
 using glyphastore::store::paired::status_from_completion;
+using glyphastore::store::paired::SyncDurableExceptionContext;
+using glyphastore::store::paired::SyncDurableExceptionStatusKind;
 using glyphastore::store::paired::wire_error_code_for;
 
 GLYPHA_TEST("completion_policy wire codes match taxonomy") {
@@ -74,9 +74,8 @@ GLYPHA_TEST("mutation_recovery sync durable exception: entered unpublished") {
 }
 
 GLYPHA_TEST("mutation_recovery sync durable exception: published committed keeps success") {
-    const SyncDurableExceptionContext ctx{.durable_committed = true,
-                                          .durable_mutate_entered = true,
-                                          .generation_published = true};
+    const SyncDurableExceptionContext ctx{
+        .durable_committed = true, .durable_mutate_entered = true, .generation_published = true};
     const auto recovery = plan_sync_durable_exception_recovery(ctx);
     GLYPHA_REQUIRE(!recovery.drain_if_unpublished);
     GLYPHA_REQUIRE(recovery.fail_closed);

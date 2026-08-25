@@ -108,13 +108,15 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
             [](MaintenanceObserveRequest) -> Result<MaintenanceObservation> {
                 return MaintenanceObservation{.durable = false};
             });
-        store->impl_->maintenance->start();
         store->impl_->concurrency = config.concurrency;
         store->impl_->close_drain_deadline_ms = config.close_drain_deadline_ms;
         if (auto paired = start_paired_runtime(*store, config); !paired) {
             static_cast<void>(store->close());
             return unexpected(paired.error());
         }
+        // The paired runtime establishes exclusive Worker ownership. Publish
+        // that immutable mode before maintenance can inspect the Workers.
+        store->impl_->maintenance->start();
         return store;
     }
     if (!config.data_directory || config.data_directory->empty()) {
@@ -197,13 +199,13 @@ auto Store::open(const StoreConfig& config) -> Result<std::unique_ptr<Store>> tr
             }
             return observation;
         });
-    store->impl_->maintenance->start();
     store->impl_->concurrency = config.concurrency;
     store->impl_->close_drain_deadline_ms = config.close_drain_deadline_ms;
     if (auto paired = start_paired_runtime(*store, config); !paired) {
         static_cast<void>(store->close());
         return unexpected(paired.error());
     }
+    store->impl_->maintenance->start();
     return store;
 } catch (const std::bad_alloc&) {
     return store_detail::resource_exhausted();
@@ -393,9 +395,8 @@ auto Store::put_batch(const std::span<const PutItem> items) -> std::vector<Statu
                 statuses[entry.input_index] = store_detail::durable_status(
                     impl_->durable_runtime->put(entry.hashed, entry.value, entry.expire_at_ns));
             } else {
-                statuses[entry.input_index] =
-                    impl_->volatile_runtime->workers.route(entry.hashed)
-                        .put(entry.hashed, entry.value, entry.expire_at_ns);
+                statuses[entry.input_index] = impl_->volatile_runtime->workers.route(entry.hashed)
+                                                  .put(entry.hashed, entry.value, entry.expire_at_ns);
             }
         }
         return statuses;
@@ -425,15 +426,15 @@ auto Store::put_batch(const std::span<const PutItem> items) -> std::vector<Statu
         }
         for (std::size_t offset = 0; offset < count; ++offset) {
             const auto& entry = prepared[begin + offset];
-            batch_items[offset] = store::paired::ShardPairRuntime::SyncBatchItem{
-                .kind = store::paired::MutationKind::put,
-                .key = &entry.hashed,
-                .value = entry.value,
-                .expire_at_ns = entry.expire_at_ns};
+            batch_items[offset] =
+                store::paired::ShardPairRuntime::SyncBatchItem{.kind = store::paired::MutationKind::put,
+                                                               .key = &entry.hashed,
+                                                               .value = entry.value,
+                                                               .expire_at_ns = entry.expire_at_ns};
             batch_statuses[offset] = {};
         }
-        const auto batch_status = impl_->pair_runtime->mutate_batch(
-            shard, std::span{batch_items, count}, std::span{batch_statuses, count});
+        const auto batch_status = impl_->pair_runtime->mutate_batch(shard, std::span{batch_items, count},
+                                                                    std::span{batch_statuses, count});
         for (std::size_t offset = 0; offset < count; ++offset) {
             if (!batch_status && batch_statuses[offset]) {
                 batch_statuses[offset] = batch_status;

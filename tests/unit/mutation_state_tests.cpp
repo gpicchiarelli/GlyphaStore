@@ -3,16 +3,16 @@
 
 #include <optional>
 
+using glyphastore::store::paired::commit_knowledge_from;
 using glyphastore::store::paired::CommitKnowledge;
 using glyphastore::store::paired::CompletionDecision;
+using glyphastore::store::paired::decide_completion;
+using glyphastore::store::paired::durable_outcome_from;
 using glyphastore::store::paired::DurableDecision;
 using glyphastore::store::paired::MutationLifecycle;
 using glyphastore::store::paired::MutationStage;
 using glyphastore::store::paired::PublicationDecision;
 using glyphastore::store::paired::PublicationState;
-using glyphastore::store::paired::commit_knowledge_from;
-using glyphastore::store::paired::decide_completion;
-using glyphastore::store::paired::durable_outcome_from;
 
 GLYPHA_TEST("mutation_state CommitKnowledge aliases DurableMutationOutcome") {
     GLYPHA_REQUIRE(commit_knowledge_from(glyphastore::DurableMutationOutcome::committed) ==
@@ -26,14 +26,12 @@ GLYPHA_TEST("mutation_state CommitKnowledge aliases DurableMutationOutcome") {
 }
 
 GLYPHA_TEST("mutation_state illegal transitions are rejected by table") {
-    GLYPHA_REQUIRE(!MutationLifecycle::transition_allowed(MutationStage::not_admitted,
-                                                          MutationStage::completed));
-    GLYPHA_REQUIRE(!MutationLifecycle::transition_allowed(MutationStage::published,
-                                                          MutationStage::rejected));
-    GLYPHA_REQUIRE(!MutationLifecycle::transition_allowed(MutationStage::completed,
-                                                          MutationStage::admitted));
-    GLYPHA_REQUIRE(MutationLifecycle::transition_allowed(MutationStage::not_admitted,
-                                                         MutationStage::admitted));
+    GLYPHA_REQUIRE(
+        !MutationLifecycle::transition_allowed(MutationStage::not_admitted, MutationStage::completed));
+    GLYPHA_REQUIRE(!MutationLifecycle::transition_allowed(MutationStage::published, MutationStage::rejected));
+    GLYPHA_REQUIRE(!MutationLifecycle::transition_allowed(MutationStage::completed, MutationStage::admitted));
+    GLYPHA_REQUIRE(
+        MutationLifecycle::transition_allowed(MutationStage::not_admitted, MutationStage::admitted));
     GLYPHA_REQUIRE(MutationLifecycle::transition_allowed(MutationStage::durable_started,
                                                          MutationStage::authority_committed));
 }

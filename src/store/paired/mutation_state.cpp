@@ -9,8 +9,8 @@ namespace {
 
 } // namespace
 
-auto decide_completion(const DurableDecision& durable,
-                       const PublicationDecision& publication) noexcept -> CompletionDecision {
+auto decide_completion(const DurableDecision& durable, const PublicationDecision& publication) noexcept
+    -> CompletionDecision {
     CompletionDecision out{};
 
     if (!durable.mutate_entered && durable.knowledge == CommitKnowledge::known_not_committed &&
@@ -181,8 +181,7 @@ auto MutationLifecycle::mark_publication_staged() noexcept -> bool {
 }
 
 auto MutationLifecycle::mark_published() noexcept -> bool {
-    if (stage_ != MutationStage::publication_required &&
-        publication_.state != PublicationState::staged &&
+    if (stage_ != MutationStage::publication_required && publication_.state != PublicationState::staged &&
         publication_.state != PublicationState::required) {
         return false;
     }
@@ -196,8 +195,7 @@ auto MutationLifecycle::mark_published() noexcept -> bool {
 }
 
 auto MutationLifecycle::mark_publication_failed() noexcept -> bool {
-    if (stage_ != MutationStage::publication_required &&
-        publication_.state != PublicationState::staged &&
+    if (stage_ != MutationStage::publication_required && publication_.state != PublicationState::staged &&
         publication_.state != PublicationState::required) {
         return false;
     }

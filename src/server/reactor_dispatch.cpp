@@ -542,7 +542,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                 response.status = reactor_detail::response_status(record.error());
             } else {
                 owned_response = std::move(*record);
-                response.value = owned_response.bytes;
+                response.value = owned_response.view();
             }
             break;
         }
@@ -557,7 +557,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             response.status = reactor_detail::response_status(record.error());
         } else if (record->value) {
             owned_response = std::move(*record->value);
-            response.value = owned_response.bytes;
+            response.value = owned_response.view();
         } else {
             auto* current = connection(token);
             if (current == nullptr) {

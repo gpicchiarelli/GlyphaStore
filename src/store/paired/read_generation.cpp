@@ -859,14 +859,21 @@ class DeltaState final {
     const auto page_count = capacity / kDeltaPageSlots;
     auto arena = std::make_shared<DeltaArena>(maximum_entries);
     if (page_count <= kFlatDeltaMaximumPages) {
-        return DeltaState{capacity, maximum_entries, 0,
+        return DeltaState{capacity,
+                          maximum_entries,
+                          0,
                           std::vector<std::shared_ptr<const DeltaPage>>(page_count),
-                          std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{}, std::move(arena)};
+                          std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{},
+                          std::move(arena)};
     }
     const auto directory_count = (page_count + kDeltaDirectoryBlockPages - 1U) / kDeltaDirectoryBlockPages;
     const auto chunk_count = (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
-    return DeltaState{capacity, maximum_entries, 0, std::vector<std::shared_ptr<const DeltaPage>>{},
-                      std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count), std::move(arena)};
+    return DeltaState{capacity,
+                      maximum_entries,
+                      0,
+                      std::vector<std::shared_ptr<const DeltaPage>>{},
+                      std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count),
+                      std::move(arena)};
 }
 
 class DeltaBuilder final {
@@ -954,8 +961,9 @@ class DeltaBuilder final {
     }
 
     [[nodiscard]] auto freeze() && -> DeltaState {
-        return DeltaState{previous_->capacity_, previous_->maximum_entries_, size_, std::move(flat_pages_),
-                          std::move(directory_chunks_), std::move(primary_arena_), std::move(secondary_arena_)};
+        return DeltaState{previous_->capacity_,       previous_->maximum_entries_,  size_,
+                          std::move(flat_pages_),     std::move(directory_chunks_), std::move(primary_arena_),
+                          std::move(secondary_arena_)};
     }
 
     [[nodiscard]] auto allocation_arena() const noexcept -> const std::shared_ptr<DeltaArena>& {
@@ -1052,8 +1060,8 @@ struct PairReadMerge::State final {
 
     State(std::shared_ptr<const PairReadGeneration> merge_cut,
           std::unique_ptr<IncrementalBaseBuilder> next_base, DeltaState post, const std::size_t maximum_post)
-        : cut(std::move(merge_cut)), current(cut), builder(std::move(next_base)),
-          post_delta(std::move(post)), maximum_post_entries(maximum_post) {}
+        : cut(std::move(merge_cut)), current(cut), builder(std::move(next_base)), post_delta(std::move(post)),
+          maximum_post_entries(maximum_post) {}
 
     std::shared_ptr<const PairReadGeneration> cut;
     std::shared_ptr<const PairReadGeneration> current;
@@ -1078,9 +1086,9 @@ PairReadGeneration::PairReadGeneration(const WorkerRoutingState routing,
       visible_through_(visible_through) {}
 
 struct PairReadGenerationEnableShared final : PairReadGeneration {
-    PairReadGenerationEnableShared(WorkerRoutingState routing,
-                                   std::shared_ptr<const ImmutableReadIndex> base, DeltaState delta,
-                                   const std::uint64_t epoch, const std::uint64_t visible_through) noexcept
+    PairReadGenerationEnableShared(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
+                                   DeltaState delta, const std::uint64_t epoch,
+                                   const std::uint64_t visible_through) noexcept
         : PairReadGeneration(routing, std::move(base), nullptr, epoch, visible_through),
           delta_storage_(std::move(delta)) {
         bind_delta(&delta_storage_);
@@ -1094,8 +1102,8 @@ struct PairReadGenerationEnableShared final : PairReadGeneration {
                                           const std::uint64_t epoch, const std::uint64_t visible_through)
     -> std::shared_ptr<const PairReadGeneration> {
     // Co-allocate generation shell + embedded DeltaState in one control block.
-    return std::make_shared<PairReadGenerationEnableShared>(routing, std::move(base), std::move(delta),
-                                                            epoch, visible_through);
+    return std::make_shared<PairReadGenerationEnableShared>(routing, std::move(base), std::move(delta), epoch,
+                                                            visible_through);
 }
 
 auto PairReadGeneration::empty(const WorkerRoutingState routing)

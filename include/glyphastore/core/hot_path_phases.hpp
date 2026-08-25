@@ -138,14 +138,15 @@ void observe_tcp(TcpPhase phase, std::uint64_t elapsed_ns) noexcept;
 
 class PhaseScope final {
   public:
-    explicit PhaseScope(void (*observe)(std::uint8_t, std::uint64_t) noexcept, const std::uint8_t phase) noexcept;
+    explicit PhaseScope(void (*observe)(std::uint8_t, std::uint64_t) noexcept,
+                        const std::uint8_t phase) noexcept;
     ~PhaseScope();
 
     PhaseScope(const PhaseScope&) = delete;
     auto operator=(const PhaseScope&) -> PhaseScope& = delete;
 
   private:
-    void (*observe_)(std::uint8_t, std::uint64_t) noexcept{};
+    void (*observe_)(std::uint8_t, std::uint64_t) noexcept {};
     std::uint8_t phase_{};
     std::uint64_t start_ns_{};
 };
@@ -192,20 +193,20 @@ inline auto format_report() -> std::string {
 #if defined(GLYPHASTORE_HOT_PATH_PHASES)
 #define GS_PHASE_CONCAT_INNER(a, b) a##b
 #define GS_PHASE_CONCAT(a, b) GS_PHASE_CONCAT_INNER(a, b)
-#define GS_PHASE_GET(phase)                                                                          \
-    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_get_, __COUNTER__) {           \
-        &::glyphastore::hot_path::observe_get_u8,                                                    \
-            static_cast<std::uint8_t>(::glyphastore::hot_path::GetPhase::phase)                      \
+#define GS_PHASE_GET(phase)                                                                                  \
+    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_get_, __COUNTER__) {                  \
+        &::glyphastore::hot_path::observe_get_u8,                                                            \
+            static_cast<std::uint8_t>(::glyphastore::hot_path::GetPhase::phase)                              \
     }
-#define GS_PHASE_PUT(phase)                                                                          \
-    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_put_, __COUNTER__) {           \
-        &::glyphastore::hot_path::observe_put_u8,                                                    \
-            static_cast<std::uint8_t>(::glyphastore::hot_path::PutPhase::phase)                      \
+#define GS_PHASE_PUT(phase)                                                                                  \
+    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_put_, __COUNTER__) {                  \
+        &::glyphastore::hot_path::observe_put_u8,                                                            \
+            static_cast<std::uint8_t>(::glyphastore::hot_path::PutPhase::phase)                              \
     }
-#define GS_PHASE_TCP(phase)                                                                          \
-    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_tcp_, __COUNTER__) {           \
-        &::glyphastore::hot_path::observe_tcp_u8,                                                    \
-            static_cast<std::uint8_t>(::glyphastore::hot_path::TcpPhase::phase)                      \
+#define GS_PHASE_TCP(phase)                                                                                  \
+    const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_tcp_, __COUNTER__) {                  \
+        &::glyphastore::hot_path::observe_tcp_u8,                                                            \
+            static_cast<std::uint8_t>(::glyphastore::hot_path::TcpPhase::phase)                              \
     }
 #else
 #define GS_PHASE_GET(phase) static_cast<void>(0)

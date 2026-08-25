@@ -306,11 +306,16 @@ GLYPHA_TEST("migrate_durable_store resumes after an injected mid-copy interrupt"
         GLYPHA_REQUIRE((*opened)->close().has_value());
     }
 
-    FailAfterDestinationCommits interrupt{.fail_after = 1};
+    // Allow two copied keys and their checkpoints to commit, then interrupt the
+    // following copied key.
+    FailAfterDestinationCommits interrupt{.fail_after = 2};
     const auto interrupted =
         glyphastore::migrate_durable_store(source, destination, 2, true, {}, interrupt.hooks());
     GLYPHA_REQUIRE(!interrupted.has_value());
-    GLYPHA_REQUIRE(interrupted.error().code == glyphastore::ErrorCode::io_error);
+    // The paired Writer entered the Store boundary before the injected storage
+    // refusal, so the public outcome is indeterminate/fail-closed. The durable
+    // checkpoint is what makes the operation safely resumable.
+    GLYPHA_REQUIRE(interrupted.error().code == glyphastore::ErrorCode::unavailable);
     GLYPHA_REQUIRE(std::filesystem::exists(glyphastore::migrate_checkpoint_path(destination)));
     // Destination partially populated and checkpoint present.
     GLYPHA_REQUIRE(std::filesystem::exists(destination));

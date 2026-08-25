@@ -103,8 +103,8 @@ auto encoded_record_size(const RecordInput& input) -> Result<std::size_t> {
     return compute_encoded_size(input);
 }
 
-auto encode_record(const std::span<std::byte> out, const RecordInput& input,
-                   const std::size_t encoded_size) -> Status {
+auto encode_record(const std::span<std::byte> out, const RecordInput& input, const std::size_t encoded_size)
+    -> Status {
     if (auto valid = validate_record_input(input); !valid) {
         return valid;
     }

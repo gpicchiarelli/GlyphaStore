@@ -333,8 +333,7 @@ GLYPHA_TEST("concurrent Store::backup_to re-fences admissions after compaction w
                 if (which == 1 && probe.store != nullptr) {
                     // Second backup's manifest copy: admissions must still be closed.
                     const auto admitted = probe.store->put("during-second-backup", bytes("no"));
-                    probe.put_during_second_manifest.store(admitted.has_value(),
-                                                           std::memory_order_release);
+                    probe.put_during_second_manifest.store(admitted.has_value(), std::memory_order_release);
                 }
                 return {};
             }

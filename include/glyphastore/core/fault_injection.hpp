@@ -56,8 +56,8 @@ void fail_nth(Site site, std::uint32_t n) noexcept;
 // Deterministic one-shot block for litmus: maybe_block waits until release_block.
 void arm_block(Site site) noexcept;
 void release_block(Site site) noexcept;
-[[nodiscard]] auto wait_until_blocked(Site site,
-                                      std::chrono::milliseconds timeout = std::chrono::seconds{2}) -> bool;
+[[nodiscard]] auto wait_until_blocked(Site site, std::chrono::milliseconds timeout = std::chrono::seconds{2})
+    -> bool;
 void maybe_block(Site site) noexcept;
 
 #else

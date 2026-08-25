@@ -46,31 +46,22 @@ check "perl/VERSION (all modules)" "$perl_ver"
 go_ver="$("${GO:-go}" -C "$root/sdk/go" run ./cmd/glyphastore-version)"
 check "go/client.Version" "$go_ver"
 
-ruby_bin="${RUBY:-}"
-if [[ -z "$ruby_bin" && -x "${HOME:-}/.local/bin/mise" ]]; then
-  ruby_bin="$("${HOME}/.local/bin/mise" exec ruby@3.3 -- which ruby 2>/dev/null || true)"
-fi
-ruby_bin="${ruby_bin:-$(command -v ruby || true)}"
-if [[ -z "$ruby_bin" ]]; then
-  echo "ruby not found on PATH (set RUBY=...)" >&2
-  exit 1
-fi
 ruby_ver="$(
-  RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}" \
-    "$ruby_bin" -e 'require "glypha_store"; print GlyphaStore::VERSION'
+  sed -nE 's/^[[:space:]]*VERSION[[:space:]]*=[[:space:]]*"([^"]+)"[[:space:]]*$/\1/p' \
+    "$root/sdk/ruby/lib/glypha_store/version.rb"
 )"
 check "ruby/GlyphaStore::VERSION" "$ruby_ver"
 
-if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
-  (cd "$root/sdk/erlang" && rebar3 compile >/dev/null)
-  erlang_ver="$(
-    erl -noshell -pa "$root/sdk/erlang/_build/default/lib/glyphastore/ebin" \
-      -eval 'io:format("~s", [glyphastore_version:version()]), halt().'
-  )"
-  check "erlang/glyphastore_version" "$erlang_ver"
-else
-  echo "note: skipping Erlang version check (erl/rebar3 not on PATH)" >&2
-fi
+erlang_ver="$(
+  sed -nE 's/^[[:space:]]*<<"([^"]+)">>\.[[:space:]]*$/\1/p' \
+    "$root/sdk/erlang/src/glyphastore_version.erl"
+)"
+erlang_app_ver="$(
+  sed -nE 's/^[[:space:]]*\{vsn,[[:space:]]*"([^"]+)"\},[[:space:]]*$/\1/p' \
+    "$root/sdk/erlang/src/glyphastore.app.src"
+)"
+check "erlang/glyphastore_version" "$erlang_ver"
+check "erlang/application.vsn" "$erlang_app_ver"
 
 check "cmake/PROJECT_VERSION (VERSION file)" "$expected"
 

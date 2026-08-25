@@ -791,13 +791,12 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
         }
 
         worker_lock.lock();
-        worker.mutation_io_finished.wait(
-            worker_lock, [&] { return !worker.mutation_io_active || !healthy(); });
+        worker.mutation_io_finished.wait(worker_lock,
+                                         [&] { return !worker.mutation_io_active || !healthy(); });
         if (!healthy()) {
             commit_gate.clear_locked();
             worker_lock.unlock();
-            return abort_prepared(
-                Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
+            return abort_prepared(Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
         }
         catalog_lock.lock();
         sources_still_pinned = source_pins.size() == sources.size();
@@ -817,14 +816,13 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                                    generation_pins_[catalog_index] == source_pins[source_index];
         }
         if (!healthy() || worker.mutation_io_active || manifest_ != snapshot ||
-            segments_.size() != snapshot.segments.size() ||
-            worker.next_sequence != snapshot_next_sequence || !worker.pending_group_mutations.empty() ||
-            worker.batch_closing || !sources_still_pinned) {
+            segments_.size() != snapshot.segments.size() || worker.next_sequence != snapshot_next_sequence ||
+            !worker.pending_group_mutations.empty() || worker.batch_closing || !sources_still_pinned) {
             catalog_lock.unlock();
             commit_gate.clear_locked();
             worker_lock.unlock();
-            return abort_prepared(Error{ErrorCode::sequence_conflict,
-                                        "runtime state changed during durable compaction"});
+            return abort_prepared(
+                Error{ErrorCode::sequence_conflict, "runtime state changed during durable compaction"});
         }
         catalog_lock.unlock();
         worker_lock.unlock();

@@ -265,8 +265,7 @@ struct WorkerConnection {
             if (!read) {
                 return unexpected(read.error());
             }
-            if (read->kind == server::TlsIoKind::would_block ||
-                read->kind == server::TlsIoKind::want_read ||
+            if (read->kind == server::TlsIoKind::would_block || read->kind == server::TlsIoKind::want_read ||
                 read->kind == server::TlsIoKind::want_write) {
                 auto ready =
                     wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
@@ -522,8 +521,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
             if (!read) {
                 return ExchangeFailure{read.error(), request_bytes_sent};
             }
-            if (read->kind == server::TlsIoKind::would_block ||
-                read->kind == server::TlsIoKind::want_read ||
+            if (read->kind == server::TlsIoKind::would_block || read->kind == server::TlsIoKind::want_read ||
                 read->kind == server::TlsIoKind::want_write) {
                 auto ready =
                     wait_for(connection.socket.get(), static_cast<short>(POLLIN | POLLOUT), deadline);
@@ -971,10 +969,10 @@ class Client::Impl final {
                         responses[index].outcome = PipelineOutcome::failed;
                         // Group-level pre-admission failure (connect/encode): bytes_sent=0 →
                         // mutation_outcome=rejected, matching mark_unresolved / Erlang.
-                        responses[index].error = enrich_error(
-                            executed.error(), operation_name(request.opcode), std::nullopt,
-                            worker_for(request.key), routing_epoch_, 0, std::nullopt,
-                            is_mutation(request.opcode), false);
+                        responses[index].error =
+                            enrich_error(executed.error(), operation_name(request.opcode), std::nullopt,
+                                         worker_for(request.key), routing_epoch_, 0, std::nullopt,
+                                         is_mutation(request.opcode), false);
                     }
                     return responses;
                 }
@@ -996,10 +994,10 @@ class Client::Impl final {
                     const auto index = item.job->original_indices[offset];
                     const auto& request = item.job->requests[offset];
                     responses[index].outcome = PipelineOutcome::failed;
-                    responses[index].error = enrich_error(
-                        executed.error(), operation_name(request.opcode), std::nullopt,
-                        worker_for(request.key), routing_epoch_, 0, std::nullopt,
-                        is_mutation(request.opcode), false);
+                    responses[index].error =
+                        enrich_error(executed.error(), operation_name(request.opcode), std::nullopt,
+                                     worker_for(request.key), routing_epoch_, 0, std::nullopt,
+                                     is_mutation(request.opcode), false);
                 }
                 continue;
             }
@@ -1158,8 +1156,8 @@ class Client::Impl final {
                     // empty" and falsely claim the backup never succeeded — treat like a
                     // mutation with bytes in flight (indeterminate / reconcile_first).
                     return unexpected(enrich_error(failure->error, operation, request_id, worker,
-                                                   routing_epoch_, failure->request_bytes_sent,
-                                                   std::nullopt, true, true));
+                                                   routing_epoch_, failure->request_bytes_sent, std::nullopt,
+                                                   true, true));
                 }
                 last_error = enrich_error(failure->error, operation, request_id, worker, routing_epoch_,
                                           failure->request_bytes_sent);

@@ -4,10 +4,10 @@
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/bounded_spsc_queue.hpp"
+#include "glyphastore/store/paired/completion_policy.hpp"
+#include "glyphastore/store/paired/mutation_recovery.hpp"
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
 #include "glyphastore/store/paired/mutation_state.hpp"
-#include "glyphastore/store/paired/mutation_recovery.hpp"
-#include "glyphastore/store/paired/completion_policy.hpp"
 #include "store/store_internal.hpp"
 
 #include <algorithm>
@@ -407,8 +407,7 @@ auto ShardPairRuntime::try_submit(const AsyncMutationRequest& request) noexcept
     } submission{*this};
     if (!healthy_.load(std::memory_order_acquire) || !started_.load(std::memory_order_acquire) ||
         stopping_.load(std::memory_order_acquire) || lane.stopping.load(std::memory_order_acquire) ||
-        expire_remaining_.load(std::memory_order_acquire) ||
-        !detail::StoreAccess::admissions_open(store_)) {
+        expire_remaining_.load(std::memory_order_acquire) || !detail::StoreAccess::admissions_open(store_)) {
         lane.rejected.fetch_add(1U, std::memory_order_relaxed);
         return std::nullopt;
     }
@@ -789,20 +788,18 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             if (!snapshot) {
                 return false;
             }
-            auto next = PairReadGeneration::replace_durable_snapshot(lane.writer_generation,
-                                                                     snapshot->records);
+            auto next =
+                PairReadGeneration::replace_durable_snapshot(lane.writer_generation, snapshot->records);
             if (!next) {
                 return false;
             }
             lane.retired_generations.push_back(lane.writer_generation);
-            lane.retired_generation_count.store(lane.retired_generations.size(),
-                                                std::memory_order_relaxed);
+            lane.retired_generation_count.store(lane.retired_generations.size(), std::memory_order_relaxed);
             lane.writer_generation = std::move(*next);
             update_delta_stats();
             lane.writer_epoch.store(lane.writer_generation->epoch(), std::memory_order_relaxed);
             publish_read_generation(lane.published_generation, lane.writer_generation.get());
-            lane.published_catalog_revision.store(snapshot->catalog_revision,
-                                                  std::memory_order_release);
+            lane.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
             lane.read_merge.reset();
             lane.read_merge_active.store(false, std::memory_order_relaxed);
             lane.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -951,8 +948,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
 
     for (;;) {
         process_reclamation();
-        if (!lane.stopping.load(std::memory_order_acquire) &&
-            healthy_.load(std::memory_order_acquire)) {
+        if (!lane.stopping.load(std::memory_order_acquire) && healthy_.load(std::memory_order_acquire)) {
             process_refresh();
             process_merge();
         }
@@ -1004,8 +1000,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 std::vector<SyncMutation*> sticky_committed_nodes;
                 sticky_committed_nodes.reserve(8);
                 const auto ack_sticky_after_visibility = [&]() noexcept {
-                    const auto* published =
-                        lane.published_generation.load(std::memory_order_acquire);
+                    const auto* published = lane.published_generation.load(std::memory_order_acquire);
                     if (published == nullptr) {
                         return;
                     }
@@ -1057,8 +1052,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     // Default Status{} is success — must not survive catch/drain for items
                     // never Store-mutated (would success-ACK invisible keys).
                     for (auto* node : nodes) {
-                        node->status = Status{fail(ErrorCode::resource_exhausted,
-                                                   "paired durable batch item not processed")};
+                        node->status = Status{
+                            fail(ErrorCode::resource_exhausted, "paired durable batch item not processed")};
                     }
                     views.reserve(nodes.size());
                     std::size_t begin = 0;
@@ -1143,8 +1138,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     if (publication_required) {
                         // allow_fail_closed: failing mutate may already have marked durable
                         // unhealthy while earlier siblings remain indexed.
-                        auto snapshot =
-                            detail::StoreAccess::snapshot_durable_reads(store_, shard, true);
+                        auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, shard, true);
                         auto next = snapshot ? PairReadGeneration::replace_durable_snapshot(
                                                    lane.writer_generation, snapshot->records)
                                              : Result<std::shared_ptr<const PairReadGeneration>>{
@@ -1305,9 +1299,9 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         lane.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                         for (std::size_t index = 0; index < chunk_size; ++index) {
                             // Never Store-entered — same polarity as async merge pressure.
-                            chunk[index]->status = Status{fail(
-                                ErrorCode::resource_exhausted,
-                                "mutation rejected until incremental read merge advances")};
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted,
+                                            "mutation rejected until incremental read merge advances")};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
@@ -1327,9 +1321,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                 if (!healthy_.load(std::memory_order_acquire)) {
                                     for (; index < chunk_size; ++index) {
                                         // Never Store-entered after sticky — known not newly committed.
-                                        chunk[index]->status = Status{fail(
-                                            ErrorCode::resource_exhausted,
-                                            "paired runtime is fail-closed")};
+                                        chunk[index]->status = Status{fail(ErrorCode::resource_exhausted,
+                                                                           "paired runtime is fail-closed")};
                                     }
                                     break;
                                 }
@@ -1345,8 +1338,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                               detail::StoreAccess::PublishedAdmission::caller_holds_guard);
                                 if (!published) {
                                     bool sticky = false;
-                                    auto error =
-                                        classify_volatile_mutation_error(published.error(), sticky);
+                                    auto error = classify_volatile_mutation_error(published.error(), sticky);
                                     if (sticky) {
                                         publish_fail_closed();
                                     }
@@ -1354,29 +1346,28 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                     continue;
                                 }
                                 store_mutated = true;
-                                publications[publication_count] = ReadMutation{
-                                    .key = key,
-                                    .record = published->record,
-                                    .segment = std::move(published->segment),
-                                    .opcode = published->opcode};
+                                publications[publication_count] =
+                                    ReadMutation{.key = key,
+                                                 .record = published->record,
+                                                 .segment = std::move(published->segment),
+                                                 .opcode = published->opcode};
                                 published_nodes[publication_count] = node;
                                 ++publication_count;
                                 // Litmus / cross-lane sticky: force fail-closed after a successful
                                 // Store mutate so later siblings hit the mid-chunk reject above.
-                                if (glyphastore::fault::consume_fail(
-                                        glyphastore::fault::Site::mutate)) {
+                                if (glyphastore::fault::consume_fail(glyphastore::fault::Site::mutate)) {
                                     publish_fail_closed();
                                 }
                             }
                         }
                         if (publication_count != 0) {
-                            Result<std::shared_ptr<const PairReadGeneration>> next{fail(
-                                ErrorCode::internal_error, "read publication not attempted")};
+                            Result<std::shared_ptr<const PairReadGeneration>> next{
+                                fail(ErrorCode::internal_error, "read publication not attempted")};
                             {
                                 GS_PHASE_PUT(publish);
                                 next = PairReadGeneration::publish_incremental(
-                                    lane.writer_generation,
-                                    std::span{publications.data(), publication_count}, lane.read_merge.get());
+                                    lane.writer_generation, std::span{publications.data(), publication_count},
+                                    lane.read_merge.get());
                                 if (!next && next.error().code == ErrorCode::resource_exhausted) {
                                     reclaim_quiescent();
                                     process_merge();
@@ -1431,18 +1422,18 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             }
                             if (store_entered) {
                                 // Mutated but not success-ACK'd — reconcile polarity.
-                                node->status = Status{fail(ErrorCode::unavailable,
-                                                           "paired mutation allocation failed")};
+                                node->status =
+                                    Status{fail(ErrorCode::unavailable, "paired mutation allocation failed")};
                             } else if (!node->status) {
                                 // Keep Store API / mid-chunk fail-closed polarity (known not committed).
                                 continue;
                             } else if (store_mutated) {
                                 // Default success but never Store-entered after sticky.
-                                node->status = Status{fail(ErrorCode::resource_exhausted,
-                                                           "paired runtime is fail-closed")};
+                                node->status = Status{
+                                    fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             } else {
-                                node->status = Status{fail(ErrorCode::resource_exhausted,
-                                                           "paired mutation allocation failed")};
+                                node->status = Status{
+                                    fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                             }
                         }
                     } catch (...) {
@@ -1466,8 +1457,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             } else if (!node->status) {
                                 continue;
                             } else if (store_mutated) {
-                                node->status = Status{fail(ErrorCode::resource_exhausted,
-                                                           "paired runtime is fail-closed")};
+                                node->status = Status{
+                                    fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             } else {
                                 node->status =
                                     Status{fail(ErrorCode::resource_exhausted, "paired Writer failure")};
@@ -1559,8 +1550,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         // After drain/publish: success ACK iff published generation matches the
                         // mutation (put hit / erase miss). Index-insert-fail stays error+miss.
                         const auto ack_after_published_visibility = [&]() -> Status {
-                            const auto* published =
-                                lane.published_generation.load(std::memory_order_acquire);
+                            const auto* published = lane.published_generation.load(std::memory_order_acquire);
                             if (published == nullptr) {
                                 return Status{fail(ErrorCode::unavailable,
                                                    "paired read generation missing after drain")};
@@ -1607,9 +1597,10 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                     generation_published = try_drain_durable_snapshot();
                                     shadow_mark_published(generation_published);
                                     publish_fail_closed();
-                                    status = generation_published ? ack_after_published_visibility()
-                                                                  : Status{fail(ErrorCode::unavailable,
-                                                                                "durable read capture failed")};
+                                    status = generation_published
+                                                 ? ack_after_published_visibility()
+                                                 : Status{fail(ErrorCode::unavailable,
+                                                               "durable read capture failed")};
                                     shadow_resolve_status();
                                 } else {
                                     publication.record = captured->reference();
@@ -1658,9 +1649,10 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                     generation_published = try_drain_durable_snapshot();
                                     shadow_mark_published(generation_published);
                                     publish_fail_closed();
-                                    status = generation_published ? ack_after_published_visibility()
-                                                                  : Status{fail(ErrorCode::unavailable,
-                                                                                "read publication failed")};
+                                    status =
+                                        generation_published
+                                            ? ack_after_published_visibility()
+                                            : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                     shadow_resolve_status();
                                 } else {
                                     lane.retired_generations.push_back(lane.writer_generation);
@@ -1674,8 +1666,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                             lane.writer_generation.get());
                                     generation_published = true;
                                     shadow_mark_published(true);
-                                    if (glyphastore::fault::consume_fail(
-                                            glyphastore::fault::Site::publish)) {
+                                    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
                                         throw std::bad_alloc{};
                                     }
                                     reclaim_proportional();
@@ -1706,11 +1697,11 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     if (recovery.fail_closed) {
                         publish_fail_closed();
                     }
-                    const auto status_plan = plan_sync_durable_exception_status(
-                        {.durable_committed = durable_committed,
-                         .durable_mutate_entered = durable_mutate_entered,
-                         .generation_published = generation_published,
-                         .status_resolved = status_resolved});
+                    const auto status_plan =
+                        plan_sync_durable_exception_status({.durable_committed = durable_committed,
+                                                            .durable_mutate_entered = durable_mutate_entered,
+                                                            .generation_published = generation_published,
+                                                            .status_resolved = status_resolved});
                     switch (status_plan.kind) {
                     case SyncDurableExceptionStatusKind::keep_resolved:
                         // Keep definitive polarity — including visibility-failed errors after
@@ -1728,8 +1719,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         shadow_resolve_status();
                         break;
                     case SyncDurableExceptionStatusKind::resource_exhausted_never_entered:
-                        status = Status{
-                            fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                        status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                         shadow_resolve_status();
                         break;
                     }
@@ -1751,11 +1742,11 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     if (recovery.fail_closed) {
                         publish_fail_closed();
                     }
-                    const auto status_plan = plan_sync_durable_exception_status(
-                        {.durable_committed = durable_committed,
-                         .durable_mutate_entered = durable_mutate_entered,
-                         .generation_published = generation_published,
-                         .status_resolved = status_resolved});
+                    const auto status_plan =
+                        plan_sync_durable_exception_status({.durable_committed = durable_committed,
+                                                            .durable_mutate_entered = durable_mutate_entered,
+                                                            .generation_published = generation_published,
+                                                            .status_resolved = status_resolved});
                     switch (status_plan.kind) {
                     case SyncDurableExceptionStatusKind::keep_resolved:
                         break;
@@ -1800,8 +1791,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         assert(life.durable().committed());
                     }
                     if (generation_published) {
-                        assert(life.publication().published() ||
-                               life.stage() == MutationStage::completed ||
+                        assert(life.publication().published() || life.stage() == MutationStage::completed ||
                                life.stage() == MutationStage::completion_decided);
                     }
                     if (status_resolved) {
@@ -1986,8 +1976,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 throw std::bad_alloc{};
             }
             if (lane.read_merge) {
-                lane.read_merge_post_entries.store(
-                    PairReadGeneration::merge_post_entries(*lane.read_merge), std::memory_order_relaxed);
+                lane.read_merge_post_entries.store(PairReadGeneration::merge_post_entries(*lane.read_merge),
+                                                   std::memory_order_relaxed);
             }
             merge_retry_blocked = false;
             reclaim_quiescent();
@@ -2177,8 +2167,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     first_unprocessed = end;
                     mutate_inflight = false;
                     for (const auto offset : pending_stage_offsets) {
-                        stage_durable_publication(durable_indices[begin + offset],
-                                                  results[offset].mutation);
+                        stage_durable_publication(durable_indices[begin + offset], results[offset].mutation);
                     }
                     begin = end;
                 }
@@ -2311,8 +2300,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                 : detail::StoreAccess::erase_volatile_published(store_, shard, key);
                         if (!published) {
                             bool sticky = false;
-                            auto error =
-                                classify_volatile_mutation_error(published.error(), sticky);
+                            auto error = classify_volatile_mutation_error(published.error(), sticky);
                             if (sticky) {
                                 // Append crossed; mirror durable indeterminate sticky.
                                 post_commit_publication_failure = true;
@@ -2390,9 +2378,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     for (const auto index : read_mutation_indices) {
                         if (!completions[index].error) {
                             completions[index].error.emplace(
-                                ErrorCode::unavailable,
-                                "read publication failed after a committed mutation; "
-                                "paired runtime is fail-closed");
+                                ErrorCode::unavailable, "read publication failed after a committed mutation; "
+                                                        "paired runtime is fail-closed");
                         }
                     }
                 }
@@ -2404,9 +2391,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     for (const auto index : read_mutation_indices) {
                         if (!completions[index].error) {
                             completions[index].error.emplace(
-                                ErrorCode::unavailable,
-                                "read publication failed after a committed mutation; "
-                                "paired runtime is fail-closed");
+                                ErrorCode::unavailable, "read publication failed after a committed mutation; "
+                                                        "paired runtime is fail-closed");
                         }
                     }
                 } else {
@@ -2540,7 +2526,8 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
     // Otherwise volatile pairs keep mutating after publish_fail_closed (durable is masked
     // by DurableRuntime::healthy checks on the Store API).
     if (!healthy_.load(std::memory_order_acquire) || !started_.load(std::memory_order_acquire) ||
-        stopping_.load(std::memory_order_acquire) || lanes_[shard]->stopping.load(std::memory_order_acquire)) {
+        stopping_.load(std::memory_order_acquire) ||
+        lanes_[shard]->stopping.load(std::memory_order_acquire)) {
         return fail(ErrorCode::unavailable, "paired runtime is fail-closed");
     }
 
@@ -2607,7 +2594,8 @@ auto ShardPairRuntime::mutate_batch(const std::size_t shard, const std::span<con
     } admission{*this};
 
     if (!healthy_.load(std::memory_order_acquire) || !started_.load(std::memory_order_acquire) ||
-        stopping_.load(std::memory_order_acquire) || lanes_[shard]->stopping.load(std::memory_order_acquire)) {
+        stopping_.load(std::memory_order_acquire) ||
+        lanes_[shard]->stopping.load(std::memory_order_acquire)) {
         for (auto& status : statuses) {
             status = Status{fail(ErrorCode::unavailable, "paired runtime is fail-closed")};
         }

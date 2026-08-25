@@ -411,10 +411,8 @@ GLYPHA_TEST("exclusive Writer with flusher does not deadlock rotation on compact
     GLYPHA_REQUIRE(directory.has_value());
     glyphastore::DurableRuntimeOptions options{};
     options.exclusive_writer = true;
-    options.batch = glyphastore::DurableGroupConfig{.max_records = 32,
-                                                    .max_bytes = 65'536,
-                                                    .max_wait_ms = 50,
-                                                    .min_records = 1};
+    options.batch = glyphastore::DurableGroupConfig{
+        .max_records = 32, .max_bytes = 65'536, .max_wait_ms = 50, .min_records = 1};
     options.strict_ack = true;
     options.sync_interval_ms = 50;
     auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, options);
@@ -465,10 +463,10 @@ GLYPHA_TEST("exclusive Writer with flusher does not deadlock rotation on compact
     compactor.join();
 
     GLYPHA_REQUIRE(queue_progressed);
-    GLYPHA_REQUIRE(queued.committed() ||
-                   (queued.error.has_value() &&
-                    (queued.error->code == glyphastore::ErrorCode::sequence_conflict ||
-                     queued.error->code == glyphastore::ErrorCode::resource_exhausted)));
+    GLYPHA_REQUIRE(
+        queued.committed() ||
+        (queued.error.has_value() && (queued.error->code == glyphastore::ErrorCode::sequence_conflict ||
+                                      queued.error->code == glyphastore::ErrorCode::resource_exhausted)));
     GLYPHA_REQUIRE(!rotating.committed());
     GLYPHA_REQUIRE(rotating.error.has_value());
     GLYPHA_REQUIRE(rotating.error->code == glyphastore::ErrorCode::sequence_conflict ||
@@ -549,8 +547,7 @@ GLYPHA_TEST("exclusive Writer compact unlocks before hot_path_depth wait") {
     glyphastore::DurableMutationResult mutating;
     std::thread writer{[&] {
         const std::string value{"concurrent"};
-        mutating =
-            (*runtime)->put(std::as_bytes(std::span{mutate_key}), std::as_bytes(std::span{value}));
+        mutating = (*runtime)->put(std::as_bytes(std::span{mutate_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(blocker.append.wait_until_blocked());
 
@@ -637,8 +634,7 @@ GLYPHA_TEST("exclusive Writer compact Phase A drains hot_path_depth before Index
     glyphastore::DurableMutationResult in_flight;
     std::thread writer{[&] {
         const std::string value{"in-flight"};
-        in_flight =
-            (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
+        in_flight = (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(blocker.append.wait_until_blocked());
 
@@ -736,16 +732,14 @@ GLYPHA_TEST("exclusive Writer unread TTL probe drains hot_path_depth before Inde
     glyphastore::DurableMutationResult in_flight;
     std::thread writer{[&] {
         const std::string value{"in-flight"};
-        in_flight =
-            (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
+        in_flight = (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(append.wait_until_blocked());
 
     glyphastore::Result<glyphastore::MaintenanceObservation> observation{
         glyphastore::fail(glyphastore::ErrorCode::internal_error, "unset")};
-    std::thread prober{[&] {
-        observation = (*runtime)->maintenance_observation(0, /*now_ns=*/100, /*probe=*/true);
-    }};
+    std::thread prober{
+        [&] { observation = (*runtime)->maintenance_observation(0, /*now_ns=*/100, /*probe=*/true); }};
     std::this_thread::sleep_for(std::chrono::milliseconds{20});
 
     glyphastore::DurableMutationResult gated;
@@ -845,18 +839,16 @@ GLYPHA_TEST("exclusive Writer capture_published_read takes Worker mutex under co
 
     {
         const std::string value{"stable"};
-        GLYPHA_REQUIRE(
-            (*runtime)
-                ->put(std::as_bytes(std::span{stable_key}), std::as_bytes(std::span{value}))
-                .committed());
+        GLYPHA_REQUIRE((*runtime)
+                           ->put(std::as_bytes(std::span{stable_key}), std::as_bytes(std::span{value}))
+                           .committed());
     }
 
     blocker.append.arm();
     glyphastore::DurableMutationResult in_flight;
     std::thread writer{[&] {
         const std::string value{"in-flight"};
-        in_flight =
-            (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
+        in_flight = (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(blocker.append.wait_until_blocked());
 
@@ -870,8 +862,7 @@ GLYPHA_TEST("exclusive Writer capture_published_read takes Worker mutex under co
     for (std::uint32_t attempt = 0; std::chrono::steady_clock::now() < gate_deadline; ++attempt) {
         const auto key = gated_key + std::to_string(attempt);
         const std::string value{"gated"};
-        const auto gated =
-            (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+        const auto gated = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
         if (!gated.committed() && gated.error.has_value() &&
             gated.error->code == glyphastore::ErrorCode::sequence_conflict) {
             saw_gate = true;
@@ -956,18 +947,16 @@ GLYPHA_TEST("exclusive Writer prepare_get drains hot_path_depth before Index fin
 
     {
         const std::string value{"stable"};
-        GLYPHA_REQUIRE(
-            (*runtime)
-                ->put(std::as_bytes(std::span{stable_key}), std::as_bytes(std::span{value}))
-                .committed());
+        GLYPHA_REQUIRE((*runtime)
+                           ->put(std::as_bytes(std::span{stable_key}), std::as_bytes(std::span{value}))
+                           .committed());
     }
 
     append.arm();
     glyphastore::DurableMutationResult in_flight;
     std::thread writer{[&] {
         const std::string value{"in-flight"};
-        in_flight =
-            (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
+        in_flight = (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(append.wait_until_blocked());
 
@@ -981,8 +970,7 @@ GLYPHA_TEST("exclusive Writer prepare_get drains hot_path_depth before Index fin
     for (std::uint32_t attempt = 0; std::chrono::steady_clock::now() < gate_deadline; ++attempt) {
         const auto key = gated_key + std::to_string(attempt);
         const std::string value{"gated"};
-        const auto gated =
-            (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+        const auto gated = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
         if (!gated.committed() && gated.error.has_value() &&
             gated.error->code == glyphastore::ErrorCode::sequence_conflict) {
             saw_gate = true;
@@ -1059,8 +1047,7 @@ GLYPHA_TEST("exclusive Writer flush drains hot_path_depth before dirty sync") {
     glyphastore::DurableMutationResult in_flight;
     std::thread writer{[&] {
         const std::string value{"in-flight"};
-        in_flight =
-            (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
+        in_flight = (*runtime)->put(std::as_bytes(std::span{in_flight_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(append.wait_until_blocked());
 
@@ -1074,8 +1061,7 @@ GLYPHA_TEST("exclusive Writer flush drains hot_path_depth before dirty sync") {
     for (std::uint32_t attempt = 0; std::chrono::steady_clock::now() < gate_deadline; ++attempt) {
         const auto key = gated_key + std::to_string(attempt);
         const std::string value{"gated"};
-        const auto gated =
-            (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
+        const auto gated = (*runtime)->put(std::as_bytes(std::span{key}), std::as_bytes(std::span{value}));
         if (!gated.committed() && gated.error.has_value() &&
             gated.error->code == glyphastore::ErrorCode::sequence_conflict) {
             saw_gate = true;
@@ -1134,10 +1120,8 @@ GLYPHA_TEST("exclusive Writer with flusher re-locks Worker after rotation I/O") 
     GLYPHA_REQUIRE(directory.has_value());
     glyphastore::DurableRuntimeOptions options{};
     options.exclusive_writer = true;
-    options.batch = glyphastore::DurableGroupConfig{.max_records = 32,
-                                                    .max_bytes = 65'536,
-                                                    .max_wait_ms = 50,
-                                                    .min_records = 1};
+    options.batch = glyphastore::DurableGroupConfig{
+        .max_records = 32, .max_bytes = 65'536, .max_wait_ms = 50, .min_records = 1};
     options.strict_ack = true;
     options.sync_interval_ms = 50;
     auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory), 0, options);
@@ -1146,8 +1130,7 @@ GLYPHA_TEST("exclusive Writer with flusher re-locks Worker after rotation I/O") 
     glyphastore::DurableMutationResult rotating;
     std::thread rotator{[&] {
         const std::string value{"rotating"};
-        rotating =
-            (*runtime)->put(std::as_bytes(std::span{rotating_key}), std::as_bytes(std::span{value}));
+        rotating = (*runtime)->put(std::as_bytes(std::span{rotating_key}), std::as_bytes(std::span{value}));
     }};
     GLYPHA_REQUIRE(blocker.wait_until_blocked());
 
@@ -1157,8 +1140,7 @@ GLYPHA_TEST("exclusive Writer with flusher re-locks Worker after rotation I/O") 
     bool sibling_finished{};
     std::thread sibling_writer{[&] {
         const std::string value{"sibling"};
-        sibling =
-            (*runtime)->put(std::as_bytes(std::span{sibling_key}), std::as_bytes(std::span{value}));
+        sibling = (*runtime)->put(std::as_bytes(std::span{sibling_key}), std::as_bytes(std::span{value}));
         {
             const std::lock_guard lock{completion_mutex};
             sibling_finished = true;
@@ -1177,14 +1159,14 @@ GLYPHA_TEST("exclusive Writer with flusher re-locks Worker after rotation I/O") 
     sibling_writer.join();
 
     GLYPHA_REQUIRE(sibling_progressed);
-    GLYPHA_REQUIRE(rotating.committed() ||
-                   (rotating.error.has_value() &&
-                    (rotating.error->code == glyphastore::ErrorCode::sequence_conflict ||
-                     rotating.error->code == glyphastore::ErrorCode::resource_exhausted)));
-    GLYPHA_REQUIRE(sibling.committed() ||
-                   (sibling.error.has_value() &&
-                    (sibling.error->code == glyphastore::ErrorCode::sequence_conflict ||
-                     sibling.error->code == glyphastore::ErrorCode::resource_exhausted)));
+    GLYPHA_REQUIRE(
+        rotating.committed() ||
+        (rotating.error.has_value() && (rotating.error->code == glyphastore::ErrorCode::sequence_conflict ||
+                                        rotating.error->code == glyphastore::ErrorCode::resource_exhausted)));
+    GLYPHA_REQUIRE(
+        sibling.committed() ||
+        (sibling.error.has_value() && (sibling.error->code == glyphastore::ErrorCode::sequence_conflict ||
+                                       sibling.error->code == glyphastore::ErrorCode::resource_exhausted)));
     GLYPHA_REQUIRE(rotating.committed() || sibling.committed());
     GLYPHA_REQUIRE((*runtime)->healthy());
 }

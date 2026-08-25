@@ -241,7 +241,7 @@ class Reactor final {
     // poller failure). Isolates the peer; must not fail the executor.
     // `request_id_override` is used when the buffered BIND OK was already cleared.
     void reject_orphaned_handoff(ConnectionHandoff handoff,
-                                std::optional<std::uint64_t> request_id_override = {}) noexcept;
+                                 std::optional<std::uint64_t> request_id_override = {}) noexcept;
     [[nodiscard]] auto read_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto write_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto process_frames(ConnectionToken token) -> Status;

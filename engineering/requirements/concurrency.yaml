@@ -8,6 +8,7 @@ requirements:
     SPSC lanes) per owner id with immutable ReadGeneration adoption.
   autorita:
   - docs/spec/concurrency-memory-model.md
+  - docs/spec/mutation-lifecycle.md
   - docs/adr/paired-reader-writer-shards.md
   - docs/adr/0032-paired-concurrency-embedded-store.md
   implementazione:

@@ -2,7 +2,7 @@ Status: descriptive of as-implemented paired Writer mutation lifecycle (behavior
 Applies to: `ShardPairRuntime::run`, durable/volatile sync and async mutation paths
 Owner: store/concurrency maintainers
 Last reviewed: 2026-08-02
-Requirement: `GS-PAIR-MUT-LIFECYCLE-001`
+Requirement: `GS-CONCUR-PAIR-001`
 
 # Mutation lifecycle (as implemented)
 

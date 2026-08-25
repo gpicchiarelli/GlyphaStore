@@ -86,9 +86,10 @@ class StoreAccess final {
     // Async submissions must use check_admission — they have no outer OperationGuard.
     enum class PublishedAdmission : std::uint8_t { check_admission, caller_holds_guard };
 
-    [[nodiscard]] static auto put_volatile_published(
-        Store& store, std::size_t worker_index, const HashedKey& key, std::span<const std::byte> value,
-        std::uint64_t expire_at_ns, PublishedAdmission admission = PublishedAdmission::check_admission)
+    [[nodiscard]] static auto
+    put_volatile_published(Store& store, std::size_t worker_index, const HashedKey& key,
+                           std::span<const std::byte> value, std::uint64_t expire_at_ns,
+                           PublishedAdmission admission = PublishedAdmission::check_admission)
         -> Result<VolatileMutationPublication>;
     [[nodiscard]] static auto
     erase_volatile_published(Store& store, std::size_t worker_index, const HashedKey& key,

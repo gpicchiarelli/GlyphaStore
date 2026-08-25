@@ -358,8 +358,7 @@ GLYPHA_TEST("ADR 0036 V9 prototype: slot-pool starvation increments publication 
            (*pair)->stats().publication_backpressure == 0 &&
            (*pair)->stats().generation_slot_exhaustions == 0) {
         if (submitted < 1'024) {
-            const auto status =
-                (*pair)->try_submit_put(submitted, "pool-pressure", bytes("x"));
+            const auto status = (*pair)->try_submit_put(submitted, "pool-pressure", bytes("x"));
             if (status == glyphastore::experimental::PrototypeSubmitStatus::submitted) {
                 ++submitted;
             }
@@ -569,9 +568,9 @@ GLYPHA_TEST("ADR 0036 V2 prototype: reclaim never frees a pinned or pre-quiescen
     const auto retires_at_unpin = (*pair)->stats().generation_retire_count;
     for (int turn = 0; turn < 8; ++turn) {
         (*pair)->adopt_publication();
-        GLYPHA_REQUIRE((*pair)->try_submit_put(static_cast<std::uint64_t>(100 + turn), "v2-key",
-                                               bytes("post-unpin")) ==
-                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        GLYPHA_REQUIRE(
+            (*pair)->try_submit_put(static_cast<std::uint64_t>(100 + turn), "v2-key", bytes("post-unpin")) ==
+            glyphastore::experimental::PrototypeSubmitStatus::submitted);
         GLYPHA_REQUIRE(!wait_completion(**pair).error.has_value());
         (*pair)->adopt_publication();
     }
@@ -652,8 +651,7 @@ GLYPHA_TEST("ADR 0036 V7 prototype: delta merge under pin slot pressure keeps co
         GLYPHA_REQUIRE((*pair)->get(std::string{"merge-"} + std::to_string(index)).has_value());
     }
     for (const auto index : accepted_indices) {
-        GLYPHA_REQUIRE(
-            (*pair)->get(std::string{"merge-"} + std::to_string(kWarmKeys + index)).has_value());
+        GLYPHA_REQUIRE((*pair)->get(std::string{"merge-"} + std::to_string(kWarmKeys + index)).has_value());
     }
 }
 
@@ -703,8 +701,7 @@ GLYPHA_TEST("ADR 0036 V13 prototype: pin adopt merge reclaim stress") {
         }
 
         // Hold the pin across an extra publish/adopt pair, then drop it.
-        auto hold_status =
-            (*pair)->try_submit_put(submitted, "stress-pin-hold", bytes("hold"));
+        auto hold_status = (*pair)->try_submit_put(submitted, "stress-pin-hold", bytes("hold"));
         while (hold_status == glyphastore::experimental::PrototypeSubmitStatus::queue_full) {
             std::this_thread::yield();
             hold_status = (*pair)->try_submit_put(submitted, "stress-pin-hold", bytes("hold"));

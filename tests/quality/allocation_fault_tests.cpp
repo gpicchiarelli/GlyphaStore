@@ -529,8 +529,7 @@ void run_exhaustive_allocation_failures(const Scenario& scenario) {
             // Pre-I/O reject when already fail-closed is not_committed (no write boundary).
             require(blocked.outcome == glyphastore::DurableMutationOutcome::not_committed,
                     "failed-closed runtime accepted another mutation");
-            require(blocked.error.has_value() &&
-                        blocked.error->code == glyphastore::ErrorCode::unavailable,
+            require(blocked.error.has_value() && blocked.error->code == glyphastore::ErrorCode::unavailable,
                     "failed-closed reject was not unavailable");
         }
         runtime.reset();
@@ -913,10 +912,7 @@ void run_paired_async_durable_coalesced_fail_closed() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 32,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 100,
-                          .min_records = 2},
+        .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 100, .min_records = 2},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
         .filesystem_hooks = {.context = &counter, .before = &WriteCounter::before},
     });
@@ -995,8 +991,7 @@ void run_paired_async_durable_coalesced_fail_closed() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed drain-snapshotted first value");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "first",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "first",
             "drain-snapshotted value mismatch");
 
     const auto late = store.put("async-fc-late", bytes("no"));
@@ -1018,8 +1013,7 @@ void run_paired_async_durable_sibling_publish_after_capture_fail() {
     // Two distinct same-shard keys coalesce into one Writer batch. Key A stages
     // successfully; key B's capture fails. Both clean commits must success-ACK and
     // become GET-visible via durable snapshot publish; pair sticky-fails.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-sib-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-sib-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1035,10 +1029,7 @@ void run_paired_async_durable_sibling_publish_after_capture_fail() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 32,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 100,
-                          .min_records = 2},
+        .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 100, .min_records = 2},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
     });
     require(opened.has_value(), "failed to open paired durable_group Store");
@@ -1137,8 +1128,7 @@ void run_paired_durable_batch_stops_after_indeterminate_ttl() {
 #else
     // Deferred TTL drain failure on the first mutate must sticky-fail durable and
     // reject later siblings in the same Writer batch (no further appends).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-ttl-stop-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-ttl-stop-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1182,10 +1172,7 @@ void run_paired_durable_batch_stops_after_indeterminate_ttl() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 32,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 10,
-                          .min_records = 1},
+        .durable_group = {.max_records = 32, .max_bytes = 65'536, .max_wait_ms = 10, .min_records = 1},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
         .clock = clock,
         .filesystem_hooks = {.context = &counter, .before = &WriteCounter::before},
@@ -1387,8 +1374,7 @@ void run_paired_volatile_sync_midchunk_catch_preserves_resource_exhausted() {
     const auto statuses = store.put_batch(items);
     glyphastore::fault::reset();
     require(statuses.size() == 2, "put_batch size mismatch");
-    require(statuses[0].has_value(),
-            "first mid-chunk put lost success ACK after publish-then-catch");
+    require(statuses[0].has_value(), "first mid-chunk put lost success ACK after publish-then-catch");
     require(!statuses[1].has_value(), "later mid-chunk sibling must not success-ACK after sticky");
     require(statuses[1].error().code == glyphastore::ErrorCode::resource_exhausted,
             "catch must not upgrade never-Store-entered sibling to unavailable");
@@ -1420,8 +1406,7 @@ void run_paired_sync_durable_group_catch_preserves_resource_exhausted() {
     // publish + Site::index_account sticky-closes; second is never Store-entered
     // (resource_exhausted). Site::publish catch must not upgrade that sibling to
     // unavailable.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-grp-catch-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-grp-catch-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1437,10 +1422,7 @@ void run_paired_sync_durable_group_catch_preserves_resource_exhausted() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 1,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 60'000,
-                          .min_records = 1},
+        .durable_group = {.max_records = 1, .max_bytes = 65'536, .max_wait_ms = 60'000, .min_records = 1},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
     });
     require(opened.has_value(), "failed to open paired durable_group Store");
@@ -1470,8 +1452,7 @@ void run_paired_sync_durable_group_catch_preserves_resource_exhausted() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed drain-snapshotted first value after catch");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "first",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "first",
             "drain-snapshotted value mismatch after catch");
 
     const auto late = store.put("grp-catch-late", bytes("no"));
@@ -1490,8 +1471,7 @@ void run_paired_sync_durable_sync_drain_after_capture_fail() {
 #else
     // Sync durable_sync (single-op Writer path): commit then capture fail must
     // drain-snapshot before sticky close so Store::get keeps RAW (async already did).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-cap-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-cap-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1523,8 +1503,7 @@ void run_paired_sync_durable_sync_drain_after_capture_fail() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed drain-snapshotted key after sync capture fail");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "drain-snapshotted value mismatch");
 
     const auto late = store.put("sync-cap-late", bytes("no"));
@@ -1543,8 +1522,7 @@ void run_paired_sync_durable_sync_ack_after_publish_catch() {
 #else
     // Sync durable_sync: after publish_read_generation, Site::publish fault throws
     // before reclaim. Catch must keep success ACK (authority already published).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-pub-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-pub-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1576,8 +1554,7 @@ void run_paired_sync_durable_sync_ack_after_publish_catch() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed published key after catch");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "published value mismatch after catch");
 
     const auto late = store.put("sync-pub-late", bytes("no"));
@@ -1596,8 +1573,7 @@ void run_paired_sync_durable_sync_erase_ack_after_publish_catch() {
 #else
     // Sync durable_sync erase: post-publish Site::publish fault must keep success ACK
     // and GET miss (tombstone already in the published generation).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-pube-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-pube-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1630,8 +1606,7 @@ void run_paired_sync_durable_sync_erase_ack_after_publish_catch() {
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after published erase catch");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("sync-pube-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
@@ -1649,8 +1624,7 @@ void run_paired_sync_durable_sync_ack_after_index_account() {
 #else
     // Index insert succeeds; secondary accounting fails (committed+error). Drain must
     // still success-ACK when the published generation shows the put (no inverted RAW).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-idx-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-idx-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1682,8 +1656,7 @@ void run_paired_sync_durable_sync_ack_after_index_account() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed Index-visible key after index_account fail");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "Index-visible value mismatch after index_account fail");
 
     const auto late = store.put("sync-idx-late", bytes("no"));
@@ -1702,8 +1675,7 @@ void run_paired_sync_durable_sync_erase_ack_after_index_account() {
 #else
     // Seed then erase: Index erase succeeds; accounting fails. Drain must success-ACK
     // when published generation shows absence (erase miss).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-sync-idxe-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-sync-idxe-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1736,8 +1708,7 @@ void run_paired_sync_durable_sync_erase_ack_after_index_account() {
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after Index erase + accounting fail");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("sync-idxe-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
@@ -1755,8 +1726,7 @@ void run_paired_async_durable_sync_ack_after_index_account() {
 #else
     // Async durable_sync single-op: Index-visible committed+error must success-ACK
     // after drain-snapshot (mirrors sync ACK-after-visibility).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-idx-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-idx-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1818,13 +1788,11 @@ void run_paired_async_durable_sync_ack_after_index_account() {
     glyphastore::fault::reset();
     require(done.has_value(), "async completion timed out");
     require(!runtime->healthy(), "async Index accounting failure did not sticky-fail the pair");
-    require(!done->error.has_value(),
-            "async Index-visible committed+error kept error ACK after drain");
+    require(!done->error.has_value(), "async Index-visible committed+error kept error ACK after drain");
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed async Index-visible key after index_account fail");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "async Index-visible value mismatch");
 
     const auto late = store.put("async-idx-late", bytes("no"));
@@ -1843,8 +1811,7 @@ void run_paired_sync_durable_group_ack_after_index_account() {
 #else
     // durable_group flush: Index publish then accounting fail advances durable_through
     // before sticky close so finalize keeps success ACK + drain-snapshot (no RAW lie).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-grp-idx-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-grp-idx-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -1860,10 +1827,7 @@ void run_paired_sync_durable_group_ack_after_index_account() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 1,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 60'000,
-                          .min_records = 1},
+        .durable_group = {.max_records = 1, .max_bytes = 65'536, .max_wait_ms = 60'000, .min_records = 1},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
     });
     require(opened.has_value(), "failed to open paired durable_group Store");
@@ -1880,8 +1844,7 @@ void run_paired_sync_durable_group_ack_after_index_account() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed group Index-visible key after index_account fail");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "group Index-visible value mismatch");
 
     const auto late = store.put("grp-idx-late", bytes("no"));
@@ -1922,8 +1885,7 @@ void run_paired_volatile_sync_ack_after_publish_catch() {
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed published volatile key after catch");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "published volatile value mismatch after catch");
 
     const auto late = store.put("vol-pub-late", bytes("no"));
@@ -1961,8 +1923,7 @@ void run_paired_volatile_sync_erase_ack_after_publish_catch() {
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after published volatile erase catch");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("vol-pube-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
@@ -2029,13 +1990,11 @@ void run_paired_async_volatile_ack_after_publish_catch() {
     glyphastore::fault::reset();
     require(done.has_value(), "async volatile completion timed out");
     require(!runtime->healthy(), "async volatile publish-path fault did not sticky-fail the pair");
-    require(!done->error.has_value(),
-            "async volatile catch after publish inverted RAW with error ACK");
+    require(!done->error.has_value(), "async volatile catch after publish inverted RAW with error ACK");
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed async published volatile key after catch");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "async published volatile value mismatch");
 
     const auto late = store.put("async-vol-pub-late", bytes("no"));
@@ -2051,8 +2010,7 @@ void run_paired_async_durable_sync_ack_after_publish_catch() {
     return;
 #else
     // Async durable_sync: post-publish Site::publish fault must keep success completion.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-pub-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-pub-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -2114,13 +2072,11 @@ void run_paired_async_durable_sync_ack_after_publish_catch() {
     glyphastore::fault::reset();
     require(done.has_value(), "async durable completion timed out");
     require(!runtime->healthy(), "async durable publish-path fault did not sticky-fail the pair");
-    require(!done->error.has_value(),
-            "async durable catch after publish inverted RAW with error ACK");
+    require(!done->error.has_value(), "async durable catch after publish inverted RAW with error ACK");
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed async published durable key after catch");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "async published durable value mismatch");
 
     const auto late = store.put("async-dur-pub-late", bytes("no"));
@@ -2138,8 +2094,7 @@ void run_paired_async_durable_sync_erase_ack_after_publish_catch() {
     return;
 #else
     // Async durable_sync erase: post-publish fault must success-ACK + GET miss.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-pube-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-pube-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -2203,13 +2158,11 @@ void run_paired_async_durable_sync_erase_ack_after_publish_catch() {
     glyphastore::fault::reset();
     require(done.has_value(), "async durable erase completion timed out");
     require(!runtime->healthy(), "async durable erase publish-path fault did not sticky-fail");
-    require(!done->error.has_value(),
-            "async durable erase catch after publish inverted RAW with error ACK");
+    require(!done->error.has_value(), "async durable erase catch after publish inverted RAW with error ACK");
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after async published erase catch");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("async-dur-pube-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
@@ -2279,13 +2232,11 @@ void run_paired_async_volatile_erase_ack_after_publish_catch() {
     glyphastore::fault::reset();
     require(done.has_value(), "async volatile erase completion timed out");
     require(!runtime->healthy(), "async volatile erase publish-path fault did not sticky-fail");
-    require(!done->error.has_value(),
-            "async volatile erase catch after publish inverted RAW with error ACK");
+    require(!done->error.has_value(), "async volatile erase catch after publish inverted RAW with error ACK");
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after async volatile erase catch");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("async-vol-pube-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
@@ -2301,8 +2252,7 @@ void run_paired_async_durable_group_ack_after_index_account() {
 #else
     // Async durable_group: Index publish then accounting fail must success-ACK after
     // mutate_durable_batch finalize + drain (distinct from durable_sync single-op).
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-grp-idx-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-grp-idx-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -2318,10 +2268,7 @@ void run_paired_async_durable_group_ack_after_index_account() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 1,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 60'000,
-                          .min_records = 1},
+        .durable_group = {.max_records = 1, .max_bytes = 65'536, .max_wait_ms = 60'000, .min_records = 1},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
     });
     require(opened.has_value(), "failed to open paired durable_group Store");
@@ -2368,13 +2315,11 @@ void run_paired_async_durable_group_ack_after_index_account() {
     glyphastore::fault::reset();
     require(done.has_value(), "async group completion timed out");
     require(!runtime->healthy(), "async group Index accounting failure did not sticky-fail the pair");
-    require(!done->error.has_value(),
-            "async group Index-visible commit kept error ACK after drain");
+    require(!done->error.has_value(), "async group Index-visible commit kept error ACK after drain");
 
     const auto got = store.get(key);
     require(got.has_value(), "Store::get missed async group Index-visible key");
-    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
-                "alpha",
+    require(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "alpha",
             "async group Index-visible value mismatch");
 
     const auto late = store.put("async-grp-idx-late", bytes("no"));
@@ -2392,8 +2337,7 @@ void run_paired_async_durable_group_erase_ack_after_index_account() {
     return;
 #else
     // Async durable_group erase: Index erase then accounting fail → success ACK + miss.
-    auto pattern =
-        (std::filesystem::temp_directory_path() / "glyphastore-async-grp-idxe-XXXXXX").string();
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-async-grp-idxe-XXXXXX").string();
     std::vector<char> writable(pattern.begin(), pattern.end());
     writable.push_back('\0');
     require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
@@ -2409,10 +2353,7 @@ void run_paired_async_durable_group_erase_ack_after_index_account() {
         .storage_mode = glyphastore::StorageMode::durable_group,
         .data_directory = store_path,
         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
-        .durable_group = {.max_records = 1,
-                          .max_bytes = 65'536,
-                          .max_wait_ms = 60'000,
-                          .min_records = 1},
+        .durable_group = {.max_records = 1, .max_bytes = 65'536, .max_wait_ms = 60'000, .min_records = 1},
         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
     });
     require(opened.has_value(), "failed to open paired durable_group Store");
@@ -2461,13 +2402,11 @@ void run_paired_async_durable_group_erase_ack_after_index_account() {
     glyphastore::fault::reset();
     require(done.has_value(), "async group erase completion timed out");
     require(!runtime->healthy(), "async group erase Index accounting did not sticky-fail the pair");
-    require(!done->error.has_value(),
-            "async group Index-visible erase kept error ACK after drain");
+    require(!done->error.has_value(), "async group Index-visible erase kept error ACK after drain");
 
     const auto got = store.get(key);
     require(!got.has_value(), "Store::get still saw key after async group Index erase");
-    require(got.error().code == glyphastore::ErrorCode::not_found,
-            "post-erase get was not not_found");
+    require(got.error().code == glyphastore::ErrorCode::not_found, "post-erase get was not not_found");
 
     const auto late = store.put("async-grp-idxe-late", bytes("no"));
     require(!late.has_value(), "late put accepted after sticky fail-closed");
