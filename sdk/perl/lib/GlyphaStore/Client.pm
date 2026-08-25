@@ -694,7 +694,8 @@ sub _mutate {
 }
 
 sub _mark_unresolved_pipeline_responses {
-    my ($responses, $normalized, $metadata, $first, $error, $bytes_sent, $worker, $routing_epoch) = @_;
+    my ($responses, $normalized, $metadata, $first, $error, $bytes_sent, $worker, $routing_epoch)
+        = @_;
     if (ref($error) ne 'GlyphaStore::Error') {
         $error = _error('transport', _plain_message($error));
     }
@@ -712,12 +713,15 @@ sub _mark_unresolved_pipeline_responses {
             bytes_sent    => $pos_bytes,
         );
         if ($is_mutation) {
-            $fields{mutation_outcome}
-                = $mutation_may_have_arrived ? 'indeterminate' : 'rejected';
+            $fields{mutation_outcome}= $mutation_may_have_arrived ? 'indeterminate' : 'rejected';
         }
-        my $enriched = GlyphaStore::Error->new($error->category, $error->message, {
-            wire_status => $error->wire_status,
-        })->enrich(%fields);
+        my $enriched = GlyphaStore::Error->new(
+            $error->category,
+            $error->message,
+            {
+                wire_status => $error->wire_status,
+            }
+        )->enrich(%fields);
         $responses->[$index] = {
             outcome => $mutation_may_have_arrived ? 'indeterminate' : 'failed',
             value   => '',
@@ -744,8 +748,7 @@ sub _apply_pipeline_response {
     }
     my $op = $normalized->[$index];
     my $is_mutation = ($op eq 'put' || $op eq 'erase');
-    my $indeterminate
-        = $is_mutation && $response->{status} == STATUS_INTERNAL_ERROR;
+    my $indeterminate= $is_mutation && $response->{status} == STATUS_INTERNAL_ERROR;
     my %fields = (
         operation     => $op,
         request_id    => $metadata->[$index][0],
@@ -815,7 +818,7 @@ sub execute_pipeline {
         }
         my $protocol_error
             = $self->_apply_pipeline_response($index, $response, $normalized, $worker, \@responses,
-                $metadata, length($output));
+            $metadata, length($output));
         if ($protocol_error) {
             $self->_reset_connection($connection);
             _mark_unresolved_pipeline_responses(\@responses, $normalized, $metadata, $index,
@@ -869,35 +872,41 @@ sub execute_batch {
 # $batches is an arrayref indexed by Worker; each element is an arrayref of requests (or undef/[]).
 sub _pipeline_failed_responses {
     my ($self, $requests, $error, $fallback_category) = @_;
-    my $base =
-        ref($error) eq 'GlyphaStore::Error'
+    my $base
+        =ref($error) eq 'GlyphaStore::Error'
         ? $error
         : _error($fallback_category, _plain_message($error));
-    return [
-        map {
-            my $req  = $_;
-            my $name = $req->{opcode} // '';
-            my %fields = (
-                operation     => $name eq '' ? 'get' : $name,
-                bytes_sent    => 0,
-                routing_epoch => $self->{routing_epoch},
-            );
-            if ($name eq 'put' || $name eq 'erase') {
-                eval { $fields{worker} = $self->worker_for($req->{key} // '') };
-                $fields{mutation_outcome} = 'rejected';
-            }
-            elsif (defined $req->{key}) {
-                eval { $fields{worker} = $self->worker_for($req->{key}) };
-            }
+    my @responses;
+    for my $req (@$requests) {
+        my $name = $req->{opcode} // '';
+        my %fields = (
+            operation     => $name eq '' ? 'get' : $name,
+            bytes_sent    => 0,
+            routing_epoch => $self->{routing_epoch},
+        );
+        if ($name eq 'put' || $name eq 'erase') {
+            my $worker = eval { $self->worker_for($req->{key} // '') };
+            $fields{worker} = $worker if $@ eq '';
+            $fields{mutation_outcome} = 'rejected';
+        }
+        elsif (defined $req->{key}) {
+            my $worker = eval { $self->worker_for($req->{key}) };
+            $fields{worker} = $worker if $@ eq '';
+        }
+        push @responses,
             {
-                outcome => 'failed',
-                value   => '',
-                error   => GlyphaStore::Error->new($base->category, $base->message, {
+            outcome => 'failed',
+            value   => '',
+            error   => GlyphaStore::Error->new(
+                $base->category,
+                $base->message,
+                {
                     wire_status => $base->wire_status,
-                })->enrich(%fields),
-            }
-        } @$requests
-    ];
+                }
+            )->enrich(%fields),
+            };
+    }
+    return \@responses;
 }
 
 sub _abort_active_worker_pipelines {
@@ -991,7 +1000,7 @@ sub execute_worker_pipelines {
         next if !defined($requests) || !@$requests;
         my $encoded = eval { $self->_encode_pipeline_batch($worker, $requests) };
         if (!$encoded) {
-            $results[$worker] = $self->_pipeline_failed_responses($requests, $@, 'invalid_argument');
+            $results[$worker]= $self->_pipeline_failed_responses($requests, $@, 'invalid_argument');
             next;
         }
         my $connection = $self->{connections}->[$worker];
@@ -1117,14 +1126,9 @@ sub _fail_worker_pipeline_state {
     # Match single-Worker execute_pipeline: enrich per-slot bytes_sent / mutation_outcome
     # so indeterminate slots advertise reconcile_first (not bare same_request / new_attempt).
     _mark_unresolved_pipeline_responses(
-        $state->{responses},
-        $state->{normalized},
-        $state->{metadata},
-        $state->{next_index},
-        $error,
+        $state->{responses},$state->{normalized},$state->{metadata},$state->{next_index},$error,
         $bytes_sent // 0,
-        $state->{worker},
-        $self->{routing_epoch},
+        $state->{worker},$self->{routing_epoch},
     );
     return;
 }
@@ -1144,8 +1148,7 @@ sub _record_worker_pipeline_response {
         return;
     }
     my $is_mutation = ($name eq 'put' || $name eq 'erase');
-    my $indeterminate
-        = $is_mutation && $received->{status} == STATUS_INTERNAL_ERROR;
+    my $indeterminate= $is_mutation && $received->{status} == STATUS_INTERNAL_ERROR;
     my $output_len = length($state->{output} // '');
     my %fields = (
         operation     => $name,
