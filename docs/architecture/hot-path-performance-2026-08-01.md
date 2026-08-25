@@ -95,6 +95,32 @@ alternated to reduce order bias, measured:
 Pipeline 1 remained flat in a shorter check (47,606 vs 47,755 ops/s, +0.3%).
 The figures remain advisory same-machine evidence, not a release claim.
 
+### Completion resume with Writer/socket overlap (2026-08-25)
+
+The mutation completion path now resumes already-buffered frames before draining
+its contiguous decided output. `process_frames` still admits at most one new
+asynchronous operation on the connection. Consequently the next Writer request
+can overlap the socket write of prior ordered responses without a response
+reorder buffer, queue widening, or early acknowledgement. A trailing decode or
+admission failure preserves prior decided responses through `close_after_flush`.
+Resume is suppressed when output was already pending at completion, retaining
+the historical slow-client backpressure boundary.
+
+In the instrumented pipeline-128 workload, socket-write samples fell from about
+3.60M to 1.80M while poller-update samples remained zero. A Release A/B against
+`dbf246d`, alternated to reduce order bias, measured under the same host state:
+
+| Run | `dbf246d` | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 197,994 ops/s | 306,616 ops/s | +54.9% |
+| B (reverse order) | 200,705 ops/s | 309,928 ops/s | +54.4% |
+
+An earlier candidate reached 419,101 ops/s under a less contended host state;
+after adding the explicit pending-output backpressure guard, a fresh seven-sample
+Release run measured 423,376 ops/s median. Neither absolute value is used for the
+A/B ratio. Pipeline 1 showed no regression in the sampled check. All figures
+remain advisory same-machine evidence.
+
 ## Hot-path diagram (embedded paired)
 
 ```text
@@ -180,6 +206,9 @@ Quantitative targets:
 6. TCP: skip the remaining same-state read-interest update after a synchronous
    flush that never armed writable interest; half-close and writable states
    still reconcile through the poller.
+7. TCP: resume bounded buffered work after mutation completion before draining
+   contiguous output, preserving one-in-flight response order while overlapping
+   the next Writer operation with the socket write.
 
 ## Rejected optimizations
 

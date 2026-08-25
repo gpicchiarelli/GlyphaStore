@@ -237,6 +237,15 @@ section 8. Disk-read executor or completion-capacity saturation returns `OVERLOA
 it never creates an unbounded queue. This does not prevent other connections bound to the same
 Worker from making progress.
 
+After an asynchronous mutation completes and its response is decided, the server may resume
+already-buffered frames before offering the accumulated ordered responses to the transport. At most
+one following asynchronous request is admitted on that connection. Its execution may overlap the
+socket drain, but responses remain byte-ordered by request and no acknowledgement is encoded before
+the corresponding Store contract completes. All mutation bytes already sent by the client remain
+subject to the indeterminate-on-disconnect rule in section 10.1. If output was already pending when
+the completion arrived, buffered input does not resume until that output drains; slow-client
+backpressure therefore remains authoritative.
+
 ## 12. Compatibility rules
 
 - Version 2 accepts only the exact version value `2`.

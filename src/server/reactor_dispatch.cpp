@@ -808,6 +808,7 @@ auto Reactor::process_mutation_completions() -> Status {
         if (!current->request_in_flight || current->cold_read_in_flight) {
             return fail(ErrorCode::corrupted_data, "unexpected mutation completion");
         }
+        const bool output_was_pending = has_pending_output(*current);
         current->request_in_flight = false;
         current->in_flight_since = {};
         touch_activity(*current, std::chrono::steady_clock::now());
@@ -823,8 +824,24 @@ auto Reactor::process_mutation_completions() -> Status {
             close_connection(completion->connection);
             continue;
         }
-        // Flush the decided response; write_ready processes pipelined input only
-        // after output fully drains. process_frames-on-EAGAIN discarded ACKs.
+        // Resume already-buffered frames after the completed mutation, before
+        // flushing its decided response. At most one new asynchronous request
+        // can be admitted; its Writer work may overlap this socket drain while
+        // response bytes remain ordered in the connection output buffer.
+        if (!output_was_pending && current->input_offset < current->input.size()) {
+            if (auto resumed = process_frames(completion->connection); !resumed) {
+                current = connection(completion->connection);
+                if (current == nullptr || !has_pending_output(*current)) {
+                    close_connection(completion->connection);
+                    continue;
+                }
+                // A later malformed frame must not discard responses already
+                // decided earlier in the pipeline.
+                current->close_after_flush = true;
+                current->input.clear();
+                current->input_offset = 0;
+            }
+        }
         if (auto flushed = write_ready(completion->connection); !flushed) {
             close_connection(completion->connection);
         }

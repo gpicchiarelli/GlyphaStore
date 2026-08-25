@@ -64,6 +64,10 @@ succeeded. Rules that must stay true:
 - BIND OK must flush before trailing decode can close;
 - handoff failure returns OVERLOADED then `close_after_flush` (definitive status preserved);
 - stale `(slot, generation)` completions are dropped without rewriting an earlier ACK.
+- after a mutation completion, buffered frames may resume while its decided ACK remains in the
+  contiguous output buffer; a trailing failure arms `close_after_flush` and drains every response
+  decided earlier in wire order. Resume is suppressed if output was already pending when the
+  completion arrived, so socket backpressure remains the admission boundary for that connection.
 
 ## 5. Illegal combinations (enforced only by scattered ifs today)
 
