@@ -76,6 +76,25 @@ Pipeline 1 remained effectively flat in a shorter check (47,011 vs 47,278
 ops/s, +0.6%). These local figures are advisory and retain the same-machine,
 non-isolated benchmark limitations.
 
+A second same-state transition remained after a synchronous output flush. When
+`write_ready` is entered from `read_ready`, drains the queued response, and has
+never armed writable interest, an in-flight request leaves the socket already
+registered for reads. Skipping that redundant `read → read` modification is
+behavior-neutral; half-closed and write-armed sockets still take the complete
+reconciliation path.
+
+With phase instrumentation, this reduced poller-update samples from about 1.79M
+to zero in the same pipeline-128 workload. A Release A/B against `fe32cfc`,
+alternated to reduce order bias, measured:
+
+| Run | `fe32cfc` | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 242,112 ops/s | 268,755 ops/s | +11.0% |
+| B (reverse order) | 243,485 ops/s | 272,709 ops/s | +12.0% |
+
+Pipeline 1 remained flat in a shorter check (47,606 vs 47,755 ops/s, +0.3%).
+The figures remain advisory same-machine evidence, not a release claim.
+
 ## Hot-path diagram (embedded paired)
 
 ```text
@@ -158,6 +177,9 @@ Quantitative targets:
    storms under pipelined load plus encode/write path hygiene — **not** queue widening.
 5. TCP: removed redundant async-submission poller modifications; the read/write
    caller remains the sole owner of the next interest transition.
+6. TCP: skip the remaining same-state read-interest update after a synchronous
+   flush that never armed writable interest; half-close and writable states
+   still reconcile through the poller.
 
 ## Rejected optimizations
 

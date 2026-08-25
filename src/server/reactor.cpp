@@ -1056,6 +1056,14 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
             return {};
         }
         if (current->request_in_flight) {
+            // A synchronous flush entered from read_ready can drain output
+            // without ever arming writable interest. The socket is already
+            // registered readable, so a read -> read modify would be a pure
+            // syscall. Half-closed or write-armed connections still require
+            // the full reconciliation below.
+            if (!current->write_armed && !current->peer_read_closed) {
+                return {};
+            }
             return update_connection_interest(token);
         }
         if (!current->write_armed) {
