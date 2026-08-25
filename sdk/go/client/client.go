@@ -326,7 +326,8 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		begin     int
 	}
 	normalized := make([]meta, 0, len(requests))
-	var worker *uint32
+	var worker uint32
+	workerSet := false
 	needed := 0
 	for _, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
@@ -336,10 +337,10 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		if err != nil {
 			return nil, err
 		}
-		if worker == nil {
-			w := owner
-			worker = &w
-		} else if owner != *worker {
+		if !workerSet {
+			worker = owner
+			workerSet = true
+		} else if owner != worker {
 			return nil, invalidArgument("every pipeline key must route to the same Worker")
 		}
 		if (request.Opcode == PipelineGet || request.Opcode == PipelineErase) &&
@@ -360,7 +361,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 	for i := range responses {
 		responses[i] = PipelineResponse{Outcome: PipelineFailed}
 	}
-	conn := c.connections[*worker]
+	conn := c.connections[worker]
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if !c.healthy.Load() {
@@ -417,7 +418,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 				case PipelineErase:
 					op = "erase"
 				}
-				annotated := annotate(ge, op, normalized[index].requestID, *worker, c.routingEpoch).
+				annotated := annotate(ge, op, normalized[index].requestID, worker, c.routingEpoch).
 					withBytesSent(posBytes)
 				if isMut {
 					mutOutcome := MutationRejected
@@ -456,7 +457,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 			markUnresolved(index, err, len(output))
 			return responses, nil
 		}
-		if err := c.validateResponse(response, item.requestID, *worker); err != nil {
+		if err := c.validateResponse(response, item.requestID, worker); err != nil {
 			conn.reset()
 			markUnresolved(index, err, len(output))
 			return responses, nil
@@ -483,7 +484,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		case PipelineErase:
 			op = "erase"
 		}
-		statusErr := annotate(statusError(response.Status), op, item.requestID, *worker, c.routingEpoch).
+		statusErr := annotate(statusError(response.Status), op, item.requestID, worker, c.routingEpoch).
 			withBytesSent(len(output) - item.begin)
 		if isMut {
 			mutOutcome := MutationRejected
@@ -788,7 +789,7 @@ func (c *Client) receiveResponse(conn *connection, deadline time.Time) (protocol
 		}
 		if conn.offset > 0 {
 			copy(conn.input, conn.input[conn.offset:])
-			conn.input = conn.input[: len(conn.input)-conn.offset]
+			conn.input = conn.input[:len(conn.input)-conn.offset]
 			conn.offset = 0
 		}
 		if cap(conn.input)-len(conn.input) < 64*1024 {

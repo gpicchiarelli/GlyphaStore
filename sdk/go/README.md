@@ -93,6 +93,10 @@ cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
 ./bin/glyphastore-bench --port 7379 --workers 4 --ops 100000 --pipeline 128 --execution concurrent
 ```
 
+Use `--execution batch` to measure mixed-owner `ExecuteBatch` grouping and fan-out. The benchmark
+generates keys through the connected client's negotiated routing identity rather than assuming
+default FNV routing.
+
 ## Performance notes
 
 - Contiguous little-endian frame encoding into pre-sized, connection-local scratch buffers
@@ -100,6 +104,7 @@ cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
 - `DecodeResponseView` + `OwnBytes` avoid allocating empty values; GET payloads are copied once
 - One TCP connection and `sync.Mutex` per Worker; `ExecuteBatch` fans out one goroutine per Worker
 - Atomic request IDs and fail-closed health (no nested lock under connection mutex)
+- Pipeline ownership validation hashes every key once; the first key is not routed twice
 - Prefer pipeline depth around **8–32** pairs for peak Go throughput; depth 128 often regresses
   on client CPU while raw TCP continues to climb
 

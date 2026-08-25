@@ -70,6 +70,13 @@ allocation/copy costs first; evaluate a narrow XS
 codec/routing kernel only if profiles show that boundary dominates. XS is not assumed to be the only
 large lever. See the [Perl README](../../sdk/perl/README.md).
 
+For Go, pipeline ownership validation now hashes the first key once rather than twice. A local
+macOS-arm64 loopback A/B at four Workers, pipeline depth 8 and 200,000 operations measured about
+225k versus 205k operations/s (~9.8%); this is development evidence, not a retained release gate.
+Passing the batch's precomputed Worker into its internal pipeline was rejected: depth 128 was flat
+(~312k operations/s both ways), while depth 8 regressed about 1.9%. The batch benchmark mode remains
+to keep this decision reproducible, and its workload uses the routing identity negotiated at INIT.
+
 Configurable connections per Worker remains measurement-gated for every SDK. It may improve
 same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.
 
