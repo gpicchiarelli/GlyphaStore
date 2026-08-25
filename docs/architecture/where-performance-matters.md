@@ -93,10 +93,20 @@ and 75.9–77.3 k ops/s after (about +2–4%). Pipeline 1 remained flat in a sho
 sample moved from 66.3 k to 71.4 k ops/s. These are same-machine advisory measurements, not release
 capacity claims.
 
-Three nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
-an outer readiness event, join-at-end frame assembly, and an intermediate flat response decoder.
-Each regressed by roughly 2–4%. Perl's existing scalar copy-on-write and incremental concatenation
-were cheaper than the extra branching or intermediate arrays in this profile.
+The next accepted pass removed duplicate FNV-1a routing from Perl `execute_batch`. The public
+`execute_worker_pipelines` API still validates that every key belongs to its supplied Worker;
+`execute_batch` instead reuses the ownership it has already established while grouping. Two
+same-server A/B pairs on Perl 5.44, four Workers and pipeline 128 measured about
+57.5–58.9 k ops/s before and 72.2–74.7 k ops/s after (about +25–27%). The benchmark now exposes a
+`--batch` mode and the Perl matrix records it separately. This is local advisory evidence, not a
+release capacity claim.
+
+Four nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
+an outer readiness event, join-at-end frame assembly, an intermediate flat response decoder, and
+parallel request-id/frame-offset arrays in place of per-request metadata pairs. The first three
+regressed by roughly 2–4%; flattened metadata varied from a small gain to a 4.3% regression when
+run order was reversed. Perl's existing scalar copy-on-write, incremental concatenation, and small
+array representation were cheaper or more stable than the alternatives in this profile.
 
 ## Lab hot-path evidence
 

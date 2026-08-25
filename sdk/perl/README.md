@@ -83,8 +83,8 @@ object-heavy synchronous calls:
 - pipeline result slots are materialized once, at their decided success or failure outcome, rather
   than allocating placeholder failure hashes that the success path immediately replaces;
 - `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
-- `execute_batch` hashes once to group requests, overlaps the Worker pipelines, then restores caller
-  order.
+- `execute_batch` hashes each key exactly once while grouping, reuses that validated ownership while
+  encoding, overlaps the Worker pipelines, then restores caller order.
 
 Those choices reduce syscalls and expose server parallelism. They do **not** make the current Perl
 path allocation-free: public requests and results are hash references, encoded frames are assembled
@@ -116,6 +116,7 @@ adapter may improve application concurrency without improving single-pipeline CP
 perl sdk/perl/benchmarks/client_benchmark.pl --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 # --no-concurrent forces sequential drain across Workers
+# --batch measures mixed-owner execute_batch grouping and ordered results
 ```
 
 Compare SDKs only through `./scripts/benchmark_sdk_clients.sh`, which fixes the validated workload

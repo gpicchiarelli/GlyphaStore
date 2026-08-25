@@ -18,6 +18,7 @@ my %options = (
     warmup     => 1,
     repeats    => 7,
     concurrent => undef,
+    batch      => 0,
 );
 GetOptions(
     'host=s'      => \$options{host},
@@ -28,6 +29,7 @@ GetOptions(
     'warmup=i'    => \$options{warmup},
     'repeats=i'   => \$options{repeats},
     'concurrent!' => \$options{concurrent},
+    'batch!'      => \$options{batch},
 ) or die "invalid benchmark arguments\n";
 die "--port is required\n" if !$options{port};
 die "numeric arguments are outside benchmark limits\n"
@@ -117,10 +119,37 @@ sub run_once_concurrent {
     return time - $started;
 }
 
-my $run_once = $use_concurrent ? \&run_once_concurrent : \&run_once_sequential;
-my $execution = $use_concurrent
-    ? 'single-process-worker-concurrent'
-    : 'single-process-worker-sequential';
+sub run_once_batch {
+    my $started = time;
+    for my $round (0 .. $max_rounds - 1) {
+        my @wave = map {
+            my $worker_batches = $batches[$_];
+            ($round < @$worker_batches) ? $worker_batches->[$round] : [];
+        } 0 .. $options{workers} - 1;
+        my @mixed;
+        my $largest = 0;
+        for my $batch (@wave) {
+            $largest = @$batch if @$batch > $largest;
+        }
+        for (my $offset = 0; $offset < $largest; $offset += 2) {
+            for my $batch (@wave) {
+                next if $offset >= @$batch;
+                push @mixed, @$batch[$offset, $offset + 1];
+            }
+        }
+        validate_batch(\@mixed, $client->execute_batch(\@mixed));
+    }
+    return time - $started;
+}
+
+my $run_once
+    = $options{batch} ? \&run_once_batch
+    : $use_concurrent ? \&run_once_concurrent
+    :                   \&run_once_sequential;
+my $execution
+    = $options{batch} ? 'single-process-batch'
+    : $use_concurrent ? 'single-process-worker-concurrent'
+    :                   'single-process-worker-sequential';
 
 sub median {
     my @sorted = sort { $a <=> $b } @_;

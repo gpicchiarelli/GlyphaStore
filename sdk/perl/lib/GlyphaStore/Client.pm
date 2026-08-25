@@ -855,7 +855,7 @@ sub execute_batch {
         push @{$original_indices[$worker]}, $index;
     }
 
-    my $worker_results = $self->execute_worker_pipelines(\@batches, deadline => $deadline);
+    my $worker_results = $self->_execute_worker_pipelines(\@batches, $deadline, 1);
     my @responses = (undef) x scalar(@$requests);
     for my $worker (0 .. $self->{worker_count} - 1) {
         my $group = $worker_results->[$worker] // [];
@@ -985,12 +985,18 @@ sub execute_worker_pipelines {
     _throw('invalid_argument', 'worker pipeline vector does not match Worker count')
         if @$batches != $worker_count;
 
-    my @results = map { undef } 0 .. $worker_count - 1;
-    my (@active, %by_fd);
     my $deadline
         = defined $options{deadline}
         ? $options{deadline}
         : $self->_request_deadline($options{timeout});
+    return $self->_execute_worker_pipelines($batches, $deadline, 0);
+}
+
+sub _execute_worker_pipelines {
+    my ($self, $batches, $deadline, $routing_validated) = @_;
+    my $worker_count = $self->{worker_count};
+    my @results = map { undef } 0 .. $worker_count - 1;
+    my (@active, %by_fd);
     local $SIG{PIPE} = 'IGNORE';
     my $write_set = IO::Select->new;
     my $read_set = IO::Select->new;
@@ -998,7 +1004,7 @@ sub execute_worker_pipelines {
     for my $worker (0 .. $worker_count - 1) {
         my $requests = $batches->[$worker];
         next if !defined($requests) || !@$requests;
-        my $encoded = eval { $self->_encode_pipeline_batch($worker, $requests) };
+        my $encoded= eval { $self->_encode_pipeline_batch($worker, $requests, $routing_validated) };
         if (!$encoded) {
             $results[$worker]= $self->_pipeline_failed_responses($requests, $@, 'invalid_argument');
             next;
@@ -1064,7 +1070,7 @@ sub execute_worker_pipelines {
 }
 
 sub _encode_pipeline_batch {
-    my ($self, $worker, $requests) = @_;
+    my ($self, $worker, $requests, $routing_validated) = @_;
     _throw('invalid_argument', 'pipeline exceeds the configured request limit')
         if @$requests > $self->{maximum_pipeline_requests};
     state %wire_opcode = (get => OP_GET, put => OP_PUT, erase => OP_ERASE);
@@ -1084,9 +1090,11 @@ sub _encode_pipeline_batch {
         my $key = $request->{key} // '';
         my $value = $request->{value} // '';
         my $expire_at_ns = $request->{expire_at_ns} // 0;
-        my $owner = $self->worker_for($key);
-        _throw('invalid_argument', 'every pipeline key must route to the same Worker')
-            if $owner != $worker;
+        if (!$routing_validated) {
+            my $owner = $self->worker_for($key);
+            _throw('invalid_argument', 'every pipeline key must route to the same Worker')
+                if $owner != $worker;
+        }
         _throw('invalid_argument', 'GET and ERASE pipeline requests cannot carry PUT fields')
             if ($name eq 'get' || $name eq 'erase')
             && (length($value) || ($expire_at_ns ne '0' && $expire_at_ns != 0));

@@ -378,6 +378,14 @@ $client = GlyphaStore::Client->connect(port => $port);
                 "concurrent GET worker $worker ordered");
         }
     }
+
+    my $worker_zero_key = (grep { $owners{$_} == 0 } @keys)[0];
+    my $misrouted = $client->execute_worker_pipelines(
+        [[], [{ opcode => 'get', key => $worker_zero_key }]]);
+    is($misrouted->[1][0]{outcome}, 'failed',
+        'public worker pipeline still rejects a key assigned to another Worker');
+    is($misrouted->[1][0]{error}->category, 'invalid_argument',
+        'misrouted public worker pipeline preserves its error category');
 }
 $client->close;
 waitpid($pid, 0);
