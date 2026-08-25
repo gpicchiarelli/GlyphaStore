@@ -894,12 +894,14 @@ GLYPHA_TEST("server request timeout closes partial request frames") {
 }
 
 GLYPHA_TEST("partial request timeout drains prior decided response before close") {
-    // Large PING fills the peer receive window so the server retains decided bytes
-    // when a trailing partial frame times out — must not discard that response.
+    // A small server send buffer makes the large PING retain decided user-space
+    // bytes when a trailing partial frame times out. Keep the client receive window
+    // normal so completion does not depend on platform TCP retransmit intervals.
     auto opened = glyphastore::server::Server::create({
         .port = 0,
         .maximum_connections = 4,
         .worker_count = 1,
+        .accepted_socket_send_buffer_bytes = 4U * 1024U,
         .abuse =
             {
                 .request_timeout_ms = 80,
@@ -911,8 +913,6 @@ GLYPHA_TEST("partial request timeout drains prior decided response before close"
 
     const auto socket = connect_to(server.port());
     GLYPHA_REQUIRE(socket >= 0);
-    int rcvbuf = 4 * 1024;
-    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) == 0);
     GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
 
     constexpr std::size_t kPayload = 64U * 1024U;
@@ -925,8 +925,8 @@ GLYPHA_TEST("partial request timeout drains prior decided response before close"
     GLYPHA_REQUIRE(ping.has_value());
     GLYPHA_REQUIRE(send_all(socket, *ping));
 
-    // Incomplete follow-up starts the partial-assembly budget while PING output may
-    // still be blocked on the small client receive window.
+    // Incomplete follow-up starts the partial-assembly budget while PING output is
+    // still bounded by the accepted socket's deliberately small send buffer.
     constexpr std::array<std::byte, 8> partial{
         std::byte{0x28}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
         std::byte{0x02}, std::byte{0x00}, std::byte{0x00}, std::byte{0x00},
@@ -936,8 +936,6 @@ GLYPHA_TEST("partial request timeout drains prior decided response before close"
 
     std::vector<std::byte> received;
     received.reserve(kPayload + 64);
-    // OpenBSD's deliberately tiny receive window can need several retransmit
-    // intervals under QEMU before the complete 64 KiB decided response drains.
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
     while (std::chrono::steady_clock::now() < deadline) {
         std::array<std::byte, 16U * 1024U> chunk{};
@@ -969,13 +967,14 @@ GLYPHA_TEST("partial request timeout drains prior decided response before close"
 }
 
 GLYPHA_TEST("half-close with pending large response drains before poller teardown") {
-    // Large PING + small SO_RCVBUF leaves decided bytes queued; SHUT_WR must still
-    // deliver them. Hangup is handled before raw poller error so co-reported
+    // Large PING + small server SO_SNDBUF leaves decided bytes queued; SHUT_WR must
+    // still deliver them. Hangup is handled before raw poller error so co-reported
     // error|hangup cannot hard-close and discard the remainder after EAGAIN.
     auto opened = glyphastore::server::Server::create({
         .port = 0,
         .maximum_connections = 4,
         .worker_count = 1,
+        .accepted_socket_send_buffer_bytes = 4U * 1024U,
     });
     GLYPHA_REQUIRE(opened.has_value());
     auto& server = **opened;
@@ -983,8 +982,6 @@ GLYPHA_TEST("half-close with pending large response drains before poller teardow
 
     const auto socket = connect_to(server.port());
     GLYPHA_REQUIRE(socket >= 0);
-    int rcvbuf = 4 * 1024;
-    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf)) == 0);
     GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
 
     constexpr std::size_t kPayload = 64U * 1024U;
