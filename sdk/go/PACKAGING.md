@@ -22,7 +22,9 @@ The script:
 3. Runs `go test ./...` and race tests on `client` / `protocol`
 4. Builds `glyphastore-interop`, `glyphastore-bench`, and `glyphastore-version`
 5. Checks `go mod tidy` cleanliness when supported
-6. Writes `sdk/go/dist/package-info.txt`
+6. Reconstructs a tag-shaped module from tracked files only and reruns its tests
+7. Compiles and runs an external consumer of the snapshot's public `client` and `protocol` packages
+8. Writes `sdk/go/dist/package-info.txt`
 
 ## Consumers
 

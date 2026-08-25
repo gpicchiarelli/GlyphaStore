@@ -50,6 +50,61 @@ fi
   fi
 )
 
+# Go consumers receive the nested module from a VCS tag. Reconstruct that tag-shaped source from
+# tracked files only, then test it and compile an external module against its public packages.
+work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-go-pack.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+module_snapshot="$work/module"
+consumer="$work/consumer"
+mkdir -p "$module_snapshot" "$consumer"
+while IFS= read -r -d '' path; do
+  relative="${path#sdk/go/}"
+  mkdir -p "$module_snapshot/$(dirname "$relative")"
+  cp "$root/$path" "$module_snapshot/$relative"
+done < <(git -C "$root" ls-files -z -- sdk/go)
+(
+  cd "$module_snapshot"
+  "$go_bin" test ./...
+)
+cat >"$consumer/go.mod" <<'EOF'
+module glyphastore-package-consumer
+
+go 1.22
+
+require github.com/gpicchiarelli/GlyphaStore/sdk/go v0.0.0
+
+replace github.com/gpicchiarelli/GlyphaStore/sdk/go => ../module
+EOF
+cat >"$consumer/main.go" <<'EOF'
+package main
+
+import (
+	"fmt"
+
+	"github.com/gpicchiarelli/GlyphaStore/sdk/go/client"
+	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
+)
+
+func main() {
+	config := client.DefaultConfig()
+	owner, err := protocol.WorkerFor([]byte("consumer-key"), 4)
+	if err != nil || config.Host == "" {
+		panic("invalid installed Go module")
+	}
+	fmt.Printf("glyphastore=%s owner=%d\n", client.Version, owner)
+}
+EOF
+(
+  cd "$consumer"
+  "$go_bin" build ./...
+  output="$("$go_bin" run .)"
+  [[ "$output" == "glyphastore=$got owner="* ]] || {
+    echo "unexpected Go consumer output: $output" >&2
+    exit 1
+  }
+)
+
 mkdir -p "$sdk/dist"
 {
   echo "module=github.com/gpicchiarelli/GlyphaStore/sdk/go"
@@ -58,6 +113,8 @@ mkdir -p "$sdk/dist"
   echo "go=$("$go_bin" version)"
   echo "source_date_epoch=$SOURCE_DATE_EPOCH"
   echo "built_at=$(glyphastore_repro_iso8601)"
+  echo "tracked_source_snapshot=tested"
+  echo "external_module_consumer=passed"
 } >"$sdk/dist/package-info.txt"
 
 for required in LICENSE NOTICE; do

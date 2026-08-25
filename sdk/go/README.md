@@ -16,6 +16,9 @@ Version: `client.Version` (must match repository `VERSION`)
 License: BSD-3-Clause. Requires Go ≥ 1.22.  
 Packaging: [PACKAGING.md](PACKAGING.md)
 
+The packaging gate reconstructs the nested module from tracked files only, tests that snapshot, and
+builds an external consumer before a `sdk/go/vVERSION` tag is considered publishable.
+
 ```go
 package main
 

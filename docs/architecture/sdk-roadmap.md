@@ -49,8 +49,8 @@ complete before that matrix passes.
 Source-tree interoperability is implemented. Still required:
 
 - install every built package artifact and rerun conformance from the installed copy (Python wheel
-  and sdist, Perl tarball, Ruby gem and the C++ installed consumer are covered; Go is source-tag
-  distribution and the Erlang Hex artifact remains open);
+  and sdist, Perl tarball, Ruby gem and the C++ installed consumer are covered; Go's tracked tag
+  snapshot has an external consumer proof; the Erlang Hex artifact remains open);
 - test supported old-client/new-server combinations under the 0.x compatibility policy;
 - publish checksums, provenance and SBOMs with tagged artifacts;
 - record registry publication state rather than saying “install from registry” unconditionally.
