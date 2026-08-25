@@ -217,6 +217,19 @@ protocol makes straightforward to implement safely.
 
 ## Performance interpretation
 
+`glyphastore_client_benchmark` measures only the public reference client against an already-running
+daemon. It validates every positional PUT/GET response and supports `concurrent`, `sequential`, and
+mixed-owner `batch` execution. Keys are assigned through the connected client's negotiated routing
+identity, so keyed SipHash runs do not silently use an FNV workload.
+
+```bash
+build/macos-release/glyphastore_client_benchmark --port 7379 --workers 4 \
+  --ops 100000 --pipeline 8 --warmup 1 --repeats 7 --execution concurrent
+```
+
+The cross-SDK harness includes one C++ concurrent row per Worker/depth combination. The additional
+C++ modes remain available for focused experiments without multiplying the default matrix.
+
 The public-client benchmark with `--client-api` measures alternating
 `PUT`/`GET` calls through one shared `Client`; `INIT`, binding, allocation of client threads, and
 server startup remain outside the timed region. `--latency` records each synchronous API call.

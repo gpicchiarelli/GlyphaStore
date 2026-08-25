@@ -128,6 +128,15 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_server_benchmarks RELEASE ARGUMENTS
         --ops 100000 --workers 2 --clients 2 --pipeline 32 --warmup 1 --repeats 7
     )
+    add_executable(glyphastore_client_benchmark client_benchmark.cpp)
+    target_link_libraries(glyphastore_client_benchmark
+        PRIVATE GlyphaStore::client glyphastore_project_options)
+    target_compile_definitions(glyphastore_client_benchmark
+        PRIVATE GLYPHASTORE_SDK_VERSION="${PROJECT_VERSION}")
+    glyphastore_set_warnings(glyphastore_client_benchmark)
+    glyphastore_enable_hardening(glyphastore_client_benchmark)
+    glyphastore_enable_ipo(glyphastore_client_benchmark)
+    set_target_properties(glyphastore_client_benchmark PROPERTIES FOLDER "Benchmarks")
     if(BUILD_TESTING)
         foreach(distribution IN ITEMS uniform worker-affine single-worker zipf)
             add_test(
@@ -225,4 +234,3 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
         )
     endif()
 endif()
-

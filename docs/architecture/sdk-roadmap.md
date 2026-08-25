@@ -62,6 +62,13 @@ commit, routing mode, Worker/client counts, pipeline depth, value size, operatio
 TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
 where the harness exposes latency; do not infer a language limit from one pipeline depth.
 
+The public C++ reference client now has `glyphastore_client_benchmark` with sequential, concurrent,
+and mixed-owner batch modes; the shared matrix runs the concurrent mode once per Worker/depth cell.
+An attempted removal of its duplicate first-key pipeline hash was rejected after alternating local
+samples: the second pass measured about +0.8% at depth 1 and −0.4% at depth 8, so no stable throughput
+benefit justified the extra state in the validation loop. The benchmark remains as the retained
+improvement and uses routing negotiated at INIT.
+
 For Perl specifically, the next work is profile-led. Client routing now reuses the normalized INIT
 identity, and the benchmark can generate both default-FNV and keyed-SipHash workloads. Continue to
 measure scalar/hash allocation, frame copies, buffer compaction, parser cost, `IO::Select`, syscalls

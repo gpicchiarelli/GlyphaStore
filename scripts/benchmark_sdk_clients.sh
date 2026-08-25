@@ -7,6 +7,7 @@ stamp="$(date -u +%Y%m%d-%H%M%S)"
 sdk_version="0.1.0"
 outdir="${1:-$root/benchmark-results-sdk-${sdk_version}-${stamp}}"
 daemon="${GLYPHASTORED:-$root/build/macos-native-release/glyphastored}"
+cpp_bench="${CPP_CLIENT_BENCHMARK:-$(dirname "$daemon")/glyphastore_client_benchmark}"
 python="${PYTHON:-python3}"
 perl="${PERL:-perl}"
 host="127.0.0.1"
@@ -18,8 +19,12 @@ if [[ ! -x "$daemon" ]]; then
   echo "missing glyphastored at $daemon; build macos-native-release first" >&2
   exit 1
 fi
+if [[ ! -x "$cpp_bench" ]]; then
+  echo "missing C++ client benchmark at $cpp_bench; build glyphastore_client_benchmark first" >&2
+  exit 1
+fi
 
-mkdir -p "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/erlang" "$outdir/logs"
+mkdir -p "$outdir/cpp" "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/erlang" "$outdir/logs"
 export PYTHONPATH="$root/sdk/python/src"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 go_bin="${GO:-go}"
@@ -64,6 +69,7 @@ PY
     echo "perl_sdk_version=$($perl -MGlyphaStore -e 'print \$GlyphaStore::VERSION')"
     echo "go=$($go_bin version)"
     echo "go_sdk_version=0.1.0"
+    echo "cpp_client_benchmark=$cpp_bench"
     if [[ "$erlang_ready" == "1" ]]; then
       echo "erlang=$(erl -noshell -eval 'io:format("~s",[erlang:system_info(otp_release)]),halt().')"
       echo "erlang_sdk_version=$(erl -noshell -pa "$root/sdk/erlang/_build/default/lib/glyphastore/ebin" -eval 'io:format("~s",[glyphastore_version:version()]),halt().')"
@@ -151,6 +157,11 @@ run_matrix() {
 
     for p in "${pipelines[@]}"; do
       local label="w${w}-p${p}"
+      echo "running C++ concurrent $label"
+      "$cpp_bench" --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+        --pipeline "$p" --warmup "$warmup" --repeats "$repeats" --execution concurrent \
+        | tee "$outdir/cpp/concurrent-${label}.txt"
+
       echo "running python sync concurrent $label"
       "$python" "$root/sdk/python/benchmarks/client_benchmark.py" \
         --host "$host" --port "$port" --workers "$w" --ops "$ops" \
@@ -252,7 +263,8 @@ pattern = re.compile(
 
 rows = []
 for path in (
-    sorted(outdir.glob("python/*.txt"))
+    sorted(outdir.glob("cpp/*.txt"))
+    + sorted(outdir.glob("python/*.txt"))
     + sorted(outdir.glob("perl/*.txt"))
     + sorted(outdir.glob("go/*.txt"))
     + sorted(outdir.glob("erlang/*.txt"))
@@ -298,7 +310,9 @@ lines = [
     "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |",
 ]
 for row in rows:
-    if row["file"].startswith("python/"):
+    if row["file"].startswith("cpp/"):
+        sdk = "C++"
+    elif row["file"].startswith("python/"):
         sdk = "Python"
     elif row["file"].startswith("perl/"):
         sdk = "Perl"
@@ -317,6 +331,7 @@ lines.extend(
         "",
         "## Notes",
         "",
+        "- C++ `concurrent` uses one OS thread per Worker against the public reference `Client`.",
         "- Python `concurrent` uses one OS thread per Worker against one shared `Client`.",
         "- Python `async` uses one `asyncio` task per Worker against one shared `AsyncClient`.",
         "- Python `sequential`, Perl sequential, Go `sequential`, and Erlang sequential drain Workers one after another.",
@@ -336,7 +351,7 @@ write_readme() {
   cat >"$outdir/README.md" <<EOF
 # GlyphaStore SDK benchmarks — ${sdk_version}
 
-Published client-side pipeline benchmarks for the native Python, Perl, Go, and Erlang SDKs at version
+Published client-side pipeline benchmarks for the native C++, Python, Perl, Go, and Erlang SDKs at version
 \`${sdk_version}\`.
 
 ## Contents
@@ -347,6 +362,7 @@ Published client-side pipeline benchmarks for the native Python, Perl, Go, and E
 | \`commands.md\` | Workload matrix and listen ports |
 | \`summary.md\` | Comparison table (median ops/s) |
 | \`results.json\` | Machine-readable parsed results |
+| \`cpp/\` | Raw C++ public-client result files |
 | \`python/\` | Raw Python sync/async result files |
 | \`perl/\` | Raw Perl result files |
 | \`go/\` | Raw Go result files |
@@ -367,7 +383,8 @@ Language-only:
 ./scripts/benchmark_erlang_client.sh
 \`\`\`
 
-Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`, \`PYTHON\`, \`PERL\`, \`GO\`.
+Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`,
+\`CPP_CLIENT_BENCHMARK\`, \`PYTHON\`, \`PERL\`, \`GO\`.
 EOF
 }
 
