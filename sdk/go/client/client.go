@@ -519,7 +519,8 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		index   int
 		request PipelineRequest
 	}
-	groups := make(map[uint32][]item)
+	groups := make([][]item, c.workerCount)
+	activeGroups := 0
 	for index, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
 			return nil, invalidArgument("batch request contains an invalid opcode")
@@ -536,6 +537,9 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		if len(bucket) >= c.cfg.MaximumPipelineRequests {
 			return nil, invalidArgument("batch exceeds the configured per-Worker request limit")
 		}
+		if len(bucket) == 0 {
+			activeGroups++
+		}
 		groups[worker] = append(bucket, item{index: index, request: request})
 	}
 
@@ -544,16 +548,9 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		responses[i] = PipelineResponse{Outcome: PipelineFailed}
 	}
 
-	type result struct {
-		indices []int
-		resps   []PipelineResponse
-	}
-
-	runGroup := func(items []item) result {
-		indices := make([]int, len(items))
+	runGroup := func(items []item) []PipelineResponse {
 		reqs := make([]PipelineRequest, len(items))
 		for i, it := range items {
-			indices[i] = it.index
 			reqs[i] = it.request
 		}
 		resps, err := c.executePipelineDeadline(reqs, deadline)
@@ -580,44 +577,41 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 				}
 				failed[i] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
 			}
-			return result{indices: indices, resps: failed}
+			return failed
 		}
-		return result{indices: indices, resps: resps}
+		return resps
 	}
 
-	if len(groups) == 1 {
+	applyGroup := func(items []item) {
+		groupResponses := runGroup(items)
+		for i, it := range items {
+			responses[it.index] = groupResponses[i]
+		}
+	}
+
+	if activeGroups == 1 {
 		for _, items := range groups {
-			out := runGroup(items)
-			for i, index := range out.indices {
-				responses[index] = out.resps[i]
+			if len(items) != 0 {
+				applyGroup(items)
+				break
 			}
 		}
 		return responses, nil
 	}
 
-	type groupOut struct {
-		out result
-	}
-	outs := make([]groupOut, 0, len(groups))
 	var wg sync.WaitGroup
-	var mu sync.Mutex
 	for _, items := range groups {
+		if len(items) == 0 {
+			continue
+		}
 		items := items
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			out := runGroup(items)
-			mu.Lock()
-			defer mu.Unlock()
-			outs = append(outs, groupOut{out: out})
+			applyGroup(items)
 		}()
 	}
 	wg.Wait()
-	for _, item := range outs {
-		for i, index := range item.out.indices {
-			responses[index] = item.out.resps[i]
-		}
-	}
 	return responses, nil
 }
 

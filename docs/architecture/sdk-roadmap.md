@@ -76,6 +76,10 @@ macOS-arm64 loopback A/B at four Workers, pipeline depth 8 and 200,000 operation
 Passing the batch's precomputed Worker into its internal pipeline was rejected: depth 128 was flat
 (~312k operations/s both ways), while depth 8 regressed about 1.9%. The batch benchmark mode remains
 to keep this decision reproducible, and its workload uses the routing identity negotiated at INIT.
+Worker-indexed batch groups and disjoint positional result writes were retained: end-to-end
+`benchmem` at four Workers and eight PUT/GET pairs per Worker reduced one batch call from 78 to 73
+allocations (−6.4%) and from about 26.25 KiB to 25.55 KiB (−2.7%), while throughput remained flat
+within noise. The benchmark is opt-in and requires a live daemon via `GLYPHASTORE_BENCH_PORT`.
 
 Configurable connections per Worker remains measurement-gated for every SDK. It may improve
 same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.
