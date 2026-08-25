@@ -456,7 +456,9 @@ GLYPHA_TEST("ADR 0036 V6 prototype: rejected publication never makes mutations v
                     epoch_at_reject = completion->epoch;
                     visible_at_reject = completion->visible_through;
                     GLYPHA_REQUIRE((*pair)->stats().writer_epoch == *epoch_at_reject);
-                    GLYPHA_REQUIRE((*pair)->stats().visible_through == *visible_at_reject);
+                    // stats().visible_through is the Reader-local adopted frontier,
+                    // intentionally stale here because this test withholds adoption.
+                    // The rejected completion carries the Writer frontier instead.
                 }
                 GLYPHA_REQUIRE(completion->epoch == *epoch_at_reject);
                 GLYPHA_REQUIRE(completion->visible_through == *visible_at_reject);
