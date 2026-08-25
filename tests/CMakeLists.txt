@@ -330,4 +330,3 @@ if(BUILD_TESTING)
     set_target_properties(check PROPERTIES FOLDER "Quality")
     glyphastore_xcode_scheme(check)
 endif()
-

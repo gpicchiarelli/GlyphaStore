@@ -786,7 +786,7 @@ sub execute_pipeline {
     my $metadata = $encoded->{metadata};
     my $output = $encoded->{output};
 
-    my @responses = map { { outcome => 'failed', value => '', error => undef } } 0 .. $#$requests;
+    my @responses = (undef) x scalar(@$requests);
     my $connection = $self->{connections}->[$worker];
     _throw('unavailable', 'client closed before pipeline admission') if !$self->{healthy};
     $self->_ensure_connected($connection);
@@ -856,7 +856,7 @@ sub execute_batch {
     }
 
     my $worker_results = $self->execute_worker_pipelines(\@batches, deadline => $deadline);
-    my @responses = map { { outcome => 'failed', value => '', error => undef } } 0 .. $#$requests;
+    my @responses = (undef) x scalar(@$requests);
     for my $worker (0 .. $self->{worker_count} - 1) {
         my $group = $worker_results->[$worker] // [];
         my $indices = $original_indices[$worker];
@@ -1018,10 +1018,7 @@ sub execute_worker_pipelines {
             output     => $encoded->{output},
             sent       => 0,
             next_index => 0,
-            responses  => [
-                map { { outcome => 'failed', value => '', error => undef } }
-                    0 .. $#{$encoded->{normalized}}
-            ],
+            responses  => [(undef) x scalar(@{$encoded->{normalized}})],
         };
         push @active, $state;
         $by_fd{fileno($socket)} = $state;

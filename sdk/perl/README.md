@@ -80,6 +80,8 @@ object-heavy synchronous calls:
 - a Worker pipeline is encoded into one contiguous scalar and drained under one absolute deadline;
 - response bytes accumulate in a reusable connection buffer and multiple complete frames are parsed
   from each `sysread`;
+- pipeline result slots are materialized once, at their decided success or failure outcome, rather
+  than allocating placeholder failure hashes that the success path immediately replaces;
 - `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
 - `execute_batch` hashes once to group requests, overlaps the Worker pipelines, then restores caller
   order.

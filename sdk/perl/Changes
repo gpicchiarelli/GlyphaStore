@@ -7,7 +7,8 @@ Revision history for Perl distribution GlyphaStore
         - GlyphaStore::Protocol bidirectional codec and FNV-1a Worker routing.
         - Hot-path performance: native pack 'Q<', zero-copy octet keys,
           integer FNV-1a, buffered sysread, reused IO::Select, and
-          execute_worker_pipelines for multi-Worker overlap.
+          execute_worker_pipelines for multi-Worker overlap. Pipeline results
+          avoid eager placeholder hashes and materialize each slot once.
         - Brutal Perl::Critic (severity 1) enforced via .perlcriticrc,
           scripts/test-perl-client.sh, and CI.
         - Request deadlines use CLOCK_MONOTONIC; thread/fork contract documented.

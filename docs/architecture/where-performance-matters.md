@@ -84,6 +84,20 @@ single-digit details.
 The performance mindset is empirical: preserve semantics, change one cost centre, and rerun the same
 validated workload. XS is one possible outcome of that process, not the starting assumption.
 
+The first allocation pass now leaves pipeline result slots unmaterialized until their actual
+success or failure is known. Previously every slot eagerly allocated a placeholder failure hash
+that the normal success path immediately discarded. The error paths already materialized every
+unresolved slot, so outcome ordering and mutation classification are unchanged. Alternated
+same-process A/B runs on Perl 5.44, four Workers and pipeline 128 measured 74.2–74.5 k ops/s before
+and 75.9–77.3 k ops/s after (about +2–4%). Pipeline 1 remained flat in a shorter check; a pipeline-32
+sample moved from 66.3 k to 71.4 k ops/s. These are same-machine advisory measurements, not release
+capacity claims.
+
+Three nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
+an outer readiness event, join-at-end frame assembly, and an intermediate flat response decoder.
+Each regressed by roughly 2–4%. Perl's existing scalar copy-on-write and incremental concatenation
+were cheaper than the extra branching or intermediate arrays in this profile.
+
 ## Lab hot-path evidence
 
 Same-machine macOS Apple Silicon measurements and cost maps for Store GET/PUT and TCP are recorded
