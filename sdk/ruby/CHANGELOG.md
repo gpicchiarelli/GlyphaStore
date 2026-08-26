@@ -7,6 +7,7 @@
 - Load `glypha_store` through the gem load path and verify the installed interop executable, so the
   packaged CLI cannot accidentally depend on the source-tree `lib/` layout.
 - In installed-artifact interop mode, fail if Ruby resolves `glypha_store` from the repository.
+- Install the built gem into an isolated `GEM_HOME` for the secure-profile artifact matrix.
 
 ## 0.1.0
 
