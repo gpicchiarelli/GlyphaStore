@@ -33,6 +33,11 @@ Report at least sample count, median, minimum, and maximum for elapsed seconds, 
 
 Every sample validates operation counts, hits/misses, response IDs, status, and payload bytes. A fast sample with invalid results is a failed benchmark.
 
+Automated retained reports must fail closed when an input suite is empty, required metadata is
+missing, a result identity is duplicated, counts disagree with the run metadata, values are
+non-finite/non-positive, or min/median/max ordering is invalid. Exploratory parsing may be more
+permissive only when it is explicitly excluded from CI evidence.
+
 ## 4. Canonical workloads
 
 | Family | Question | Timed region |

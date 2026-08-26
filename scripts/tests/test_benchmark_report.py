@@ -13,6 +13,7 @@ from scripts.benchmark_report import (
     parse_environment,
     regressions_over_threshold,
     render_markdown,
+    validate_runs,
 )
 
 
@@ -50,6 +51,28 @@ def runs(
             ],
         }
     ]
+
+
+def strict_runs() -> list[dict[str, object]]:
+    fixture = runs(100.0, 90.0, 110.0)
+    fixture[0]["metadata"] = {
+        "git_sha": "abc123",
+        "arch": "x86_64",
+        "platform": "linux",
+        "compiler": "clang 20",
+        "benchmark_warmup": 1,
+        "benchmark_repeats": 3,
+    }
+    fixture[0]["results"][0].update(
+        {
+            "samples": 3,
+            "warmup": 1,
+            "median_seconds": 1.0,
+            "min_seconds": 0.9,
+            "max_seconds": 1.1,
+        }
+    )
+    return fixture
 
 
 class BenchmarkEnvironmentTests(unittest.TestCase):
@@ -137,6 +160,27 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             current_runs[0]["results"][0]["comparison"]["interpretation"],
             "improvement-candidate",
         )
+
+    def test_strict_report_accepts_complete_results(self) -> None:
+        validate_runs(strict_runs())
+
+    def test_strict_report_rejects_empty_suite(self) -> None:
+        fixture = strict_runs()
+        fixture[0]["results"] = []
+        with self.assertRaisesRegex(ValueError, "no benchmark results"):
+            validate_runs(fixture)
+
+    def test_strict_report_rejects_duplicate_result_key(self) -> None:
+        fixture = strict_runs()
+        fixture[0]["results"].append(dict(fixture[0]["results"][0]))
+        with self.assertRaisesRegex(ValueError, "duplicate benchmark result key"):
+            validate_runs(fixture)
+
+    def test_strict_report_rejects_sample_mismatch(self) -> None:
+        fixture = strict_runs()
+        fixture[0]["results"][0]["samples"] = 2
+        with self.assertRaisesRegex(ValueError, "samples do not match"):
+            validate_runs(fixture)
 
 
 if __name__ == "__main__":

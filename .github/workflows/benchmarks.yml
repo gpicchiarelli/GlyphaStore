@@ -162,6 +162,7 @@ jobs:
             baseline=(--baseline "$baseline_path")
           fi
           python scripts/benchmark_report.py "$RESULTS_DIR"/*.txt \
+            --strict \
             --json "$RESULTS_DIR/results.json" \
             --markdown "$RESULTS_DIR/summary.md" \
             --environment "$RESULTS_DIR/environment.txt" \

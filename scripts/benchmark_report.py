@@ -81,6 +81,96 @@ def parse_environment(path: Path | None) -> dict[str, Any]:
     return environment
 
 
+def positive_finite(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value > 0
+        and math.isfinite(value)
+    )
+
+
+def positive_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
+def validate_runs(runs: list[dict[str, Any]]) -> None:
+    if not runs:
+        raise ValueError("benchmark report contains no input suites")
+    required_metadata = (
+        "git_sha",
+        "arch",
+        "platform",
+        "compiler",
+        "benchmark_warmup",
+        "benchmark_repeats",
+    )
+    seen_sources: set[str] = set()
+    seen_results: set[tuple[Any, ...]] = set()
+    for run in runs:
+        source = run.get("source")
+        if not isinstance(source, str) or not source:
+            raise ValueError("benchmark suite has no source name")
+        if source in seen_sources:
+            raise ValueError(f"duplicate benchmark source: {source}")
+        seen_sources.add(source)
+        metadata = run.get("metadata")
+        if not isinstance(metadata, dict):
+            raise ValueError(f"{source}: metadata is missing")
+        missing_metadata = [
+            field
+            for field in required_metadata
+            if field not in metadata or metadata[field] in ("", "unknown", None)
+        ]
+        if missing_metadata:
+            raise ValueError(f"{source}: missing metadata: {', '.join(missing_metadata)}")
+        if not isinstance(metadata["benchmark_warmup"], int) or metadata["benchmark_warmup"] < 0:
+            raise ValueError(f"{source}: benchmark_warmup must be a non-negative integer")
+        if not positive_integer(metadata["benchmark_repeats"]):
+            raise ValueError(f"{source}: benchmark_repeats must be a positive integer")
+        results = run.get("results")
+        if not isinstance(results, list) or not results:
+            raise ValueError(f"{source}: no benchmark results parsed")
+        for result in results:
+            if not isinstance(result, dict):
+                raise ValueError(f"{source}: result is not an object")
+            name = result.get("name")
+            if not isinstance(name, str) or not name:
+                raise ValueError(f"{source}: result has no benchmark name")
+            key = result_key(source, result)
+            if key in seen_results:
+                raise ValueError(f"{source}: duplicate benchmark result key for {name}")
+            seen_results.add(key)
+            for field in ("operations", "samples"):
+                if not positive_integer(result.get(field)):
+                    raise ValueError(f"{source}/{name}: {field} must be a positive integer")
+            if not isinstance(result.get("warmup"), int) or result["warmup"] < 0:
+                raise ValueError(f"{source}/{name}: warmup must be a non-negative integer")
+            for field in (
+                "median_seconds",
+                "min_seconds",
+                "max_seconds",
+                "median_ops_per_second",
+                "min_ops_per_second",
+                "max_ops_per_second",
+            ):
+                if not positive_finite(result.get(field)):
+                    raise ValueError(f"{source}/{name}: {field} must be finite and positive")
+            if result["samples"] != metadata["benchmark_repeats"]:
+                raise ValueError(f"{source}/{name}: samples do not match benchmark_repeats")
+            if result.get("warmup") != metadata["benchmark_warmup"]:
+                raise ValueError(f"{source}/{name}: warmup does not match benchmark_warmup")
+            for suffix in ("seconds", "ops_per_second"):
+                if not (
+                    result[f"min_{suffix}"]
+                    <= result[f"median_{suffix}"]
+                    <= result[f"max_{suffix}"]
+                ):
+                    raise ValueError(
+                        f"{source}/{name}: invalid {suffix} min/median/max ordering"
+                    )
+
+
 def environment_identity(environment: dict[str, Any]) -> dict[str, Any]:
     fields = {
         field: environment[field]
@@ -471,6 +561,11 @@ def main() -> int:
     parser.add_argument("--markdown", required=True, type=Path, dest="markdown_path")
     parser.add_argument("--baseline", type=Path)
     parser.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail on missing metadata, empty suites, duplicates, or invalid result statistics.",
+    )
+    parser.add_argument(
         "--environment",
         type=Path,
         help="Machine-readable key=value environment record used to authorize baseline deltas.",
@@ -489,6 +584,11 @@ def main() -> int:
 
     inputs = sorted(path for path in args.inputs if path.name != "environment.txt")
     runs = [parse_output(path) for path in inputs if path.is_file()]
+    if args.strict:
+        try:
+            validate_runs(runs)
+        except ValueError as error:
+            parser.error(str(error))
     baseline = None
     if args.baseline and args.baseline.is_file():
         baseline = json.loads(args.baseline.read_text(encoding="utf-8"))

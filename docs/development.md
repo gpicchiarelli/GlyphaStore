@@ -25,6 +25,8 @@ CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-
 suppress deltas and are listed in the report rather than being mislabeled as code regressions.
 For compatible environments, the report classifies overlapping min/max throughput ranges as
 inconclusive. Only disjoint ranges become improvement or regression candidates.
+The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
+metadata, count mismatches, invalid numbers, and inconsistent statistical ordering fail the report.
 
 The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
 depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined
@@ -38,6 +40,8 @@ python3 scripts/benchmark_report.py benchmark-results/*.txt \
   --json benchmark-results/results.json \
   --markdown benchmark-results/summary.md
 ```
+
+Add `--strict` when the local outputs are intended to exercise the CI evidence contract.
 
 The durable TCP audit matrix runs v1 sync, strict group, and periodic policies at pipeline depths
 1, 8, and 32. It includes both 1/2/4 client-to-Worker scaling and four clients per Worker at each

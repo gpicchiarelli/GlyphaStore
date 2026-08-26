@@ -7,7 +7,8 @@ requirements:
   descrizione: Benchmark CI emits median ops/s deltas against the previous baseline only when the
     recorded environment identity matches. Hosted results and the 10% review threshold are advisory
     regression signals; overlapping min/max ranges remain inconclusive, not a hard release gate or
-    absolute product claim.
+    absolute product claim. Retained CI reports fail closed on incomplete or internally inconsistent
+    benchmark output.
   autorita:
   - docs/spec/benchmark-standard.md
   - docs/benchmarks/paired-shards-plan.md
