@@ -47,6 +47,13 @@ async with await AsyncClient.connect() as cache:
     ])
 ```
 
+## Online backup
+
+`Client.backup(destination)` and `await AsyncClient.backup(destination)` issue wire `BACKUP` to
+create an online fenced durable catalog copy in a new empty server-side path. They return the bounded
+ASCII report as `bytes`. This is an admin operation under secure authz and is not a zero-fence hot
+snapshot; ambiguous transport/`INTERNAL_ERROR` outcomes require reconciliation, not blind retry.
+
 ## Install
 
 From PyPI (once published):

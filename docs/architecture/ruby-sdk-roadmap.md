@@ -19,8 +19,8 @@ usage belongs in the [package README](../../sdk/ruby/README.md).
 | Wire codec | 40-byte request/response headers, canonical field checks, frame limits and binary-safe strings |
 | Worker routing | FNV-1a 64-bit by default; keyed SipHash-2-4 from the strict extended `INIT` identity |
 | Session | `INIT`, one `BIND_WORKER` connection per Worker, `TCP_NODELAY`, routing epoch/count checks |
-| Sync API | `get`, `put`, `erase`, `ping`, `execute_pipeline`, `execute_batch` |
-| Async API | Optional `GlyphaStore::AsyncClient` using the `async` gem |
+| Sync API | `get`, `put`, `erase`, `ping`, `backup`, `execute_pipeline`, `execute_batch` |
+| Async API | Optional `GlyphaStore::AsyncClient` with the same backup/data operations using the `async` gem |
 | Failure model | Structured errors, monotonic deadlines, at-most-one permitted retry and indeterminate mutation outcomes |
 | TLS | Opt-in TLS 1.3, CA/hostname verification, optional mTLS, fail-closed configuration |
 | Packaging | Gemspec, package verification script and release checklist in `sdk/ruby/PACKAGING.md` |

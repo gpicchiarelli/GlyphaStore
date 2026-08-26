@@ -3,7 +3,7 @@
 Status: descriptive
 Applies to: durable data directories
 Owner: persistence maintainers
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-26
 
 Use this runbook when you must change the persisted Worker count of a durable Store. Ordinary
 reopen cannot change Worker count. Policy:
@@ -14,7 +14,7 @@ reopen cannot change Worker count. Policy:
 
 - Disk space for a second full logical copy of live data.
 - Source Store fully stopped.
-- Known target Worker / shard-pair count `N` in `[1, 256]`, matching future daemon `--shard-pairs`
+- Known target Worker / shard-pair count `N` in `[1, 256]`, matching daemon `--shard-pairs`
   (`--workers` is the 0.1.x alias for the same setting).
 
 ## Steps

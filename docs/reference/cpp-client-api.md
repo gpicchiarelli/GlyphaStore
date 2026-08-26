@@ -1,9 +1,9 @@
 # C++ TCP client API
 
-Status: normative for the current experimental C++ client
+Status: normative for the current installable C++ client
 Applies to: `GlyphaStore::client`, wire protocol v2
 Owner: networking maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-26
 
 ## Purpose and ownership
 

@@ -1,8 +1,14 @@
 # Persistence filesystem layer
 
+Status: descriptive of implemented persistence v1 filesystem primitives
+Applies to: all durable Store policies
+Owner: persistence maintainers
+Last reviewed: 2026-08-26
+
 This document specifies the low-level filesystem primitives behind public
-`Store::open(durable_sync)` creation, recovery, and mutation. Production certification still
-requires native-platform and process-kill evidence.
+durable Store creation, recovery, mutation, rotation, compaction, and backup. The synchronization
+frequency depends on the selected acknowledgement policy. Filesystem/device certification still
+requires retained native power-loss evidence; no row is E3/E4 certified.
 
 ## Security and namespace policy
 

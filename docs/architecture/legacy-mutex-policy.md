@@ -46,9 +46,9 @@ Allowed work on the legacy path:
 2. Docs: glossary, public API contract, worker model, and this policy state removal in 0.2.
 3. Release notes: each 0.1.x release that still ships the hatch must mention the 0.2 removal date
    intent.
-4. Mixing: configuration is open-time immutable. Mixing legacy mutators with a paired Writer on the
-   same Store instance is undefined behavior and must be refused at open / fail closed if detected
-   (ADR 0032). Public callers select exactly one enum value.
+4. Mixing: configuration is open-time immutable and public callers select exactly one enum value.
+   There is no supported operation that changes the mode of a live Store; any detected internal
+   ownership violation fails closed (ADR 0032).
 
 ## 5. Equivalence matrix (observable outcomes)
 

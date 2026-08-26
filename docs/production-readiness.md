@@ -161,7 +161,7 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-THREAT-SUPPLY** — Threat model and security release process including supply chain
   State: `IMPLEMENTATA` · Release target: `beta`
   Requirements: `GS-SEC-PROFILE-001`, `GS-SUPPLY-ACTIONS-001`
-  Residual risk: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs; no tagged security-matrix evidence has been retained yet
+  Residual risk: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; no tagged security-matrix evidence has been retained yet
   Threat model, SBOM/checksum/Cosign/SLSA path, SHA-pinned Actions and Scorecard/dependency-review are implemented; the tag graph now closes the Linux sanitizer, CodeQL, static, supply-chain, SBOM and distributed-ELF matrix, but retained tagged evidence remains absent.
 
 ### Distribution and lifecycle
@@ -187,7 +187,7 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-RELEASE-MATRIX** — Release CI covers supported compilers OS arch optimized builds
   State: `IMPLEMENTATA` · Release target: `rc`
   Requirements: `GS-COMPAT-FIXTURE-001`, `GS-RELEASE-ARTIFACT-001`
-  Residual risk: No immutable tag or native BSD package evidence exists; Windows is out of scope; hosted billing may block runs
+  Residual risk: No immutable tag or native BSD package evidence exists; Windows is out of scope
   Platform build/test workflows exist; tag publication is now blocked until exact native packages and same-commit evidence enter the sealed manifest.
 
 - [ ] **GATE-REPRO-SBOM** — Artifacts reproducible signed checksummed with provenance and SBOM

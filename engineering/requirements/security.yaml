@@ -57,6 +57,6 @@ requirements:
   - workflow: actionlint.yml
   rischio_residuo:
   - Dependabot must update SHAs rather than floating tags
-  - Hosted Actions billing may block workflow runs
+  - A skipped, cancelled, queued, or unavailable hosted workflow is not evidence for the candidate
   gates:
   - GATE-THREAT-SUPPLY

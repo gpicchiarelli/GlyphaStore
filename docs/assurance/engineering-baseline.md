@@ -1,13 +1,18 @@
-Status: descriptive
+Status: historical Phase A gap baseline; not the current gate view
 Applies to: assurance program Phase A baseline (0.1.x)
 Owner: maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 # Engineering baseline (Phase A)
 
 GlyphaStore remains an **architectural prototype**. This document records the gap recon that
 precedes the machine-readable assurance system under `engineering/`. It does not advance any
 release level.
+
+The gap rows below are the Phase A input snapshot, not a current backlog: several items they say
+were absent are now implemented. Current state is authoritative only in
+[`engineering/gates/quality-gates.yaml`](../../engineering/gates/quality-gates.yaml) and its
+generated [production-readiness view](../production-readiness.md).
 
 ## Current state (what already exists)
 

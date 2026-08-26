@@ -1,7 +1,13 @@
 # Durable runtime catalog and mutation state machine
 
+Status: descriptive of the implemented durable backend
+Applies to: persistence v1 under all durable Store policies
+Owner: persistence maintainers
+Last reviewed: 2026-08-26
+
 This layer materializes a recovered durable Store into per-Worker Indexes and a bounded file-backed
-runtime. `Store::open(durable_sync)` owns it through the public PImpl.
+runtime. `Store::open` owns it through the public PImpl for `durable_sync`, `durable_group`, and
+`durable_periodic`.
 
 ## Initial bootstrap
 
@@ -25,11 +31,14 @@ failures leave files untouched and release the lock.
 
 ## Bounded descriptors and verified reads
 
-Each Worker owns one mutex and at most one mutable active-Segment descriptor. The catalog owns one
-immutable shared generation pin, including a read-only descriptor, per published Segment. Ordinary
-mutations hold a shared catalog lock; different Workers therefore proceed concurrently. Rotation
-alone takes the exclusive catalog lock because it appends the globally ordered manifest and
-commit-state vectors.
+Each Worker owns one mutex and at most one mutable active-Segment descriptor. In default paired mode,
+the per-shard execution token/dedicated Writer is the sole mutation owner; the mutex remains for
+maintenance, legacy mode, and durable group/periodic state shared with the flush coordinator. The
+`durable_sync` exclusive Writer hot path may elide it under the quiescence protocol. The catalog owns
+one immutable shared generation pin, including a read-only descriptor, per published Segment.
+Ordinary mutations use only the required shared catalog/publication boundary; different Workers
+therefore proceed concurrently. Rotation takes the exclusive catalog lock because it appends the
+globally ordered Manifest and commit-state vectors.
 Online compaction briefly snapshots one target Worker, owns copied Index entries and exact sealed
 generation pins, then performs replacement I/O without the Worker or catalog lock. Publication
 try-locks the Worker, takes the catalog lock, and succeeds only if sequence, batch, manifest, source,
@@ -42,17 +51,17 @@ mutations, lets reads continue, and makes flush wait with its mutex released. Af
 publication, the allocation-free in-memory switch refreshes commit metadata for other Workers
 before clearing that gate. No third manifest authority can appear while the lease exists.
 
-A cold read acquires both its `RecordRef` and a shared pin of the exact Segment generation while the
-Worker and catalog locks are held. It then releases both locks before positional I/O, decoding,
-CRC32C, sequence, key-hash, full-binary-key, opcode, expiration validation, and the owning value copy.
-It finally reacquires the locks and linearizes only if the Index still names the same `RecordRef` and
-the catalog still names the same generation-pin object; otherwise it discards the result and retries.
-No file-cache mutex is held during I/O. A manifest publication may retire the pathname while an
-already pinned descriptor remains valid, so a `RecordRef` never crosses the Worker-lock boundary
-without generation ownership. Normal misses and expiration do not poison the runtime; corruption or
-I/O disagreement on a still-current pin makes later operations return `unavailable`.
+In paired mode a cold read obtains its `RecordRef` and exact Segment-generation pin from the
+immutable published `ReadGeneration`; completion validates that published authority before use. The
+legacy/internal mutable-Index path captures the same pair under Worker/catalog synchronization and
+revalidates it afterward. In both cases positional I/O, decoding, CRC32C, sequence, key-hash,
+full-binary-key, opcode, expiration validation, and owning value copy happen without a Worker,
+catalog, or file-cache mutex. A Manifest publication may retire the pathname while an already pinned
+descriptor remains valid: a `RecordRef` never crosses a synchronization boundary without generation
+ownership and an explicit linearization check. Normal misses and expiration do not poison the
+runtime; corruption or I/O disagreement on a still-current pin makes later mutations fail closed.
 
-After a validated expiration (hot-cache hit or cold Record visit), the runtime returns `not_found`
+After a validated expiration (generation/cache hit or cold Record visit), the runtime returns `not_found`
 immediately and never serves the expired value. Physical Index removal is queued on a bounded
 per-Worker deferred-TTL backlog and drained by existing Worker paths (`prepare_get`, `mutate`) with
 exact `RecordRef` verification so a concurrent reinsert is never erased. Matching hot-cache rows are
@@ -60,9 +69,10 @@ dropped immediately. Compaction remains the durable TTL cleanup path (`expired_r
 A zero backlog limit forces synchronous Index reclaim. Repeated GETs after a successful drain are
 Index misses and perform no Segment I/O.
 
-The per-Worker active-Record hot cache is a Swiss-style flat open-addressed table (power-of-two
-capacity, maximum load 0.75, geometric growth, 8-slot control groups, H2 fingerprints, SIMD/scalar
-group matching shared with the Index via `swiss_control_group.hpp`, values inlined up to 48 bytes).
+The legacy/internal per-Worker active-Record hot cache is a Swiss-style flat open-addressed table
+(power-of-two capacity, maximum load 0.75, geometric growth, 8-slot control groups, H2
+fingerprints, SIMD/scalar group matching shared with the Index via
+`swiss_control_group.hpp`, values inlined up to 48 bytes).
 Bucket arrays are allocated on first successful admission, so disabled and never-used Worker caches
 have zero table storage. Each resident slot uses its `RecordRef` as the only sequence identity,
 derives inline/heap representation from value size, and does not duplicate its recalculable byte
@@ -73,13 +83,16 @@ Hash is never identity — full key bytes are compared on every fingerprint cand
 charges fixed bucket arrays once, external resident key/value payload separately, and complete
 temporary publication state while staged. Accounted resident/staged/bucket bytes, limits, hits,
 misses, stale hits, evictions, size rejects, expired-TTL GETs, and admission bypasses are observable
-without a global cache lock. Durable GET path timing (mutex wait, prepare/complete hold, Index/hot/
-pin lookup, cold read, CRC/value copy, relinearization retries) is published through
+without a global cache lock. Default paired opens disable this duplicate read authority and use only
+the immutable generation; zero-cache operation therefore remains correct. Durable GET path timing
+(mutex wait, prepare/complete hold, Index/hot/pin lookup, cold read, CRC/value copy,
+relinearization retries) is published through
 `get_path_stats()` with relaxed atomics so the Worker critical section stays short; fine-grained
-clock sampling compiles out of Release unless `GLYPHASTORE_GET_PATH_TIMING` is set. Ordinary hot
-`prepare_get` holds only the Worker mutex (catalog shared lock is taken only on cold-miss pin
-acquire). A hot read snapshots shared immutable ownership under the Worker mutex and performs the
-value-sized owning copy after unlocking. On an active-generation miss, the pinned runtime reader may
+clock sampling compiles out of Release unless `GLYPHASTORE_GET_PATH_TIMING` is set. The mutable
+`prepare_get` compatibility path holds only the Worker mutex (the catalog shared lock is taken only
+on cold-miss pin acquisition). A cache hit snapshots shared immutable ownership under the Worker
+mutex and performs the value-sized owning copy after unlocking. On an active-generation miss, the
+pinned runtime reader may
 exceed its handle's opening boundary only for the exact authoritative `RecordRef`; the mandatory
 post-I/O Index and pin revalidation above is its linearization point. Rotation removes all entries
 charged to the retired active generation.
@@ -99,15 +112,17 @@ unchanged.
 
 ## Durable mutation order
 
-Put performs these transitions while holding its Worker lock:
+The owning paired mutation executor (or the legacy Worker lock) serializes these transitions:
 
 1. Prepare Swiss-table capacity, long-key arena storage, bounded hot-cache ownership, and the
    complete encoded Record.
-2. Write and synchronize Record bytes.
-3. Write the alternate commit slot and synchronize the Segment.
-4. Publish the `RecordRef` in the prepared Index and advance the Worker sequence.
+2. Append complete Record bytes.
+3. Write the alternate commit slot and apply the synchronization required by the selected policy.
+4. Publish the `RecordRef`, advance the Worker sequence, and publish the coherent read generation.
 
-No allocation is required after the persistent commit. Erase appends a tombstone and uses a
+Strict sync/group acknowledgement crosses the required Segment synchronization before success;
+periodic acknowledgement may precede the later forced boundary exactly as specified by persistence
+v1. No allocation is required after the persistent commit. Erase appends a tombstone and uses a
 deliberately non-compacting, non-allocating Index removal after commit; volatile erase retains safe
 arena reclamation. Results distinguish `committed`, `not_committed`, and `indeterminate`. Any
 post-commit publication error reports the committed boundary and makes the runtime fail closed.

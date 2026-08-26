@@ -113,6 +113,13 @@ buffer reuse and parser shape; syscall and scheduling behavior; then an optional
 routing kernel if profiles still place CPU there. XS is a possible tool, not a pre-decided answer.
 Wrapping the C++ client through FFI is outside the current native-SDK design.
 
+## Online backup
+
+`$client->backup($destination, timeout => $seconds)` issues wire `BACKUP` and returns the bounded
+ASCII report. The destination is a new empty server-side path. This is an admin operation under
+secure authz and an online fenced copy, not a zero-fence hot snapshot; ambiguous failures are
+reconcile-first and are never blindly retried.
+
 `connections_per_worker` and an event-loop adapter remain measurement-gated. More connections may
 help hot-Worker concurrency while increasing ordering, memory and reconnect complexity; an async
 adapter may improve application concurrency without improving single-pipeline CPU throughput.

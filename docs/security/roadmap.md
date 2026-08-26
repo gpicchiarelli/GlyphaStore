@@ -3,7 +3,7 @@
 Status: roadmap  
 Applies to: daemon TCP surface, official SDKs, durable namespace ops  
 Owner: security maintainers  
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-26
 
 This roadmap turns [threat-model.md](threat-model.md) and the security rows in
 [production-readiness.md](../production-readiness.md) / [v1-production-roadmap.md](../v1-production-roadmap.md)
@@ -14,20 +14,23 @@ changes require ADRs and compatibility evidence first.
 
 1. **Correctness before exposure.** Fail-closed storage/recovery rules are never weakened for auth
    convenience.
-2. **Same train for all official SDKs.** When TLS or session auth lands, C++ / Python / Perl / Go /
-   Erlang / Ruby ship in the **same release**. No official SDK may silently keep cleartext defaults
-   while peers go secure ([sdk-roadmap.md](../architecture/sdk-roadmap.md)).
+2. **Same train for all official SDKs.** TLS or session-auth changes ship for C++ / Python / Perl /
+   Go / Erlang / Ruby in the **same release**. Cleartext remains an explicit development default,
+   but no official SDK may silently lack requested TLS/mTLS support or fall back to cleartext
+   ([sdk-roadmap.md](../architecture/sdk-roadmap.md)).
 3. **Secure profiles fail closed.** A deployment that asks for TLS/auth must not fall back to
    cleartext or anonymous access by default.
 4. **OS/network boundary is not a product feature.** Loopback / private / sidecar remains the
-   *documented* posture until Phases 2–4 are done; it is not a substitute for those phases.
-5. **UDS is not security.** Unix-domain sockets may come later as a same-host transport; they do
-   not replace TLS/auth on reachable listeners ([server-model.md](../architecture/server-model.md)).
+   documented posture even though Phases 2–4 are implemented; hostile public and adversarial
+   multi-tenant deployment are still outside the supported claim.
+5. **UDS is not security.** The implemented Unix-domain transport and optional peer credentials are
+   complementary same-host controls; they do not replace TLS/auth on reachable listeners
+   ([server-model.md](../architecture/server-model.md)).
 6. **No payload secrets in logs.** Categories, sizes, request IDs — never key/value dumps
    ([threat-model.md](threat-model.md) §7).
 7. **OpenBSD is first-class.** Secure-profile TLS uses **LibreSSL** on OpenBSD; CI and docs must
    not treat OpenBSD as a best-effort port ([ADR 0020](../adr/0020-tls-outer-transport.md)).
-   `pledge`/`unveil` land with the secure profile hardening, not as a substitute for TLS.
+   Implemented `pledge`/`unveil` hardening is not a substitute for TLS.
 
 ## Platform matrix (secure profile)
 

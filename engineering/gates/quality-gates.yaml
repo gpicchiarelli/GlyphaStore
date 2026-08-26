@@ -462,7 +462,7 @@ gates:
   - workflow: assurance.yml
   - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs; no tagged security-matrix evidence has been retained yet
+  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; no tagged security-matrix evidence has been retained yet
   riapertura:
   - Removing SBOM/checksum gates
   - Reintroducing mutable Action tags
@@ -566,7 +566,7 @@ gates:
   - workflow: openbsd-libressl.yml
   - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: No immutable tag or native BSD package evidence exists; Windows is out of scope; hosted billing may block runs
+  rischio_residuo: No immutable tag or native BSD package evidence exists; Windows is out of scope
   riapertura:
   - Dropping a supported OS without lifecycle update
   narrative: Platform build/test workflows exist; tag publication is now blocked until exact native packages and same-commit evidence enter the sealed manifest.

@@ -3,7 +3,7 @@
 Status: roadmap
 Applies to: post-audit documentation work after 2026-07-19
 Owner: project maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-26
 
 Tracks remaining evidence and operator-facing material after the P0 specification set. Does not
 override specifications.
@@ -11,7 +11,7 @@ override specifications.
 | Priority | Document / update | Purpose | Audience | Suggested length | Dependencies | Estimate |
 |---|---|---|---|---:|---|---:|
 | P0 | Wire v2 golden fixtures and fixture commentary | Freeze canonical bytes for every opcode/status and boundaries | client authors, maintainers | **done:** independent request/response fixtures cover every current opcode/status and are verified across official SDKs | wire v2 spec | — |
-| P0 | Cross-SDK interoperability suite | Prove C++/Python/Perl/Go/Ruby PUT→GET matrices (binary, expiry, pipeline, errors, 1–8 Workers) | client authors, CI | **done:** 1/2/4/8-Worker cleartext matrix, every deterministic owner, structured `NOT_FOUND`, local 2 MiB rejection, pipeline, expiry, binary/empty values, plus TLS matrix for every official SDK | harness + CI job | — |
+| P0 | Cross-SDK interoperability suite | Prove C++/Python/Perl/Go/Erlang/Ruby PUT→GET matrices (binary, expiry, pipeline, errors, 1–8 Workers) | client authors, CI | **done:** 1/2/4/8-Worker cleartext matrix, every deterministic owner, structured `NOT_FOUND`, local 2 MiB rejection, pipeline, expiry, binary/empty values, plus TLS matrix for every official SDK | harness + CI job | — |
 | P0 | Compaction intent v1 golden fixture | Freeze the last persistent codec without independent golden bytes | persistence maintainers | **done:** canonical dual-Manifest fixture, independent generator/verifier, decode-only and exact encoder evidence | persistence v1 | — |
 | P0 | Error taxonomy ADR | Decide compatibility categories including format incompatibility and indeterminate outcomes | API/client maintainers | 4–6 pages | **done:** [ADR 0019](adr/0019-client-error-retry-timeout.md) + [client semantics v1](spec/client-semantics-v1.md) | — |
 | P0 | Platform durability evidence matrix | Record which filesystem/device guarantees were actually tested | release and storage maintainers | **harness + campaign-prep done:** [E0–E4 evidence policy and matrix](architecture/platform-durability-evidence.md), E2 collector, E3 block-reset harness, operator [E3 campaign runbook](operations/e3-campaign.md) + `scripts/run-e3-campaign.sh` (always `e3_certified=no`); CI rehearsal workflow; **no row is E3/E4 certified** | dedicated crash/power-loss infrastructure + reviewed campaign artifacts on pinned NVMe/VM disks | campaign execution and maintainer promotion |

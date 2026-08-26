@@ -3,7 +3,7 @@
 Status: normative for the current TCP server
 Applies to: protocol version 2
 Owner: networking maintainers
-Last reviewed: 2026-07-23
+Last reviewed: 2026-08-26
 
 ## 1. Transport and byte order
 
@@ -71,7 +71,7 @@ Unknown status codes must be treated as errors while preserving frame synchroniz
 
 | Value | Name | Request fields | Successful response |
 |---:|---|---|---|
-| 1 | `INIT` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | value is ASCII `GlyphaStore/2`; reports worker metadata |
+| 1 | `INIT` | empty key/value; `expire_at_ns = 0`; `target_worker = kNoWorker` | plain `GlyphaStore/2` or the section 7 extended SipHash identity; reports Worker metadata |
 | 2 | `PING` | empty key; opaque value; `expire_at_ns = 0`; `target_worker = kNoWorker` | echoes value |
 | 3 | `GET` | non-empty key; empty value; `expire_at_ns = 0`; `target_worker = kNoWorker` | stored value or `NOT_FOUND` |
 | 4 | `PUT` | non-empty key; value; optional `expire_at_ns`; `target_worker = kNoWorker` | empty value |

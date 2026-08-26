@@ -3,7 +3,7 @@
 Status: normative algorithm specification
 Applies to: in-memory Index version 1
 Owner: storage-engine maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-08-26
 
 ## 1. Contract
 
@@ -27,7 +27,9 @@ Capacity is a power of two, at least one group, and a multiple of eight.
 
 ## 3. Hashes
 
-The Index receives or computes a stable 64-bit key hash over every key byte. The current routing-compatible key hash is FNV-1a 64-bit.
+The Index receives or computes the Store's 64-bit routing hash over every key byte. Ordinary Stores
+use FNV-1a 64-bit; keyed Stores use the persisted SipHash-2-4 algorithm and seed from ADR 0030. The
+same routing identity must be used when rebuilding or rehashing a Store Index.
 
 Table placement uses a separate mixing step. The default seed is the published constant below;
 `--secure-profile` (and `--index-hash-seed`) may replace it with a process-lifetime secret
@@ -39,9 +41,11 @@ x = (x XOR (x >> 33)) * 0x9E3779B97F4A7C15
 x = (x XOR (x >> 29))
 ```
 
-**Flood-resistance note:** with the published default seed, Index placement is stable and
-reproducible but not secret. A secret seed prevents precomputed bucket floods against that
-process. Worker routing remains public FNV-1a (ADR 0006) until a keyed routing design lands.
+**Flood-resistance note:** with the published default Index-mix seed, table placement is stable and
+reproducible but not secret. A secret Index seed prevents precomputed bucket floods against that
+process. Worker routing is a separate domain: FNV-1a remains the compatibility default, while
+`--worker-hash-seed` and `--secure-profile` select persisted SipHash-2-4 routing
+([ADR 0030](../adr/0030-keyed-worker-routing.md)).
 
 The fingerprint `H2` is the low seven bits of the mixed hash, with zero changed to one. The initial group `H1` is derived from the remaining bits:
 

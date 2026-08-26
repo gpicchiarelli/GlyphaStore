@@ -42,17 +42,19 @@ the listener to untrusted networks until mTLS principals and capabilities are en
 
 The **secure profile** is specified in [docs/security/roadmap.md](docs/security/roadmap.md) and ADRs
 [0020](docs/adr/0020-tls-outer-transport.md)–[0022](docs/adr/0022-authorization-capabilities.md)
-([0025](docs/adr/0025-key-prefix-tenant-scope.md) optional key-prefix scope).
-Phase 2 (outer TLS) is implemented; Phases 3–4 (mTLS principals + `--authz-map` /
-`--secure-profile`) are implemented in the daemon and C++/Python/Perl/Go/Erlang clients. **Ruby**
-remains cleartext-only until its SDK Phase 3 (explicit exception to the “same train” TLS policy).
+([0025](docs/adr/0025-key-prefix-tenant-scope.md) optional key-prefix scope). TLS 1.3, mTLS
+principals, `--authz-map`, `--secure-profile`, abuse limits, audit events, CRL checks, and persisted
+SipHash Worker routing are implemented. The C++, Python, Perl, Go, Erlang, and Ruby source SDKs all
+implement opt-in TLS/mTLS and keyed INIT routing; a given installation still fails closed when its
+language TLS/toolchain dependency is unavailable.
+
 **OpenBSD** is a first-class portability target (LibreSSL; `pledge`/`unveil` after
-`Server::create` — Phase 6.5; not a durable storage certification). CI builds and tests the daemon against system LibreSSL
-([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Enable the full secure profile (TLS + mTLS + capabilities + Phase 5 abuse limits + Phase 6 audit) before leaving a
-trusted perimeter. Configure `--tls-crl` (and optionally `--tls-ocsp-fail-closed`) before hostile
-public Internet. Optional `--authz-map` `prefix=` isolates GET/PUT/ERASE key namespaces (Phase 8
-first slice); keyed routing and full multi-tenant readiness remain residual. Live OCSP HTTP is
-unsupported. Physical E3 remains open.
+`Server::create`; not durable storage certification). CI builds and tests the daemon against system
+LibreSSL ([`.github/workflows/openbsd-libressl.yml`](.github/workflows/openbsd-libressl.yml)). Enable
+the full secure profile before leaving a trusted perimeter. Configure `--tls-crl` (and optionally
+`--tls-ocsp-fail-closed`) before hostile public Internet. Optional `--authz-map` `prefix=` isolates
+GET/PUT/ERASE key namespaces (Phase 8 first slice); adversarial shared-daemon multi-tenancy remains
+unsupported. Live OCSP HTTP is unsupported. Physical E3/E4 durability certification remains open.
 Threat model: [docs/security/threat-model.md](docs/security/threat-model.md).
 
 ## Security scope
