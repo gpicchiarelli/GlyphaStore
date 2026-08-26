@@ -80,9 +80,12 @@ jobs:
               -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/build/release-sdk-prefix"
             cmake --build build/release-sdk-consumer
             ctest --test-dir build/release-sdk-consumer --output-on-failure
+            read -r -a pkg_config_flags <<< "$(
+              PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/release-sdk-prefix/lib/pkgconfig" \
+                pkg-config --cflags --libs glyphastore-abi
+            )"
             cc -std=c11 tests/consumer/abi.c \
-              $(PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/release-sdk-prefix/lib/pkgconfig" \
-                pkg-config --cflags --libs glyphastore-abi) \
+              "${pkg_config_flags[@]}" \
               -o build/release-sdk-consumer/pkgconfig-abi-consumer
             LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/release-sdk-prefix/lib" \
               build/release-sdk-consumer/pkgconfig-abi-consumer
@@ -1141,15 +1144,18 @@ jobs:
           tar -xJf "$archive" -C build/extracted
           prefix="$(find build/extracted -mindepth 1 -maxdepth 1 -type d -print -quit)"
           test -x "$prefix/bin/glyphastored"
-          test "$($prefix/bin/glyphastored --version)" = \
+          test "$("$prefix/bin/glyphastored" --version)" = \
             "glyphastored $(cat VERSION)"
           cmake -S tests/consumer -B build/verified-consumer -G Ninja \
             -DCMAKE_PREFIX_PATH="$prefix"
           cmake --build build/verified-consumer
           ctest --test-dir build/verified-consumer --output-on-failure
+          read -r -a pkg_config_flags <<< "$(
+            PKG_CONFIG_PATH="$prefix/lib/pkgconfig" \
+              pkg-config --cflags --libs glyphastore-abi
+          )"
           cc -std=c11 tests/consumer/abi.c \
-            $(PKG_CONFIG_PATH="$prefix/lib/pkgconfig" \
-              pkg-config --cflags --libs glyphastore-abi) \
+            "${pkg_config_flags[@]}" \
             -o build/verified-consumer/pkgconfig-abi-consumer
           LD_LIBRARY_PATH="$prefix/lib" build/verified-consumer/pkgconfig-abi-consumer
       - name: Download same-run certification inputs

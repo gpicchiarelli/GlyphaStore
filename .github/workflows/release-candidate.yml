@@ -75,9 +75,12 @@ jobs:
             -DCMAKE_PREFIX_PATH="${GITHUB_WORKSPACE}/build/release-prefix"
           cmake --build build/release-consumer
           ctest --test-dir build/release-consumer --output-on-failure
+          read -r -a pkg_config_flags <<< "$(
+            PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/release-prefix/lib/pkgconfig" \
+              pkg-config --cflags --libs glyphastore-abi
+          )"
           cc -std=c11 tests/consumer/abi.c \
-            $(PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/release-prefix/lib/pkgconfig" \
-              pkg-config --cflags --libs glyphastore-abi) \
+            "${pkg_config_flags[@]}" \
             -o build/release-consumer/pkgconfig-abi-consumer
           LD_LIBRARY_PATH="${GITHUB_WORKSPACE}/build/release-prefix/lib" \
             build/release-consumer/pkgconfig-abi-consumer
