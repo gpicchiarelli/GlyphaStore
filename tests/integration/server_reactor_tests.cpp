@@ -1283,7 +1283,13 @@ GLYPHA_TEST("pending output stops mutation completion pipeline resume until sock
         .key = bytes("slow-a"),
         .value = bytes("one"),
     });
-    constexpr std::size_t kPingBytes = 512U * 1024U;
+    // Use a protocol-maximum response. A 512 KiB response can be absorbed in
+    // loopback autotuning buffers even after SO_RCVBUF/SO_SNDBUF are reduced,
+    // which makes the intended EAGAIN boundary timing-dependent on Linux and
+    // macOS. The maximum legal frame creates the same bounded condition without
+    // test-only production hooks or relaxed assertions.
+    constexpr std::size_t kPingBytes =
+        glyphastore::server::kMaxFrameBytes - glyphastore::server::kRequestHeaderBytes;
     const std::vector<std::byte> ping_value(kPingBytes, std::byte{0x61});
     const auto ping = glyphastore::server::encode_request({
         .opcode = glyphastore::server::RequestOpcode::ping,
