@@ -126,6 +126,13 @@ criterion: many Erlang processes sharing one client against different Workers.
 Artifacts land under `benchmark-results-erlang-*`. The escript pins `+S 4:4` for
 cross-machine comparability.
 
+## Online backup
+
+`glyphastore_client:backup(Client, Destination[, Opts])` issues wire `BACKUP`; `Destination` is a
+non-empty binary naming a new empty server-side path. Success returns the bounded ASCII report. The
+operation requires `admin` under secure authz and is fenced rather than zero-fence hot; ambiguous
+failures are reconcile-first and are not blindly retried.
+
 ## TLS
 
 Optional TLS 1.3 is supported when the `ssl` application is available (standard OTP).

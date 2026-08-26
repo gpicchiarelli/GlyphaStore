@@ -3,7 +3,7 @@
 Status: descriptive
 Applies to: `glyphastored` wire protocol v2
 Owner: platform maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 ## Purpose
 
@@ -35,8 +35,11 @@ Failed probes return `INTERNAL_ERROR` with an empty value. During shutdown, expe
 while `HEALTH` may still succeed briefly.
 
 Use any v2 client that can send raw opcodes (official SDKs encode `HEALTH`/`READY`/`STATS`). There
-is no separate probe binary; treat `STATS` as a private-admin surface until authentication is enforced
-([ADR 0021](../adr/0021-secure-profile-authentication.md)).
+is no separate probe binary. In cleartext/default mode, protect `STATS` as a private-admin surface
+with the listener boundary. When authz is enabled it requires `read` for an unscoped principal and
+`admin` for a prefix-scoped principal; secure profile supplies authenticated mTLS principals
+([ADR 0021](../adr/0021-secure-profile-authentication.md),
+[ADR 0027](../adr/0027-stats-isolation-prefix-principals.md)).
 
 ## Graceful shutdown procedure
 
@@ -119,8 +122,9 @@ after fixing capacity or shedding load.
 1. **`STATS`**: inspect per-shard-pair mutation lane `admitted`/`rejected`/`expired`, queue depth,
    maintenance emergency/skip reason, and rotation phase timings (`pair_writer_stats` / wire Worker
    lane counters name the same topology).
-2. **Capacity**: check `--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`,
-   `--max-hot-cache-bytes`, connection and buffer limits via `--dump-config`.
+2. **Capacity**: check `--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`, connection,
+   mutation-lane and buffer limits via `--dump-config`. `--max-hot-cache-bytes` is retained for
+   0.1.x compatibility, but the paired daemon disables that legacy cache.
 3. **Shed load**: stop new clients, reduce shard-pair hot spots, or add instances (shard-pair /
    Worker count changes require offline migration — not an in-place rewrite).
 4. **Do not** rely on killing the process to “clear queues”; use graceful drain so admitted work can

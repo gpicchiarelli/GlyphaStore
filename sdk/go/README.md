@@ -74,9 +74,16 @@ cd sdk/go && go test ./...
 
 | Package | Role |
 | --- | --- |
-| `protocol` | Wire codec, FNV-1a routing, golden fixture tests |
-| `client` | Sync TCP client (Get/Put/Erase/Ping, pipeline, batch) |
+| `protocol` | Wire codec, FNV/SipHash routing, golden fixture tests |
+| `client` | Sync TCP client (Get/Put/Erase/Ping/Backup, pipeline, batch) |
 | `cmd/glyphastore-interop` | CLI for `scripts/test-sdk-interop.sh` |
+
+## Online backup
+
+`Client.Backup(destination, options...)` issues wire `BACKUP` and returns the bounded ASCII report
+as `[]byte`. The destination is a new empty server-side path. This is an admin operation under secure
+authz and an online fenced copy, not a zero-fence hot snapshot; ambiguous failures require
+reconciliation and are not blindly retried.
 
 ## Benchmarks
 

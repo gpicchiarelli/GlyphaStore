@@ -1,36 +1,42 @@
 # Storage model
 
+Status: descriptive of the current paired Store
+Applies to: volatile memory and persistence v1 backends
+Owner: storage-engine maintainers
+Last reviewed: 2026-08-26
+
 ## Logical structure
 
 ```text
 Store
-  volatile runtime
-    Worker -> Index + in-memory Segments + mutex
-    GlobalSegmentManager -> allocation/lifecycle snapshots
-  or durable runtime
-    runtime Worker -> Index + active file Segment + mutex + hot cache
-    DurableRuntimeCatalog -> manifest-aligned file namespace
+  ShardPairRuntime (default concurrency)
+    owner -> immutable ReadGeneration + one mutation executor
+    volatile backend -> mutable Index + in-memory Segments
+    or durable backend -> mutable Index + active file Segment + generation pins
+  control/maintenance
+    GlobalSegmentManager or DurableRuntimeCatalog
 ```
 
 The Store presents one key-space. Routing chooses a Worker deterministically from the key hash.
 The Worker owns mutation of its Index partition and appends immutable Records to an assigned active
 Segment.
 
-The volatile `Worker` and durable runtime Worker are separate implementations of the same ownership
-rule. The global manager/catalog is control plane; normal exact-key lookup remains in the routed
-Worker data plane. The normative component and dependency map is in the
+The volatile `Worker` and durable runtime Worker are separate backends under the same paired
+ownership rule. The global manager/catalog is control plane; ordinary paired lookup remains in the
+owner Reader's immutable generation and never scans other Workers. Mutable backend Index state is
+Writer-only during normal paired operation. The normative component and dependency map is in the
 [architecture specification](../spec/architecture.md).
 
 ## Read and write paths
 
 ```text
-read:  key -> Worker -> Index -> RecordRef -> Segment + validated offset -> Record
-write: key -> Worker -> encode Record -> append -> publish Index reference
+read:  key -> owner -> immutable ReadGeneration -> RecordRef/pin -> Segment -> value
+write: key -> owner mutation executor -> encode -> append -> publish backend Index + ReadGeneration
 ```
 
-Publishing the Index reference makes a new Record visible. Replacing or removing an Index entry
-updates Segment liveness accounting; the old Record remains physically present until its Segment
-is reclaimed or vacuumed.
+Publishing a coherent `ReadGeneration` makes a new Record visible to paired readers. Replacing or
+removing an Index entry updates Segment liveness accounting; the old Record remains physically
+present until its Segment is reclaimed or compacted.
 
 In durable-sync mode, successful synchronization of the alternate Segment commit slot is
 the durable commit point and precedes in-memory publication. The full ordering and acknowledgement
@@ -42,8 +48,8 @@ The Index can be reconstructed by scanning valid Records. Recovery compares full
 hashes. A higher sequence supersedes a lower one regardless of Segment scan order. A newest
 tombstone removes visibility; a newest expired Record is omitted from the rebuilt Index.
 
-An optional persisted Index checkpoint may accelerate startup later, but corruption of that cache
-must always permit fallback to Segment scanning.
+No persisted Index checkpoint is part of persistence v1. Any future derived checkpoint must remain
+discardable and permit fallback to validated Segment scanning.
 
 Durable recovery uses the persisted routing algorithm, Worker count, and routing epoch. Machine
 topology does not silently repartition an existing Store during reopen.

@@ -100,7 +100,7 @@ abi:
     notes: Same-build proof exists; cross-release compatibility requires a retained tagged consumer.
 
   - id: ABI-C1-N-MINUS-1
-    producer: "future C ABI 1.x library"
+    producer: "candidate C ABI 1.x library"
     consumer: "prior tagged C ABI 1.x binary"
     status: not_promised
     notes: Policy requires compatibility. Every candidate now packages a compiled ABI-1 consumer;

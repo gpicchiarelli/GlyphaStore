@@ -18,12 +18,12 @@ has been published to its language registry or that the server is production-cer
 
 | Client | Public surface | Concurrency model | TLS 1.3 | Worker routing |
 | --- | --- | --- | --- | --- |
-| C++ | sync CRUD, pipeline, batch | thread-safe connection per Worker | yes | FNV + keyed SipHash `INIT` extension |
-| Python | sync + `asyncio`, pipeline, batch | mutexed sync / native async | yes | FNV + keyed SipHash `INIT` extension |
-| Perl | sync CRUD, pipeline, batch, Worker vectors | one select loop across Workers; one client per process/thread | optional `IO::Socket::SSL` | FNV + keyed SipHash `INIT` extension |
-| Go | sync CRUD, pipeline, batch | mutex per Worker; goroutine batch fan-out | yes | FNV + keyed SipHash `INIT` extension |
-| Erlang | sync OTP API, pipeline, batch, Worker vectors | shareable coordinator + per-Worker `gen_server` | yes | FNV + keyed SipHash `INIT` extension |
-| Ruby | sync + optional `async`, pipeline, batch | MRI-thread-safe sync / Fiber async | yes | FNV + keyed SipHash `INIT` extension |
+| C++ | sync CRUD, backup, pipeline, batch | thread-safe connection per Worker | yes | FNV + keyed SipHash `INIT` extension |
+| Python | sync + `asyncio`, backup, pipeline, batch | mutexed sync / native async | yes | FNV + keyed SipHash `INIT` extension |
+| Perl | sync CRUD, backup, pipeline, batch, Worker vectors | one select loop across Workers; one client per process/thread | optional `IO::Socket::SSL` | FNV + keyed SipHash `INIT` extension |
+| Go | sync CRUD, backup, pipeline, batch | mutex per Worker; goroutine batch fan-out | yes | FNV + keyed SipHash `INIT` extension |
+| Erlang | sync OTP API, backup, pipeline, batch, Worker vectors | shareable coordinator + per-Worker `gen_server` | yes | FNV + keyed SipHash `INIT` extension |
+| Ruby | sync + optional `async`, backup, pipeline, batch | MRI-thread-safe sync / Fiber async | yes | FNV + keyed SipHash `INIT` extension |
 
 All six use golden wire fixtures and participate in the default-routing interoperability harness.
 Every official client decodes plain `GlyphaStore/2` (FNV) and the extended SipHash INIT identity.

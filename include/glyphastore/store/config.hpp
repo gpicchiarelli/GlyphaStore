@@ -138,9 +138,10 @@ enum class DurableOpenMode : std::uint8_t {
 };
 
 // Store linearization model (ADR 0032). paired is the product default: every
-// Worker/shard owns one Writer thread plus one immutable published read
-// generation, so ordinary get never acquires the Index mutex and multi-thread
-// put/erase serialize on the Writer lane.
+// Worker/shard owns one serial mutation executor plus one immutable published
+// read generation, so ordinary get never acquires the Index mutex and concurrent
+// put/erase serialize on the Writer lane. Embedded synchronous calls may execute
+// through the shard combiner; the daemon enables the dedicated Writer thread.
 //
 // legacy_mutex restores the historical Worker-mutex path. It is deprecated for
 // 0.1.x and removed in 0.2. The two models must never mutate the same Store

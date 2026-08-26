@@ -3,7 +3,7 @@
 Status: normative terminology
 Applies to: current architecture, public API, persistence v1, wire protocol v2
 Owner: GlyphaStore maintainers
-Last reviewed: 2026-07-31 (ADR 0032 paired embedded Store)
+Last reviewed: 2026-08-26
 
 Terms in this glossary use their exact capitalization when they name an architectural entity.
 
@@ -11,12 +11,12 @@ Terms in this glossary use their exact capitalization when they name an architec
 |---|---|
 | Store | One logical exact-key key-space exposed by the embedded API or daemon. |
 | Worker | The unit of key ownership and mutation serialization on disk and wire. A key has exactly one owner Worker for a routing epoch. In the 0.1.0 daemon this is one shard pair; Manifest and wire still use `worker_count` / owner Worker ids. |
-| ShardPair | One Reader plus one serial Writer for a single owner id ([ADR 0031](adr/paired-reader-writer-shards.md), [ADR 0032](adr/0032-paired-concurrency-embedded-store.md)). Default for embedded `Store::open` and the sole `glyphastored` 0.1.0 runtime. |
-| ShardPairRuntime | Library-owned paired runtime inside `glyphastore_core`: Writer threads, SPSC lanes, and generation publication shared by embedded Store and the daemon thin I/O layer. |
+| ShardPair | One Reader role plus one serial mutation-executor/Writer role for a single owner id ([ADR 0031](adr/paired-reader-writer-shards.md), [ADR 0032](adr/0032-paired-concurrency-embedded-store.md)). Default for embedded `Store::open` and the sole `glyphastored` 0.1.x runtime. |
+| ShardPairRuntime | Library-owned paired runtime inside `glyphastore_core`: immutable generation publication, synchronous combining, and optional bounded asynchronous lanes. Embedded callers combine synchronously; the daemon enables a dedicated Writer thread. |
 | Reader | Half of a ShardPair that serves GET from a local immutable `ReadGeneration` (daemon: readiness/Reactor; embedded: caller thread adopting the published generation). |
-| Writer | The serial mutator half of a ShardPair: sole append/publication path for that owner; reached only via bounded SPSC lanes. |
+| Writer | The serial mutation-executor role of a ShardPair: sole append/publication path for that owner; reached through the embedded synchronous combiner or the daemon's bounded asynchronous lane. |
 | ReadGeneration | Immutable publication descriptor for ordinary paired GET. Daemon Readers adopt it once per event-loop turn (borrowed/leased); public `Store::get` still returns an owning `OwnedValue` ([ADR 0009](adr/0009-public-read-ownership.md)). |
-| StoreConcurrencyMode | Open-time concurrency: `paired` (default) or deprecated `legacy_mutex` (0.1.x escape hatch; removed in 0.2). Mixing both mutator styles on one Store is refused / UB. |
+| StoreConcurrencyMode | Immutable open-time choice: `paired` (default) or deprecated `legacy_mutex` (0.1.x escape hatch; removed in 0.2). Public callers cannot switch a live Store; any detected internal ownership violation fails closed. |
 | executor | A server thread running one Reader for one shard pair (historically “Reactor + Worker”). It is not a separate Store. |
 | Reactor | Synonym in docs for the Reader’s readiness loop: owner of a set of network sockets and their connection buffers. |
 | Index | Derived acceleration state mapping a complete key to one `RecordRef`. It is partitioned physically by Worker. |
@@ -33,7 +33,7 @@ Terms in this glossary use their exact capitalization when they name an architec
 | committed extent | The Record byte range authorized by the selected valid commit slot. |
 | crash tail | Bytes beyond the committed extent. Recovery never interprets them. |
 | recovery authority | The durable objects allowed to determine recovered state: the authoritative Manifest and its committed Segment extents, plus a validated recovery intent where specified. |
-| routing hash | Deterministic FNV-1a-64 over the complete binary key in routing algorithm v1. |
+| routing hash | Deterministic hash over the complete binary key: FNV-1a-64 by default, or persisted SipHash-2-4 when keyed routing is selected. Algorithm and seed are part of the routing identity. |
 | routing epoch | Persisted identifier for one key-to-Worker ownership assignment. It changes only through an explicit migration. |
 | owner-bound | A connection or operation executes on the Worker/shard pair selected by the routing function. |
 | worker-affine benchmark | A workload assigning each client thread keys owned by one Worker while using the public Store path. |
@@ -52,8 +52,8 @@ Terms in this glossary use their exact capitalization when they name an architec
 | not committed | Failure known to precede the persistent authority change; recovery retains the previous state. |
 | indeterminate | The authority-changing operation was attempted and its durable result cannot be inferred in the running process; close and recover are required. |
 | snapshot | An owning copy of diagnostic/catalog state or a specifically pinned historical read. A returned reference to a live container is not a snapshot. |
-| hot-record cache | Durable-runtime RAM cache of recently published values. It is acceleration state and never recovery authority. |
-| vacuum | Copy-build-validate-publish-reclaim model, currently represented by the volatile/offline builder foundations. |
+| hot-record cache | Legacy durable-runtime RAM cache of recently published values. It is never recovery authority and is disabled as a read authority in default paired mode. |
+| vacuum | Historical/internal name for copy-build-validate-publish-reclaim compaction; it is not a public API type. |
 | durable compaction | Crash-safe whole-Worker replacement of its complete sealed history under a persisted intent. |
 | retirement | Removal of old physical objects after a newer authority is durable and readers cannot require them. |
 | residency | Whether Segment bytes are resident, mapped, or require loading; persistence alone does not imply RAM residency. |

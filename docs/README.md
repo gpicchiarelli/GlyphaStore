@@ -61,7 +61,10 @@ Use `normative` only for required behavior. Architecture guides describe the cur
 and must label planned behavior explicitly. Roadmaps may track unfinished work but cannot redefine a
 format, acknowledgement point, ownership rule, or compatibility guarantee.
 
-## Stable specifications
+## Normative and versioned specifications
+
+"Versioned" describes the contract domain; it does not mean the GlyphaStore product has reached a
+stable release. The current release-claim ceiling remains architectural prototype.
 
 | Document | Authority |
 |---|---|

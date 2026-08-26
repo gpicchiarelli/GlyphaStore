@@ -1,14 +1,21 @@
 # Residency model
 
-The Index and each Worker active Segment remain resident in RAM. A sealed Segment may transition
-between resident, mapped, and evicted states only after a durable or otherwise valid secondary
-copy exists.
+Status: descriptive of implemented ownership plus future residency constraints
+Applies to: volatile memory and persistence v1
+Owner: storage-engine maintainers
+Last reviewed: 2026-08-26
+
+Mutable Index state and volatile Segments are resident in RAM. Durable active and sealed Segments
+are fixed-size files; the runtime keeps bounded descriptors/generation pins and performs positional
+reads rather than requiring complete Segment residency. Immutable `ReadGeneration` metadata is
+resident, while cold value bytes are materialized from the pinned file generation.
 
 ```text
-ACTIVE: resident and writable by its owning Worker
-SEALED/HOT: resident or prefaulted mapping
-SEALED/WARM: file-backed mapping, pages managed by the OS
-SEALED/COLD: evicted or unmapped, load required on access
+ACTIVE volatile: resident and writable only by its owner mutation executor
+ACTIVE durable: file-backed mutable Segment + published immutable generation pin
+SEALED durable: immutable file generation, read through a shared pin/descriptor
+VALUE HOT: bytes already carried by the adopted ReadGeneration
+VALUE COLD: positional read and validation required
 DEAD: retired and reclaimable after safety conditions
 ```
 
@@ -16,10 +23,11 @@ DEAD: retired and reclaimable after safety conditions
 filesystem. Data directories are configurable. Production defaults will follow each OS convention
 without hard-coding paths in the core.
 
-Residency policy uses high/low watermarks to avoid oscillation, never evicts active or pinned
-Segments, and must expose page-fault and load latency to SLA metrics. `mmap` offers positional
-access but does not guarantee physical residency or durability.
+The current durable runtime does not use `mmap` as its value-access contract. Any future mapping or
+eviction policy must use high/low watermarks, must not invalidate active generation pins, and must
+separate page residency from durability.
 
-A public pinned read keeps its exact Segment generation resident independently of current Index
-visibility and Store object lifetime. Eviction, unmapping, deletion, and Segment reuse wait until
-all pins for that generation are released.
+Public C++ reads are owning copies; no public pinned-read handle is implemented. Internal generation
+pins keep the exact Segment generation usable independently of pathname retirement. Descriptor
+close, deletion, unmapping (if introduced), and Segment reuse must wait until the relevant internal
+reader/reclamation obligation is released.

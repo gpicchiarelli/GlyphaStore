@@ -20,9 +20,9 @@ The volatile `Worker` owns in-memory Segments through `GlobalSegmentManager`. Du
 separate internal runtime Worker that owns a file-backed active Segment and bounded hot-record state
 through `DurableRuntimeCatalog`. They share the routing/ownership contract, not one concrete class.
 
-Routing is deterministic from a key hash. The first implementation may route directly by Worker
-count; online Worker resizing would require a stable routing-slot table and migration protocol and
-is intentionally outside this bootstrap. Changing the persisted Worker count is supported only via
+Routing is deterministic from the persisted routing algorithm/seed and routes directly by Worker
+count. Online Worker resizing would require a stable routing transition and migration protocol and
+is intentionally outside 0.1.x. Changing the persisted Worker count is supported only via
 offline [store migration](store-migration.md) ([ADR 0024](../adr/0024-offline-worker-migration.md)).
 
 ## Concurrency
@@ -59,7 +59,9 @@ The supported public API returns an owning value copy. Internal server execution
 before its execution lifetime ends. An explicitly pinned public zero-copy handle remains future
 work. See the [public API contract](public-api-contract.md).
 
-On macOS, physical core detection uses `sysctlbyname`. Linux must respect the process CPU affinity
-mask when the platform backend is completed. FreeBSD uses native topology APIs with a portable
-fallback. OpenBSD uses `_SC_NPROCESSORS_ONLN` for the available CPU count and otherwise retains the
-portable `std::thread::hardware_concurrency` topology fallback.
+On macOS, physical core and memory detection use `sysctlbyname`. FreeBSD uses `kern.smp.cores` and
+`hw.physmem`; OpenBSD uses `_SC_NPROCESSORS_ONLN` for available CPU count. Linux currently uses the
+online logical CPU count and `sysinfo` free-memory sample; it does not yet distinguish physical cores
+or reduce that count to the process affinity mask. Every platform retains the portable
+`std::thread::hardware_concurrency` fallback. Explicit Worker/shard-pair count is therefore the
+deterministic choice for controlled affinity or benchmark runs.

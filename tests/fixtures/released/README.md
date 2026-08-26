@@ -29,4 +29,4 @@ Package the current tree's fixtures for a label:
 scripts/package-release-compatibility-artifacts.sh 0.1.0-alpha.1
 ```
 
-Policy: [version lifecycle](../../docs/architecture/version-lifecycle.md).
+Policy: [version lifecycle](../../../docs/architecture/version-lifecycle.md).

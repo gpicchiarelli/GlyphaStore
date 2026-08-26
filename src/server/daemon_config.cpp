@@ -197,17 +197,18 @@ constexpr std::array kOptionSpecs{
     cli::OptionSpec{max_segments, "max-segments", '\0', cli::OptionArity::required, "COUNT",
                     "Cap durable Segment count (default: 127)"},
     cli::OptionSpec{max_hot_cache_bytes, "max-hot-cache-bytes", '\0', cli::OptionArity::required, "BYTES",
-                    "Cap durable hot-cache bytes across Workers (default: 256MiB; 0 disables)"},
+                    "Retained 0.1.x durable-limit compatibility setting; paired daemon reads use "
+                    "ReadGeneration and disable the legacy hot cache (default: 256MiB)"},
     cli::OptionSpec{max_hot_cache_value_bytes, "max-hot-cache-value-bytes", '\0', cli::OptionArity::required,
                     "BYTES",
-                    "Reject hot-cache admission for values larger than BYTES (default: 64KiB; 0 disables "
-                    "admission)"},
+                    "Retained 0.1.x durable-limit compatibility setting; paired daemon reads disable "
+                    "the legacy hot cache (default: 64KiB)"},
     cli::OptionSpec{disable_hot_cache,
                     "disable-hot-cache",
                     '\0',
                     cli::OptionArity::none,
                     {},
-                    "Disable durable hot-cache admission (cold pinned reads remain correct)"},
+                    "Explicitly disable the legacy durable hot cache (already disabled by paired daemon)"},
     cli::OptionSpec{max_temporary_compaction_bytes, "max-temporary-compaction-bytes", '\0',
                     cli::OptionArity::required, "BYTES",
                     "Cap temporary durable compaction peak bytes (default: 1GiB)"},

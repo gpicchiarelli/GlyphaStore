@@ -19,9 +19,10 @@
 ![GlyphaStore storage engine laboratory](docs/assets/glyphastore-hero.png)
 
 GlyphaStore stores opaque binary keys and values in one logical key-space. Keys are routed to
-independent Worker-owned partitions; immutable records are appended to fixed 64 MiB Segments and an
-exact-key Index points to the latest visible record. The project can be embedded as a C++ library or
-run through the native `glyphastored` daemon and wire protocol v2.
+independent paired Reader–Writer ownership domains; immutable records are appended to fixed 64 MiB
+Segments and an exact-key Index points to the latest visible record. The project can be embedded
+through the C++ API or the separately versioned C ABI, or run through the native `glyphastored`
+daemon and wire protocol v2.
 
 It is a key-value engine, not a SQL or document database. See
 [where performance matters](docs/architecture/where-performance-matters.md) before treating raw
@@ -31,8 +32,9 @@ engine throughput as application throughput.
 
 > [!IMPORTANT]
 > **Architectural prototype — not production ready.** Volatile storage, persistence v1, recovery,
-> compaction, the daemon, secure transport, and native clients are implemented and tested. Stable
-> release compatibility, filesystem/device power-loss certification, signed artifacts, and a full
+> compaction, the paired daemon, secure transport, the C ABI v1 implementation, and native clients
+> are present and tested. The first retained cross-release C ABI proof, stable product-release
+> compatibility, filesystem/device power-loss certification, signed published artifacts, and a full
 > production evidence matrix are not complete. Follow the machine-readable
 > [assurance catalog](engineering/README.md) and the derived
 > [production-readiness gates](docs/production-readiness.md), not feature presence alone. Agent and
@@ -42,10 +44,11 @@ Implemented surfaces:
 
 | Surface | Current implementation |
 | --- | --- |
-| Embedded Store | `GET`, `PUT`, `ERASE`, TTL, explicit compaction; volatile and three durable acknowledgement policies |
+| Embedded C++ Store | `GET`, `PUT`, `PUT batch`, `ERASE`, TTL, flush, fenced online backup and explicit compaction; volatile and three durable acknowledgement policies |
+| C ABI | ABI v1 shared library: version/status, open/close, owning `GET`, `PUT`, `PUT batch` and `ERASE`; volatile and durable-sync only |
 | Persistence | Versioned Manifest, Segment, Record and commit-slot formats; bounded recovery and fail-closed validation |
 | Daemon | Non-blocking `epoll`/`kqueue`, owner-bound connections, bounded queues, graceful drain and background maintenance |
-| Protocol | Wire v2: `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, `ERASE`, `HEALTH`, `READY`, `STATS` |
+| Protocol | Wire v2: `INIT`, `BIND_WORKER`, `PING`, `GET`, `PUT`, `ERASE`, `BACKUP`, `HEALTH`, `READY`, `STATS` |
 | Security | Optional TLS 1.3/mTLS, capability and key-prefix authorization, quotas, audit events, CRL checks and UDS peer credentials |
 | Clients | C++, Python, Perl, Go, Erlang/OTP and Ruby, all using the same fixtures and client-semantics contract |
 
@@ -63,8 +66,9 @@ each shard pair has one Reader/Reactor and one serial Writer. After `INIT`, a cl
 connection to one owner id; if necessary, the daemon hands the socket and its buffered state to the
 owning Reader exactly once. Requests for a different owner return `WRONG_OWNER` and are not
 forwarded. Mutations leave the Reader through a bounded SPSC lane to that pair’s Writer; GET uses a
-local immutable `ReadGeneration` adopted once per event-loop turn. Wire `worker_count` /
-`--workers` remain 0.1.x names for shard-pair count.
+local immutable `ReadGeneration` adopted once per event-loop turn. Persistence and wire v2 retain
+the compatibility name `worker_count` for the shard-pair count. `--shard-pairs` is the canonical
+daemon option; `--workers` is its deprecated 0.1.x alias.
 
 The volatile TCP engine under `src/experimental/` is a **lab-only** prototype (tests and dedicated
 benchmarks). It is not installed and is not reachable from `glyphastored`. Residual P1 performance
@@ -155,6 +159,12 @@ Use the [public C++ API reference](docs/reference/cpp-api.md),
 [platform evidence matrix](docs/architecture/platform-durability-evidence.md) for the exact
 acknowledgement and recovery contracts.
 
+The installed shared-library boundary is C ABI v1 (`GlyphaStore::abi` or
+`pkg-config glyphastore-abi`). Its deliberately smaller surface and compatibility limits are in the
+[C ABI specification](docs/spec/c-abi-v1.md) and [ABI guide](docs/abi/README.md). The C++ ABI remains
+unstable before 1.0, and an ABI contract does not raise the product above architectural-prototype
+status.
+
 ## Native clients
 
 Every client implements default FNV wire-v2 routing, monotonic deadlines, bounded ordered pipelines
@@ -187,6 +197,7 @@ release state are tracked by the [SDK roadmap](docs/architecture/sdk-roadmap.md)
 > keeps FNV-1a; the extended INIT identity selects SipHash-2-4. Secure-profile smoke
 > (`scripts/test-secure-profile-interop.sh`, CI) covers mTLS, authz, prefix, CRL, quotas, and keyed
 > routing for cpp/python/go plus perl/ruby/erlang when those toolchains are present.
+
 ## Performance and engineering evidence
 
 ```bash
@@ -232,17 +243,18 @@ Start with the [documentation map](docs/README.md). The shortest useful paths ar
 ## Supported platforms
 
 - macOS on Apple Silicon is the primary development platform; macOS Intel remains a target.
-- Linux and macOS are built and tested in CI.
-- OpenBSD has a native LibreSSL build/test gate.
-- FreeBSD has a native VM build/test gate; this is a portability signal, not UFS/ZFS durability
+- Linux x86-64 and Arm64, macOS, OpenBSD/LibreSSL, and FreeBSD have build/test workflows. The BSD
+  VM rows and hosted runners are portability and regression evidence, not filesystem durability
   certification.
+- No platform/filesystem row is E3/E4 power-loss certified.
 
 ## Security
 
 Cleartext loopback remains the default development posture. The implemented daemon secure profile
-requires TLS 1.3, mTLS and a default-deny authorization map, but its keyed-routing default is not yet
-supported by the non-C++ SDKs. It does not certify hostile public or multi-tenant deployment. Read
-[SECURITY.md](SECURITY.md) before reporting a vulnerability and use the
+requires TLS 1.3, mTLS and a default-deny authorization map. Every official source SDK implements
+TLS/mTLS and the extended INIT identity used by keyed SipHash routing; availability in a particular
+language runtime still depends on its TLS/toolchain support. This does not certify hostile public or
+multi-tenant deployment. Read [SECURITY.md](SECURITY.md) before reporting a vulnerability and use the
 [secure-profile runbook](docs/operations/secure-profile-certs.md) for certificates and revocation.
 
 ## Contributing and license

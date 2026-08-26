@@ -1,7 +1,7 @@
 Status: descriptive summary of the assurance engineering program
 Applies to: release claim honesty for GlyphaStore 0.1.x
 Owner: maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 # Final engineering report (assurance program)
 
@@ -27,8 +27,9 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
 
 ## Honest residuals (do not close by checklist)
 
-1. **GitHub Actions billing** — hosted workflows may not run until billing is restored; local
-   validator/build success ≠ green CI.
+1. **Candidate-specific hosted evidence** — green workflows on another branch or commit do not
+   certify a release candidate; only completed checks and retained artifacts for the exact commit
+   count.
 2. **Physical E3/E4 durability** — still open; rehearsals keep `e3_certified=no`.
 3. **Tagged N−1 fixture drops** — policy matrix exists; permanent prior-release trees under
    `tests/fixtures/released/<label>/` remain a release-process step.
@@ -39,8 +40,8 @@ Authority roots: `engineering/`, validators under `engineering/tools/`, workflow
 6. **Project GPG / full SLSA L3** — optional residuals on supply-chain gates. Scorecard,
    dependency-review, actionlint+pin validator, multi-language CodeQL, checksum-pinned Syft,
    C++ install-prefix SBOM (tag/dispatch), GitHub Release attach, docs-link/license/coverage
-   hygiene, and branch-protection settings checklist are in-tree; hosted Actions billing may
-   still block runs (local green ≠ CI green).
+   hygiene, and branch-protection settings checklist are in-tree; local green still does not replace
+   exact-commit hosted evidence.
 7. **Zero-fence hot backup** — online fenced backup exists (shorter fence + structural source check +
    bounded Segment copy parallelism; destination CRC promotion gate); fully concurrent hot copy
    remains deferred per [ADR 0034](../adr/0034-zero-fence-hot-backup-deferred.md). HAZ-021 incomplete
@@ -73,7 +74,8 @@ python3 engineering/tools/validate_claims.py
 python3 engineering/tools/validate_perf_budgets.py
 ```
 
-After billing is restored, re-run workflows on `main` before treating CI as green.
+Before treating a commit as green, verify that every required workflow completed for that exact
+commit and that required evidence artifacts were retained.
 
 ## Recommendation
 

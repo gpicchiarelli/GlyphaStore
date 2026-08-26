@@ -49,6 +49,13 @@ end
 
 Cancellation / task stop poisons the in-flight Worker connection (client-semantics §6.3).
 
+## Online backup
+
+`Client#backup(destination, timeout: ...)` and `AsyncClient#backup` issue wire `BACKUP` and return
+the bounded ASCII report. The destination is a new empty server-side path. This is an admin
+operation under secure authz and an online fenced copy, not a zero-fence hot snapshot; ambiguous
+failures require reconciliation and are never blindly retried.
+
 ## Concurrency
 
 | Environment | Rule |
@@ -69,7 +76,7 @@ ruby -Ilib -e 'require "glypha_store"; puts GlyphaStore::VERSION'
 
 | Path | Role |
 | --- | --- |
-| `lib/glypha_store/protocol.rb` | Wire codec + FNV routing |
+| `lib/glypha_store/protocol.rb` | Wire codec + FNV/SipHash routing |
 | `lib/glypha_store/error.rb` | Structured errors + outcome types |
 | `lib/glypha_store/client.rb` | Sync TCP/TLS client |
 | `lib/glypha_store/tls.rb` | TLS 1.3 context + wrap helpers |

@@ -61,7 +61,7 @@ ceiling above *architectural prototype*. Authority for gates:
 
 - [ ] Claim YAML `claim_massimo` stays honest (`architectural-prototype` until alpha criteria met)
 - [ ] Durability campaigns still show `e3_certified=no` unless a promoted campaign record exists
-- [ ] Hosted CI green only after Actions billing allows runs; local green ≠ hosted green
+- [ ] Every required hosted check completed successfully for the exact commit; queued/skipped/cancelled ≠ green
 - [ ] Docs snapshot: version-lifecycle, compatibility manual, secure-profile residuals still accurate
 
 ## Post-tag

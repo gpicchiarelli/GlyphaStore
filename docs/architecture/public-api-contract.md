@@ -1,9 +1,15 @@
 # Public C++ API contract
 
-This document defines the supported C++ surface being prepared for the alpha release. The Store
-header uses PImpl, owning reads, and a deliberate installed header set. `durable_sync` creation and
-reopen use the same public operations as volatile mode. Store-owned clock injection is implemented;
-stable error evolution and pinned zero-copy reads remain future work.
+Status: normative for the current installed C++ API
+Applies to: `glyphastore::Store` 0.1.x
+Owner: API maintainers
+Last reviewed: 2026-08-26
+
+This document defines the current supported C++ surface while the product remains below alpha. The
+Store header uses PImpl, owning reads, and a deliberate installed header set. All three durable
+policies use the same public key operations as volatile mode. Store-owned clock injection, positional
+`put_batch`, and fenced online backup are implemented; a dedicated incompatible-format error and
+pinned zero-copy reads remain future additive work.
 
 Durable mode requires `data_directory`. `create_new` rejects an existing leaf, `open_existing`
 requires durable metadata, and `open_or_create` initializes only a missing or pristine directory.
@@ -13,17 +19,19 @@ persisted routing metadata.
 ## Supported surface
 
 The supported embedded API contains Store creation/open/close, byte-key `get`, `get_copy`, `put`,
-and `erase`, owning result values, configuration value types, typed error categories, explicit
-flush/compaction, and Index verification. A pinned read handle is a reserved future extension and
-is not part of the current public API.
+`put_batch`, and `erase`, owning result values, configuration value types, typed error categories,
+explicit flush/fenced backup/compaction, maintenance snapshots, and Index verification. A pinned
+read handle is a reserved future extension and is not part of the current public API.
 
 Workers, Index partitions, Segments, Record codecs, routing hashes, pollers, reactors, and vacuum
 builders are implementation mechanisms. They are not supported merely because a header is present
-under `include/` or installed by CMake. Alpha packaging must install a deliberate public header set
-and keep internal headers out of exported target usage requirements.
+under `include/`. Current CMake packaging installs a deliberate public header set and keeps internal
+headers out of exported target usage requirements; additions require an explicit API decision.
 
 The native daemon and wire protocol have their own compatibility contract. Internal server paths
 may call owner-checked Store operations without exposing those operations to embedded consumers.
+The separately installed C ABI v1 is a smaller synchronous facade; it does not make C++ layouts or
+the full Store surface ABI-stable.
 
 ## Keys, values, and limits
 
@@ -48,6 +56,11 @@ nondecreasing. Expiration removes visibility but durable byte reclamation remain
 Callers do not provide a precomputed routing hash. The Store hashes the exact key bytes once and
 uses that result consistently for routing, Record metadata, and Index lookup. This prevents a
 caller-supplied key/hash mismatch from violating Worker ownership.
+
+`put_batch` accepts a borrowed positional list, groups it by owner, preserves FIFO order within each
+owner and restores caller order in its result vector. Owners publish independently and individual
+failures do not roll back successful siblings; it is not a cross-key transaction. Every successful
+item is visible before return.
 
 ## Read ownership
 
@@ -77,7 +90,7 @@ Public key operations are safe to call concurrently. The default open mode is pa
 ([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md)): ordinary GET adopts a published
 immutable generation; same-shard `put`/`erase` serialize on the Writer lane. The API does not
 promise lock freedom. A completed mutation happens before a later operation that observes its
-result. There is no atomicity across multiple keys in alpha.
+result. There is no atomicity across multiple keys in the current API.
 
 `StoreConfig::concurrency = StoreConcurrencyMode::legacy_mutex` restores Worker-mutex serialization
 and is deprecated in 0.1.x (removed in 0.2). Mixing legacy and paired mutators on one Store is
@@ -103,9 +116,11 @@ recovery memory, live keys, temporary compaction bytes, and write amplification.
 may therefore be opened under different policy, but a policy smaller than its existing catalog or
 recovery state rejects open without editing the Store.
 
-The policy also bounds the derived durable hot cache globally and per Worker, with separate entry
-and pre-publication staging limits. These limits may be zero: cache admission then falls back to
-generation-pinned verified reads without changing durable data or mutation success.
+The policy also retains bounds for the derived durable hot cache globally and per Worker, with
+separate entry and pre-publication staging limits. Default paired opens disable that duplicate read
+authority and use immutable generations; the limits remain relevant only to the deprecated
+`legacy_mutex` path and 0.1.x configuration compatibility. Zero-cache operation never changes
+durable data or mutation success.
 
 The live-key limit is partitioned deterministically across persisted Workers and the partition sizes
 sum exactly to the configured total. This preserves Worker-local admission and avoids a shared
@@ -139,6 +154,15 @@ and unexpected implementation exceptions are translated to a stable error or pla
 fail-closed state as required by the commit status. Deterministic allocator-interposition tests
 enumerate the actual allocation sites emitted by each native STL build instead of assuming a fixed
 implementation-specific allocation count.
+
+## Online backup
+
+`Store::backup_to` is available only for durable Stores. It briefly fences admissions, drains and
+flushes admitted work, copies a structurally verified catalog under the exclusive catalog boundary,
+writes the destination Manifest last, resumes admissions, and then optionally performs the complete
+destination CRC scan. The destination must be new and empty. This is the online **fenced** contract,
+not a zero-fence hot snapshot; any failed destination remains unfit for service until an independent
+verification succeeds. See [Backup and restore v1](../spec/backup-restore-v1.md).
 
 ## Explicit maintenance
 

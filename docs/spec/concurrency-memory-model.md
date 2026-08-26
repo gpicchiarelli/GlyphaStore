@@ -25,7 +25,10 @@ acceptor and one Reader/Reactor thread per shard pair; it is thin I/O over the s
 runtime and must not publish a second generation authority for the same shard. The Reactor never
 executes Store mutate.
 
-Store callers may invoke public operations concurrently unless a method explicitly says otherwise. Thread safety does not create multi-key atomicity. Mixing `legacy_mutex` mutators with a paired Writer on the same Store instance is undefined behavior and must be refused at open.
+Store callers may invoke public operations concurrently unless a method explicitly says otherwise.
+Thread safety does not create multi-key atomicity. Concurrency mode is fixed at open, so the public
+API provides no supported operation that mixes `legacy_mutex` and paired mutation ownership. Any
+detected internal ownership violation fails the Store closed.
 
 ## 3. Ownership table
 

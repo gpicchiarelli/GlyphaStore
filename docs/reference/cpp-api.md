@@ -3,7 +3,7 @@
 Status: normative for the current public headers
 Applies to: `glyphastore::Store` version `0.1.x`
 Owner: API maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-08-26
 
 ## 1. General contract
 
@@ -62,7 +62,25 @@ Publishes the byte value for the complete binary key. `expire_at_ns == 0` means 
 Success does not expose the internal `RecordRef` or replacement status. The durability guarantee
 depends on storage mode. The Store never retains input spans.
 
-## 6. Erase
+## 6. Put batch
+
+```cpp
+struct Store::PutItem {
+    std::string_view key;
+    std::span<const std::byte> value;
+    std::uint64_t expire_at_ns;
+};
+
+auto put_batch(std::span<const PutItem> items) -> std::vector<Status>;
+```
+
+Returns one positional status per input item. Items may span owners: each owner serializes and
+publishes its own FIFO subsequence independently, and the returned vector restores caller order.
+Successful items are visible when the method returns; publication is internally chunked in groups
+of at most 32. A batch is not a transaction and success on one item is not rolled back by failure on
+another. Key/value spans are borrowed only for the call.
+
+## 7. Erase
 
 ```cpp
 auto erase(std::string_view key) -> Status;
@@ -72,7 +90,7 @@ auto erase(std::span<const std::byte> key) -> Status;
 Removes current visibility for the binary key. Durable mode records a tombstone when required for
 recovery ordering. An absent or expired key returns `ErrorCode::not_found`.
 
-## 7. Flush
+## 8. Flush
 
 ```cpp
 auto flush() -> Status;
@@ -82,7 +100,22 @@ For durable modes, waits until all mutations covered by the call have crossed th
 
 For volatile mode, `flush()` succeeds as a no-op.
 
-## 8. Compaction
+## 9. Online backup
+
+```cpp
+auto backup_to(const std::filesystem::path& destination, bool scan_records = true)
+    -> Result<DurableStoreBackupReport>;
+```
+
+Creates a verified persistence-v1 catalog copy in a new empty destination while the durable Store
+remains open. It fences new admissions, drains admitted calls, flushes, structurally verifies and
+copies the catalog under its exclusive boundary, writes the Manifest last, resumes admissions, then
+optionally verifies destination Record CRCs. It is a fenced backup, not a zero-fence concurrent hot
+snapshot. Volatile Stores reject the operation with `invalid_argument`; an incomplete or failed
+destination must not be promoted. The normative boundary is
+[Backup and restore v1](../spec/backup-restore-v1.md).
+
+## 10. Compaction
 
 ```cpp
 auto compact() -> Result<CompactionResult>;
@@ -119,7 +152,7 @@ transition; subtracting the three named execution phases yields that residual.
 The snapshot also exposes the most recently consumed foreground sample count, its fixed-bucket
 conservative p99, and the cumulative number of latency-driven suspensions.
 
-## 9. Verification
+## 11. Verification
 
 ```cpp
 auto verify_index() const -> Status;
@@ -129,7 +162,7 @@ Checks internal Index and reference invariants. It may stop all Worker progress 
 
 Success is evidence that checked in-memory invariants hold at one synchronized point; it is not a full disk scrub or hardware-integrity guarantee.
 
-## 10. Close and destruction
+## 12. Close and destruction
 
 ```cpp
 auto close() -> Status;
@@ -142,7 +175,7 @@ Destruction invokes the same safety path but cannot report failure. Applications
 
 Concurrent destruction with calls that do not otherwise own the `Store` is invalid C++ lifetime usage and is not made safe by internal admission.
 
-## 11. Error categories
+## 13. Error categories
 
 The current `ErrorCode` set is:
 
@@ -155,7 +188,7 @@ The current `ErrorCode` set is:
 | `invalid_record`, `checksum_mismatch`, `corrupted_data` | malformed or corrupted encoded state |
 | `invalid_reference` | Record reference does not identify a valid current extent |
 | `sequence_conflict` | conflicting sequence or mutually exclusive operation |
-| `not_found` | requested internal object is absent; normal `get` absence uses `nullopt` |
+| `not_found` | key is absent, tombstoned or expired, or a requested internal object is absent |
 | `resource_exhausted`, `storage_exhausted` | memory/policy or storage capacity exhausted |
 | `file_too_large`, `descriptor_exhausted`, `read_only_filesystem` | stable filesystem/resource category |
 | `unavailable` | Store closed, poisoned, or temporarily unavailable |
@@ -164,8 +197,11 @@ The current `ErrorCode` set is:
 
 There is not yet a dedicated `incompatible_format` enumerator. Unsupported required persistent versions therefore surface through an existing validation/corruption category. Adding a stable compatibility-specific category is release work and must be additive.
 
-## 12. API stability
+## 14. API stability
 
-Version `0.1.x` is pre-1.0. Source compatibility may change, but changes must be intentional and documented. Binary ABI stability is not promised. Persistent and wire compatibility are governed by their own versions and do not follow the C++ package version automatically.
+Version `0.1.x` is pre-1.0. Source compatibility may change, but changes must be intentional and
+documented. C++ binary ABI stability is not promised. The separately versioned C ABI v1,
+persistence v1, and wire v2 each have their own compatibility contracts and do not follow the C++
+package version automatically.
 
 Public headers must document ownership, units, limits, and thread safety for every new type or method. Implementation-private classes under `src/` are not public API merely because tests can include them.

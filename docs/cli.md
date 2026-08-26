@@ -103,10 +103,29 @@ input/output buffers. Durable deployments also expose batch and resource caps:
 `--sync-interval-ms`, `--group-max-records` / `--group-max-bytes` / `--group-max-wait-ms`,
 `--max-store-bytes`, `--reserved-free-bytes`, `--max-segments`, `--max-hot-cache-bytes`, and
 `--max-temporary-compaction-bytes`. Those flags require a durable `--storage-mode` and are validated
-before the process listens. Unsupported shard-pair counts and buffers smaller than protocol headers are rejected before
+before the process listens. The three hot-cache options remain accepted for 0.1.x configuration
+compatibility, but the paired-only daemon disables that legacy cache and reads through immutable
+`ReadGeneration` state. Unsupported shard-pair counts and buffers smaller than protocol headers are rejected before
 the server binds a socket. `--reuse-port` and `--no-reuse-port` are mutually exclusive; the operating system
-decides whether per-Reader listeners are available. Executor affinity is strict on supported Linux systems
+decides whether per-Reader listeners are available. `--executor-affinity` is strict on supported Linux systems
 and advisory on macOS.
+
+Additional bounded controls accepted by the daemon are:
+
+| Option | Current meaning |
+| --- | --- |
+| `--max-connections` | process-wide admitted connection cap |
+| `--handoff-capacity` | bounded one-time connection handoff queue per Reader |
+| `--event-batch-size` | maximum readiness events processed per poll turn |
+| `--durable-mutation-queue-capacity` | admitted mutation-record slots per shard pair |
+| `--durable-mutation-queue-bytes` | owned mutation payload bytes per shard pair |
+| `--durable-mutation-queue-wait-ms` | pre-Store queue-wait deadline; zero disables expiry |
+| `--open-mode` | `open-or-create`, `create-new`, or `open-existing` for durable storage |
+| `--maintenance-mode` | `cooperative`, `background`, or `disabled` scheduling |
+| `--maintenance-unread-ttl-pressure-probe` | bounded unread-expiration probe under pressure/emergency |
+| `--maintenance-unread-ttl-normal-scheduling` | opt in to unread-expiration probing for normal reclaim |
+| `--max-hot-cache-value-bytes` | retained legacy-cache value limit; paired daemon cache is disabled |
+| `--disable-hot-cache` | explicitly disable the already-inactive paired-daemon legacy cache |
 
 `--maintenance-max-copy-bytes-per-cycle` bounds the exact Index-referenced live Record bytes of one
 normal background compaction. The daemon default is `128MiB`; a candidate exactly at the limit is
@@ -157,6 +176,10 @@ secure-profile also requires `--unix-peercred`. Cleartext remains the
 default when TLS flags are omitted. Capability `admin` implies `write` ⇒ `read`; prefix-scoped
 principals need `admin` for `STATS` ([ADR 0027](adr/0027-stats-isolation-prefix-principals.md)).
 UDS is not a TLS replacement ([ADR 0029](adr/0029-uds-peercred.md)).
+
+`--tls-crl PATH` loads a PEM CRL for mTLS revocation and requires `--tls-client-ca`.
+`--tls-ocsp-fail-closed` requires that CRL-backed revocation configuration; it does not perform live
+AIA/HTTP OCSP. TLS configuration errors fail before the process begins serving.
 
 ### Phase 5 abuse controls
 

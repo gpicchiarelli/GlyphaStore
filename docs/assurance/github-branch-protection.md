@@ -1,11 +1,11 @@
 Status: maintained repository settings checklist
 Applies to: GitHub branch protection, security products, required checks
 Owner: maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 # GitHub branch protection and security settings
 
-Workflow YAML cannot enable org/repo settings. After hosted Actions billing is healthy,
+Workflow YAML cannot enable org/repo settings. In repository settings,
 apply this checklist on `main` so CI evidence is enforceable.
 
 Claim ceiling remains **architectural prototype**. Green required checks do not imply E3/E4
@@ -59,6 +59,6 @@ floating tag must be rewritten to a SHA before merge.
 
 ## Honest residuals
 
-- Hosted Actions billing may block runs; local green ≠ CI green.
+- A queued, skipped, cancelled, or unavailable hosted run is not green evidence; local green ≠ CI green.
 - Physical E3/E4, absolute hardware perf, and tagged N−1 fixture drops remain outside
   this checklist.

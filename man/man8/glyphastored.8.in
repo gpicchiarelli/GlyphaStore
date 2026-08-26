@@ -191,11 +191,12 @@ Keep this much free space unused (default 256MiB).
 .It Fl Fl max-segments Ar COUNT
 Cap durable Segment count (default 127).
 .It Fl Fl max-hot-cache-bytes Ar BYTES
-Hot-cache cap across Workers (default 256MiB; 0 disables).
+Retained 0.1.x durable-limit compatibility setting.
+The paired daemon disables the legacy hot cache and reads from immutable generations.
 .It Fl Fl max-hot-cache-value-bytes Ar BYTES
-Reject hot-cache admission above this size (default 64KiB).
+Retained 0.1.x durable-limit compatibility setting; no effect on paired daemon reads.
 .It Fl Fl disable-hot-cache
-Disable hot-cache admission.
+Explicitly disable the legacy hot cache (already disabled by the paired daemon).
 .It Fl Fl max-temporary-compaction-bytes Ar BYTES
 Cap temporary compaction peak (default 1GiB).
 .El

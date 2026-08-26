@@ -1,9 +1,10 @@
 # Durability and recovery contract
 
-This document defines the alpha persistent-engine contract. The embedded Store implements the
-persistence v1 path and process-termination coverage described below. Release certification
-criteria are in the [persistence v1 production roadmap](../v1-production-roadmap.md). Normative
-terms such as **must**, **must not**, and **may** describe required alpha behavior.
+This document defines the persistence v1 engine contract implemented by the embedded Store. The
+project remains an architectural prototype: process-termination evidence is present, but no
+filesystem/device row is E3/E4 certified. Release criteria are in the
+[persistence v1 production roadmap](../v1-production-roadmap.md). Normative terms such as **must**,
+**must not**, and **may** describe required persistence-v1 behavior, not achieved release status.
 
 The consolidated normative mapping from every durable intermediate state to its exact restart
 outcome is the [recovery state-transition matrix v1](../spec/recovery-state-matrix-v1.md).
@@ -37,7 +38,7 @@ Disk, manifest, Record, and wire versions are independent. The manifest records 
 - Store identity generated at creation;
 - manifest format version;
 - Segment and Record format versions;
-- routing algorithm identifier (`fnv1a64-v1` for the bootstrap);
+- routing algorithm identifier and seed (FNV-1a by default; persisted SipHash-2-4 for keyed Stores);
 - persisted Worker count and routing epoch;
 - the complete Segment catalog and active Segment for every Worker;
 - the next Segment ID and generation information needed to prevent stale references.
@@ -45,7 +46,7 @@ Disk, manifest, Record, and wire versions are independent. The manifest records 
 Worker auto-sizing runs only when a durable Store is created. Reopen uses the persisted Worker
 count, even when current machine topology differs. Supplying an incompatible Worker count, routing
 algorithm, or routing epoch must fail before any file is mutated. Online resizing and routing
-migration are outside the alpha scope.
+migration are outside the 0.1.x scope.
 
 Unknown required format versions fail closed. Optional forward-compatible fields must be length
 delimited and safely skippable. No decoder may allocate directly from an unchecked persisted size.
@@ -137,7 +138,7 @@ mutation. The process must not continue serving a state that disagrees with its 
 An acknowledged mutation must survive restart. A client that loses its connection after the
 commit point but before receiving the response has an indeterminate outcome and must read the key
 before deciding whether to retry. Idempotency keys and cross-key transactions are not part of the
-alpha contract.
+current contract.
 
 Volatile mode retains the current append-then-publish behavior but must still fail closed if a
 rollback cannot restore a coherent Index/liveness state.
@@ -282,7 +283,7 @@ contract.
 
 ## Required evidence
 
-Alpha durability requires CI coverage of:
+Persistence-v1 release evidence requires CI coverage of:
 
 - golden fixtures for manifest, Segment header, commit slots, and Records;
 - restart tests across every mutation and rotation transition;
@@ -292,7 +293,7 @@ Alpha durability requires CI coverage of:
 - manifest rollback and explicit orphan quarantine/identity reservation;
 - routing and Worker-count mismatch rejection;
 - recovery independence from Segment enumeration order;
-- compatibility reads using artifacts emitted by every supported alpha format version.
+- compatibility reads using artifacts emitted by every supported released format version.
 
 Current development coverage is recorded in the
 [format compatibility matrix](format-compatibility.md). Cross-release compatibility and pinned
