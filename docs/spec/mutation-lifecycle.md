@@ -56,14 +56,18 @@ Source flags in `src/store/paired/shard_pair_runtime.cpp` (`run`):
 
 | Conceptual stage | Representative flags |
 | --- | --- |
-| Admitted | `begin_submission`, `healthy_`, `started_`, `!stopping_` |
-| Staged | sync LIFO→FIFO / async SPSC coalesce |
+| Admitted | `begin_submission`, `healthy_`, `started_`, `!stopping_`; token acquire **or** enqueue for combiner (ADR 0037) |
+| Staged | sync LIFO→FIFO combine / async SPSC coalesce |
 | Expired pre-Store | `expired[]`, `expire_remaining_`, merge/retire pressure |
 | Durable started | `durable_mutate_entered`, `mutate_inflight` |
 | Authority | `result.committed()`, `durable_committed`, `durable_commit_observed` |
 | Publication | `publication_required`, `generation_published`, `sibling_snapshot_published`, `post_commit_publication_failure` |
 | Completion locked | `status_resolved` |
 | Fail-closed | `publish_fail_closed` → `healthy_=false`, `expire_remaining_` |
+
+`Admitted` does **not** require handoff to a dedicated Writer thread when combining is enabled
+([ADR 0037](../adr/0037-shard-execution-token-flat-combining.md)): the caller that holds the
+execution token is the Writer for that turn.
 
 ## 3. Linearization points
 

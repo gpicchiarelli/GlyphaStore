@@ -3,17 +3,27 @@
 Status: normative for the current implementation
 Applies to: repository version `0.1.x`
 Owner: project maintainers
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-26
 
 ## 1. Scope
 
 This specification defines thread ownership, synchronization domains, lock order, operation admission, linearization, and shutdown. It does not standardize implementation-private class names, but every shared mutable object must map to one of the domains below.
 
-Product default concurrency is **paired** ([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md)): each owner shard has one serial Writer and an immutable published `ReadGeneration`. The deprecated `legacy_mutex` open mode retains the historical per-Worker mutex path through 0.1.x.
+Product default concurrency is **paired** ([ADR 0032](../adr/0032-paired-concurrency-embedded-store.md),
+[ADR 0037](../adr/0037-shard-execution-token-flat-combining.md)): each owner shard has exactly one
+mutation executor (execution-token holder), an immutable published `ReadGeneration`, and bounded
+combining / async lanes. The deprecated `legacy_mutex` open mode retains the historical per-Worker
+mutex path through 0.1.x.
 
 ## 2. Threads and executors
 
-An embedded Store has caller threads, one Writer thread per shard in paired mode, and, in durable mode, one flush-coordinator thread. The TCP daemon additionally has an acceptor and one Reader/Reactor thread per shard pair; it is thin I/O over the same Store paired runtime and must not publish a second generation authority for the same shard.
+An embedded Store has caller threads and, when `async_lane_capacity == 0`, **no dedicated Writer
+thread**: callers that win the per-shard execution token become the combiner for that turn
+(ADR 0037). When async lanes are enabled (daemon), one dedicated executor thread per shard holds the
+same token. Durable mode may add one flush-coordinator thread. The TCP daemon additionally has an
+acceptor and one Reader/Reactor thread per shard pair; it is thin I/O over the same Store paired
+runtime and must not publish a second generation authority for the same shard. The Reactor never
+executes Store mutate.
 
 Store callers may invoke public operations concurrently unless a method explicitly says otherwise. Thread safety does not create multi-key atomicity. Mixing `legacy_mutex` mutators with a paired Writer on the same Store instance is undefined behavior and must be refused at open.
 
@@ -22,7 +32,7 @@ Store callers may invoke public operations concurrently unless a method explicit
 | State | Owner / synchronization | Notes |
 |---|---|---|
 | Paired published `ReadGeneration` | immutable after Writer release | ordinary paired GET adopts with acquire; no Index mutex |
-| Paired mutable Index / active Segment / delta | that shard's Writer thread | sole mutator; callers enqueue on the SPSC lane |
+| Paired mutable Index / active Segment / delta | holder of that shard's execution token | sole mutator; other callers enqueue for the combiner |
 | Volatile Worker Index and segments (`legacy_mutex`) | that Worker's mutex | ordinary key operations acquire exactly one Worker mutex |
 | Durable Worker Index, active file, hot records, group state (`legacy_mutex`) | that durable Worker's mutex | never accessed concurrently without the mutex |
 | Durable hot cache (paired) | disabled / not ordinary-read authority | generation-only policy; compaction/verify/backup still use catalog locks |
@@ -33,7 +43,8 @@ Store callers may invoke public operations concurrently unless a method explicit
 | Store lifecycle admission | sharded atomic counters | one shard per Worker plus one control shard |
 | Flush scheduling state | coordinator mutex and condition variables | callback executes after releasing this mutex |
 | TCP connection | exactly one Reader/executor | ownership may transfer once after bind |
-| Paired mutation / completion lanes | bounded SPSC | one Reader (or embedded submitter) producer, one Writer consumer |
+| Paired sync combining queue | LIFO admit / FIFO combine under token | embedded sync; ≤32 publication chunks; no wait-to-fill |
+| Paired async mutation / completion lanes | bounded SPSC | one Reader (or embedded submitter) producer, one dedicated executor consumer |
 | Executor handoff queue (connection bind) | bounded MPSC protocol | many producers, one owning consumer |
 | Directory health | atomic state plus protected error payload | acquire/release publishes terminal health |
 

@@ -7,6 +7,7 @@
 #include "glyphastore/server/connection_handoff.hpp"
 #include "glyphastore/server/connection_token.hpp"
 #include "glyphastore/server/disk_read_executor.hpp"
+#include "glyphastore/server/mutation_window.hpp"
 #include "glyphastore/server/pair_writer.hpp"
 #include "glyphastore/server/poller.hpp"
 #include "glyphastore/server/protocol.hpp"
@@ -226,8 +227,10 @@ class Reactor final {
         // instead of serializing it behind a single scatter lease.
         bool pipelined_store_input_observed{};
         // At most one asynchronous Store request per connection preserves wire
-        // response order and prevents one pipelined client monopolizing a lane.
+        // response order unless an ADR 0037 mutation window is open (≤32 PUTs/ERASEs
+        // before a GET barrier). GET and other barriers wait for the window to drain.
         bool request_in_flight{};
+        std::uint32_t mutations_in_flight{};
         bool cold_read_in_flight{};
         // After BIND handoff rejection, keep the socket until OVERLOADED drains.
         bool close_after_flush{};
@@ -238,6 +241,9 @@ class Reactor final {
         std::chrono::steady_clock::time_point in_flight_since{};
         std::uint64_t connection_rate_window_start_ns{};
         std::uint32_t connection_rate_used{};
+        // ADR 0037 Phase C: pipelined GET waits until published epoch covers prior mutations.
+        MutationVisibilityBarrier mutation_visibility{};
+        std::uint32_t mutation_window_count{};
     };
 
     Reactor(ReactorConfig config, std::size_t executor_id, TcpListener cleartext_listener,

@@ -230,6 +230,9 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->write_armed = false;
     current->pipelined_store_input_observed = false;
     current->request_in_flight = false;
+    current->mutations_in_flight = 0;
+    current->mutation_window_count = 0;
+    current->mutation_visibility.clear();
     current->cold_read_in_flight = false;
     current->close_after_flush = false;
     current->last_activity = {};
@@ -456,6 +459,9 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
     current.write_armed = has_pending_output(current);
     current.pipelined_store_input_observed = false;
     current.request_in_flight = false;
+    current.mutations_in_flight = 0;
+    current.mutation_window_count = 0;
+    current.mutation_visibility.clear();
     current.cold_read_in_flight = false;
     current.close_after_flush = false;
     current.last_activity = handoff.last_activity.time_since_epoch().count() == 0

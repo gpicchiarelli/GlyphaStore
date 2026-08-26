@@ -27,6 +27,7 @@ struct MutationCompletion final {
     std::uint64_t request_id{};
     std::size_t admission_bytes{};
     std::uint32_t payload_slot{};
+    std::uint64_t writer_epoch{};
     std::optional<Error> error{};
 };
 

@@ -34,6 +34,7 @@ struct MutationOutcome final {
     std::uint64_t request_id{};
     std::size_t admission_bytes{};
     std::uint32_t payload_slot{};
+    std::uint64_t writer_epoch{};
     std::optional<Error> error{};
 };
 
@@ -117,13 +118,15 @@ struct ShardPairStats final {
     LatencyHistogram service_histogram{};
 };
 
-// Paired Reader/Writer runtime owned by the Store (ADR 0031, ADR 0032). Every
-// Worker/shard owns exactly one persistent Writer thread, one immutable
-// published read generation, and the bounded lanes that feed it:
+// Paired Reader/Writer runtime owned by the Store (ADR 0031, ADR 0032, ADR 0037).
+// Every Worker/shard owns one immutable published read generation and the lanes
+// that feed mutation ownership via an execution token:
 //
-//   * embedded put/erase hand a stack-resident node to the owning Writer and
-//     wait for completion, so same-shard callers serialize on the Writer lane
-//     instead of the Index mutex;
+//   * embedded (`async_lane_capacity == 0`): callers combine under the token
+//     (no mandatory Writer thread); sync put/erase enqueue a stack-resident node
+//     and either execute or wait for completion;
+//   * daemon (`async_lane_capacity > 0`): a dedicated per-shard Writer thread
+//     holds the token and drains sync + async lanes;
 //   * glyphastored hands off borrowed frame bytes through the bounded SPSC lane
 //     and receives asynchronous completions on its Reader.
 //
@@ -151,6 +154,14 @@ class ShardPairRuntime final {
         return lanes_.size();
     }
     [[nodiscard]] auto async_lane_enabled() const noexcept -> bool;
+    // ADR 0037: embedded sync combines without Writer threads when async is off.
+    [[nodiscard]] auto combining_enabled() const noexcept -> bool {
+        return !async_lane_enabled();
+    }
+    // True when a permanent per-shard Writer thread must run (async lane and/or
+    // durable_group Writer-batch coalesce). Embedded volatile and durable_sync
+    // with async off use the caller combiner only.
+    [[nodiscard]] auto dedicated_writer_required() const noexcept -> bool;
     [[nodiscard]] auto start() -> Status;
     [[nodiscard]] auto healthy() const noexcept -> bool {
         return healthy_.load(std::memory_order_acquire);
@@ -253,10 +264,19 @@ class ShardPairRuntime final {
                      std::vector<std::uint64_t> initial_catalog_revisions);
 
     void run(std::size_t shard) noexcept;
+    // Drain already-queued sync mutations for `shard` (FIFO after LIFO admission,
+    // ≤32 publication chunks). Caller must hold the execution token (combiner or
+    // dedicated Writer). ACK polarity matches the historical run() sync path.
+    void process_sync_lane(std::size_t shard) noexcept;
+    // Combining-mode mutate path: acquire token, drain, release with lost-wakeup CAS.
+    void combine_sync_lane(std::size_t shard) noexcept;
+    // Writerless housekeeping under the execution token (reclaim + merge quantum).
+    void combiner_housekeeping(std::size_t shard) noexcept;
     void note_writer_exit() noexcept;
     [[nodiscard]] auto begin_submission() noexcept -> bool;
     void finish_submission() noexcept;
     void wake(Lane& lane) noexcept;
+    void wait_sync_done(SyncMutation& node) noexcept;
 
     static constexpr auto kAdmissionClosed = std::size_t{1}
                                              << (std::numeric_limits<std::size_t>::digits - 1U);

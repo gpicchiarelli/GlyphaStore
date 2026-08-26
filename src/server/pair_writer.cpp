@@ -14,6 +14,7 @@ namespace {
                                   .request_id = outcome.request_id,
                                   .admission_bytes = outcome.admission_bytes,
                                   .payload_slot = outcome.payload_slot,
+                                  .writer_epoch = outcome.writer_epoch,
                                   .error = std::move(outcome.error)};
     return queue->try_push(std::move(completion));
 }

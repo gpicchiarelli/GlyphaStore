@@ -4,13 +4,16 @@ requirements:
   categoria: concurrency
   criticita: critica
   stato: implementato
-  descrizione: Official daemon and paired Store runtime use one ShardPair (Reader + serial Writer + bounded
-    SPSC lanes) per owner id with immutable ReadGeneration adoption.
+  descrizione: Official daemon and paired Store runtime use one ShardPair (Reader + sole mutation
+    executor via execution token + bounded lanes) per owner id with immutable ReadGeneration
+    adoption. Embedded sync may omit a dedicated Writer thread (ADR 0037); daemon retains a
+    dedicated executor. Reactor never Store-mutates.
   autorita:
   - docs/spec/concurrency-memory-model.md
   - docs/spec/mutation-lifecycle.md
   - docs/adr/paired-reader-writer-shards.md
   - docs/adr/0032-paired-concurrency-embedded-store.md
+  - docs/adr/0037-shard-execution-token-flat-combining.md
   implementazione:
   - src/store/paired
   - src/server
@@ -19,6 +22,7 @@ requirements:
   - tests/integration/paired_store_tests.cpp
   - tests/integration/concurrency_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
+  - tests/unit/shard_combining_executor_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -27,11 +31,47 @@ requirements:
   - workflow: ci.yml
   rischio_residuo:
   - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
-    routing independence
+    routing independence; embedded catalog refresh may defer until a combiner turn
   hazards:
   - HAZ-003
   - HAZ-008
   - HAZ-009
+  - HAZ-027
+  - HAZ-028
+  gates:
+  - GATE-CONCURRENCY-SPEC
+- id: GS-CONCUR-COMBINE-001
+  titolo: Shard execution token and flat combining
+  categoria: concurrency
+  criticita: critica
+  stato: implementato
+  descrizione: Per-shard IDLE/EXECUTING token grants sole mutate+publish rights. Embedded sync
+    callers that win the token combine already-queued work (≤32) with no wait-to-fill; lost-wakeup-safe
+    release. Daemon keeps dedicated executor; mutation windows / GET visibility barrier land under
+    ADR 0037 Phase C. ACK/RAW and fail-closed polarity unchanged.
+  autorita:
+  - docs/adr/0037-shard-execution-token-flat-combining.md
+  - docs/spec/concurrency-memory-model.md
+  - docs/spec/mutation-lifecycle.md
+  implementazione:
+  - include/glyphastore/store/paired/shard_combining_executor.hpp
+  - src/store/paired/shard_pair_runtime.cpp
+  - src/server/reactor_dispatch.cpp
+  prove:
+  - tests/unit/shard_combining_executor_tests.cpp
+  - tests/integration/paired_store_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+  - path: benchmarks/results/local-macos-2026-08-26-shard-combining/README.md
+  rischio_residuo:
+  - durable_group/periodic flusher token sharing deferred; daemon windows still one TCP port
+  hazards:
+  - HAZ-003
   - HAZ-027
   - HAZ-028
   gates:

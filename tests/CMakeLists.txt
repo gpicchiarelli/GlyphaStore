@@ -20,6 +20,8 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_extraction_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/connection_lifecycle_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_lifecycle_property_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/shard_combining_executor_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/mutation_window_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/maintenance_controller_pressure_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/namespace_audit_tests.cpp

@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+- ADR 0037 (accepted): shard execution token + flat combining. Embedded volatile and
+  `durable_sync` omit dedicated Writer threads when the async lane is off; callers that
+  win `IDLE→EXECUTING` combine already-queued sync work (≤32, no wait-to-fill). Daemon
+  keeps per-shard executors; Reactor mutation windows (≤32) raise a GET visibility barrier
+  on published `writer_epoch`. Read plane / ACK / fail-closed polarity unchanged. Proofs:
+  `shard_combining_executor_tests`, `mutation_window_tests`, paired + durable litmus.
+
 - Structural refactor (behavior-neutral, phases 3–7): extract `fail_closed_state`,
   `mutation_execution` / `mutation_batch`, `publication_coordinator` helpers; nest
   `Lane` by-value aggregates (`lane_state.hpp`) with alignment `static_assert`s;

@@ -30,8 +30,18 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
     std::uint64_t cached_now_ns{};
     // Sample the reactor clock once per process_frames turn (not per request).
     const auto now = std::chrono::steady_clock::now();
-    while (!current->request_in_flight && !current->output_lease &&
-           current->input_offset < current->input.size()) {
+    while (!current->output_lease && current->input_offset < current->input.size()) {
+        // Cold reads and non-mutation in-flight work still serialize the connection.
+        if (current->cold_read_in_flight) {
+            break;
+        }
+        if (current->request_in_flight && current->mutations_in_flight == 0) {
+            break;
+        }
+        // ADR 0037 Phase C: mutation windows are capped at the Writer publication chunk.
+        if (current->mutations_in_flight >= kMaximumMutationWindow) {
+            break;
+        }
         const std::span<const std::byte> available{current->input.data() + current->input_offset,
                                                    current->input.size() - current->input_offset};
         DecodedFrame<RequestView> decoded{};
@@ -257,6 +267,10 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             if (available.size() > decoded.consumed) {
                 current->pipelined_store_input_observed = true;
             }
+            // GET is a visibility barrier: drain the open mutation window first.
+            if (decoded.frame.opcode == RequestOpcode::get && current->mutations_in_flight > 0) {
+                return {};
+            }
             immediate_response = false;
             if (auto dispatched = dispatch_request(token, decoded.frame, cached_now_ns); !dispatched) {
                 return dispatched;
@@ -274,6 +288,12 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         touch_activity(*current, now);
         if (current->request_in_flight) {
             current->in_flight_since = now;
+            // ADR 0037 Phase C: keep parsing PUT/ERASE into the open mutation window.
+            if (current->mutations_in_flight > 0 &&
+                current->mutations_in_flight < kMaximumMutationWindow &&
+                current->input_offset < current->input.size()) {
+                continue;
+            }
             break;
         }
     }
@@ -526,6 +546,10 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
     GS_PHASE_TCP_NAMED(store_phase, store_op);
     switch (request.opcode) {
     case RequestOpcode::get: {
+        auto* current = connection(token);
+        if (current == nullptr) {
+            return {};
+        }
         if (cached_now_ns == 0) {
             cached_now_ns = reactor_detail::current_time_ns();
         }
@@ -539,6 +563,18 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             response.status = ResponseStatus::overloaded;
             break;
         }
+        // ADR 0037 Phase C: GET is a visibility barrier for prior mutations on this connection.
+        if (!current->mutation_visibility.allows(local_read_generation_->epoch())) {
+            pair_writers_.request_read_refresh(executor_id_);
+            local_read_generation_ =
+                pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
+            if (local_read_generation_ == nullptr ||
+                !current->mutation_visibility.allows(local_read_generation_->epoch())) {
+                response.status = ResponseStatus::overloaded;
+                break;
+            }
+        }
+        current->mutation_visibility.clear();
         if (!durable_store_) {
             auto record = local_read_generation_->get(key, cached_now_ns);
             if (!record) {
@@ -562,10 +598,6 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             owned_response = std::move(*record->value);
             response.value = owned_response.view();
         } else {
-            auto* current = connection(token);
-            if (current == nullptr) {
-                return {};
-            }
             if (disk_reads_outstanding_ >= config_.disk_read_queue_capacity) {
                 response.status = ResponseStatus::overloaded;
                 break;
@@ -652,6 +684,8 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         }
         ++mutations_outstanding_;
         mutation_bytes_outstanding_ += *admitted;
+        ++current->mutations_in_flight;
+        ++current->mutation_window_count;
         current->request_in_flight = true;
         return {};
     } break;
@@ -692,6 +726,8 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         }
         ++mutations_outstanding_;
         mutation_bytes_outstanding_ += *admitted;
+        ++current->mutations_in_flight;
+        ++current->mutation_window_count;
         current->request_in_flight = true;
         return {};
     } break;
@@ -805,12 +841,20 @@ auto Reactor::process_mutation_completions() -> Status {
         if (current == nullptr) {
             continue;
         }
-        if (!current->request_in_flight || current->cold_read_in_flight) {
+        if (!current->request_in_flight || current->cold_read_in_flight ||
+            current->mutations_in_flight == 0) {
             return fail(ErrorCode::corrupted_data, "unexpected mutation completion");
         }
         const bool output_was_pending = has_pending_output(*current);
-        current->request_in_flight = false;
-        current->in_flight_since = {};
+        --current->mutations_in_flight;
+        if (current->mutations_in_flight == 0) {
+            current->request_in_flight = false;
+            current->in_flight_since = {};
+            current->mutation_window_count = 0;
+        }
+        if (!completion->error && completion->writer_epoch != 0) {
+            current->mutation_visibility.raise_to(completion->writer_epoch);
+        }
         touch_activity(*current, std::chrono::steady_clock::now());
         ResponseView response{.status = ResponseStatus::ok,
                               .request_id = completion->request_id,

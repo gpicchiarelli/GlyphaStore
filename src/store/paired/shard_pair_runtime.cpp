@@ -13,6 +13,7 @@
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
 #include "glyphastore/store/paired/mutation_state.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
+#include "glyphastore/store/paired/shard_combining_executor.hpp"
 #include "store/store_internal.hpp"
 
 #include <algorithm>
@@ -166,6 +167,15 @@ auto ShardPairRuntime::async_lane_enabled() const noexcept -> bool {
     return !lanes_.empty() && lanes_.front()->async.async_enabled;
 }
 
+auto ShardPairRuntime::dedicated_writer_required() const noexcept -> bool {
+    if (async_lane_enabled()) {
+        return true;
+    }
+    // durable_group / Writer-batch modes keep the dedicated coalesce loop.
+    return detail::StoreAccess::is_durable(store_) &&
+           detail::StoreAccess::durable_writer_batch_config(store_).has_value();
+}
+
 auto ShardPairRuntime::create(Store& store, const PairedConcurrencyConfig& config)
     -> Result<std::unique_ptr<ShardPairRuntime>> try {
     const auto shard_count = store.worker_count();
@@ -213,6 +223,11 @@ auto ShardPairRuntime::start() -> Status try {
     }
     if (stopping_.load(std::memory_order_acquire)) {
         return fail(ErrorCode::unavailable, "paired mutation executor has been stopped");
+    }
+    // ADR 0037 Phase A/B: embedded volatile and durable_sync combine on callers;
+    // no permanent Writer threads unless async or durable_group batching requires them.
+    if (!dedicated_writer_required()) {
+        return {};
     }
     for (std::size_t worker = 0; worker < lanes_.size(); ++worker) {
         active_writers_.fetch_add(1U, std::memory_order_relaxed);
@@ -546,7 +561,9 @@ void ShardPairRuntime::abandon_queued_mutations() noexcept {
             MutationOutcome outcome{.context = task->context,
                                     .request_id = task->request_id,
                                     .admission_bytes = task->admission_bytes,
-                                    .payload_slot = task->payload_slot};
+                                    .payload_slot = task->payload_slot,
+                                    .writer_epoch =
+                                        lane.generation.writer_epoch.load(std::memory_order_relaxed)};
             outcome.error.emplace(ErrorCode::resource_exhausted,
                                   "mutation abandoned after shutdown drain deadline");
             if (!deliver_outcome(task->sink, std::move(outcome))) {
@@ -823,6 +840,12 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     };
 
     for (;;) {
+        // ADR 0037: refresh/merge/sync share the execution token with the combiner.
+        if (!try_acquire_execution_token(lane.async.execution_token)) {
+            const auto observed = lane.async.signal.load(std::memory_order_acquire);
+            lane.async.signal.wait(observed, std::memory_order_acquire);
+            continue;
+        }
         process_reclamation();
         if (!lane.async.stopping.load(std::memory_order_acquire) && healthy_.load(std::memory_order_acquire)) {
             process_refresh();
@@ -1658,6 +1681,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         auto task = carried_task ? std::exchange(carried_task, std::nullopt) : pop_queued();
         if (!task) {
             if (lane.async.stopping.load(std::memory_order_acquire)) {
+                release_execution_token(lane.async.execution_token);
                 return;
             }
             const auto observed = lane.async.signal.load(std::memory_order_acquire);
@@ -1685,10 +1709,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
 #endif
                 }
                 if (!woke) {
+                    release_execution_token(lane.async.execution_token);
                     lane.async.signal.wait(observed, std::memory_order_acquire);
+                    continue;
                 }
             }
             if (!task) {
+                release_execution_token(lane.async.execution_token);
                 continue;
             }
         }
@@ -2329,17 +2356,662 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             lane.metrics.completed.fetch_add(1U, std::memory_order_relaxed);
             atomic_saturating_add(lane.metrics.total_service_ns, service_ns);
             atomic_max(lane.metrics.maximum_service_ns, service_ns);
+            completions[index].writer_epoch =
+                lane.generation.writer_epoch.load(std::memory_order_relaxed);
             if (!deliver_outcome(batch[index].sink, std::move(completions[index]))) {
                 std::terminate();
             }
             notify_sink(batch[index].sink);
         }
+        release_execution_token(lane.async.execution_token);
     }
 }
 
 void ShardPairRuntime::wake(Lane& lane) noexcept {
     lane.async.signal.fetch_add(1U, std::memory_order_release);
     lane.async.signal.notify_one();
+}
+
+void ShardPairRuntime::wait_sync_done(SyncMutation& node) noexcept {
+    for (unsigned spin = 0; spin < 32U; ++spin) {
+        if (node.done.load(std::memory_order_acquire)) {
+            return;
+        }
+#if defined(__aarch64__) || defined(_M_ARM64)
+        __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+        __builtin_ia32_pause();
+#else
+        std::this_thread::yield();
+#endif
+    }
+    node.done.wait(false, std::memory_order_acquire);
+}
+
+// ADR 0037: sync lane drain under the execution token (volatile + durable_sync).
+// durable_group batching remains on the dedicated Writer (dedicated_writer_required).
+void ShardPairRuntime::combiner_housekeeping(const std::size_t shard) noexcept {
+    auto& lane = *lanes_[shard];
+    const auto reclaim_quiescent = [&]() noexcept {
+        if (lane.generation.retired_generations.empty()) {
+            lane.generation.retired_generation_count.store(0U, std::memory_order_relaxed);
+            return;
+        }
+        std::uint64_t quiescent_epoch{};
+        if (config_.reader_epoch_lease) {
+            quiescent_epoch = lane.generation.reader_safe_epoch.load(std::memory_order_acquire);
+        } else {
+            std::atomic_thread_fence(std::memory_order_seq_cst);
+            quiescent_epoch = lane.reclaim.active_read_leases.load(std::memory_order_acquire) == 0
+                                  ? lane.generation.writer_epoch.load(std::memory_order_relaxed)
+                                  : std::uint64_t{0};
+        }
+        if (quiescent_epoch == 0) {
+            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                          std::memory_order_relaxed);
+            return;
+        }
+        const auto before = lane.generation.retired_generations.size();
+        std::erase_if(lane.generation.retired_generations,
+                      [&](const auto& retired) { return retired->epoch() < quiescent_epoch; });
+        const auto retired = before - lane.generation.retired_generations.size();
+        if (retired != 0U) {
+            lane.generation.generations_retired.fetch_add(retired, std::memory_order_relaxed);
+        }
+        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                      std::memory_order_relaxed);
+    };
+    if (lane.generation.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
+        reclaim_quiescent();
+    }
+    if (!healthy_.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (!lane.merge.read_merge &&
+        (lane.generation.writer_generation->delta_entries() >= config_.merge_delta_entries ||
+         lane.generation.writer_generation->delta_record_versions() >= config_.merge_delta_entries)) {
+        auto started = PairReadGeneration::start_incremental_merge(lane.generation.writer_generation,
+                                                                   config_.merge_maximum_post_entries);
+        if (started) {
+            lane.merge.read_merge = std::move(*started);
+            lane.merge.read_merge_active.store(true, std::memory_order_relaxed);
+            lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+            lane.merge.read_merge_starts.fetch_add(1U, std::memory_order_relaxed);
+        } else {
+            lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+        }
+    }
+    if (!lane.merge.read_merge) {
+        return;
+    }
+    if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
+        auto advanced =
+            PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, config_.merge_quantum_slots);
+        if (!advanced) {
+            lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+            lane.merge.read_merge.reset();
+            lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+            lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+            return;
+        }
+        lane.merge.read_merge_slots_processed.fetch_add(*advanced, std::memory_order_relaxed);
+    }
+    if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
+        return;
+    }
+    reclaim_quiescent();
+    auto next =
+        PairReadGeneration::finish_incremental_merge(lane.generation.writer_generation, *lane.merge.read_merge);
+    if (!next) {
+        lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+        lane.merge.read_merge.reset();
+        lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+        lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+        return;
+    }
+    install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
+                              lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                              std::move(*next));
+    lane.generation.delta_entries.store(lane.generation.writer_generation->delta_entries(),
+                                        std::memory_order_relaxed);
+    publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+    lane.merge.read_merge.reset();
+    lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+    lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+    lane.merge.read_merge_completions.fetch_add(1U, std::memory_order_relaxed);
+    reclaim_quiescent();
+}
+
+void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
+    auto& lane = *lanes_[shard];
+    // durable_group coalesce stays on the dedicated Writer loop in run().
+    if (detail::StoreAccess::is_durable(store_) &&
+        detail::StoreAccess::durable_writer_batch_config(store_).has_value()) {
+        return;
+    }
+    FailClosedState fail_closed{store_, healthy_, expire_remaining_};
+    std::vector<FailClosedLaneWake> wakes;
+    wakes.reserve(lanes_.size());
+    for (auto& other : lanes_) {
+        wakes.push_back(FailClosedLaneWake{.signal = &other->async.signal});
+    }
+    const auto publish_fail_closed = [&]() noexcept {
+        fail_closed.arm(wakes, FailClosedScope::pair_and_store);
+    };
+    const auto reclaim_proportional = [&]() noexcept {
+        constexpr std::size_t kReclaimPublishQuantum = 8;
+        if (lane.generation.retired_generations.size() >= kReclaimPublishQuantum ||
+            lane.generation.retired_generations.size() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            lane.generation.reclaim_requested.store(true, std::memory_order_release);
+            combiner_housekeeping(shard);
+        } else {
+            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                          std::memory_order_relaxed);
+        }
+    };
+    const auto try_drain_durable_snapshot = [&]() noexcept -> bool {
+        try {
+            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::drain_snapshot)) {
+                return false;
+            }
+            auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, shard, true);
+            if (!snapshot) {
+                return false;
+            }
+            auto next =
+                PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation, snapshot->records);
+            if (!next) {
+                return false;
+            }
+            install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
+                                      lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                                      std::move(*next));
+            lane.generation.delta_entries.store(lane.generation.writer_generation->delta_entries(),
+                                                std::memory_order_relaxed);
+            publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+            lane.generation.published_catalog_revision.store(snapshot->catalog_revision,
+                                                             std::memory_order_release);
+            lane.merge.read_merge.reset();
+            lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+            lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+            reclaim_proportional();
+            return true;
+        } catch (...) {
+            return false;
+        }
+    };
+
+    for (;;) {
+        SyncMutation* sync_batch = nullptr;
+        {
+            const std::lock_guard lock{lane.sync.sync_mutex};
+            sync_batch = lane.sync_head;
+            lane.sync_head = nullptr;
+        }
+        if (sync_batch == nullptr) {
+            break;
+        }
+        SyncMutation* rev = nullptr;
+        while (sync_batch != nullptr) {
+            auto* next = sync_batch->next;
+            sync_batch->next = rev;
+            rev = sync_batch;
+            sync_batch = next;
+        }
+        if (!healthy_.load(std::memory_order_acquire)) {
+            for (auto* node = rev; node != nullptr;) {
+                auto* const next = node->next;
+                node->status =
+                    Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                node->done.store(true, std::memory_order_release);
+                node->done.notify_one();
+                node = next;
+            }
+            continue;
+        }
+
+        if (!detail::StoreAccess::is_durable(store_)) {
+            while (rev != nullptr) {
+                if (!healthy_.load(std::memory_order_acquire)) {
+                    while (rev != nullptr) {
+                        auto* const next = rev->next;
+                        rev->status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                        rev->done.store(true, std::memory_order_release);
+                        rev->done.notify_one();
+                        rev = next;
+                    }
+                    break;
+                }
+                std::array<SyncMutation*, kMaximumPublicationBatch> chunk{};
+                std::size_t chunk_size = 0;
+                while (rev != nullptr && chunk_size < kMaximumPublicationBatch) {
+                    chunk[chunk_size++] = rev;
+                    rev = rev->next;
+                }
+                for (unsigned spin = 0;
+                     !PairReadGeneration::can_publish_incremental(
+                         *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size) &&
+                     spin < 256U;
+                     ++spin) {
+                    combiner_housekeeping(shard);
+                }
+                if (!PairReadGeneration::can_publish_incremental(
+                        *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size)) {
+                    lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        chunk[index]->status = Status{fail(
+                            ErrorCode::resource_exhausted,
+                            "mutation rejected until incremental read merge advances")};
+                        chunk[index]->done.store(true, std::memory_order_release);
+                        chunk[index]->done.notify_one();
+                    }
+                    continue;
+                }
+                bool store_mutated = false;
+                bool generation_published = false;
+                std::array<ReadMutation, kMaximumPublicationBatch> publications{};
+                std::array<SyncMutation*, kMaximumPublicationBatch> published_nodes{};
+                std::size_t publication_count = 0;
+                try {
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        auto* node = chunk[index];
+                        const auto& key = *node->key;
+                        auto published =
+                            node->kind == MutationKind::put
+                                ? detail::StoreAccess::put_volatile_published(
+                                      store_, shard, key, node->value, node->expire_at_ns,
+                                      detail::StoreAccess::PublishedAdmission::caller_holds_guard)
+                                : detail::StoreAccess::erase_volatile_published(
+                                      store_, shard, key,
+                                      detail::StoreAccess::PublishedAdmission::caller_holds_guard);
+                        if (!published) {
+                            bool sticky = false;
+                            auto error = classify_volatile_mutation_error(published.error(), sticky);
+                            if (sticky) {
+                                publish_fail_closed();
+                            }
+                            node->status = Status{unexpected(std::move(error))};
+                            continue;
+                        }
+                        store_mutated = true;
+                        publications[publication_count] =
+                            ReadMutation{.key = key,
+                                         .record = published->record,
+                                         .segment = std::move(published->segment),
+                                         .opcode = published->opcode};
+                        published_nodes[publication_count] = node;
+                        ++publication_count;
+                    }
+                    if (publication_count != 0) {
+                        auto next = PairReadGeneration::publish_incremental(
+                            lane.generation.writer_generation,
+                            std::span{publications.data(), publication_count}, lane.merge.read_merge.get());
+                        if (!next) {
+                            publish_fail_closed();
+                            for (std::size_t index = 0; index < publication_count; ++index) {
+                                published_nodes[index]->status =
+                                    Status{fail(ErrorCode::unavailable, "read publication failed")};
+                            }
+                        } else {
+                            lane.generation.retired_generations.push_back(lane.generation.writer_generation);
+                            lane.generation.retired_generation_count.store(
+                                lane.generation.retired_generations.size(), std::memory_order_relaxed);
+                            lane.generation.writer_generation = std::move(*next);
+                            lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
+                                                               std::memory_order_relaxed);
+                            lane.generation.delta_entries.store(
+                                lane.generation.writer_generation->delta_entries(),
+                                std::memory_order_relaxed);
+                            publish_read_generation(lane.generation.published_generation,
+                                                    lane.generation.writer_generation.get());
+                            generation_published = true;
+                            for (std::size_t index = 0; index < publication_count; ++index) {
+                                published_nodes[index]->status = Status{};
+                            }
+                            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
+                                throw std::bad_alloc{};
+                            }
+                            reclaim_proportional();
+                        }
+                    }
+                } catch (...) {
+                    if (store_mutated && !generation_published) {
+                        publish_fail_closed();
+                    }
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        auto* node = chunk[index];
+                        if (generation_published && node->status) {
+                            continue;
+                        }
+                        if (!node->status) {
+                            continue;
+                        }
+                        node->status = Status{fail(store_mutated ? ErrorCode::unavailable
+                                                                 : ErrorCode::resource_exhausted,
+                                                   "paired mutation allocation failed")};
+                    }
+                }
+                for (std::size_t index = 0; index < chunk_size; ++index) {
+                    chunk[index]->done.store(true, std::memory_order_release);
+                    chunk[index]->done.notify_one();
+                }
+            }
+            continue;
+        }
+
+        // durable_sync under the combiner token (ACK after visibility).
+        while (rev != nullptr) {
+            if (!healthy_.load(std::memory_order_acquire)) {
+                for (auto* node = rev; node != nullptr;) {
+                    auto* const next = node->next;
+                    node->status =
+                        Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                    node->done.store(true, std::memory_order_release);
+                    node->done.notify_one();
+                    node = next;
+                }
+                break;
+            }
+            auto* node = rev;
+            rev = rev->next;
+            Status status{};
+            bool durable_committed = false;
+            bool durable_mutate_entered = false;
+            bool generation_published = false;
+            bool status_resolved = false;
+            MutationLifecycle life{};
+            static_cast<void>(life.admit());
+            static_cast<void>(life.stage_for_writer());
+            const auto shadow_mark_published = [&](const bool published) noexcept {
+                if (published) {
+                    static_cast<void>(life.mark_published());
+                    return;
+                }
+                if (life.publication().state == PublicationState::required ||
+                    life.publication().state == PublicationState::staged) {
+                    static_cast<void>(life.mark_publication_failed());
+                }
+            };
+            const auto shadow_resolve_status = [&]() noexcept {
+                status_resolved = true;
+                if (life.stage() != MutationStage::completion_decided &&
+                    life.stage() != MutationStage::completed) {
+                    auto decided = decide_completion(life.durable(), life.publication());
+                    if (status) {
+                        decided.kind = CompletionDecision::Kind::success;
+                    } else if (status.error().code == ErrorCode::unavailable) {
+                        decided.kind = CompletionDecision::Kind::indeterminate;
+                    } else {
+                        decided.kind = CompletionDecision::Kind::known_not_committed;
+                    }
+                    static_cast<void>(life.decide(decided));
+                }
+                static_cast<void>(life.mark_completed());
+            };
+            try {
+                const auto& key = *node->key;
+                durable_mutate_entered = true;
+                static_cast<void>(life.mark_durable_started());
+                auto result = execute_durable_single(store_, shard, node->kind, key, node->value,
+                                                     node->expire_at_ns);
+                if (result.committed()) {
+                    durable_committed = true;
+                }
+                static_cast<void>(life.apply_durable_result(result));
+                const auto ack_after_published_visibility = [&]() -> Status {
+                    const auto* published =
+                        lane.generation.published_generation.load(std::memory_order_acquire);
+                    if (published == nullptr) {
+                        return Status{fail(ErrorCode::unavailable,
+                                           "paired read generation missing after drain")};
+                    }
+                    const auto view = published->prepare_durable(key);
+                    if (node->kind == MutationKind::put) {
+                        return view.has_value()
+                                   ? Status{}
+                                   : Status{fail(ErrorCode::unavailable,
+                                                 "committed put missing from published generation")};
+                    }
+                    return (!view.has_value() && view.error().code == ErrorCode::not_found)
+                               ? Status{}
+                               : Status{fail(ErrorCode::unavailable,
+                                             "committed erase still visible after drain")};
+                };
+                if (!result.committed() || result.error) {
+                    auto error = result.error ? *result.error
+                                              : Error{ErrorCode::io_error, "durable mutation failed"};
+                    if (result.committed() ||
+                        result.outcome == DurableMutationOutcome::indeterminate) {
+                        error.code = ErrorCode::unavailable;
+                        generation_published = try_drain_durable_snapshot();
+                        shadow_mark_published(generation_published);
+                        publish_fail_closed();
+                        if (generation_published && result.committed()) {
+                            status = ack_after_published_visibility();
+                        } else {
+                            status = Status{unexpected(std::move(error))};
+                        }
+                    } else {
+                        rewrite_known_not_committed_wire_error(error);
+                        status = Status{unexpected(std::move(error))};
+                    }
+                    shadow_resolve_status();
+                } else {
+                    ReadMutation publication{
+                        .key = key,
+                        .record = RecordRef{.sequence = *result.sequence},
+                        .opcode = node->kind == MutationKind::put ? Opcode::put : Opcode::erase};
+                    if (node->kind == MutationKind::put) {
+                        auto captured = detail::StoreAccess::capture_durable_read(store_, shard, key);
+                        if (!captured) {
+                            generation_published = try_drain_durable_snapshot();
+                            shadow_mark_published(generation_published);
+                            publish_fail_closed();
+                            status = generation_published
+                                         ? ack_after_published_visibility()
+                                         : Status{fail(ErrorCode::unavailable, "durable read capture failed")};
+                            shadow_resolve_status();
+                        } else {
+                            publication.record = captured->reference();
+                            publication.durable.emplace(std::move(*captured));
+                            static_cast<void>(life.mark_publication_staged());
+                            auto next = PairReadGeneration::publish_incremental(
+                                lane.generation.writer_generation, std::span{&publication, 1},
+                                lane.merge.read_merge.get());
+                            if (!next) {
+                                generation_published = try_drain_durable_snapshot();
+                                shadow_mark_published(generation_published);
+                                publish_fail_closed();
+                                status = generation_published
+                                             ? ack_after_published_visibility()
+                                             : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                shadow_resolve_status();
+                            } else {
+                                install_writer_generation(
+                                    lane.generation.writer_generation, lane.generation.retired_generations,
+                                    lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                                    std::move(*next));
+                                lane.generation.delta_entries.store(
+                                    lane.generation.writer_generation->delta_entries(),
+                                    std::memory_order_relaxed);
+                                publish_read_generation(lane.generation.published_generation,
+                                                        lane.generation.writer_generation.get());
+                                generation_published = true;
+                                shadow_mark_published(true);
+                                if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
+                                    throw std::bad_alloc{};
+                                }
+                                reclaim_proportional();
+                                status = Status{};
+                                shadow_resolve_status();
+                            }
+                        }
+                    } else {
+                        static_cast<void>(life.mark_publication_staged());
+                        auto next = PairReadGeneration::publish_incremental(
+                            lane.generation.writer_generation, std::span{&publication, 1},
+                            lane.merge.read_merge.get());
+                        if (!next) {
+                            generation_published = try_drain_durable_snapshot();
+                            shadow_mark_published(generation_published);
+                            publish_fail_closed();
+                            status = generation_published
+                                         ? ack_after_published_visibility()
+                                         : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                            shadow_resolve_status();
+                        } else {
+                            install_writer_generation(
+                                lane.generation.writer_generation, lane.generation.retired_generations,
+                                lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                                std::move(*next));
+                            lane.generation.delta_entries.store(
+                                lane.generation.writer_generation->delta_entries(),
+                                std::memory_order_relaxed);
+                            publish_read_generation(lane.generation.published_generation,
+                                                    lane.generation.writer_generation.get());
+                            generation_published = true;
+                            shadow_mark_published(true);
+                            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
+                                throw std::bad_alloc{};
+                            }
+                            reclaim_proportional();
+                            status = Status{};
+                            shadow_resolve_status();
+                        }
+                    }
+                }
+            } catch (const std::bad_alloc&) {
+                const SyncDurableExceptionContext recovery_ctx{
+                    .durable_committed = durable_committed,
+                    .durable_mutate_entered = durable_mutate_entered,
+                    .generation_published = generation_published,
+                    .status_resolved = status_resolved,
+                };
+                const auto recovery = plan_sync_durable_exception_recovery(recovery_ctx);
+                if (recovery.mark_exception_lifecycle) {
+                    static_cast<void>(life.mark_exception_after_durable_start());
+                }
+                if (recovery.drain_if_unpublished) {
+                    generation_published = try_drain_durable_snapshot() || generation_published;
+                    shadow_mark_published(generation_published);
+                }
+                if (recovery.fail_closed) {
+                    publish_fail_closed();
+                }
+                const auto status_plan = plan_sync_durable_exception_status(
+                    {.durable_committed = durable_committed,
+                     .durable_mutate_entered = durable_mutate_entered,
+                     .generation_published = generation_published,
+                     .status_resolved = status_resolved});
+                switch (status_plan.kind) {
+                case SyncDurableExceptionStatusKind::keep_resolved:
+                    break;
+                case SyncDurableExceptionStatusKind::success_after_visibility:
+                    status = Status{};
+                    shadow_resolve_status();
+                    break;
+                case SyncDurableExceptionStatusKind::unavailable_store_entered:
+                    status = Status{fail(ErrorCode::unavailable, "paired mutation allocation failed")};
+                    shadow_resolve_status();
+                    break;
+                case SyncDurableExceptionStatusKind::resource_exhausted_never_entered:
+                    status =
+                        Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                    shadow_resolve_status();
+                    break;
+                }
+            } catch (...) {
+                const SyncDurableExceptionContext recovery_ctx{
+                    .durable_committed = durable_committed,
+                    .durable_mutate_entered = durable_mutate_entered,
+                    .generation_published = generation_published,
+                    .status_resolved = status_resolved,
+                };
+                const auto recovery = plan_sync_durable_exception_recovery(recovery_ctx);
+                if (recovery.mark_exception_lifecycle) {
+                    static_cast<void>(life.mark_exception_after_durable_start());
+                }
+                if (recovery.drain_if_unpublished) {
+                    generation_published = try_drain_durable_snapshot() || generation_published;
+                    shadow_mark_published(generation_published);
+                }
+                if (recovery.fail_closed) {
+                    publish_fail_closed();
+                }
+                const auto status_plan = plan_sync_durable_exception_status(
+                    {.durable_committed = durable_committed,
+                     .durable_mutate_entered = durable_mutate_entered,
+                     .generation_published = generation_published,
+                     .status_resolved = status_resolved});
+                switch (status_plan.kind) {
+                case SyncDurableExceptionStatusKind::keep_resolved:
+                    break;
+                case SyncDurableExceptionStatusKind::success_after_visibility:
+                    status = Status{};
+                    shadow_resolve_status();
+                    break;
+                case SyncDurableExceptionStatusKind::unavailable_store_entered:
+                    status = Status{fail(ErrorCode::unavailable, "paired Writer failure")};
+                    shadow_resolve_status();
+                    break;
+                case SyncDurableExceptionStatusKind::resource_exhausted_never_entered:
+                    status = Status{fail(ErrorCode::resource_exhausted, "paired Writer failure")};
+                    shadow_resolve_status();
+                    break;
+                }
+            }
+            if (durable_mutate_entered && !detail::StoreAccess::operational(store_)) {
+                if (!generation_published) {
+                    generation_published = try_drain_durable_snapshot();
+                    shadow_mark_published(generation_published);
+                }
+                publish_fail_closed();
+                if (!generation_published) {
+                    if (!status_resolved) {
+                        status = Status{fail(ErrorCode::unavailable, "paired runtime is fail-closed")};
+                        shadow_resolve_status();
+                    } else if (status) {
+                        status = Status{fail(ErrorCode::unavailable, "paired runtime is fail-closed")};
+                    }
+                }
+            }
+            node->status = status;
+            node->done.store(true, std::memory_order_release);
+            node->done.notify_one();
+        }
+    }
+}
+
+void ShardPairRuntime::combine_sync_lane(const std::size_t shard) noexcept {
+    auto& lane = *lanes_[shard];
+    // durable_group (!async): leave work for the dedicated Writer.
+    if (dedicated_writer_required()) {
+        return;
+    }
+    while (try_acquire_execution_token(lane.async.execution_token)) {
+        combiner_housekeeping(shard);
+        process_sync_lane(shard);
+        bool pending = false;
+        {
+            const std::lock_guard lock{lane.sync.sync_mutex};
+            pending = lane.sync_head != nullptr;
+        }
+        release_execution_token(lane.async.execution_token);
+        if (!try_reacquire_execution_token_if_pending(lane.async.execution_token, pending)) {
+            return;
+        }
+        combiner_housekeeping(shard);
+        process_sync_lane(shard);
+        {
+            const std::lock_guard lock{lane.sync.sync_mutex};
+            pending = lane.sync_head != nullptr;
+        }
+        release_execution_token(lane.async.execution_token);
+        if (!pending) {
+            return;
+        }
+    }
 }
 
 auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, const HashedKey& key,
@@ -2380,25 +3052,19 @@ auto ShardPairRuntime::mutate(const std::size_t shard, const MutationKind kind, 
         lane.sync_head = &node;
     }
     lane.sync.sync_admitted.fetch_add(1U, std::memory_order_relaxed);
+    if (combining_enabled()) {
+        combine_sync_lane(shard);
+        if (!node.done.load(std::memory_order_acquire)) {
+            wake(lane);
+        }
+        GS_PHASE_PUT(ack);
+        wait_sync_done(node);
+        return node.status;
+    }
     wake(lane);
     {
         GS_PHASE_PUT(ack);
-        // Short adaptive spin before parking. Keep this bounded: on Apple Silicon
-        // long dual-sided spins (caller + Writer) compete for the same P-cores and
-        // can regress worker-affine multi-thread PUT.
-        for (unsigned spin = 0; spin < 32U; ++spin) {
-            if (node.done.load(std::memory_order_acquire)) {
-                return node.status;
-            }
-#if defined(__aarch64__) || defined(_M_ARM64)
-            __asm__ __volatile__("yield");
-#elif defined(__x86_64__) || defined(_M_X64)
-            __builtin_ia32_pause();
-#else
-            std::this_thread::yield();
-#endif
-        }
-        node.done.wait(false, std::memory_order_acquire);
+        wait_sync_done(node);
     }
     return node.status;
 }
@@ -2471,26 +3137,25 @@ auto ShardPairRuntime::mutate_batch(const std::size_t shard, const std::span<con
         }
     }
     lane.sync.sync_admitted.fetch_add(items.size(), std::memory_order_relaxed);
-    wake(lane);
-
-    for (std::size_t index = 0; index < items.size(); ++index) {
-        auto& node = nodes[index];
-        for (unsigned spin = 0; spin < 32U; ++spin) {
-            if (node.done.load(std::memory_order_acquire)) {
+    if (combining_enabled()) {
+        combine_sync_lane(shard);
+        bool all_done = true;
+        for (std::size_t index = 0; index < items.size(); ++index) {
+            if (!nodes[index].done.load(std::memory_order_acquire)) {
+                all_done = false;
                 break;
             }
-#if defined(__aarch64__) || defined(_M_ARM64)
-            __asm__ __volatile__("yield");
-#elif defined(__x86_64__) || defined(_M_X64)
-            __builtin_ia32_pause();
-#else
-            std::this_thread::yield();
-#endif
         }
-        if (!node.done.load(std::memory_order_acquire)) {
-            node.done.wait(false, std::memory_order_acquire);
+        if (!all_done) {
+            wake(lane);
         }
-        statuses[index] = node.status;
+    } else {
+        wake(lane);
+    }
+
+    for (std::size_t index = 0; index < items.size(); ++index) {
+        wait_sync_done(nodes[index]);
+        statuses[index] = nodes[index].status;
     }
     return {};
 }

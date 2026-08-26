@@ -58,6 +58,8 @@ struct AsyncLaneState final {
     alignas(128) std::mutex queue_consumer_mutex{};
     alignas(128) std::atomic<std::uint64_t> signal{};
     alignas(128) std::atomic_bool stopping{};
+    // ADR 0037: IDLE=0 / EXECUTING=1 sole mutator ownership for the shard.
+    alignas(128) std::atomic<std::uint32_t> execution_token{};
     std::atomic<std::size_t> queued_bytes{};
     bool async_enabled{};
 };
@@ -94,6 +96,8 @@ struct MergeState final {
     std::atomic<std::uint64_t> read_merge_failures{};
     std::atomic<std::uint64_t> read_merge_backpressure{};
     std::atomic<std::uint64_t> read_merge_slots_processed{};
+    // Writer-local: resource_exhausted merge start defers retries until a publish clears it.
+    bool merge_retry_blocked{};
 };
 
 struct ReclamationState final {

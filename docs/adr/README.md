@@ -62,6 +62,7 @@ alternatives, decision, consequences, compatibility impact, verification, and re
 | [0034](0034-zero-fence-hot-backup-deferred.md) | Zero-fence hot backup design constraints (deferred) | accepted | extends backup-restore v1 non-goal; not implemented in 0.1.x |
 | [0035](0035-generation-shell-recycling.md) | PairReadGeneration shell TLS freelist under existing publish protocol | rejected | measured affine PUT regression; does not amend 0031; full slot pool → 0036 |
 | [0036](0036-generation-slot-pool-publish.md) | Generation slot-pool publish/reclaim design bar | proposed | would amend 0031 publication/reclaim after V1–V14; depends on 0031/0032; related 0035 |
+| [0037](0037-shard-execution-token-flat-combining.md) | Shard execution token + flat combining | accepted | amends 0031/0032 Writer identity; phased embedded→daemon windows |
 
 Official TCP client error taxonomy, automatic retries, and deadline behavior are governed by
 [ADR 0019](0019-client-error-retry-timeout.md) and [client semantics v1](../spec/client-semantics-v1.md).

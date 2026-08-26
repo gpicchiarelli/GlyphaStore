@@ -75,6 +75,7 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-CONCUR-PAIR-001
+  - GS-CONCUR-COMBINE-001
   - GS-CONCUR-LIN-001
   - GS-CONCUR-FAULT-001
   - GS-CONCUR-MEM-001
@@ -88,11 +89,13 @@ gates:
   - docs/spec/client-semantics-v1.md
   - docs/spec/error-taxonomy-v1.md
   - docs/spec/concurrency-memory-model.md
+  - docs/adr/0037-shard-execution-token-flat-combining.md
   - docs/assurance/memory-order-inventory.md
   - docs/architecture/legacy-mutex-policy.md
   - tests/integration/concurrency_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
   - tests/integration/runtime_equivalence_tests.cpp
+  - tests/unit/shard_combining_executor_tests.cpp
   - tests/fixtures/error_taxonomy_v1.json
   - tests/integration/server_reactor_security_tests.cpp
   - tests/integration/server_reactor_durable_tests.cpp
@@ -105,13 +108,16 @@ gates:
   - workflow: formal-shard-pair.yml
   stato: IMPLEMENTATA
   rischio_residuo: TLC job best-effort; checker history size bounded; admitted Store mutations remain
-    non-cancellable by disconnect/timeout (by design)
+    non-cancellable by disconnect/timeout (by design); ADR 0037 Phase C windows residual
   riapertura:
+  - Execution-token or combining semantics change without ADR 0037 amendment
+  - ACK boundary / mutation visibility change without ADR + GATE-DURABLE-ACK evidence
   - Visibility or borrow lifetime change without ADR
   - legacy_mutex feature creep without policy update
   - Daemon request-timeout policy change without client-semantics / wire update
-  narrative: Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, legacy_mutex
-    policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative.
+  narrative: Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining),
+    B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted
+    Store work) are normative.
 - id: GATE-DURABLE-ACK
   titolo: Acknowledgement semantics for durable mutations
   sezione: durability_recovery
@@ -120,18 +126,23 @@ gates:
   - GS-PERSIST-ACK-001
   prove:
   - tests/crash/crash_persistence.cpp
+  - tests/integration/paired_store_tests.cpp
   - docs/architecture/platform-durability-evidence.md
+  - docs/adr/0037-shard-execution-token-flat-combining.md
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: durability-evidence.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: No native filesystem row has E3/E4 certification
+  rischio_residuo: No native filesystem row has E3/E4 certification; ADR 0037 durable_sync
+    combiner shares ACK-after-visibility with the dedicated Writer path
   riapertura:
   - ACK boundary change
   - e3_certified=yes without pinned campaign
   narrative: E2 evidence present; physical E3 honesty enforced by rehearsal scripts.
+    Embedded durable_sync may combine under the execution token (ADR 0037 Phase B) without
+    changing ACK-after-visibility polarity.
 - id: GATE-WRITE-ORDER
   titolo: Write ordering synchronization and manifest publication
   sezione: durability_recovery

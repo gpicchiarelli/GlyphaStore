@@ -46,9 +46,9 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified  
   State: `IMPLEMENTATA` · Release target: `alpha`  
-  Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001`  
-  Residual risk: TLC job best-effort; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design)
-  Client semantics, error taxonomy, concurrency model, B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative.
+  Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001`  
+  Residual risk: TLC job best-effort; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design); ADR 0037 Phase C windows residual
+  Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining), B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices  
   State: `PROVATA_IN_CI` · Release target: `alpha`  
@@ -73,8 +73,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-DURABLE-ACK** — Acknowledgement semantics for durable mutations  
   State: `PROVATA_IN_CI` · Release target: `beta`  
   Requirements: `GS-PERSIST-ACK-001`  
-  Residual risk: No native filesystem row has E3/E4 certification
-  E2 evidence present; physical E3 honesty enforced by rehearsal scripts.
+  Residual risk: No native filesystem row has E3/E4 certification; ADR 0037 durable_sync combiner shares ACK-after-visibility with the dedicated Writer path
+  E2 evidence present; physical E3 honesty enforced by rehearsal scripts. Embedded durable_sync may combine under the execution token (ADR 0037 Phase B) without changing ACK-after-visibility polarity.
 
 - [ ] **GATE-FAIL-CLOSED-IO** — Fail-closed on truncation corruption and I/O failures  
   State: `PROVATA_LOCALMENTE` · Release target: `beta`  

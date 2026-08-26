@@ -6,7 +6,9 @@
 - Applies to: runtime paired; persistence v1 e wire protocol v2 restano invariati
 - Amends: ADR 0005, 0012, 0016, 0018, 0023 e 0030
 - Amended by: [ADR 0032](0032-paired-concurrency-embedded-store.md) (paired concurrency becomes the
-  default for embedded `Store` as well as the daemon; supersedes Worker-mutex as product default)
+  default for embedded `Store` as well as the daemon; supersedes Worker-mutex as product default);
+  [ADR 0037](0037-shard-execution-token-flat-combining.md) (Writer = per-shard execution token;
+  embedded sync may omit a dedicated Writer thread; daemon keeps a dedicated executor)
 - Supersedes: il modello Worker-affine / mutex sull’Index come default di prodotto (completato con
   ADR 0032); non supersede persistence v1 né wire v2
 
@@ -548,10 +550,12 @@ prima della pubblicazione 0.1.0, quindi non richiedono alias di compatibilità.
 
 ## Conseguenze
 
-Il modello raddoppia i thread storage per shard e richiede più memoria per generazioni/delta durante
-merge. In cambio separa completamente GET e mutazioni, rende il Writer seriale per costruzione e
-riduce la sincronizzazione a publication e due SPSC. Hardware con pochi core potrà preferire
-`memory_constrained`, ma non è ammesso fondere Reader e Writer violando l'invariante della coppia.
+Il modello richiede un **unico mutatore per shard** (token di esecuzione; thread dedicato sul
+daemon). L'embedded sync può omettere il Writer `std::thread` permanente ([ADR 0037](0037-shard-execution-token-flat-combining.md)).
+In cambio separa completamente GET e mutazioni, rende le mutazioni seriali per costruzione e
+riduce la sincronizzazione a publication e code bounded. Hardware con pochi core potrà preferire
+`memory_constrained`, ma non è ammesso fondere Reader e Writer violando l'invariante della coppia
+(il Reactor non esegue Store mutate).
 
 ## Compatibilità
 
