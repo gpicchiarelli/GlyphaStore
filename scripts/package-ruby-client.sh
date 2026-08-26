@@ -47,6 +47,8 @@ mkdir -p "$sdk/dist"
   "$gem_bin" build glyphastore.gemspec
   mv -f "glyphastore-$got.gem" "dist/glyphastore-$got.gem"
 )
+"$root/scripts/normalize-ruby-gem.sh" "$sdk/dist/glyphastore-$got.gem"
+"$gem_bin" specification "$sdk/dist/glyphastore-$got.gem" >/dev/null
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-ruby-pack.XXXXXX")"
 cleanup() { rm -rf "$work"; }
