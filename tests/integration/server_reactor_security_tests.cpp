@@ -188,6 +188,124 @@ GLYPHA_TEST("deep mutation pipeline keeps input compaction linear") {
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("partial output appends compact only when retained capacity is exhausted") {
+#if defined(__OpenBSD__)
+    // SO_RCVBUF and kqueue scheduling under qemu do not reliably retain a
+    // user-space suffix. Linux and macOS exercise the copy-avoidance path.
+    return;
+#endif
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 1,
+        .maximum_output_bytes = 1024U * 1024U,
+        .accepted_socket_send_buffer_bytes = 4U * 1024U,
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    const int receive_buffer = 4 * 1024;
+    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &receive_buffer, sizeof(receive_buffer)) == 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    // A completed large response leaves vector capacity retained after clear().
+    const std::vector<std::byte> warm_value(768U * 1024U, std::byte{0x41});
+    const auto warm = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 2'000,
+        .value = warm_value,
+    });
+    GLYPHA_REQUIRE(warm.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *warm));
+    auto response = glyphastore::server::decode_response(receive_response(socket));
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 2'000);
+    GLYPHA_REQUIRE(response->frame.value.size() == warm_value.size());
+
+    // This response cannot fit in the deliberately small TCP windows. Follow-up
+    // responses still fit in the retained vector capacity, so appending them must
+    // preserve the consumed prefix cursor instead of moving the unsent suffix.
+    const std::vector<std::byte> slow_value(256U * 1024U, std::byte{0x52});
+    const auto slow = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 2'001,
+        .value = slow_value,
+    });
+    GLYPHA_REQUIRE(slow.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *slow));
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+
+    constexpr std::size_t kFollowUps = 8;
+    const std::vector<std::byte> follow_value(1024, std::byte{0x63});
+    for (std::size_t index = 0; index < kFollowUps; ++index) {
+        const auto follow = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::ping,
+            .request_id = 2'002U + index,
+            .value = follow_value,
+        });
+        GLYPHA_REQUIRE(follow.has_value());
+        GLYPHA_REQUIRE(send_all(socket, *follow));
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+
+    response = glyphastore::server::decode_response(receive_response(socket));
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 2'001);
+    GLYPHA_REQUIRE(response->frame.value.size() == slow_value.size());
+    for (std::size_t index = 0; index < kFollowUps; ++index) {
+        response = glyphastore::server::decode_response(receive_response(socket));
+        GLYPHA_REQUIRE(response.has_value());
+        GLYPHA_REQUIRE(response->frame.request_id == 2'002U + index);
+        GLYPHA_REQUIRE(response->frame.value.size() == follow_value.size());
+    }
+
+    auto stats = server.reactor_buffer_stats();
+    GLYPHA_REQUIRE(stats.output_compactions == 0);
+    GLYPHA_REQUIRE(stats.output_bytes_moved == 0);
+
+    // The retained capacity is approximately the warm response size. A 512 KiB
+    // partial response plus a 256 KiB follow-up and its header cannot append
+    // physically without growth, although their unsent logical bytes remain under
+    // the 1 MiB watermark. Exactly one necessary compaction reclaims the prefix.
+    const std::vector<std::byte> exhaust_value(512U * 1024U, std::byte{0x74});
+    const auto exhaust = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 2'100,
+        .value = exhaust_value,
+    });
+    GLYPHA_REQUIRE(exhaust.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *exhaust));
+    std::this_thread::sleep_for(std::chrono::milliseconds{20});
+
+    const std::vector<std::byte> growth_value(256U * 1024U, std::byte{0x75});
+    const auto growth = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 2'101,
+        .value = growth_value,
+    });
+    GLYPHA_REQUIRE(growth.has_value());
+    GLYPHA_REQUIRE(send_all(socket, *growth));
+
+    response = glyphastore::server::decode_response(receive_response(socket));
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 2'100);
+    GLYPHA_REQUIRE(response->frame.value.size() == exhaust_value.size());
+    response = glyphastore::server::decode_response(receive_response(socket));
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 2'101);
+    GLYPHA_REQUIRE(response->frame.value.size() == growth_value.size());
+
+    stats = server.reactor_buffer_stats();
+    GLYPHA_REQUIRE(stats.output_compactions == 1);
+    GLYPHA_REQUIRE(stats.output_bytes_moved > 0);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("late cold-read completion cannot target a reused connection slot") {
     ServerTemporaryDirectory temporary;
     const auto path = temporary.store_path();
