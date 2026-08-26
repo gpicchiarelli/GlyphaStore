@@ -22,7 +22,8 @@ The script:
 2. Asserts `GlyphaStore::VERSION` matches `VERSION`
 3. Builds `sdk/ruby/dist/glyphastore-VERSION.gem`
 4. Installs the gem into a clean `GEM_HOME`
-5. Runs the Minitest suite against the installed gem (plus development gems `async`, `minitest`)
+5. Runs the installed `glyphastore-interop` executable with no source-tree load path
+6. Runs the Minitest suite against the installed gem (plus development gems `async`, `minitest`)
 
 ## Manual build
 

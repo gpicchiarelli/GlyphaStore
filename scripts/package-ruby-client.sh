@@ -8,15 +8,8 @@ export GLYPHASTORE_ROOT="$root"
 source "$root/scripts/export-reproducible-build-env.sh"
 sdk="$root/sdk/ruby"
 ruby_bin="${RUBY:-}"
-if [[ -z "$ruby_bin" ]]; then
-  for candidate in \
-    "$HOME/.local/share/mise/installs/ruby/3.3.12/bin/ruby" \
-    "$HOME/.local/share/mise/installs/ruby/3.3.0/bin/ruby"; do
-    if [[ -x "$candidate" ]]; then
-      ruby_bin="$candidate"
-      break
-    fi
-  done
+if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
+  ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
 fi
 ruby_bin="${ruby_bin:-$(command -v ruby || true)}"
 if [[ -z "$ruby_bin" || ! -x "$ruby_bin" ]]; then
@@ -75,6 +68,19 @@ export PATH="$GEM_HOME/bin:$PATH"
 mkdir -p "$GEM_HOME"
 "$gem_bin" install --local --no-document "$sdk/dist/glyphastore-$got.gem"
 "$gem_bin" install --no-document async minitest >/dev/null
+
+installed_cli="$GEM_HOME/bin/glyphastore-interop"
+if [[ ! -x "$installed_cli" ]]; then
+  echo "ERROR: installed gem is missing glyphastore-interop" >&2
+  exit 1
+fi
+(
+  cd "$work"
+  unset RUBYLIB || true
+  installed_help="$("$installed_cli" --help)"
+  grep -q '^Usage: glyphastore-interop ' <<<"$installed_help"
+)
+echo "Installed Ruby interop CLI load-path OK ($installed_cli)"
 
 # Run the test suite against the *installed* gem (not the tree lib/).
 cp -R "$sdk/test" "$work/test"

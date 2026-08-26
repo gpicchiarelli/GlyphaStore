@@ -4,6 +4,8 @@
 
 - Make the interop CLI assert structured `permission_denied` and `overloaded` mutation outcomes in
   the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
+- Load `glypha_store` through the gem load path and verify the installed interop executable, so the
+  packaged CLI cannot accidentally depend on the source-tree `lib/` layout.
 
 ## 0.1.0
 
