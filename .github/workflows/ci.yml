@@ -39,7 +39,7 @@ jobs:
           cmake --build build/man-ci --target glyphastore_manpages
           ./scripts/validate-manpages.sh build/man-ci/man
           dest="$(mktemp -d)"
-          cmake --install build/man-ci --prefix "${dest}" --component ManPages
+          cmake --install build/man-ci --prefix "${dest}" --component Runtime
           test -f "${dest}/share/man/man8/glyphastored.8"
           test -f "${dest}/share/man/man7/glyphastore.7"
           test -f "${dest}/share/man/man1/glyphastore_verify_store.1"
