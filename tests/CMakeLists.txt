@@ -25,8 +25,14 @@ if(BUILD_TESTING)
     )
     target_compile_features(glyphastore_c_abi_durable_tests PRIVATE cxx_std_23)
     target_link_libraries(glyphastore_c_abi_durable_tests
-        PRIVATE GlyphaStore::abi glyphastore_project_options
+        PRIVATE GlyphaStore::abi Threads::Threads glyphastore_project_options
     )
+    if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
+        # FindThreads can resolve an empty interface on BSD even though this
+        # executable directly creates std::threads and therefore needs pthread mode.
+        target_compile_options(glyphastore_c_abi_durable_tests PRIVATE -pthread)
+        target_link_options(glyphastore_c_abi_durable_tests PRIVATE -pthread)
+    endif()
     glyphastore_set_warnings(glyphastore_c_abi_durable_tests)
     glyphastore_enable_hardening(glyphastore_c_abi_durable_tests)
     glyphastore_enable_ipo(glyphastore_c_abi_durable_tests)
