@@ -9,7 +9,12 @@ if(BUILD_TESTING)
         C_EXTENSIONS OFF
         FOLDER "Quality"
     )
-    target_link_libraries(glyphastore_c_abi_tests PRIVATE GlyphaStore::abi)
+    # The ABI consumer remains compiled as strict C11. Project options are also
+    # linked so sanitizer builds pull the runtime required by the instrumented
+    # C++ shared library into this C-owned executable.
+    target_link_libraries(glyphastore_c_abi_tests
+        PRIVATE GlyphaStore::abi glyphastore_project_options
+    )
     add_test(NAME glyphastore_c_abi_tests COMMAND glyphastore_c_abi_tests)
     set_tests_properties(glyphastore_c_abi_tests PROPERTIES LABELS "abi")
 
