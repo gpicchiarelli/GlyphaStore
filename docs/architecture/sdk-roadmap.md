@@ -54,11 +54,11 @@ helpers verify that their loaded module is outside the repository. This is the i
 not yet retained installed-artifact evidence; package orchestration and CI artifact retention remain
 open.
 
-The first package slice installs the built Python wheel into a clean virtual environment and reruns
-the secure-profile matrix with source injection disabled. C++ and Go are staged as isolated peer
-drivers for that slice; it is evidence about the Python wheel, not installed-package evidence for
-those peers. The existing `sdk-clients` job is configured to run this after packaging and daemon
-build. Other SDK artifacts and retained cross-version records remain open.
+The first package slice installs the built Python wheel and Perl tarball into clean isolated prefixes
+and reruns the secure-profile matrix with source injection disabled. C++ and Go are staged as peer
+drivers for that slice; it is evidence about Python/Perl packages, not installed-package evidence
+for those peers. The existing `sdk-clients` job is configured to run this after packaging and daemon
+build. Ruby, Erlang, C++, Go and retained cross-version artifact records remain open.
 
 ### 3. Released-artifact compatibility
 

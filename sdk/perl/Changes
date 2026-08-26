@@ -1,5 +1,8 @@
 Revision history for Perl distribution GlyphaStore
 
+        - Add installed-tarball secure-profile interop with a fail-closed check
+          that GlyphaStore::Client resolves from the isolated install prefix.
+
 0.1.0 2026-07-19
         - Initial CPAN-ready release of the native wire-protocol v2 client.
         - GlyphaStore::Client with INIT/BIND bootstrap, pipelines, and

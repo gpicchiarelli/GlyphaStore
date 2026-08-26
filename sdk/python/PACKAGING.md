@@ -34,7 +34,7 @@ the fail-closed installed-artifact secure-profile matrix:
 GLYPHASTORED=/path/to/glyphastored \
 GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
 GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
-./scripts/test-secure-profile-python-wheel.sh
+./scripts/test-secure-profile-installed-artifacts.sh
 ```
 
 ## Manual build
