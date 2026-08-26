@@ -79,7 +79,8 @@ The client is pure Perl, but its design is deliberately pipeline-first rather th
 object-heavy synchronous calls:
 
 - one TCP connection is created and bound per Worker;
-- a Worker pipeline is encoded into one contiguous scalar and drained under one absolute deadline;
+- a Worker pipeline appends validated header/key/value fragments into one contiguous scalar, without
+  constructing a complete temporary frame per request, and drains it under one absolute deadline;
 - response bytes accumulate in a reusable connection buffer and multiple complete frames are parsed
   from each `sysread`;
 - the client decoder keeps response metadata in a compact internal tuple, avoiding one transient
@@ -96,8 +97,8 @@ object-heavy synchronous calls:
 
 Those choices reduce syscalls and expose server parallelism. They do **not** make the current Perl
 path allocation-free: public requests and results are hash references, encoded frames are assembled
-for each call, and successful GET values become owned Perl scalars. These are measurable costs and
-must not be described as negligible without a profile.
+for non-pipeline calls, and successful GET values become owned Perl scalars. These are measurable
+costs and must not be described as negligible without a profile.
 
 For a throughput-sensitive application:
 
