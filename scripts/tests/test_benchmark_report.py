@@ -11,6 +11,7 @@ from scripts.benchmark_report import (
     comparison_environment_status,
     environment_identity,
     parse_environment,
+    regressions_over_threshold,
     render_markdown,
 )
 
@@ -31,7 +32,9 @@ def environment(**overrides: object) -> dict[str, object]:
     return values
 
 
-def runs(rate: float) -> list[dict[str, object]]:
+def runs(
+    rate: float, minimum: float | None = None, maximum: float | None = None
+) -> list[dict[str, object]]:
     return [
         {
             "source": "core.txt",
@@ -41,6 +44,8 @@ def runs(rate: float) -> list[dict[str, object]]:
                     "name": "store_get",
                     "operations": 100,
                     "median_ops_per_second": rate,
+                    "min_ops_per_second": minimum if minimum is not None else rate * 0.9,
+                    "max_ops_per_second": maximum if maximum is not None else rate * 1.1,
                 }
             ],
         }
@@ -70,6 +75,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertEqual(matched, 1)
         comparison = current_runs[0]["results"][0]["comparison"]
         self.assertEqual(comparison["median_ops_per_second_delta_percent"], -10.0)
+        self.assertEqual(comparison["interpretation"], "inconclusive-overlap")
 
     def test_hardware_change_suppresses_delta_and_is_rendered(self) -> None:
         current = environment(cpu_model="Current CPU")
@@ -100,6 +106,37 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         status = comparison_environment_status(current, {"environment": environment()})
         self.assertEqual(status["status"], "incompatible")
         self.assertEqual(status["reason"], "identity-fields-missing")
+
+    def test_disjoint_lower_range_is_regression_candidate(self) -> None:
+        current_runs = runs(70.0, 65.0, 75.0)
+        matched = add_comparisons(
+            current_runs, {"runs": runs(100.0, 95.0, 105.0)}
+        )
+        self.assertEqual(matched, 1)
+        comparison = current_runs[0]["results"][0]["comparison"]
+        self.assertEqual(comparison["interpretation"], "regression-candidate")
+        self.assertEqual(len(regressions_over_threshold(current_runs, 10.0)), 1)
+
+    def test_overlap_never_triggers_optional_threshold(self) -> None:
+        current_runs = runs(80.0, 70.0, 100.0)
+        add_comparisons(current_runs, {"runs": runs(100.0, 90.0, 110.0)})
+        self.assertEqual(
+            current_runs[0]["results"][0]["comparison"]["interpretation"],
+            "inconclusive-overlap",
+        )
+        self.assertEqual(regressions_over_threshold(current_runs, 10.0), [])
+        markdown = render_markdown(
+            current_runs, "now", "before", {"status": "compatible"}
+        )
+        self.assertIn("inconclusive (ranges overlap)", markdown)
+
+    def test_disjoint_higher_range_is_improvement_candidate(self) -> None:
+        current_runs = runs(130.0, 125.0, 135.0)
+        add_comparisons(current_runs, {"runs": runs(100.0, 95.0, 105.0)})
+        self.assertEqual(
+            current_runs[0]["results"][0]["comparison"]["interpretation"],
+            "improvement-candidate",
+        )
 
 
 if __name__ == "__main__":

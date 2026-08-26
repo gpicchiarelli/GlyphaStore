@@ -23,6 +23,8 @@ summary is shown directly on the GitHub Actions run page and includes throughput
 the latest successful retained run on `main` only when the machine-readable runner identity matches.
 CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-preset changes
 suppress deltas and are listed in the report rather than being mislabeled as code regressions.
+For compatible environments, the report classifies overlapping min/max throughput ranges as
+inconclusive. Only disjoint ranges become improvement or regression candidates.
 
 The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
 depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined

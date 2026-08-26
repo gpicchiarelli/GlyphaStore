@@ -21,8 +21,8 @@ classes:
       value: 10
     workflows:
       - benchmarks.yml
-    notes: Flag for review when a compatible prior baseline differs by more than 10%; hosted noise
-      prevents this advisory signal from failing a release gate.
+    notes: Flag for review when a compatible prior baseline has a disjoint lower range and its median
+      differs by more than 10%; hosted noise prevents this advisory signal from failing a release gate.
 
   - id: HARDWARE-PAIRED-LINUX-AB
     gate: GATE-PERFORMANCE

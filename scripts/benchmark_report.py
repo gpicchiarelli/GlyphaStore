@@ -196,6 +196,26 @@ def baseline_results(report: dict[str, Any]) -> dict[tuple[Any, ...], dict[str, 
     return indexed
 
 
+def classify_rate_ranges(current: dict[str, Any], prior: dict[str, Any]) -> str:
+    current_min = number(current.get("min_ops_per_second", 0))
+    current_max = number(current.get("max_ops_per_second", 0))
+    prior_min = number(prior.get("min_ops_per_second", 0))
+    prior_max = number(prior.get("max_ops_per_second", 0))
+    if (
+        min(current_min, current_max, prior_min, prior_max) <= 0
+        or current_min > current_max
+        or prior_min > prior_max
+    ):
+        return "median-only"
+    if max(current_min, prior_min) <= min(current_max, prior_max):
+        return "inconclusive-overlap"
+    if current_max < prior_min:
+        return "regression-candidate"
+    if current_min > prior_max:
+        return "improvement-candidate"
+    return "inconclusive-invalid-ranges"
+
+
 def add_comparisons(runs: list[dict[str, Any]], baseline: dict[str, Any] | None) -> int:
     if baseline is None:
         return 0
@@ -210,7 +230,10 @@ def add_comparisons(runs: list[dict[str, Any]], baseline: dict[str, Any] | None)
                 continue
             result["comparison"] = {
                 "baseline_median_ops_per_second": prior_rate,
+                "baseline_min_ops_per_second": number(prior.get("min_ops_per_second", 0)),
+                "baseline_max_ops_per_second": number(prior.get("max_ops_per_second", 0)),
                 "median_ops_per_second_delta_percent": (current_rate - prior_rate) / prior_rate * 100,
+                "interpretation": classify_rate_ranges(result, prior),
             }
             matched += 1
     return matched
@@ -230,6 +253,40 @@ def delta(result: dict[str, Any]) -> str:
         return "—"
     change = number(comparison.get("median_ops_per_second_delta_percent", 0))
     return f"{change:+.2f}%"
+
+
+def comparison_signal(result: dict[str, Any]) -> str:
+    comparison = result.get("comparison")
+    if not isinstance(comparison, dict):
+        return "—"
+    labels = {
+        "inconclusive-overlap": "inconclusive (ranges overlap)",
+        "regression-candidate": "regression candidate",
+        "improvement-candidate": "improvement candidate",
+        "median-only": "median only",
+        "inconclusive-invalid-ranges": "inconclusive (invalid ranges)",
+    }
+    interpretation = str(comparison.get("interpretation", "median-only"))
+    return labels.get(interpretation, interpretation)
+
+
+def regressions_over_threshold(runs: list[dict[str, Any]], threshold: float) -> list[str]:
+    regressions: list[str] = []
+    for run in runs:
+        suite = Path(run["source"]).stem
+        for result in run["results"]:
+            comparison = result.get("comparison")
+            if not isinstance(comparison, dict):
+                continue
+            if comparison.get("interpretation") != "regression-candidate":
+                continue
+            delta_percent = number(comparison.get("median_ops_per_second_delta_percent", 0))
+            if delta_percent < -threshold:
+                regressions.append(
+                    f"{suite}/{result.get('name', 'unknown')}: {delta_percent:+.2f}% "
+                    f"(threshold -{threshold:.2f}%)"
+                )
+    return regressions
 
 
 def render_markdown(
@@ -294,8 +351,8 @@ def render_markdown(
 
     lines.extend(
         [
-            "| Suite | Benchmark | Configuration | Median ops/s | Δ ops/s | Median ns/op | p50 | p95 | p99 | p99.9 | RSS | Duplex |",
-            "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| Suite | Benchmark | Configuration | Median ops/s | Δ ops/s | Interpretation | Median ns/op | p50 | p95 | p99 | p99.9 | RSS | Duplex |",
+            "| --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
         ]
     )
     for run in runs:
@@ -318,6 +375,7 @@ def render_markdown(
                         escape(config),
                         rate(result.get("median_ops_per_second", 0)),
                         delta(result),
+                        comparison_signal(result),
                         decimal(result.get("median_ns_per_op", 0)),
                         latency(result.get("p50_latency_ns", 0)),
                         latency(result.get("p95_latency_ns", 0)),
@@ -459,19 +517,7 @@ def main() -> int:
 
     if args.fail_regression_threshold is not None:
         threshold = args.fail_regression_threshold
-        regressions: list[str] = []
-        for run in runs:
-            suite = Path(run["source"]).stem
-            for result in run["results"]:
-                comparison = result.get("comparison")
-                if not isinstance(comparison, dict):
-                    continue
-                delta_percent = number(comparison.get("median_ops_per_second_delta_percent", 0))
-                if delta_percent < -threshold:
-                    regressions.append(
-                        f"{suite}/{result.get('name', 'unknown')}: {delta_percent:+.2f}% "
-                        f"(threshold -{threshold:.2f}%)"
-                    )
+        regressions = regressions_over_threshold(runs, threshold)
         if regressions:
             print("Benchmark regression gate failed:", file=sys.stderr)
             for entry in regressions:

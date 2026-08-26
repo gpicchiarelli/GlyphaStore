@@ -114,7 +114,12 @@ revision reports must suppress deltas when their recorded runner OS/architecture
 kernel, CPU model/count, compiler, or build preset differ or are absent. Interleave old/new runs
 when practical to reduce drift. Report absolute medians and ratios, not only percentages.
 
-A change is a plausible regression only when it repeats across runs and exceeds normal spread. Treat a result inside the combined min/max range as inconclusive unless paired/statistical evidence says otherwise. Optimize a named bottleneck only after decomposing relevant time (hashing, Index, record codec, I/O, queue, wakeup, parsing, response).
+A change is a plausible regression only when it repeats across runs and exceeds normal spread.
+Automated reports must classify overlapping current/baseline min/max throughput ranges as
+inconclusive; only disjoint ranges may be labeled improvement or regression candidates. Stronger
+paired/statistical evidence may supersede this conservative classification. Optimize a named
+bottleneck only after decomposing relevant time (hashing, Index, record codec, I/O, queue, wakeup,
+parsing, response).
 
 ## 10. Canonical commands
 
