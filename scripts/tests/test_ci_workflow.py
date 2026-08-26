@@ -34,6 +34,10 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("NO_DEFAULT_PATH", builder)
         self.assertIn('-DGLYPHASTORE_PACKAGE_DIR="$package_dir"', builder)
         self.assertNotIn('-DGlyphaStore_DIR="$package_dir"', builder)
+        self.assertIn(
+            '--target glyphastore_client glyphastore_abi',
+            builder,
+        )
         self.assertIn('--component AbiRuntime', builder)
         self.assertIn('--component Development', builder)
         self.assertIn(
