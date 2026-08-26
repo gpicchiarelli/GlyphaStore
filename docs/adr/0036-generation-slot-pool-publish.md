@@ -167,6 +167,13 @@ The following remain valid under Alternative A and must keep working under any s
 - Proportional reclaim quantum
 - Phase scopes (`encode_copy`, `index_publish`, `worker_apply`, `publish`, `ack`)
 
+## Note on mutation-lifecycle structural refactor (2026-08)
+
+The behavior-neutral extraction of `mutation_state` / `fail_closed_state` /
+`connection_lifecycle` / `lane_state` nesting does **not** implement this ADR.
+Publish remains Writer-owned `shared_ptr` + release-store of a raw generation
+pointer. This ADR stays **proposed**.
+
 ## References
 
 - [ADR 0031](paired-reader-writer-shards.md) — paired Reader–Writer; publication and reclaim

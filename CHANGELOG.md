@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+- Structural refactor (behavior-neutral, phases 3–7): extract `fail_closed_state`,
+  `mutation_execution` / `mutation_batch`, `publication_coordinator` helpers; nest
+  `Lane` by-value aggregates (`lane_state.hpp`) with alignment `static_assert`s;
+  centralize Reactor drain decisions in `connection_lifecycle.hpp`
+  (`decide_connection_action`, `DecidedOutput`); document internal Writer cause →
+  frozen wire mapping in `error-taxonomy-v1.md` §5.1; property tests for
+  OVERLOADED ⇔ known-not-committed and sticky decided completion. No wire /
+  ACK / fail-closed polarity change. ADR 0036 remains proposed.
+
 - Lab hot-path recon on `94f1307` (`benchmarks/results/local-macos-2026-08-26-head-94f1307/`): PUT end-to-end dominated by Writer ack/handoff (~67%); publication ~14%; `put_batch` ≤32 already amortizes publication (+48% vs single PUT). Rejected wait-based adaptive publication on single-op PUT. Wire `GS_PHASE_GET(index_lookup)` in `PairReadGeneration::get` so phase builds attribute GET lookup cost (~68%).
 
 - Structural refactor (behavior-neutral, phase 0–2): document as-implemented mutation and

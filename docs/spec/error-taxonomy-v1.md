@@ -139,6 +139,26 @@ rejected before Store entry after sticky stamps `resource_exhausted` (wire `OVER
 True admission rejects on the mutation path still set `ResponseStatus::overloaded` directly
 (without going through `ErrorCode::unavailable`).
 
+## 5.1 Internal Writer causes (wire mapping frozen)
+
+Structural refactor may tag internal mutation causes for diagnostics. Wire polarity remains
+centralized:
+
+| Internal situation | Authoritative rewrite | Wire |
+| --- | --- | --- |
+| Known-not-committed (never linearized) | `rewrite_known_not_committed_wire_error` → keep reject codes or `resource_exhausted` | `OVERLOADED` (or NOT_FOUND / INVALID_REQUEST) |
+| Post-commit / indeterminate / sticky | force `unavailable` before queue_response | `INTERNAL_ERROR` |
+| Pre-Store expire / fail-closed never-entered | `resource_exhausted` | `OVERLOADED` |
+
+Iron rules (unchanged by Phase 6):
+
+- `OVERLOADED` ⇔ known-not-committed for mutation ACKs;
+- post-commit visibility/publication failure → `unavailable` / wire `INTERNAL_ERROR`;
+- never demote `unavailable` through `rewrite_known_not_committed_wire_error`.
+
+Implementation: `mutation_execution.hpp` (`rewrite_known_not_committed_wire_error`,
+`classify_volatile_mutation_error`) + `reactor_detail::response_status`.
+
 ## 6. Residual gaps
 
 - Transport / deadline / local-validation vectors beyond the shared fixture remain covered by

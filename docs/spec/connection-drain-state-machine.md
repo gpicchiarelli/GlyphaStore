@@ -6,9 +6,10 @@ Requirement: `GS-PROTO-WIRE-001`
 
 # Connection drain state machine (as implemented)
 
-Maps the **current** Reactor connection lifecycle. There is no enum in code yet; lifecycle is the
-product of flags on `Reactor::Connection`, buffer occupancy, and Reactor/mesh shutdown bits.
-Structural extraction must preserve every drain/ACK rule below.
+Maps the **current** Reactor connection lifecycle. Typed helpers live in
+`connection_lifecycle.hpp`; connection flags on `Reactor::Connection` remain the
+storage until a later migration. Structural extraction must preserve every drain/ACK
+rule below.
 
 Narrative companion: [docs/architecture/server-model.md](../architecture/server-model.md),
 [docs/operations/graceful-drain-and-overload.md](../operations/graceful-drain-and-overload.md).
@@ -51,6 +52,9 @@ Close-when-drained predicates appear in `read_ready`, `write_ready`, hangup hand
 - hangup must not hard-close while decided bytes remain.
 
 Target: one `decide_connection_action(snapshot)` used by all I/O paths.
+
+**Implemented:** `include/glyphastore/server/connection_lifecycle.hpp` + Reactor
+`read_ready` / `write_ready` / hangup use `connection_action_for(...)` (same predicates).
 
 ## 4. Decided output (ACK object)
 

@@ -120,12 +120,14 @@ Volatile: Store append success is not ACK until `generation_published`. Throw af
 | Module | Responsibility |
 | --- | --- |
 | `mutation_state` | Typed stages + legal transitions |
-| `mutation_execution` | Store put/erase / volatile publish |
-| `mutation_batch` | FIFO, chunking, coalesce, group mutate |
-| `publication_coordinator` | Incremental publish, drain snapshot, epochs |
+| `mutation_execution` | Wire rewrite + durable single-op retry loop |
+| `mutation_batch` | FIFO key-dedup sub-batch + ≤32 publication chunk cap |
+| `publication_coordinator` | `publish_read_generation`, `install_writer_generation` |
 | `mutation_recovery` | Catch → `plan_sync_durable_exception_*` (sync durable single-op wired) |
 | `completion_policy` | `decide_completion` + `status_from_completion` / wire codes |
-| `fail_closed_state` | Sticky arm, expire remaining, reject admit |
+| `fail_closed_state` | Sticky arm (`pair_only` / `pair_and_store`), expire remaining, lane wake |
+| `lane_state` | By-value `AsyncLaneState` / `SyncLaneState` / `GenerationState` / `MergeState` / `ReclamationState` / `LaneMetrics` |
+| `connection_lifecycle` | `decide_connection_action`, `DecidedOutput`, Reactor drain predicates |
 
 ## 7. Related tests (golden lock)
 
@@ -134,3 +136,6 @@ Volatile: Store append success is not ACK until `generation_published`. Throw af
 - `tests/quality/allocation_fault_tests.cpp` — ACK-after-publish catch paths
 - `tests/unit/mutation_state_tests.cpp` — transition table + completion characterization
 - `tests/unit/completion_policy_recovery_tests.cpp` — Status mapping + sync durable exception plans
+- `tests/unit/mutation_extraction_tests.cpp` — batch / rewrite / fail-closed views
+- `tests/unit/connection_lifecycle_tests.cpp` — drain decide matrix
+- `tests/unit/mutation_lifecycle_property_tests.cpp` — OVERLOADED ⇔ not committed; decided completion sticky

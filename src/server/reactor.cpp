@@ -3,6 +3,7 @@
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/worker_routing.hpp"
+#include "glyphastore/server/connection_lifecycle.hpp"
 #include "glyphastore/server/peercred.hpp"
 #include "server/reactor_detail.hpp"
 #include "store/store_internal.hpp"
@@ -22,6 +23,29 @@
 #include <vector>
 
 namespace glyphastore::server {
+namespace {
+
+[[nodiscard]] auto drain_snapshot_of(const bool peer_read_closed, const bool close_after_flush,
+                                     const bool request_in_flight, const bool pending_output,
+                                     const bool residual_input) noexcept -> ConnectionDrainSnapshot {
+    return ConnectionDrainSnapshot{
+        .peer_read_closed = peer_read_closed,
+        .close_after_flush = close_after_flush,
+        .request_in_flight = request_in_flight,
+        .has_pending_output = pending_output,
+        .residual_input = residual_input,
+        .forced_close = false,
+    };
+}
+
+[[nodiscard]] auto connection_action_for(const bool peer_read_closed, const bool close_after_flush,
+                                         const bool request_in_flight, const bool pending_output,
+                                         const bool residual_input) noexcept -> ConnectionAction {
+    return decide_connection_action(drain_snapshot_of(peer_read_closed, close_after_flush, request_in_flight,
+                                                      pending_output, residual_input));
+}
+
+} // namespace
 
 Reactor::Reactor(ReactorConfig config, const std::size_t executor_id, TcpListener cleartext_listener,
                  TcpListener tls_listener, UnixListener unix_listener, Poller poller, Wakeup wakeup,
@@ -123,12 +147,16 @@ auto Reactor::has_pending_output(const Connection& connection) noexcept -> bool 
 }
 
 auto Reactor::pending_output_bytes(const Connection& connection) noexcept -> std::size_t {
-    auto pending = connection.output.size() - connection.output_offset;
+    DecidedOutput decided{
+        .contiguous_bytes = connection.output.size() - connection.output_offset,
+    };
     if (connection.output_lease) {
-        pending += connection.output_lease->header.size() - connection.output_lease->header_offset;
-        pending += connection.output_lease->value.bytes.size() - connection.output_lease->value_offset;
+        decided.lease_header_remaining =
+            connection.output_lease->header.size() - connection.output_lease->header_offset;
+        decided.lease_value_remaining =
+            connection.output_lease->value.bytes.size() - connection.output_lease->value_offset;
     }
-    return pending;
+    return decided.total_bytes();
 }
 
 auto Reactor::acquire_cold_read_lease(const std::uint64_t epoch) noexcept -> bool {
@@ -687,8 +715,10 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
             if (received->kind == TlsIoKind::closed) {
                 current->peer_read_closed = true;
-                if (!has_pending_output(*current) && !current->request_in_flight &&
-                    current->input_offset >= current->input.size()) {
+                if (connection_action_for(current->peer_read_closed, current->close_after_flush,
+                                           current->request_in_flight, has_pending_output(*current),
+                                           current->input_offset < current->input.size()) ==
+                    ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
                 }
@@ -701,8 +731,10 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                 received_size = static_cast<std::size_t>(received);
             } else if (received == 0) {
                 current->peer_read_closed = true;
-                if (!has_pending_output(*current) && !current->request_in_flight &&
-                    current->input_offset >= current->input.size()) {
+                if (connection_action_for(current->peer_read_closed, current->close_after_flush,
+                                           current->request_in_flight, has_pending_output(*current),
+                                           current->input_offset < current->input.size()) ==
+                    ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
                 }
@@ -1027,7 +1059,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         }
 
         touch_activity(*current, std::chrono::steady_clock::now());
-        if (current->close_after_flush && !has_pending_output(*current) && !current->request_in_flight) {
+        if (connection_action_for(current->peer_read_closed, current->close_after_flush,
+                                           current->request_in_flight, has_pending_output(*current),
+                                           current->input_offset < current->input.size()) ==
+                    ConnectionAction::close_now) {
             close_connection(token);
             return {};
         }
@@ -1057,8 +1092,11 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 continue;
             }
         }
-        if (current->peer_read_closed && !current->request_in_flight && !has_pending_output(*current) &&
-            current->input_offset >= current->input.size()) {
+        if (current->peer_read_closed &&
+            connection_action_for(current->peer_read_closed, current->close_after_flush,
+                                           current->request_in_flight, has_pending_output(*current),
+                                           current->input_offset < current->input.size()) ==
+                    ConnectionAction::close_now) {
             close_connection(token);
             return {};
         }
@@ -1150,8 +1188,10 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         // discard decided bytes left after a partial writable flush (EAGAIN).
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (!has_pending_output(*current) && !current->request_in_flight &&
-                current->input_offset >= current->input.size()) {
+            if (connection_action_for(current->peer_read_closed, current->close_after_flush,
+                                           current->request_in_flight, has_pending_output(*current),
+                                           current->input_offset < current->input.size()) ==
+                    ConnectionAction::close_now) {
                 close_connection(token);
             } else if (auto drained = write_ready(token); !drained) {
                 close_connection(token);
