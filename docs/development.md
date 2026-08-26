@@ -28,6 +28,11 @@ inconclusive. Only disjoint ranges become improvement or regression candidates.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
 metadata, count mismatches, invalid numbers, and inconsistent statistical ordering fail the report.
 
+To avoid spending hosted-runner time on unrelated changes, the push trigger is limited to engine,
+server, public headers, benchmark sources, CMake configuration, the canonical version, and the
+report generator. Documentation, artwork, and non-C++ SDK-only changes rely on their focused CI;
+the weekly and manual full-benchmark safety nets remain unconditional.
+
 The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
 depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined
 response latency. Keeping latency instrumentation separate avoids charging a clock read to every

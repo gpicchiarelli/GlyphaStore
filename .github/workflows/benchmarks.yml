@@ -3,6 +3,16 @@ name: Benchmarks
 on:
   push:
     branches: [main]
+    paths:
+      - ".github/workflows/benchmarks.yml"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "VERSION"
+      - "cmake/**"
+      - "include/**"
+      - "src/**"
+      - "benchmarks/**"
+      - "scripts/benchmark_report.py"
   workflow_dispatch:
   schedule:
     - cron: "23 4 * * 1"

@@ -19,6 +19,7 @@ requirements:
   prove:
   - benchmarks
   - scripts/tests/test_benchmark_report.py
+  - scripts/tests/test_benchmark_workflow.py
   - scripts/tests/test_sdk_benchmark_report.py
   piattaforme:
   - linux-x86_64
