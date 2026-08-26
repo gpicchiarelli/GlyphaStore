@@ -64,6 +64,7 @@ jobs:
       - name: Checksums + required SPDX SBOM
         env:
           SYFT_REQUIRED: "1"
+          SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
       - name: Verify wheel/sdist/gem reproducibility
         if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/')
@@ -103,6 +104,7 @@ jobs:
           name: sdk-supply-chain-${{ github.sha }}
           path: |
             dist/sdk-artifacts/SHA256SUMS
+            dist/sdk-artifacts/sdk-release-index.json
             dist/sdk-artifacts/*.spdx.json
             dist/sdk-artifacts/*.cosign.bundle
           if-no-files-found: error
@@ -121,6 +123,7 @@ jobs:
             dist/sdk-artifacts/*.gem
             dist/sdk-artifacts/*.tar.gz
             dist/sdk-artifacts/*package-info.txt
+            dist/sdk-artifacts/sdk-release-index.json
       - name: Verify SDK artifact attestations
         # Same gate as actions/attest: tags + public (or private opt-in). Fail-closed.
         if: |

@@ -12,6 +12,7 @@ The bundle contains:
 - `run.log`: complete combined output from package installation, external builds and interop;
 - `manifest.env`: result, exact commit, project/wire versions, runner identity and covered profile;
 - `package-SHA256SUMS`: checksums produced before installing the SDK artifacts;
+- `sdk-release-index.json`: exact client/role mapping for those checksummed artifacts;
 - `toolchains.txt`: compiler and language runtime identities.
 
 Failed `main` runs upload the same shape with `result=failed` before the test step returns failure.

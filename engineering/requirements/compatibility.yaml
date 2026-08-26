@@ -46,10 +46,13 @@ requirements:
   - engineering/compatibility/n-n1-matrix.yaml
   implementazione:
   - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/compatibility/sdk-release-contract.json
   - engineering/tools/validate_compat_matrix.py
+  - engineering/tools/write_sdk_release_index.py
   - scripts/package-release-claim.sh
   prove:
   - engineering/compatibility/n-n1-matrix.yaml
+  - engineering/compatibility/sdk-release-contract.json
   - engineering/tools/validate_compat_matrix.py
   - engineering/claims
   piattaforme:

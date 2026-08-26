@@ -74,6 +74,11 @@ Source-tree interoperability is implemented. Still required:
 - publish checksums, provenance and SBOMs with tagged artifacts;
 - record registry publication state rather than saying “install from registry” unconditionally.
 
+Each SDK bundle now carries a checksummed `sdk-release-index.json` with exact client roles,
+distribution models and protocol/semantics versions. This makes a future N−1 artifact selectable
+without filename heuristics; the index deliberately records that compatibility evidence is not
+inferred from catalog presence.
+
 ### 4. Comparable performance evidence
 
 `scripts/benchmark_sdk_clients.sh` is the comparison harness. A valid comparison fixes server

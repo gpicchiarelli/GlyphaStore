@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import re
 import sys
 from pathlib import Path
@@ -119,6 +120,52 @@ def main() -> int:
     doc = yaml.safe_load(path.read_text(encoding="utf-8"))
     errors: list[str] = []
 
+    sdk_contract_path = root / "engineering/compatibility/sdk-release-contract.json"
+    try:
+        sdk_contract = json.loads(sdk_contract_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        errors.append(f"invalid SDK release contract: {exc}")
+        sdk_contract = {}
+    for key in ("wire_protocol", "persistence_format"):
+        if sdk_contract.get(key) != doc.get(key):
+            errors.append(
+                f"SDK release contract {key}={sdk_contract.get(key)!r} "
+                f"does not match matrix {doc.get(key)!r}"
+            )
+    if sdk_contract.get("schema_version") != 1:
+        errors.append("SDK release contract schema_version must be 1")
+    if sdk_contract.get("client_semantics") != 1:
+        errors.append("SDK release contract client_semantics must be 1")
+    clients = sdk_contract.get("clients", {})
+    expected_clients = {"cpp", "python", "perl", "ruby", "go", "erlang"}
+    if not isinstance(clients, dict):
+        errors.append("SDK release contract clients must be an object")
+        clients = {}
+    if set(clients) != expected_clients:
+        errors.append(f"SDK release contract clients must be {sorted(expected_clients)}")
+    artifact_names: set[str] = set()
+    for client, spec in clients.items():
+        if not isinstance(spec, dict):
+            errors.append(f"SDK release contract {client} must be an object")
+            continue
+        if not spec.get("distribution"):
+            errors.append(f"SDK release contract {client} has no distribution")
+        required_artifacts = spec.get("required_artifacts", [])
+        if not isinstance(required_artifacts, list):
+            errors.append(f"SDK release contract {client} required_artifacts must be a list")
+            continue
+        for artifact in required_artifacts:
+            if not isinstance(artifact, dict):
+                errors.append(f"SDK release contract {client} artifact must be an object")
+                continue
+            name = artifact.get("name", "")
+            role = artifact.get("role", "")
+            if not name or not role or "{version}" not in name:
+                errors.append(f"SDK release contract {client} has invalid artifact template")
+            if name in artifact_names:
+                errors.append(f"duplicate SDK artifact template: {name}")
+            artifact_names.add(name)
+
     for section in ("store_open", "wire", "abi"):
         if section not in doc:
             errors.append(f"missing section {section}")
@@ -155,6 +202,16 @@ def main() -> int:
     script = policy.get("packaging_script")
     if script and not (root / script).is_file():
         errors.append(f"missing packaging script {script}")
+
+    sdk_policy = doc.get("sdk_artifact_policy", {})
+    if sdk_policy.get("compatibility_evidence") != "not-inferred-from-index":
+        errors.append("sdk_artifact_policy must not infer compatibility from the index")
+    if sdk_policy.get("generated_index") != "sdk-release-index.json":
+        errors.append("sdk_artifact_policy.generated_index must be sdk-release-index.json")
+    for key in ("contract", "index_writer"):
+        ref = sdk_policy.get(key)
+        if not isinstance(ref, str) or not (root / ref).is_file():
+            errors.append(f"sdk_artifact_policy.{key} must reference an existing file")
 
     released_root = root / "tests" / "fixtures" / "released"
     if released_root.is_dir():

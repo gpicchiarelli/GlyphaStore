@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Write SHA-256 checksums (and optional SBOM) for packaged SDK artifacts.
+# Write SHA-256 checksums, a release index, and optional SBOMs for packaged SDK artifacts.
 # Set SYFT_REQUIRED=1 to fail closed when syft is missing (CI supply-chain gate).
 set -euo pipefail
 
@@ -59,6 +59,12 @@ shopt -u nullglob
 
 if [[ -s "$manifest" ]]; then
   sort -u "$manifest" -o "$manifest"
+fi
+
+if [[ "${SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE:-0}" == "1" ]]; then
+  python3 "$root/engineering/tools/write_sdk_release_index.py" "$outdir" --require-complete
+else
+  python3 "$root/engineering/tools/write_sdk_release_index.py" "$outdir"
 fi
 
 syft_available=0

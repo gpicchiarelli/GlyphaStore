@@ -53,6 +53,15 @@ else
   echo "packaged SDK checksum manifest missing: $checksums" >&2
   exit 1
 fi
+index="$root/dist/sdk-artifacts/sdk-release-index.json"
+if [[ -f "$index" ]]; then
+  python3 "$root/engineering/tools/write_sdk_release_index.py" \
+    "$root/dist/sdk-artifacts" --verify-only --require-complete >/dev/null
+  cp "$index" "$out/sdk-release-index.json"
+else
+  echo "SDK release index missing: $index" >&2
+  exit 1
+fi
 
 {
   "${CMAKE:-cmake}" --version 2>/dev/null | head -n 1 || true

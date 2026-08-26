@@ -68,6 +68,7 @@ jobs:
       - name: Checksums + SPDX SBOM
         env:
           SYFT_REQUIRED: "1"
+          SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
       - name: Install Cosign
         if: startsWith(github.ref, 'refs/tags/')
@@ -98,6 +99,7 @@ jobs:
             Architectural-prototype release artifacts for GlyphaStore.
 
             - SDK packages, `SHA256SUMS`, and SPDX SBOMs are attached.
+            - `sdk-release-index.json` maps exact package digests to SDK roles and contracts.
             - Cosign keyless bundles are attached on tag pushes when signing succeeds.
             - This release does **not** claim production readiness, physical E3/E4
               power-loss certification, or absolute performance budgets.

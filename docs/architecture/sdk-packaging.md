@@ -63,7 +63,9 @@ build its C++ peer strictly through `GlyphaStore::client` from an isolated insta
 3. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
    (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain
-   distinct on case-insensitive filesystems)
+   distinct on case-insensitive filesystems). The generated `sdk-release-index.json` binds every
+   package name and digest to its SDK role and wire/client
+   contract. It is an artifact catalog, not evidence that two different releases interoperate.
 4. On tagged releases the supply-chain workflow keyless-signs blobs with Cosign/Sigstore
    (`.cosign.bundle` next to each artifact + `SHA256SUMS`). Optional project GPG remains
    operator-owned.

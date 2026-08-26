@@ -176,6 +176,8 @@ jobs:
       - name: Package and verify Erlang client
         run: ./scripts/package-erlang-client.sh
       - name: Checksum packaged SDK artifacts
+        env:
+          SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
       - name: Build daemon and interop client
         env:
