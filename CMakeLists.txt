@@ -177,6 +177,13 @@ install(
     COMPONENT Development
 )
 
+set(GLYPHASTORE_LTO_ENABLED FALSE)
+set(GLYPHASTORE_LTO_LINK_OPTIONS "")
+if(GLYPHASTORE_ENABLE_LTO AND GLYPHASTORE_IPO_SUPPORTED)
+    set(GLYPHASTORE_LTO_ENABLED TRUE)
+    set(GLYPHASTORE_LTO_LINK_OPTIONS "${GLYPHASTORE_IPO_LINK_OPTIONS}")
+endif()
+
 configure_package_config_file(
     cmake/GlyphaStoreConfig.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/GlyphaStoreConfig.cmake"

@@ -46,6 +46,23 @@ class CiWorkflowTests(unittest.TestCase):
         )
         self.assertNotIn('$(dirname "$daemon")/..', installed)
 
+    def test_lto_package_propagates_compatible_link_requirements(self) -> None:
+        config = (ROOT / "cmake/GlyphaStoreConfig.cmake.in").read_text(
+            encoding="utf-8"
+        )
+        optimizations = (ROOT / "cmake/ToolchainOptimizations.cmake").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn('set(GLYPHASTORE_BUILT_WITH_LTO', config)
+        self.assertIn("check_ipo_supported", config)
+        self.assertIn(
+            'CMAKE_CXX_COMPILER_VERSION}" VERSION_EQUAL',
+            config,
+        )
+        self.assertIn("INTERFACE_LINK_OPTIONS", config)
+        self.assertIn("GLYPHASTORE_IPO_LINK_OPTIONS", optimizations)
+
     def test_supply_chain_retains_primary_archives_for_cross_builder_diagnostics(self) -> None:
         workflow = (ROOT / ".github/workflows/supply-chain.yml").read_text(encoding="utf-8")
         upload = workflow[workflow.index("Retain SDK artifacts, checksums") :]

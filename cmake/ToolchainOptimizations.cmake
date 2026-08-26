@@ -78,6 +78,11 @@ function(glyphastore_enable_ipo target)
     endif()
 
     if(GLYPHASTORE_IPO_SUPPORTED)
+        if(NOT CMAKE_CXX_COMPILE_OPTIONS_IPO)
+            message(FATAL_ERROR "IPO is supported but CMake did not expose its link options")
+        endif()
+        set(GLYPHASTORE_IPO_LINK_OPTIONS "${CMAKE_CXX_COMPILE_OPTIONS_IPO}"
+            CACHE INTERNAL "Link options required by installed LTO archives" FORCE)
         set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     endif()
 endfunction()
