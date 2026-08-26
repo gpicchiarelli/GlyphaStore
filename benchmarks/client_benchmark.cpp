@@ -114,8 +114,7 @@ struct Workload {
     return options;
 }
 
-[[nodiscard]] auto make_workload(glyphastore::client::Client& client, const Options& options)
-    -> Workload {
+[[nodiscard]] auto make_workload(glyphastore::client::Client& client, const Options& options) -> Workload {
     Workload workload;
     workload.keys.resize(options.workers);
     workload.values.resize(options.workers);
@@ -146,8 +145,7 @@ struct Workload {
     for (std::size_t worker = 0; worker < options.workers; ++worker) {
         auto& worker_batches = workload.batches[worker];
         const auto pair_count = workload.keys[worker].size();
-        worker_batches.reserve(pair_count / pairs_per_batch +
-                               (pair_count % pairs_per_batch == 0 ? 0U : 1U));
+        worker_batches.reserve(pair_count / pairs_per_batch + (pair_count % pairs_per_batch == 0 ? 0U : 1U));
         for (std::size_t begin = 0; begin < pair_count; begin += pairs_per_batch) {
             const auto end = std::min(pair_count, begin + pairs_per_batch);
             auto& batch = worker_batches.emplace_back();
@@ -187,8 +185,7 @@ struct Workload {
     return responses && validate(requests, *responses);
 }
 
-[[nodiscard]] auto run_sequential(glyphastore::client::Client& client, const Workload& workload)
-    -> double {
+[[nodiscard]] auto run_sequential(glyphastore::client::Client& client, const Workload& workload) -> double {
     const auto started = Clock::now();
     for (const auto& worker_batches : workload.batches) {
         for (const auto& batch : worker_batches) {
@@ -200,8 +197,7 @@ struct Workload {
     return std::chrono::duration<double>{Clock::now() - started}.count();
 }
 
-[[nodiscard]] auto run_concurrent(glyphastore::client::Client& client, const Workload& workload)
-    -> double {
+[[nodiscard]] auto run_concurrent(glyphastore::client::Client& client, const Workload& workload) -> double {
     std::barrier start{static_cast<std::ptrdiff_t>(workload.batches.size() + 1U)};
     std::atomic_bool failed{};
     std::vector<std::thread> threads;
@@ -296,10 +292,10 @@ int main(const int argc, char** argv) {
         rates.push_back(static_cast<double>(operation_count) / sample);
     }
     const auto name = options.execution == "batch" ? "cpp_client_batch_read_after_write"
-                                                    : "cpp_client_pipeline_read_after_write";
+                                                   : "cpp_client_pipeline_read_after_write";
     std::cout << "# glyphastore C++ client benchmark\n"
-              << "# sdk_version=" << GLYPHASTORE_SDK_VERSION << " runtime=native execution="
-              << options.execution << " workers=" << options.workers
+              << "# sdk_version=" << GLYPHASTORE_SDK_VERSION
+              << " runtime=native execution=" << options.execution << " workers=" << options.workers
               << " pipeline_pairs=" << options.pipeline << " operations=" << operation_count << '\n'
               << "name=" << name << " sdk_version=" << GLYPHASTORE_SDK_VERSION
               << " runtime=native execution=" << options.execution << " workers=" << options.workers
