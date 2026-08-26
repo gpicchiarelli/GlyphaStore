@@ -68,9 +68,9 @@ gitignored and must not be cited as durable repository documentation.
 ## Perl SDK: where further speed comes from
 
 The Perl client already aggregates a Worker pipeline, buffers reads and overlaps Worker sockets in
-one `IO::Select` loop. It still creates public request/result hashes, assembles encoded frames per
-call and materializes owned GET scalars. Those costs are candidates for profiling, not presumed
-single-digit details.
+one `IO::Select` loop. Pipeline encoding now appends validated header/key/value fragments directly
+to the aggregate scalar; public request/result hashes and owned GET scalars remain. Those costs are
+candidates for profiling, not presumed single-digit details.
 
 | Priority | Action | Effect |
 | --- | --- | --- |
@@ -118,6 +118,14 @@ measured about 452 k versus 479 k hashes/s (roughly -6%). The first three candid
 roughly 2–4%; flattened metadata varied from a small gain to a 4.3% regression when run order was
 reversed. Perl's existing scalar copy-on-write, incremental concatenation, byte unpacking, and small
 array representation were cheaper or more stable than the alternatives in this profile.
+
+A later fragment-assembly pass removed a different cost than the rejected join-at-end candidate:
+the client keeps Perl's efficient incremental aggregate scalar, but no longer constructs a complete
+temporary frame containing a copied key and value for every request. An isolated Perl 5.44 A/B at
+pipeline 128 measured 346.7 to 318.5 microseconds per encoded batch with 64-byte values and 352.5 to
+323.9 microseconds with 1 KiB values (about +9% in the encoding kernel). A current one-Worker
+end-to-end sample at pipeline 128 measured 86.3 k ops/s; without an alternating server A/B that
+figure is a post-change observation, not an attributed throughput gain or release capacity claim.
 
 ## Lab hot-path evidence
 

@@ -167,6 +167,20 @@ sub _encode_request {
     return encode_request_parts($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker);
 }
 
+sub _encode_request_fragments {
+    my ($self, $opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
+    $key //= '';
+    $value //= '';
+    $expire_at_ns //= 0;
+    $target_worker //= NO_WORKER;
+    if ($expire_at_ns eq '0' || $expire_at_ns == 0) {
+        return GlyphaStore::Protocol::request_fragments_hot_internal($opcode, $request_id, $key,
+            $value, 0, $target_worker);
+    }
+    return GlyphaStore::Protocol::request_fragments_parts_internal($opcode, $request_id, $key,
+        $value, $expire_at_ns, $target_worker);
+}
+
 sub _reset_connection {
     my ($self, $connection) = @_;
     if (my $socket = delete $connection->{socket}) {
@@ -1121,15 +1135,17 @@ sub _encode_pipeline_batch {
             if ($name eq 'get' || $name eq 'erase')
             && (length($value) || ($expire_at_ns ne '0' && $expire_at_ns != 0));
         my $request_id = $self->_next_request_id;
-        my $frame = $self->_encode_request($opcode, $request_id, $key, $value, $expire_at_ns);
-        my $frame_len = length($frame);
+        my ($header, $wire_key, $wire_value, $frame_len)
+            =$self->_encode_request_fragments($opcode, $request_id, $key, $value, $expire_at_ns);
         _throw('invalid_argument', 'pipeline request exceeds the configured frame limit')
             if $frame_len > $max_frame;
         _throw('invalid_argument', 'pipeline exceeds the configured aggregate byte limit')
             if $frame_len > $max_pipeline - $output_size;
         push @normalized, $name;
         push @metadata, [$request_id, $output_size];
-        $output .= $frame;
+        $output .= $header;
+        $output .= $wire_key;
+        $output .= $wire_value;
         $output_size += $frame_len;
     }
     return {

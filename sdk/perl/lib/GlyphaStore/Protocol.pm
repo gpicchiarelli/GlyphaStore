@@ -114,6 +114,20 @@ sub encode_request_parts {
     return _pack_request($opcode, $rid, $key, $value, $expire, $target_worker);
 }
 
+sub request_fragments_parts_internal {
+    my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
+    die "unknown protocol-v2 opcode\n"
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BACKUP;
+    $key   = _require_bytes($key, 'key');
+    $value = _require_bytes($value, 'value');
+    my $expire = _as_u64($expire_at_ns // 0, 'expire_at_ns');
+    my $rid    = _as_u64($request_id, 'request_id');
+    $target_worker = NO_WORKER unless defined $target_worker;
+    die "target_worker is outside unsigned 32-bit range\n"
+        if $target_worker < 0 || $target_worker > NO_WORKER;
+    return _request_fragments($opcode, $rid, $key, $value, $expire, $target_worker);
+}
+
 # Client hot path: request_id / expire_at_ns are already native UVs in range.
 sub encode_request_hot {
     my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
@@ -124,6 +138,17 @@ sub encode_request_hot {
     $expire_at_ns = 0 unless defined $expire_at_ns;
     $target_worker = NO_WORKER unless defined $target_worker;
     return _pack_request($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker);
+}
+
+sub request_fragments_hot_internal {
+    my ($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker) = @_;
+    die "unknown protocol-v2 opcode\n"
+        if !defined($opcode) || $opcode < OP_INIT || $opcode > OP_BACKUP;
+    $key   = _require_bytes($key, 'key');
+    $value = _require_bytes($value, 'value');
+    $expire_at_ns = 0 unless defined $expire_at_ns;
+    $target_worker = NO_WORKER unless defined $target_worker;
+    return _request_fragments($opcode, $request_id, $key, $value, $expire_at_ns, $target_worker);
 }
 
 sub _validate_data_request_fields {
@@ -180,17 +205,23 @@ sub _validate_request_fields {
 
 sub _pack_request {
     my ($opcode, $rid, $key, $value, $expire, $target_worker) = @_;
+    my ($header, $wire_key, $wire_value)
+        =_request_fragments($opcode, $rid, $key, $value, $expire, $target_worker);
+    return $header . $wire_key . $wire_value;
+}
+
+sub _request_fragments {
+    my ($opcode, $rid, $key, $value, $expire, $target_worker) = @_;
     my $key_len = length($key);
     my $value_len = length($value);
     _validate_request_fields($opcode, $key_len, $value_len, $expire, $target_worker);
 
     my $frame_size = REQUEST_HEADER_BYTES + $key_len + $value_len;
     die "request exceeds the protocol frame limit\n" if $frame_size > MAX_FRAME_BYTES;
-    return pack($REQUEST_FORMAT,
+    my $header = pack($REQUEST_FORMAT,
         $frame_size, PROTOCOL_VERSION, $opcode, 0,$rid,$key_len, $value_len,$expire,
-        $target_worker, 0,)
-        . $key
-        . $value;
+        $target_worker, 0,);
+    return ($header, $key, $value, $frame_size);
 }
 
 sub encode_request {

@@ -1,5 +1,7 @@
 Revision history for Perl distribution GlyphaStore
 
+        - Assemble pipelines from validated request fragments, avoiding one
+          complete temporary frame and payload copy per request.
         - Add installed-tarball secure-profile interop with a fail-closed check
           that GlyphaStore::Client resolves from the isolated install prefix.
 
