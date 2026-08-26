@@ -4,8 +4,19 @@ use strict;
 use warnings;
 use FindBin;
 use Getopt::Long qw(GetOptions);
-use lib "$FindBin::Bin/../sdk/perl/lib";
+use Cwd qw(abs_path);
+BEGIN {
+    unshift @INC, "$FindBin::Bin/../sdk/perl/lib"
+      if ($ENV{GLYPHASTORE_INTEROP_USE_INSTALLED} // '0') ne '1';
+}
 use GlyphaStore::Client;
+
+if (($ENV{GLYPHASTORE_INTEROP_USE_INSTALLED} // '0') eq '1') {
+    my $source_root = abs_path($ENV{GLYPHASTORE_SOURCE_ROOT} // '');
+    my $loaded_from = abs_path($INC{'GlyphaStore/Client.pm'} // '');
+    die "installed-artifact mode loaded Perl SDK from source: $loaded_from\n"
+      if !$source_root || !$loaded_from || index($loaded_from, "$source_root/") == 0;
+}
 
 sub parse_hex {
     my ($text) = @_;

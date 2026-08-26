@@ -48,6 +48,12 @@ so a broken client TLS configuration cannot satisfy the negative assertion. Rema
 installed-artifact secure-profile evidence.
 Documentation must not call the SDK security train complete before that matrix passes.
 
+The harness now has a fail-closed `GLYPHASTORE_INTEROP_USE_INSTALLED=1` mode: C++ and Go binaries
+inside the checkout are refused, source load paths are not injected, and Python/Perl/Ruby/Erlang
+helpers verify that their loaded module is outside the repository. This is the isolation mechanism,
+not yet retained installed-artifact evidence; package orchestration and CI artifact retention remain
+open.
+
 ### 3. Released-artifact compatibility
 
 Source-tree interoperability is implemented. Still required:

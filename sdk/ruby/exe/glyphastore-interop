@@ -4,6 +4,15 @@
 require "optparse"
 require "glypha_store"
 
+if ENV["GLYPHASTORE_INTEROP_USE_INSTALLED"] == "1"
+  source_root = File.expand_path(ENV.fetch("GLYPHASTORE_SOURCE_ROOT"))
+  loaded_from = $LOADED_FEATURES.find { |path| path.end_with?("/glypha_store.rb") }
+  abort("installed-artifact mode cannot identify the loaded Ruby SDK") if loaded_from.nil?
+  if File.expand_path(loaded_from).start_with?("#{source_root}/")
+    abort("installed-artifact mode loaded Ruby SDK from source: #{loaded_from}")
+  end
+end
+
 options = {
   host: "127.0.0.1",
   key_hex: "",

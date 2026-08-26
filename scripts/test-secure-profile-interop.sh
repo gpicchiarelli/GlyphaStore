@@ -8,7 +8,10 @@
 # Usage:
 #   ./scripts/test-secure-profile-interop.sh
 # Env:
-#   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT / GLYPHASTORE_GO_INTEROP
+#   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT
+#   GLYPHASTORE_PYTHON_INTEROP / GLYPHASTORE_PERL_INTEROP / GLYPHASTORE_GO_INTEROP
+#   GLYPHASTORE_RUBY_INTEROP / GLYPHASTORE_ERLANG_INTEROP
+#   GLYPHASTORE_INTEROP_USE_INSTALLED=1 (forbid SDK libraries/binaries from this source tree)
 #   INTEROP_WORKER_HASH_SEED (default 13957458623937596)
 #   INTEROP_SECURE_WORKERS (default 2)
 #   SECURE_INTEROP_REQUIRE_ALL=1 (fail instead of skipping Perl/Ruby/Erlang)
@@ -23,6 +26,13 @@ cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
 hash_seed="${INTEROP_WORKER_HASH_SEED:-13957458623937596}"
 workers="${INTEROP_SECURE_WORKERS:-2}"
 require_all="${SECURE_INTEROP_REQUIRE_ALL:-0}"
+use_installed="${GLYPHASTORE_INTEROP_USE_INSTALLED:-0}"
+if [[ "$use_installed" != "0" && "$use_installed" != "1" ]]; then
+  echo "GLYPHASTORE_INTEROP_USE_INSTALLED must be 0 or 1" >&2
+  exit 1
+fi
+export GLYPHASTORE_INTEROP_USE_INSTALLED="$use_installed"
+export GLYPHASTORE_SOURCE_ROOT="$root"
 # Principal extracted by daemon: URI SAN → DNS SAN → CN (secure-profile.md §2).
 client_principal="interop.client"
 
@@ -42,7 +52,7 @@ if [[ -z "$daemon" ]]; then
     fi
   done
 fi
-if [[ -z "$cpp_client" ]]; then
+if [[ -z "$cpp_client" && "$use_installed" != "1" ]]; then
   daemon_dir="$(dirname "${daemon:-.}")"
   if [[ -n "$daemon" && -x "$daemon_dir/glyphastore_interop_client" ]]; then
     cpp_client="$daemon_dir/glyphastore_interop_client"
@@ -54,6 +64,10 @@ if [[ -z "$cpp_client" ]]; then
       fi
     done
   fi
+fi
+if [[ "$use_installed" == "1" && -z "$cpp_client" ]]; then
+  echo "installed-artifact mode requires GLYPHASTORE_INTEROP_CLIENT" >&2
+  exit 1
 fi
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
@@ -73,19 +87,43 @@ if ! "$daemon" --help 2>&1 | grep -q -- '--tls-client-ca'; then
   exit 1
 fi
 
-export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
-export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
-py_helper="$root/scripts/sdk_interop_py.py"
-pl_helper="$root/scripts/sdk_interop_perl.pl"
-ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
-erlang_helper="$root/sdk/erlang/scripts/glyphastore-interop.escript"
+if [[ "$use_installed" != "1" ]]; then
+  export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
+  export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
+fi
+py_helper="${GLYPHASTORE_PYTHON_INTEROP:-$root/scripts/sdk_interop_py.py}"
+pl_helper="${GLYPHASTORE_PERL_INTEROP:-$root/scripts/sdk_interop_perl.pl}"
+ruby_helper="${GLYPHASTORE_RUBY_INTEROP:-$root/sdk/ruby/exe/glyphastore-interop}"
+erlang_helper="${GLYPHASTORE_ERLANG_INTEROP:-$root/sdk/erlang/scripts/glyphastore-interop.escript}"
 go_helper="${GLYPHASTORE_GO_INTEROP:-}"
 if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
+  if [[ "$use_installed" == "1" ]]; then
+    echo "installed-artifact mode requires GLYPHASTORE_GO_INTEROP" >&2
+    exit 1
+  fi
   mkdir -p "$root/sdk/go/bin"
   (cd "$root/sdk/go" && "${GO:-go}" build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
   go_helper="$root/sdk/go/bin/glyphastore-interop"
 fi
-chmod +x "$py_helper" "$ruby_helper" "$erlang_helper" 2>/dev/null || true
+if [[ "$use_installed" == "1" ]]; then
+  for entry in "cpp:$cpp_client" "go:$go_helper"; do
+    sdk_name="${entry%%:*}"
+    sdk_path="${entry#*:}"
+    if [[ "$sdk_path" == "$root/"* ]]; then
+      echo "installed-artifact mode refuses source-tree $sdk_name binary: $sdk_path" >&2
+      exit 1
+    fi
+  done
+fi
+for helper in "$py_helper" "$pl_helper" "$ruby_helper" "$erlang_helper"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "missing SDK interop helper: $helper" >&2
+    exit 1
+  fi
+done
+if [[ "$use_installed" != "1" ]]; then
+  chmod +x "$py_helper" "$ruby_helper" "$erlang_helper" 2>/dev/null || true
+fi
 
 perl_ready=0
 if "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
@@ -105,14 +143,18 @@ fi
 if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
   "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
   ruby_ready=1
-  export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+  if [[ "$use_installed" != "1" ]]; then
+    export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+  fi
 else
   echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
   ruby_bin=""
 fi
 
 erlang_ready=0
-if command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+if [[ "$use_installed" == "1" ]] && command -v erl >/dev/null 2>&1 && command -v escript >/dev/null 2>&1; then
+  erlang_ready=1
+elif command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   if (cd "$root/sdk/erlang" && rebar3 compile >/dev/null 2>&1); then
     erlang_ready=1
   else
@@ -448,6 +490,12 @@ expect_overloaded() {
   esac
 }
 
+sdk_origin_mode="source-tree"
+if [[ "$use_installed" == "1" ]]; then
+  sdk_origin_mode="installed-artifact"
+fi
+echo "== SDK origin mode: $sdk_origin_mode =="
+
 run_revoked_put() {
   local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
   case "$sdk" in
@@ -631,4 +679,4 @@ for sdk in "${sdks[@]}"; do
   fi
 done
 
-echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"
+echo "secure-profile interop PASSED (origin=$sdk_origin_mode; mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"

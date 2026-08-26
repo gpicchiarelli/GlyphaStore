@@ -7,10 +7,18 @@ main(Args) ->
     run(parse_args(maps:new(), Args)).
 
 add_beam_path() ->
-    Script = escript:script_name(),
-    Root = filename:dirname(filename:dirname(Script)),
-    Beam = filename:join([Root, "_build", "default", "lib", "glyphastore", "ebin"]),
-    true = code:add_patha(Beam).
+    case os:getenv("GLYPHASTORE_INTEROP_USE_INSTALLED") of
+        "1" ->
+            {module, glyphastore_client} = code:ensure_loaded(glyphastore_client),
+            Loaded = filename:absname(code:which(glyphastore_client)),
+            SourceRoot = filename:absname(os:getenv("GLYPHASTORE_SOURCE_ROOT")),
+            false = lists:prefix(SourceRoot ++ "/", Loaded);
+        _ ->
+            Script = escript:script_name(),
+            Root = filename:dirname(filename:dirname(Script)),
+            Beam = filename:join([Root, "_build", "default", "lib", "glyphastore", "ebin"]),
+            true = code:add_patha(Beam)
+    end.
 
 parse_args(Opts, []) ->
     maps:merge(#{command => undefined, tls => false}, Opts);
