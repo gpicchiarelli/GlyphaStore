@@ -21,6 +21,9 @@ path = [
   "docs/**",
   "artwork/**",
   "sdk/**",
+  "abi/**",
+  "config/**",
+  "packaging/**",
   ".github/**",
   "LICENSES/**",
 ]
@@ -34,6 +37,7 @@ path = [
   "NOTICE",
   "THIRD_PARTY_NOTICES.md",
   "VERSION",
+  "ABI_VERSION",
   "README.md",
   "CHANGELOG.md",
   "CONTRIBUTING.md",
