@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import binascii
 import gzip
 import hashlib
 import io
@@ -101,10 +102,24 @@ def _canonical_data_tar(compressed: bytes, epoch: int) -> bytes:
 
 
 def _canonical_gzip(payload: bytes) -> bytes:
-    output = io.BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", compresslevel=9, fileobj=output, mtime=0) as stream:
-        stream.write(payload)
-    return output.getvalue()
+    # Emit RFC 1951 stored blocks directly. Their byte representation does not
+    # depend on the host zlib version, unlike ordinary DEFLATE compression.
+    output = bytearray(b"\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff")
+    offset = 0
+    while True:
+        chunk = payload[offset : offset + 65_535]
+        offset += len(chunk)
+        final = offset >= len(payload)
+        output.append(1 if final else 0)
+        length = len(chunk)
+        output.extend(length.to_bytes(2, "little"))
+        output.extend((length ^ 0xFFFF).to_bytes(2, "little"))
+        output.extend(chunk)
+        if final:
+            break
+    output.extend((binascii.crc32(payload) & 0xFFFFFFFF).to_bytes(4, "little"))
+    output.extend((len(payload) & 0xFFFFFFFF).to_bytes(4, "little"))
+    return bytes(output)
 
 
 def _checksums(metadata: bytes, data: bytes) -> bytes:

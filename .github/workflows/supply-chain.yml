@@ -98,13 +98,17 @@ jobs:
               --certificate-oidc-issuer "$issuer" \
               "$artifact"
           done < <(find . -maxdepth 1 -type f -name '*.cosign.bundle' -print0)
-      - name: Upload SHA256SUMS, SPDX, and cosign bundles
+      - name: Retain SDK artifacts, checksums, SPDX, and cosign bundles
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: sdk-supply-chain-${{ github.sha }}
           path: |
             dist/sdk-artifacts/SHA256SUMS
             dist/sdk-artifacts/sdk-release-index.json
+            dist/sdk-artifacts/*.whl
+            dist/sdk-artifacts/*.gem
+            dist/sdk-artifacts/*.tar.gz
+            dist/sdk-artifacts/*package-info.txt
             dist/sdk-artifacts/*.spdx.json
             dist/sdk-artifacts/*.cosign.bundle
           if-no-files-found: error
