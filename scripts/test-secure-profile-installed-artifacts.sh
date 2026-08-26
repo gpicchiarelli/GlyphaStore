@@ -22,7 +22,7 @@ if [[ -z "$daemon" || ! -x "$daemon" ]]; then
   exit 1
 fi
 if [[ -z "$cpp_artifact" ]]; then
-  cpp_artifact="$(cd "$(dirname "$daemon")/.." && pwd -P)"
+  cpp_artifact="$(cd "$(dirname "$daemon")" && pwd -P)"
 fi
 if [[ ! -d "$cpp_artifact" ]]; then
   echo "GLYPHASTORE_CPP_PREFIX/GLYPHASTORE_CPP_BUILD must name an installed prefix or build" >&2
