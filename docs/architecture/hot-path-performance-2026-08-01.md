@@ -12,6 +12,8 @@ or hostile-public deployment readiness.
 Baseline reference: [`benchmarks/results/local-macos-2026-08-01/`](../../benchmarks/results/local-macos-2026-08-01/)
 (`629bc68`). Candidate measurements:
 [`benchmarks/results/local-macos-2026-08-01-perf/`](../../benchmarks/results/local-macos-2026-08-01-perf/).
+HEAD recon (2026-08-26, `94f1307`):
+[`benchmarks/results/local-macos-2026-08-26-head-94f1307/`](../../benchmarks/results/local-macos-2026-08-26-head-94f1307/).
 
 ## Goal
 
