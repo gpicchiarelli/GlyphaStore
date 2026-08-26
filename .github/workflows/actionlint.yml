@@ -12,6 +12,7 @@ on:
       - ".github/workflows/**"
       - ".github/actionlint*"
       - ".github/actionlint.yaml"
+  workflow_dispatch:
 
 permissions:
   contents: read
