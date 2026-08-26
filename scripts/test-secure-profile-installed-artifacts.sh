@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove installed Python/Perl/Ruby artifacts against the real secure-profile daemon.
+# Prove installed Python/Perl/Ruby/Erlang artifacts against the real secure-profile daemon.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -45,11 +45,17 @@ if [[ -z "$ruby" || ! -x "$ruby" ]] || ! "$ruby" -e \
   echo "RUBY must be version 3.2 or newer for the installed secure-profile matrix" >&2
   exit 1
 fi
+if ! command -v erl >/dev/null 2>&1 || ! command -v escript >/dev/null 2>&1 || \
+  ! command -v rebar3 >/dev/null 2>&1; then
+  echo "Erlang/OTP and rebar3 are required for the installed secure-profile matrix" >&2
+  exit 1
+fi
 
 shopt -s nullglob
 wheels=("$root"/sdk/python/dist/glyphastore-*.whl)
 perl_tarballs=("$root"/sdk/perl/dist/GlyphaStore-*.tar.gz)
 ruby_gems=("$root"/sdk/ruby/dist/glyphastore-*.gem)
+erlang_archives=("$root"/sdk/erlang/dist/glyphastore-erlang-*.tar.gz)
 shopt -u nullglob
 if [[ "${#wheels[@]}" -ne 1 ]]; then
   echo "expected exactly one built Python wheel under sdk/python/dist" >&2
@@ -63,9 +69,14 @@ if [[ "${#ruby_gems[@]}" -ne 1 ]]; then
   echo "expected exactly one built Ruby gem under sdk/ruby/dist" >&2
   exit 1
 fi
+if [[ "${#erlang_archives[@]}" -ne 1 ]]; then
+  echo "expected exactly one built Erlang archive under sdk/erlang/dist" >&2
+  exit 1
+fi
 wheel="${wheels[0]}"
 perl_tarball="${perl_tarballs[0]}"
 ruby_gem="${ruby_gems[0]}"
+erlang_archive="${erlang_archives[0]}"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-installed-secure.XXXXXX")"
 cleanup() { rm -rf "$work"; }
@@ -74,7 +85,8 @@ venv="$work/python-venv"
 perl_artifact="$work/perl-artifact"
 perl_install="$work/perl-install"
 ruby_gem_home="$work/ruby-gems"
-mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home"
+erlang_artifact="$work/erlang-artifact"
+mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home" "$erlang_artifact"
 cp "$cpp_source" "$work/bin/glyphastore-interop-cpp"
 cp "$go_source" "$work/bin/glyphastore-interop-go"
 
@@ -121,16 +133,38 @@ if [[ "$ruby_loaded_from" != "$ruby_package_root/"* || "$ruby_loaded_from" == "$
   exit 1
 fi
 
+tar -xzf "$erlang_archive" -C "$erlang_artifact"
+erlang_roots=("$erlang_artifact"/glyphastore-erlang-*)
+if [[ "${#erlang_roots[@]}" -ne 1 || ! -d "${erlang_roots[0]}" ]]; then
+  echo "Erlang archive must contain exactly one glyphastore-erlang-VERSION root" >&2
+  exit 1
+fi
+erlang_root="$(cd "${erlang_roots[0]}" && pwd -P)"
+(
+  cd "$erlang_root"
+  rebar3 compile >/dev/null
+)
+erlang_lib="$erlang_root/_build/default/lib"
+erlang_ebin="$erlang_lib/glyphastore/ebin"
+erlang_loaded_from="$(ERL_LIBS="$erlang_lib" erl -noshell -pa "$erlang_ebin" \
+  -eval 'io:format("~s", [code:which(glyphastore_client)]), halt().')"
+if [[ "$erlang_loaded_from" != "$erlang_root/"* || "$erlang_loaded_from" == "$root/"* ]]; then
+  echo "archive smoke resolved Erlang SDK outside isolated build: $erlang_loaded_from" >&2
+  exit 1
+fi
+
 echo "installed Python wheel: $wheel"
 echo "loaded Python SDK: $python_loaded_from"
 echo "installed Perl tarball: $perl_tarball"
 echo "loaded Perl SDK: $perl_loaded_from"
 echo "installed Ruby gem: $ruby_gem"
 echo "loaded Ruby SDK: $ruby_loaded_from"
+echo "installed Erlang archive: $erlang_archive"
+echo "loaded Erlang SDK: $erlang_loaded_from"
 
 GLYPHASTORE_INTEROP_USE_INSTALLED=1 \
 SECURE_INTEROP_SKIP_RUBY=0 \
-SECURE_INTEROP_SKIP_ERLANG=1 \
+SECURE_INTEROP_SKIP_ERLANG=0 \
 PYTHON="$venv/bin/python" \
 PERL="$perl" \
 RUBY="$ruby" \
@@ -139,10 +173,12 @@ PERL5LIB="$perl_lib" \
 RUBYLIB= \
 GEM_HOME="$ruby_gem_home" \
 GEM_PATH="$ruby_gem_home" \
+ERL_LIBS="$erlang_lib" \
 GLYPHASTORED="$daemon" \
 GLYPHASTORE_INTEROP_CLIENT="$work/bin/glyphastore-interop-cpp" \
 GLYPHASTORE_GO_INTEROP="$work/bin/glyphastore-interop-go" \
 GLYPHASTORE_RUBY_INTEROP="$ruby_helper" \
+GLYPHASTORE_ERLANG_INTEROP="$erlang_root/scripts/glyphastore-interop.escript" \
 "$root/scripts/test-secure-profile-interop.sh"
 
-echo "Installed Python/Perl/Ruby secure-profile interop PASSED"
+echo "Installed Python/Perl/Ruby/Erlang secure-profile interop PASSED"

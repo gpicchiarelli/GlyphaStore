@@ -26,6 +26,16 @@ The script:
 6. Extracts and compiles that archive outside the checkout, then verifies its runtime version
 7. Writes `sdk/erlang/dist/package-info.txt`
 
+With the other SDK packages and TLS daemon/client peers built, the extracted archive participates in
+the fail-closed secure-profile matrix through:
+
+```bash
+GLYPHASTORED=/path/to/glyphastored \
+GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
+GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
+./scripts/test-secure-profile-installed-artifacts.sh
+```
+
 ## Consumers
 
 ```erlang
