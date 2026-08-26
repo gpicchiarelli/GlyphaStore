@@ -32,11 +32,12 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check cmake ninja
           cmake -S . -B build/man-ci \
+            -DBUILD_TESTING=OFF \
             -DGLYPHASTORE_ENABLE_TLS=OFF \
             -DGLYPHASTORE_BUILD_BENCHMARKS=OFF \
             -DGLYPHASTORE_BUILD_FUZZERS=OFF \
             -DGLYPHASTORE_MAN_DATE="August 1, 2026"
-          cmake --build build/man-ci --target glyphastore_manpages
+          cmake --build build/man-ci
           ./scripts/validate-manpages.sh build/man-ci/man
           dest="$(mktemp -d)"
           cmake --install build/man-ci --prefix "${dest}" --component Runtime

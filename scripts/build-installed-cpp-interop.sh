@@ -35,6 +35,7 @@ mkdir -p "$prefix" "$consumer"
 
 if [[ -f "$artifact_root/CMakeCache.txt" ]]; then
   "$cmake_bin" --build "$artifact_root" --target glyphastore_client
+  "$cmake_bin" --install "$artifact_root" --prefix "$prefix" --component AbiRuntime
   "$cmake_bin" --install "$artifact_root" --prefix "$prefix" --component Development
 elif [[ -d "$artifact_root" ]]; then
   prefix="$(cd "$artifact_root" && pwd -P)"
@@ -58,12 +59,20 @@ if [[ "${#configs[@]}" -ne 1 ]]; then
   exit 1
 fi
 package_dir="$(dirname "${configs[0]}")"
+for companion in GlyphaStoreConfigVersion.cmake GlyphaStoreTargets.cmake FindGlyphaStoreTls.cmake; do
+  if [[ ! -f "$package_dir/$companion" ]]; then
+    echo "installed C++ package is missing $companion" >&2
+    exit 1
+  fi
+done
 
 cp "$root/tools/interop_client.cpp" "$consumer/interop_client.cpp"
 cat >"$consumer/CMakeLists.txt" <<EOF
 cmake_minimum_required(VERSION 3.25)
 project(GlyphaStoreInstalledInterop LANGUAGES CXX)
-find_package(GlyphaStore $expected EXACT REQUIRED CONFIG)
+find_package(GlyphaStore $expected EXACT REQUIRED CONFIG
+  PATHS "\${GLYPHASTORE_PACKAGE_DIR}"
+  NO_DEFAULT_PATH)
 add_executable(glyphastore-interop-cpp interop_client.cpp)
 target_link_libraries(glyphastore-interop-cpp PRIVATE GlyphaStore::client)
 target_compile_features(glyphastore-interop-cpp PRIVATE cxx_std_23)
@@ -77,7 +86,7 @@ EOF
 
 "$cmake_bin" -S "$consumer" -B "$consumer/build" \
   -DCMAKE_BUILD_TYPE=Release \
-  -DGlyphaStore_DIR="$package_dir" \
+  -DGLYPHASTORE_PACKAGE_DIR="$package_dir" \
   -DCMAKE_FIND_USE_PACKAGE_REGISTRY=FALSE
 "$cmake_bin" --build "$consumer/build" --target glyphastore-interop-cpp
 
