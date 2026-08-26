@@ -1,7 +1,7 @@
 Status: lab evidence (architectural prototype)
 Applies to: embedded Store GET/PUT and TCP daemon hot paths on macOS Apple Silicon
 Owner: performance / storage maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 # Hot-path performance program (2026-08-01)
 
@@ -14,6 +14,8 @@ Baseline reference: [`benchmarks/results/local-macos-2026-08-01/`](../../benchma
 [`benchmarks/results/local-macos-2026-08-01-perf/`](../../benchmarks/results/local-macos-2026-08-01-perf/).
 HEAD recon (2026-08-26, `94f1307`):
 [`benchmarks/results/local-macos-2026-08-26-head-94f1307/`](../../benchmarks/results/local-macos-2026-08-26-head-94f1307/).
+Complete paired/runtime rerun (2026-08-26, dirty tree based on `fae4547`):
+[`benchmarks/results/local-macos-2026-08-26-full-fae4547-dirty-rerun/`](../../benchmarks/results/local-macos-2026-08-26-full-fae4547-dirty-rerun/).
 
 ## Goal
 
