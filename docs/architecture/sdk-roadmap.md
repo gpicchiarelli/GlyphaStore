@@ -61,6 +61,9 @@ Source-tree interoperability is implemented. Still required:
 commit, routing mode, Worker/client counts, pipeline depth, value size, operation mix, validation,
 TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
 where the harness exposes latency; do not infer a language limit from one pipeline depth.
+Ruby sequential and per-Worker threaded modes participate when a supported Ruby >= 3.2 runtime is
+available; older or absent runtimes are recorded as an explicit skip rather than producing
+out-of-contract measurements.
 
 The public C++ reference client now has `glyphastore_client_benchmark` with sequential, concurrent,
 and mixed-owner batch modes; the shared matrix runs the concurrent mode once per Worker/depth cell.

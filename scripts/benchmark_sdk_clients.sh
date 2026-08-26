@@ -10,6 +10,7 @@ daemon="${GLYPHASTORED:-$root/build/macos-native-release/glyphastored}"
 cpp_bench="${CPP_CLIENT_BENCHMARK:-$(dirname "$daemon")/glyphastore_client_benchmark}"
 python="${PYTHON:-python3}"
 perl="${PERL:-perl}"
+ruby_bin="${RUBY:-}"
 host="127.0.0.1"
 ops="${OPS:-100000}"
 warmup="${WARMUP:-1}"
@@ -24,13 +25,37 @@ if [[ ! -x "$cpp_bench" ]]; then
   exit 1
 fi
 
-mkdir -p "$outdir/cpp" "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/erlang" "$outdir/logs"
+mkdir -p "$outdir/cpp" "$outdir/python" "$outdir/perl" "$outdir/go" "$outdir/erlang" \
+  "$outdir/ruby" "$outdir/logs"
 export PYTHONPATH="$root/sdk/python/src"
 export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
 go_bin="${GO:-go}"
 mkdir -p "$root/sdk/go/bin"
 (cd "$root/sdk/go" && "$go_bin" build -o bin/glyphastore-bench ./cmd/glyphastore-bench)
 go_bench="$root/sdk/go/bin/glyphastore-bench"
+
+ruby_ready=0
+ruby_sdk_version=""
+if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
+  ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
+fi
+if [[ -z "$ruby_bin" ]]; then
+  ruby_bin="$(command -v ruby || true)"
+fi
+if [[ -n "$ruby_bin" ]] && "$ruby_bin" -rrubygems -e \
+  'exit(Gem::Version.new(RUBY_VERSION) >= Gem::Version.new("3.2.0") ? 0 : 1)'
+then
+  ruby_ready=1
+  ruby_sdk_version="$("$ruby_bin" -I"$root/sdk/ruby/lib" \
+    -e 'require "glypha_store"; print GlyphaStore::VERSION')"
+  if [[ "$ruby_sdk_version" != "$sdk_version" ]]; then
+    echo "Ruby SDK version '$ruby_sdk_version' does not match '$sdk_version'" >&2
+    exit 1
+  fi
+  "$ruby_bin" -c "$root/sdk/ruby/benchmarks/client_benchmark.rb" >/dev/null
+else
+  echo "note: Ruby SDK bench skipped (set RUBY= to Ruby >= 3.2)" >&2
+fi
 
 erlang_ready=0
 erlang_bench=""
@@ -67,6 +92,12 @@ PY
     echo "python_sdk_version=$($python -c 'import glyphastore; print(glyphastore.__version__)')"
     echo "perl=$($perl -V:version -V:archname | tr '\n' ' ')"
     echo "perl_sdk_version=$($perl -MGlyphaStore -e 'print \$GlyphaStore::VERSION')"
+    if [[ "$ruby_ready" == "1" ]]; then
+      echo "ruby=$($ruby_bin --version)"
+      echo "ruby_sdk_version=$ruby_sdk_version"
+    else
+      echo "ruby=skipped"
+    fi
     echo "go=$($go_bin version)"
     echo "go_sdk_version=0.1.0"
     echo "cpp_client_benchmark=$cpp_bench"
@@ -199,6 +230,24 @@ run_matrix() {
           | tee "$outdir/perl/concurrent-${label}.txt"
       fi
 
+      if [[ "$ruby_ready" == "1" ]]; then
+        echo "running ruby sequential $label"
+        "$ruby_bin" "$root/sdk/ruby/benchmarks/client_benchmark.rb" \
+          --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+          --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+          --no-concurrent \
+          | tee "$outdir/ruby/sequential-${label}.txt"
+
+        if [[ "$w" -gt 1 ]]; then
+          echo "running ruby concurrent $label"
+          "$ruby_bin" "$root/sdk/ruby/benchmarks/client_benchmark.rb" \
+            --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+            --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+            --concurrent \
+            | tee "$outdir/ruby/concurrent-${label}.txt"
+        fi
+      fi
+
       echo "running go concurrent $label"
       "$go_bench" --host "$host" --port "$port" --workers "$w" --ops "$ops" \
         --pipeline "$p" --warmup "$warmup" --repeats "$repeats" --execution concurrent \
@@ -268,6 +317,7 @@ for path in (
     + sorted(outdir.glob("perl/*.txt"))
     + sorted(outdir.glob("go/*.txt"))
     + sorted(outdir.glob("erlang/*.txt"))
+    + sorted(outdir.glob("ruby/*.txt"))
 ):
     text = path.read_text(encoding="utf-8")
     match = pattern.search(text)
@@ -318,6 +368,8 @@ for row in rows:
         sdk = "Perl"
     elif row["file"].startswith("erlang/"):
         sdk = "Erlang"
+    elif row["file"].startswith("ruby/"):
+        sdk = "Ruby"
     else:
         sdk = "Go"
     lines.append(
@@ -334,9 +386,10 @@ lines.extend(
         "- C++ `concurrent` uses one OS thread per Worker against the public reference `Client`.",
         "- Python `concurrent` uses one OS thread per Worker against one shared `Client`.",
         "- Python `async` uses one `asyncio` task per Worker against one shared `AsyncClient`.",
-        "- Python `sequential`, Perl sequential, Go `sequential`, and Erlang sequential drain Workers one after another.",
+        "- Python, Perl, Go, Erlang, and Ruby `sequential` drain Workers one after another.",
         "- Go `concurrent` uses one goroutine per Worker against one shared `Client`.",
         "- Erlang `concurrent` uses `execute_worker_pipelines` (overlapped per-Worker pipelines).",
+        "- Ruby `concurrent` uses one MRI thread per Worker against one shared `Client`.",
         "- Perl has no shared-client multi-threaded mode; ithreads are not used.",
         "- Do not treat same-host loopback numbers as production capacity.",
         "",
@@ -351,7 +404,7 @@ write_readme() {
   cat >"$outdir/README.md" <<EOF
 # GlyphaStore SDK benchmarks — ${sdk_version}
 
-Published client-side pipeline benchmarks for the native C++, Python, Perl, Go, and Erlang SDKs at version
+Published client-side pipeline benchmarks for the native C++, Python, Perl, Go, Erlang, and Ruby SDKs at version
 \`${sdk_version}\`.
 
 ## Contents
@@ -367,6 +420,7 @@ Published client-side pipeline benchmarks for the native C++, Python, Perl, Go, 
 | \`perl/\` | Raw Perl result files |
 | \`go/\` | Raw Go result files |
 | \`erlang/\` | Raw Erlang result files (when OTP/rebar3 available) |
+| \`ruby/\` | Raw Ruby result files (when Ruby >= 3.2 available) |
 | \`logs/\` | Server stdout/stderr |
 
 ## How to reproduce
@@ -381,10 +435,11 @@ Language-only:
 ./scripts/benchmark_go_client.sh
 ./scripts/benchmark_perl_client.sh
 ./scripts/benchmark_erlang_client.sh
+./scripts/benchmark_ruby_client.sh
 \`\`\`
 
 Optional overrides: \`OPS\`, \`WARMUP\`, \`REPEATS\`, \`GLYPHASTORED\`,
-\`CPP_CLIENT_BENCHMARK\`, \`PYTHON\`, \`PERL\`, \`GO\`.
+\`CPP_CLIENT_BENCHMARK\`, \`PYTHON\`, \`PERL\`, \`GO\`, \`RUBY\`.
 EOF
 }
 
