@@ -7,11 +7,13 @@ if(BUILD_TESTING)
         C_STANDARD 11
         C_STANDARD_REQUIRED ON
         C_EXTENSIONS OFF
+        LINKER_LANGUAGE CXX
         FOLDER "Quality"
     )
     # The ABI consumer remains compiled as strict C11. Project options are also
-    # linked so sanitizer builds pull the runtime required by the instrumented
-    # C++ shared library into this C-owned executable.
+    # linked, and the C++ driver performs the final link, so sanitizer builds
+    # pull every runtime required by the instrumented C++ shared library into
+    # this C-owned executable (including UBSan's C++ vptr handlers on Linux).
     target_link_libraries(glyphastore_c_abi_tests
         PRIVATE GlyphaStore::abi glyphastore_project_options
     )
