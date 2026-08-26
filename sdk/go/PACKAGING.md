@@ -24,7 +24,9 @@ The script:
 5. Checks `go mod tidy` cleanliness when supported
 6. Reconstructs a tag-shaped module from tracked files only and reruns its tests
 7. Compiles and runs an external consumer of the snapshot's public `client` and `protocol` packages
-8. Writes `sdk/go/dist/package-info.txt`
+8. Produces a normalized `glyphastore-go-VERSION.tar.gz` from that tracked snapshot
+9. Extracts the archive and rebuilds the interop executable outside the checkout
+10. Writes `sdk/go/dist/package-info.txt`
 
 ## Consumers
 
@@ -53,3 +55,5 @@ the `sdk/go/` prefix).
 
 Go modules are fetched by the module proxy from git tags. Optional CLI binaries may be attached
 to a GitHub Release with SHA-256 checksums (see `scripts/checksum-sdk-artifacts.sh`).
+The normalized source archive is verification and release evidence for the tag-shaped module; it
+does not replace the `sdk/go/vVERSION` tag consumed by the Go module proxy.

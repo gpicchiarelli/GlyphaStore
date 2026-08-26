@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Package a normalized tracked-source archive, rebuild its interop executable outside the checkout,
+  and use that artifact-built peer in the installed secure-profile matrix.
 - Make the interop CLI assert structured `permission_denied` and `overloaded` mutation outcomes in
   the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
 - Route the first pipeline key once instead of hashing it once for initialization and again during

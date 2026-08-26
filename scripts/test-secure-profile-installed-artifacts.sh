@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove installed Python/Perl/Ruby/Erlang artifacts against the real secure-profile daemon.
+# Prove installed Python/Perl/Ruby/Go/Erlang artifacts against the real secure-profile daemon.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -9,7 +9,7 @@ ruby="${RUBY:-}"
 make="${MAKE:-make}"
 daemon="${GLYPHASTORED:-}"
 cpp_source="${GLYPHASTORE_INTEROP_CLIENT:-}"
-go_source="${GLYPHASTORE_GO_INTEROP:-$root/sdk/go/bin/glyphastore-interop}"
+go_bin="${GO:-go}"
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
   echo "GLYPHASTORED must name a TLS-capable daemon" >&2
@@ -19,8 +19,8 @@ if [[ -z "$cpp_source" || ! -x "$cpp_source" ]]; then
   echo "GLYPHASTORE_INTEROP_CLIENT must name the built C++ interop peer" >&2
   exit 1
 fi
-if [[ ! -x "$go_source" ]]; then
-  echo "missing Go interop peer: $go_source" >&2
+if ! command -v "$go_bin" >/dev/null 2>&1; then
+  echo "Go is required for the installed secure-profile matrix" >&2
   exit 1
 fi
 if ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
@@ -55,6 +55,7 @@ shopt -s nullglob
 wheels=("$root"/sdk/python/dist/glyphastore-*.whl)
 perl_tarballs=("$root"/sdk/perl/dist/GlyphaStore-*.tar.gz)
 ruby_gems=("$root"/sdk/ruby/dist/glyphastore-*.gem)
+go_archives=("$root"/sdk/go/dist/glyphastore-go-*.tar.gz)
 erlang_archives=("$root"/sdk/erlang/dist/glyphastore-erlang-*.tar.gz)
 shopt -u nullglob
 if [[ "${#wheels[@]}" -ne 1 ]]; then
@@ -69,6 +70,10 @@ if [[ "${#ruby_gems[@]}" -ne 1 ]]; then
   echo "expected exactly one built Ruby gem under sdk/ruby/dist" >&2
   exit 1
 fi
+if [[ "${#go_archives[@]}" -ne 1 ]]; then
+  echo "expected exactly one built Go archive under sdk/go/dist" >&2
+  exit 1
+fi
 if [[ "${#erlang_archives[@]}" -ne 1 ]]; then
   echo "expected exactly one built Erlang archive under sdk/erlang/dist" >&2
   exit 1
@@ -76,6 +81,7 @@ fi
 wheel="${wheels[0]}"
 perl_tarball="${perl_tarballs[0]}"
 ruby_gem="${ruby_gems[0]}"
+go_archive="${go_archives[0]}"
 erlang_archive="${erlang_archives[0]}"
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-installed-secure.XXXXXX")"
@@ -85,10 +91,11 @@ venv="$work/python-venv"
 perl_artifact="$work/perl-artifact"
 perl_install="$work/perl-install"
 ruby_gem_home="$work/ruby-gems"
+go_artifact="$work/go-artifact"
 erlang_artifact="$work/erlang-artifact"
-mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home" "$erlang_artifact"
+mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home" "$go_artifact" \
+  "$erlang_artifact"
 cp "$cpp_source" "$work/bin/glyphastore-interop-cpp"
-cp "$go_source" "$work/bin/glyphastore-interop-go"
 
 "$python" -m venv "$venv"
 "$venv/bin/python" -m pip install --disable-pip-version-check -q --no-deps "$wheel"
@@ -133,6 +140,22 @@ if [[ "$ruby_loaded_from" != "$ruby_package_root/"* || "$ruby_loaded_from" == "$
   exit 1
 fi
 
+tar -xzf "$go_archive" -C "$go_artifact"
+go_roots=("$go_artifact"/glyphastore-go-*)
+if [[ "${#go_roots[@]}" -ne 1 || ! -d "${go_roots[0]}" ]]; then
+  echo "Go archive must contain exactly one glyphastore-go-VERSION root" >&2
+  exit 1
+fi
+go_root="$(cd "${go_roots[0]}" && pwd -P)"
+(
+  cd "$go_root"
+  "$go_bin" build -o "$work/bin/glyphastore-interop-go" ./cmd/glyphastore-interop
+)
+if [[ ! -x "$work/bin/glyphastore-interop-go" ]]; then
+  echo "Go archive did not produce glyphastore-interop" >&2
+  exit 1
+fi
+
 tar -xzf "$erlang_archive" -C "$erlang_artifact"
 erlang_roots=("$erlang_artifact"/glyphastore-erlang-*)
 if [[ "${#erlang_roots[@]}" -ne 1 || ! -d "${erlang_roots[0]}" ]]; then
@@ -159,6 +182,8 @@ echo "installed Perl tarball: $perl_tarball"
 echo "loaded Perl SDK: $perl_loaded_from"
 echo "installed Ruby gem: $ruby_gem"
 echo "loaded Ruby SDK: $ruby_loaded_from"
+echo "installed Go archive: $go_archive"
+echo "built Go interop peer: $work/bin/glyphastore-interop-go"
 echo "installed Erlang archive: $erlang_archive"
 echo "loaded Erlang SDK: $erlang_loaded_from"
 
@@ -181,4 +206,4 @@ GLYPHASTORE_RUBY_INTEROP="$ruby_helper" \
 GLYPHASTORE_ERLANG_INTEROP="$erlang_root/scripts/glyphastore-interop.escript" \
 "$root/scripts/test-secure-profile-interop.sh"
 
-echo "Installed Python/Perl/Ruby/Erlang secure-profile interop PASSED"
+echo "Installed Python/Perl/Ruby/Go/Erlang secure-profile interop PASSED"
