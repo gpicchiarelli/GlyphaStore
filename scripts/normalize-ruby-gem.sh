@@ -25,6 +25,8 @@ for member in metadata.gz data.tar.gz checksums.yaml.gz; do
     exit 1
   fi
 done
+chmod u+w "$work/parts/metadata.gz" "$work/parts/data.tar.gz" \
+  "$work/parts/checksums.yaml.gz"
 
 for member in metadata.gz data.tar.gz; do
   gzip -dc "$work/parts/$member" >"$work/${member%.gz}"

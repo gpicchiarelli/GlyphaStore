@@ -25,7 +25,7 @@ def write_test_gem(path: Path, *, compresslevel: int, mtime: int) -> None:
             info = tarfile.TarInfo(name)
             info.size = len(payload)
             info.mtime = mtime
-            info.mode = 0o600
+            info.mode = 0o444
             archive.addfile(info, io.BytesIO(payload))
 
 
