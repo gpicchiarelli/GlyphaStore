@@ -9,6 +9,11 @@ targets:
   glyphastore_core:
     may_link: [Threads::Threads, glyphastore_project_options]
     aliases: [GlyphaStore::core]
+  glyphastore_abi_core:
+    may_link: [Threads::Threads, glyphastore_project_options]
+  glyphastore_abi:
+    may_link: [glyphastore_core, glyphastore_abi_core, glyphastore_project_options]
+    aliases: [GlyphaStore::abi]
   glyphastore_wire:
     may_link: [glyphastore_project_options]
     aliases: [GlyphaStore::wire]

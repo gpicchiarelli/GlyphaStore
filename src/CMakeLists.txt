@@ -12,7 +12,7 @@ glyphastore_set_warnings(glyphastore_cli_support)
 glyphastore_enable_hardening(glyphastore_cli_support)
 set_target_properties(glyphastore_cli_support PROPERTIES FOLDER "Libraries/Internal")
 
-add_library(glyphastore_core
+set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/core/fault_injection.cpp
     ${CMAKE_SOURCE_DIR}/src/core/hot_path_phases.cpp
     ${CMAKE_SOURCE_DIR}/src/core/worker_routing.cpp
@@ -68,46 +68,136 @@ add_library(glyphastore_core
     ${CMAKE_SOURCE_DIR}/src/worker/topology.cpp
     ${CMAKE_SOURCE_DIR}/src/worker/worker.cpp
 )
+add_library(glyphastore_core ${GLYPHASTORE_CORE_SOURCES})
 add_library(GlyphaStore::core ALIAS glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES EXPORT_NAME core)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_source_files_properties(${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
 endif()
 
-target_compile_features(glyphastore_core PUBLIC cxx_std_23)
-target_include_directories(glyphastore_core
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-    PRIVATE
-        "${CMAKE_SOURCE_DIR}/src"
-)
-target_link_libraries(glyphastore_core
-    PUBLIC Threads::Threads
-    PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
-)
-if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
-    # FindThreads may legitimately resolve pthread symbols from libc and leave
-    # the compiler/linker flag empty, while BSD still requires explicit mode.
-    target_compile_options(glyphastore_core PUBLIC -pthread)
-    target_link_options(glyphastore_core PUBLIC -pthread)
-endif()
+function(glyphastore_configure_core_target target)
+    target_compile_features(${target} PUBLIC cxx_std_23)
+    target_include_directories(${target}
+        PUBLIC
+            $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+            $<INSTALL_INTERFACE:include>
+        PRIVATE
+            "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_link_libraries(${target}
+        PUBLIC Threads::Threads
+        PRIVATE $<BUILD_INTERFACE:glyphastore_project_options>
+    )
+    if(CMAKE_SYSTEM_NAME MATCHES "FreeBSD|OpenBSD")
+        # FindThreads may legitimately resolve pthread symbols from libc and
+        # leave the flag empty, while BSD still requires explicit mode.
+        target_compile_options(${target} PUBLIC -pthread)
+        target_link_options(${target} PUBLIC -pthread)
+    endif()
+    if(GLYPHASTORE_FAULT_INJECTION)
+        target_compile_definitions(${target} PUBLIC GLYPHASTORE_FAULT_INJECTION=1)
+    endif()
+    if(GLYPHASTORE_HOT_PATH_PHASES)
+        target_compile_definitions(${target} PUBLIC GLYPHASTORE_HOT_PATH_PHASES=1)
+    endif()
+    glyphastore_set_warnings(${target})
+    glyphastore_enable_hardening(${target})
+    glyphastore_enable_ipo(${target})
+    set_target_properties(${target} PROPERTIES
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN YES
+    )
+endfunction()
+
+glyphastore_configure_core_target(glyphastore_core)
 if(GLYPHASTORE_FAULT_INJECTION)
-    target_compile_definitions(glyphastore_core PUBLIC GLYPHASTORE_FAULT_INJECTION=1)
     message(STATUS "GlyphaStore fault injection: ENABLED (debug-only adverse scheduling hooks)")
 else()
     message(STATUS "GlyphaStore fault injection: disabled (production default)")
 endif()
 if(GLYPHASTORE_HOT_PATH_PHASES)
-    target_compile_definitions(glyphastore_core PUBLIC GLYPHASTORE_HOT_PATH_PHASES=1)
     message(STATUS "GlyphaStore hot-path phases: ENABLED (lab attribution counters)")
 else()
     message(STATUS "GlyphaStore hot-path phases: disabled (default)")
 endif()
-glyphastore_set_warnings(glyphastore_core)
-glyphastore_enable_hardening(glyphastore_core)
-glyphastore_enable_ipo(glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES FOLDER "Libraries")
+
+# ELF shared libraries require PIC objects, but forcing the installed static
+# core to PIC would also constrain glyphastored's optimized direct link. Build
+# a private ABI-only copy on ELF; Darwin's object model needs no such duplicate.
+set(GLYPHASTORE_ABI_CORE_TARGET glyphastore_core)
+if(UNIX AND NOT APPLE)
+    add_library(glyphastore_abi_core STATIC ${GLYPHASTORE_CORE_SOURCES})
+    glyphastore_configure_core_target(glyphastore_abi_core)
+    set_target_properties(glyphastore_abi_core PROPERTIES
+        POSITION_INDEPENDENT_CODE ON
+        FOLDER "Libraries/Internal"
+    )
+    set(GLYPHASTORE_ABI_CORE_TARGET glyphastore_abi_core)
+endif()
+
+add_library(glyphastore_abi SHARED
+    ${CMAKE_SOURCE_DIR}/src/abi/glyphastore.cpp
+)
+add_library(GlyphaStore::abi ALIAS glyphastore_abi)
+set_target_properties(glyphastore_abi PROPERTIES
+    EXPORT_NAME abi
+    OUTPUT_NAME glyphastore
+    VERSION "${GLYPHASTORE_ABI_VERSION}"
+    SOVERSION "${GLYPHASTORE_ABI_VERSION_MAJOR}"
+    CXX_VISIBILITY_PRESET hidden
+    VISIBILITY_INLINES_HIDDEN YES
+    FOLDER "Libraries"
+)
+if(CMAKE_SYSTEM_NAME STREQUAL "OpenBSD")
+    # OpenBSD packages encode both interface major and minor in the library
+    # filename/WANTLIB contract. ABI_VERSION remains the single authority.
+    set_target_properties(glyphastore_abi PROPERTIES
+        VERSION "${GLYPHASTORE_ABI_VERSION}"
+        SOVERSION "${GLYPHASTORE_ABI_VERSION}"
+    )
+endif()
+target_compile_features(glyphastore_abi PRIVATE cxx_std_23)
+target_compile_definitions(glyphastore_abi PRIVATE
+    GLYPHASTORE_ABI_BUILD=1
+    "GLYPHASTORE_PRODUCT_VERSION=\"${PROJECT_VERSION}\""
+    "GLYPHASTORE_PRODUCT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}"
+    "GLYPHASTORE_PRODUCT_VERSION_MINOR=${PROJECT_VERSION_MINOR}"
+    "GLYPHASTORE_PRODUCT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"
+)
+target_include_directories(glyphastore_abi
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:include>
+)
+target_link_libraries(glyphastore_abi
+    PRIVATE ${GLYPHASTORE_ABI_CORE_TARGET} $<BUILD_INTERFACE:glyphastore_project_options>
+)
+glyphastore_set_warnings(glyphastore_abi)
+glyphastore_enable_hardening(glyphastore_abi)
+glyphastore_enable_ipo(glyphastore_abi)
+
+# The text allowlist is the sole symbol authority. Generate the platform linker
+# control file instead of maintaining a second, drift-prone list.
+file(STRINGS "${CMAKE_SOURCE_DIR}/abi/symbols-v1.txt" GLYPHASTORE_ABI_SYMBOLS)
+if(APPLE)
+    set(GLYPHASTORE_ABI_EXPORT_FILE "${CMAKE_CURRENT_BINARY_DIR}/glyphastore-abi.exports")
+    file(WRITE "${GLYPHASTORE_ABI_EXPORT_FILE}" "")
+    foreach(symbol IN LISTS GLYPHASTORE_ABI_SYMBOLS)
+        file(APPEND "${GLYPHASTORE_ABI_EXPORT_FILE}" "_${symbol}\n")
+    endforeach()
+    target_link_options(glyphastore_abi PRIVATE
+        "LINKER:-exported_symbols_list,${GLYPHASTORE_ABI_EXPORT_FILE}")
+elseif(UNIX)
+    set(GLYPHASTORE_ABI_EXPORT_FILE "${CMAKE_CURRENT_BINARY_DIR}/glyphastore-abi.map")
+    file(WRITE "${GLYPHASTORE_ABI_EXPORT_FILE}" "{\n  global:\n")
+    foreach(symbol IN LISTS GLYPHASTORE_ABI_SYMBOLS)
+        file(APPEND "${GLYPHASTORE_ABI_EXPORT_FILE}" "    ${symbol};\n")
+    endforeach()
+    file(APPEND "${GLYPHASTORE_ABI_EXPORT_FILE}" "  local: *;\n};\n")
+    target_link_options(glyphastore_abi PRIVATE
+        "LINKER:--version-script=${GLYPHASTORE_ABI_EXPORT_FILE}")
+endif()
 
 add_library(glyphastore_wire
     ${CMAKE_SOURCE_DIR}/src/server/protocol.cpp
@@ -247,4 +337,3 @@ glyphastore_enable_hardening(glyphastore_demo)
 glyphastore_enable_ipo(glyphastore_demo)
 set_target_properties(glyphastore_demo PROPERTIES FOLDER "Applications")
 glyphastore_xcode_scheme(glyphastore_demo)
-

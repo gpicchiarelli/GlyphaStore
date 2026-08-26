@@ -55,7 +55,9 @@ if ! grep -q 'GlyphaStore TLS: enabled (LibreSSL)' /tmp/glyphastore-cmake-tls.lo
 fi
 
 echo "== build =="
-cmake --build --preset "$preset" --target glyphastored glyphastore_tests glyphastore_interop_client
+cmake --build --preset "$preset" --target \
+  glyphastored glyphastore_tests glyphastore_interop_client \
+  glyphastore_abi glyphastore_c_abi_tests glyphastore_c_abi_durable_tests
 
 daemon="$build_dir/glyphastored"
 tests="$build_dir/glyphastore_tests"
@@ -74,6 +76,30 @@ echo "== ctest (built targets only) =="
 # exist so missing executables are not counted as failures.
 ctest --preset "$preset" --output-on-failure -R '^(glyphastore_tests|glyphastore_cli_daemon_)'
 
+echo "== installed C ABI consumer =="
+install_root="$(mktemp -d /tmp/glyphastore-openbsd-install.XXXXXX)"
+consumer_build="$(mktemp -d /tmp/glyphastore-openbsd-consumer.XXXXXX)"
+cleanup_install() {
+  rm -rf "$install_root" "$consumer_build"
+}
+trap cleanup_install EXIT
+cmake --install "$build_dir" --prefix "$install_root" --component AbiRuntime
+cmake --install "$build_dir" --prefix "$install_root" --component Development
+test -f "$install_root/include/glyphastore/abi/glyphastore.h"
+find "$install_root/lib" -maxdepth 1 -name 'libglyphastore.so.[0-9]*' -type f | grep -q .
+
+cmake -S tests/consumer -B "$consumer_build" -G Ninja \
+  -DCMAKE_PREFIX_PATH="$install_root"
+cmake --build "$consumer_build" --target glyphastore_abi_consumer_smoke
+LD_LIBRARY_PATH="$install_root/lib" "$consumer_build/glyphastore_abi_consumer_smoke"
+
+PKG_CONFIG_PATH="$install_root/lib/pkgconfig" \
+  pkg-config --cflags --libs glyphastore-abi >"$consumer_build/abi.flags"
+# shellcheck disable=SC2046
+cc -std=c11 tests/consumer/abi.c \
+  $(cat "$consumer_build/abi.flags") -o "$consumer_build/pkgconfig-abi-consumer"
+LD_LIBRARY_PATH="$install_root/lib" "$consumer_build/pkgconfig-abi-consumer"
+
 if [[ "${GLYPHASTORE_SKIP_GO_SMOKE:-0}" == "1" ]]; then
   echo "== skip Go TLS smoke (GLYPHASTORE_SKIP_GO_SMOKE=1) =="
   echo "OpenBSD / LibreSSL CI gate OK (tests only)"
@@ -85,6 +111,7 @@ command -v go >/dev/null 2>&1 || { echo "error: go required for TLS smoke (pkg_a
 echo "== Go TLS smoke (PUT→GET) =="
 work="$(mktemp -d /tmp/glyphastore-openbsd-tls.XXXXXX)"
 cleanup() {
+  cleanup_install
   if [[ -f "$work/daemon.pid" ]]; then
     kill "$(cat "$work/daemon.pid")" 2>/dev/null || true
     wait "$(cat "$work/daemon.pid")" 2>/dev/null || true

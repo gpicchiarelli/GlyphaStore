@@ -78,6 +78,7 @@ format, acknowledgement point, ownership rule, or compatibility guarantee.
 | [Benchmark standard](spec/benchmark-standard.md) | Workload and result semantics |
 | [Public C++ API](reference/cpp-api.md) | Supported API contracts and error behavior |
 | [C++ TCP client API](reference/cpp-client-api.md) | Client routing, mutation outcomes, lifecycle, and SDK contract |
+| [C ABI v1](spec/c-abi-v1.md) | Stable language-neutral ABI, layouts, ownership and mutation outcomes |
 
 ## Architecture and implementation guides
 
@@ -117,6 +118,10 @@ source package documents its language-specific API and concurrency contract:
 - [Operations handbook](operations/handbook.md) — day-1/day-2 index and incident playbooks
 - [Operations runbooks](operations/README.md) — graceful drain, overload, offline backup/restore, Worker reshard, corruption repair
 - [Version lifecycle and compatibility](architecture/version-lifecycle.md) — 0.x upgrade/downgrade, ABI, Worker migrate
+- [Artifact delivery](distribution/artifact-delivery.md) — build-once Candidate → Verify → Publish contract
+- [Retained release evidence](distribution/release-evidence.md) — artifact-bound proof records and mandatory matrices
+- [BSD reference packaging](distribution/bsd-packaging.md) — FreeBSD/OpenBSD ports and native-proof boundary
+- [Release verification](distribution/verify-release.md) — checksums, seals, manifest and provenance
 - [ADR index and lifecycle](adr/README.md)
 - [Glossary](glossary.md)
 - [Code tour](development/code-tour.md)

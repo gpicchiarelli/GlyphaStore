@@ -26,13 +26,23 @@ jobs:
           release: "7.9"
           arch: x86_64
           usesh: true
-          copyback: false
+          copyback: true
           sync: rsync
           mem: 8192
           cache-after-prepare: true
           prepare: |
-            pkg_add -I cmake ninja git go bash
+            pkg_add -I cmake ninja git go bash pkgconf
           run: |
             set -e
+            mkdir -p engineering/evidence/native-ci
             chmod +x scripts/ci-openbsd-libressl.sh
-            bash scripts/ci-openbsd-libressl.sh
+            bash -o pipefail -c \
+              'bash scripts/ci-openbsd-libressl.sh 2>&1 | tee engineering/evidence/native-ci/openbsd.log'
+            rm -rf build sdk/go/bin
+      - name: Retain native OpenBSD log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: openbsd-native-${{ github.sha }}
+          path: engineering/evidence/native-ci/openbsd.log
+          if-no-files-found: error
+          retention-days: 14

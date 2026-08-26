@@ -480,12 +480,12 @@ hazards:
   - docs/architecture/version-lifecycle.md
   - tests/fixtures
   - tests/unit/store_backup_tests.cpp
-  rischio_residuo: Tagged N/N-1 permanent fixture drops remain a release-process step
+  rischio_residuo: Tagged N/N-1 codec drops and the first complete prior-release Store remain release-process steps
   stato: mitigato
   accettazione_rischio: >
     Fail-closed verify/restore/open for synthetic future Manifest/Record versions,
     truncated Manifests, and Worker-count mismatch after restore; permanent released
-    fixture drop still open
+    fixture drops still open; the artifact-only persistence producer therefore fails closed
   requisiti:
   - GS-OPS-BACKUP-001
   - GS-COMPAT-FIXTURE-001
@@ -631,3 +631,82 @@ hazards:
   - GS-CONCUR-PAIR-001
   - GS-CONCUR-MEM-001
   - GS-CONCUR-TLA-001
+- id: HAZ-029
+  evento_pericoloso: Deriva o contaminazione della C ABI pubblica
+  cause:
+  - Rimozione o modifica silenziosa di un simbolo ABI 1
+  - Esportazione accidentale di simboli C++ o server interni
+  - Cambio di layout o semantica senza ABI major bump
+  conseguenze:
+  - Crash o corruzione nei consumer già compilati
+  - Impossibilità di upgrade sicuro della shared library
+  severita: alta
+  probabilita: media
+  rilevabilita: alta
+  prevenzione:
+  - ABI_VERSION separato e ADR 0038
+  - Visibility hidden, allowlist esatta e static assertion di layout
+  - Consumer C esterno sigillato e matrice bidirezionale su release precedente attestata
+  contenimento:
+  - Fallire build, package verification o caricamento prima di aprire lo Store
+  - Incrementare ABI major per ogni rottura deliberata
+  prove:
+  - tests/abi/c_abi_tests.c
+  - tests/abi/c_abi_durable_tests.cpp
+  - tests/consumer/abi.c
+  - engineering/tools/check_abi_symbols.py
+  - scripts/package-abi-consumer.py
+  - engineering/tools/abi_consumer_fixture.py
+  - engineering/tools/prior_release.py
+  - scripts/test-installed-abi-compat.sh
+  - tests/abi/c_abi_layout_probe.c
+  - scripts/tests/test_artifact_release_workflow.py
+  rischio_residuo: Non esiste ancora una release ufficiale completa precedente; la compatibilità cross-release non è provabile oggi
+  stato: mitigato
+  accettazione_rischio: Contratto e producer sono presenti; nessun claim C ABI 1.x cross-release fino a evidence same-run trattenuta
+  requisiti:
+  - GS-COMPAT-CABI-001
+- id: HAZ-030
+  evento_pericoloso: Pubblicazione di byte diversi da quelli verificati o con identita non provata
+  cause:
+  - Rebuild fra verifica e publish
+  - Tag e VERSION discordanti o tag non annotato
+  - Asset sostituito dopo la verifica
+  - Package o SBOM alterato, incompleto o non attestato
+  - Evidence JSON dichiarato passed senza matrice completa, log trattenuti o subject digest
+  - Evidence aggiunta dopo il candidate seal senza un inventario chiuso o proveniente da un run ambiguo
+  - Reference port confuso con package nativo provato
+  conseguenze:
+  - Supply-chain compromise o impossibilita di ricondurre il binario alle sorgenti
+  - Installazione di ABI, wire o formato persistente differenti dal manifest dichiarato
+  severita: catastrofica
+  probabilita: media
+  rilevabilita: alta
+  prevenzione:
+  - Candidate Verify Publish con unico build e seal SHA-256 transitivo
+  - Release manifest, SPDX, tag identity, OIDC attestation e release Environment
+  - Policy release fail-closed per package BSD ed evidenze compatibility/security
+  - Schema evidence chiuso con check obbligatori, log non vuoti e binding a commit/versione/artefatto
+  - Exact candidate admission prima dell'import e digest inventory degli input di certificazione same-run
+  contenimento:
+  - Abortire la promotion; non usare clobber; ritirare la release e creare una nuova versione
+  prove:
+  - scripts/tests/test_release_artifacts.py
+  - scripts/tests/test_bsd_packaging.py
+  - scripts/tests/test_artifact_release_workflow.py
+  - engineering/tools/release_bundle.py
+  - engineering/tools/release_evidence.py
+  - engineering/tools/persistence_fixture.py
+  - scripts/test-installed-persistence-compat.sh
+  - scripts/tests/test_persistence_fixture.py
+  - scripts/package-wire-client.py
+  - engineering/tools/wire_client_fixture.py
+  - scripts/test-installed-wire-compat.sh
+  - engineering/tools/compare_release_rebuild.py
+  - scripts/verify_hardening.py
+  - scripts/test-freebsd-package-lifecycle.sh
+  rischio_residuo: La filiera completa non puo essere provata finche non esistono il primo tag e package nativi installati
+  stato: mitigato
+  accettazione_rischio: Nessuna pubblicazione e permessa finche validate-release-policy e il gate BSD release falliscono
+  requisiti:
+  - GS-RELEASE-ARTIFACT-001

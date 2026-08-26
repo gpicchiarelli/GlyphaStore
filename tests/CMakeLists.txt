@@ -1,5 +1,114 @@
 # Test suites, crash harnesses, CLI contract tests, and check target.
 if(BUILD_TESTING)
+    add_executable(glyphastore_c_abi_tests
+        ${CMAKE_SOURCE_DIR}/tests/abi/c_abi_tests.c
+    )
+    set_target_properties(glyphastore_c_abi_tests PROPERTIES
+        C_STANDARD 11
+        C_STANDARD_REQUIRED ON
+        C_EXTENSIONS OFF
+        FOLDER "Quality"
+    )
+    target_link_libraries(glyphastore_c_abi_tests PRIVATE GlyphaStore::abi)
+    add_test(NAME glyphastore_c_abi_tests COMMAND glyphastore_c_abi_tests)
+    set_tests_properties(glyphastore_c_abi_tests PROPERTIES LABELS "abi")
+
+    add_executable(glyphastore_c_abi_durable_tests
+        ${CMAKE_SOURCE_DIR}/tests/abi/c_abi_durable_tests.cpp
+    )
+    target_compile_features(glyphastore_c_abi_durable_tests PRIVATE cxx_std_23)
+    target_link_libraries(glyphastore_c_abi_durable_tests
+        PRIVATE GlyphaStore::abi glyphastore_project_options
+    )
+    glyphastore_set_warnings(glyphastore_c_abi_durable_tests)
+    glyphastore_enable_hardening(glyphastore_c_abi_durable_tests)
+    glyphastore_enable_ipo(glyphastore_c_abi_durable_tests)
+    set_target_properties(glyphastore_c_abi_durable_tests PROPERTIES FOLDER "Quality")
+    add_test(NAME glyphastore_c_abi_durable_tests COMMAND glyphastore_c_abi_durable_tests)
+    set_tests_properties(glyphastore_c_abi_durable_tests PROPERTIES LABELS "abi;durability")
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    add_test(
+        NAME glyphastore_abi_symbols
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/engineering/tools/check_abi_symbols.py"
+                --library $<TARGET_FILE:glyphastore_abi>
+                --allowlist "${CMAKE_SOURCE_DIR}/abi/symbols-v1.txt"
+    )
+    set_tests_properties(glyphastore_abi_symbols PROPERTIES LABELS "abi")
+    add_test(
+        NAME glyphastore_abi_symbol_gate_rejects_unexpected
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/engineering/tools/check_abi_symbols.py"
+                --actual-list "${CMAKE_SOURCE_DIR}/tests/abi/unexpected-symbols.txt"
+                --allowlist "${CMAKE_SOURCE_DIR}/abi/symbols-v1.txt"
+    )
+    set_tests_properties(glyphastore_abi_symbol_gate_rejects_unexpected PROPERTIES
+        LABELS "abi;negative"
+        WILL_FAIL TRUE
+    )
+    add_test(
+        NAME glyphastore_release_artifact_tests
+        COMMAND "${Python3_EXECUTABLE}" -m unittest -v scripts.tests.test_release_artifacts
+    )
+    set_tests_properties(glyphastore_release_artifact_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        LABELS "release;negative"
+        TIMEOUT 30
+    )
+    add_test(
+        NAME glyphastore_bsd_packaging_tests
+        COMMAND "${Python3_EXECUTABLE}" -m unittest -v scripts.tests.test_bsd_packaging
+    )
+    set_tests_properties(glyphastore_bsd_packaging_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        LABELS "release;packaging;negative"
+        TIMEOUT 15
+    )
+    add_test(
+        NAME glyphastore_artifact_release_workflow_tests
+        COMMAND "${Python3_EXECUTABLE}" -m unittest -v scripts.tests.test_artifact_release_workflow
+    )
+    set_tests_properties(glyphastore_artifact_release_workflow_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        LABELS "release;negative"
+        TIMEOUT 15
+    )
+    add_test(
+        NAME glyphastore_persistence_fixture_tests
+        COMMAND "${Python3_EXECUTABLE}" -m unittest -v scripts.tests.test_persistence_fixture
+    )
+    set_tests_properties(glyphastore_persistence_fixture_tests PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+        LABELS "release;persistence;negative"
+        TIMEOUT 15
+    )
+    add_test(
+        NAME glyphastore_install_components
+        COMMAND "${CMAKE_COMMAND}"
+                -DGLYPHASTORE_BINARY_DIR=${CMAKE_BINARY_DIR}
+                -DGLYPHASTORE_TEST_ROOT=${CMAKE_BINARY_DIR}/install-component-test
+                -P "${CMAKE_SOURCE_DIR}/tests/cmake/install_components.cmake"
+    )
+    set_tests_properties(glyphastore_install_components PROPERTIES
+        LABELS "install;packaging"
+        TIMEOUT 30
+    )
+    if(UNIX)
+        find_program(GLYPHASTORE_BASH_EXECUTABLE bash REQUIRED)
+        add_test(
+            NAME glyphastore_installed_cpp_interop
+            COMMAND "${CMAKE_COMMAND}"
+                    -DGLYPHASTORE_BINARY_DIR=${CMAKE_BINARY_DIR}
+                    -DGLYPHASTORE_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                    -DGLYPHASTORE_TEST_ROOT=${CMAKE_BINARY_DIR}/installed-cpp-interop-test
+                    -DGLYPHASTORE_BASH=${GLYPHASTORE_BASH_EXECUTABLE}
+                    -P "${CMAKE_SOURCE_DIR}/tests/cmake/installed_cpp_interop.cmake"
+        )
+        set_tests_properties(glyphastore_installed_cpp_interop PROPERTIES
+            LABELS "install;packaging;sdk"
+            TIMEOUT 60
+        )
+    endif()
+
     add_executable(glyphastore_tests
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_reactor.cpp
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_shard.cpp
@@ -310,6 +419,8 @@ endif()
 
 if(BUILD_TESTING)
     set(glyphastore_check_dependencies
+        glyphastore_c_abi_tests
+        glyphastore_c_abi_durable_tests
         glyphastore_tests
         glyphastore_crash_persistence
         glyphastore_crash_daemon

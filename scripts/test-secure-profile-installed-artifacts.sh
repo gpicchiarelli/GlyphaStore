@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove installed C++/Python/Perl/Ruby/Go/Erlang artifacts against the secure-profile daemon.
+# Prove installed C++/Python/Perl/Ruby/Go/Erlang artifacts against a distributed daemon.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,29 +8,35 @@ perl="${PERL:-perl}"
 ruby="${RUBY:-}"
 make="${MAKE:-make}"
 daemon="${GLYPHASTORED:-}"
-cpp_build="${GLYPHASTORE_CPP_BUILD:-}"
+profile="${INSTALLED_INTEROP_PROFILE:-secure}"
+cpp_artifact="${GLYPHASTORE_CPP_PREFIX:-${GLYPHASTORE_CPP_BUILD:-}}"
 go_bin="${GO:-go}"
+
+if [[ "$profile" != "secure" && "$profile" != "plain" ]]; then
+  echo "INSTALLED_INTEROP_PROFILE must be secure or plain" >&2
+  exit 1
+fi
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
   echo "GLYPHASTORED must name a TLS-capable daemon" >&2
   exit 1
 fi
-if [[ -z "$cpp_build" ]]; then
-  cpp_build="$(cd "$(dirname "$daemon")" && pwd -P)"
+if [[ -z "$cpp_artifact" ]]; then
+  cpp_artifact="$(cd "$(dirname "$daemon")/.." && pwd -P)"
 fi
-if [[ ! -f "$cpp_build/CMakeCache.txt" ]]; then
-  echo "GLYPHASTORE_CPP_BUILD must name the daemon's configured CMake build" >&2
+if [[ ! -d "$cpp_artifact" ]]; then
+  echo "GLYPHASTORE_CPP_PREFIX/GLYPHASTORE_CPP_BUILD must name an installed prefix or build" >&2
   exit 1
 fi
 if ! command -v "$go_bin" >/dev/null 2>&1; then
   echo "Go is required for the installed secure-profile matrix" >&2
   exit 1
 fi
-if ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
+if [[ "$profile" == "secure" ]] && ! "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
   echo "PERL must provide IO::Socket::SSL for the installed secure-profile matrix" >&2
   exit 1
 fi
-if ! "$perl" -MIO::Socket::SSL -e \
+if [[ "$profile" == "secure" ]] && ! "$perl" -MIO::Socket::SSL -e \
   'IO::Socket::SSL::SSL_Context->new(SSL_version => "TLSv1_3") or die IO::Socket::SSL::errstr()' \
   >/dev/null 2>&1; then
   echo "PERL IO::Socket::SSL backend must support TLS 1.3" >&2
@@ -99,7 +105,7 @@ erlang_artifact="$work/erlang-artifact"
 mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home" "$go_artifact" \
   "$erlang_artifact"
 "$root/scripts/build-installed-cpp-interop.sh" \
-  "$cpp_build" "$work/bin/glyphastore-interop-cpp"
+  "$cpp_artifact" "$work/bin/glyphastore-interop-cpp"
 
 "$python" -m venv "$venv"
 "$venv/bin/python" -m pip install --disable-pip-version-check -q --no-deps "$wheel"
@@ -191,23 +197,38 @@ echo "built Go interop peer: $work/bin/glyphastore-interop-go"
 echo "installed Erlang archive: $erlang_archive"
 echo "loaded Erlang SDK: $erlang_loaded_from"
 
-GLYPHASTORE_INTEROP_USE_INSTALLED=1 \
-SECURE_INTEROP_SKIP_RUBY=0 \
-SECURE_INTEROP_SKIP_ERLANG=0 \
-PYTHON="$venv/bin/python" \
-PERL="$perl" \
-RUBY="$ruby" \
-PYTHONPATH= \
-PERL5LIB="$perl_lib" \
-RUBYLIB= \
-GEM_HOME="$ruby_gem_home" \
-GEM_PATH="$ruby_gem_home" \
-ERL_LIBS="$erlang_lib" \
-GLYPHASTORED="$daemon" \
-GLYPHASTORE_INTEROP_CLIENT="$work/bin/glyphastore-interop-cpp" \
-GLYPHASTORE_GO_INTEROP="$work/bin/glyphastore-interop-go" \
-GLYPHASTORE_RUBY_INTEROP="$ruby_helper" \
-GLYPHASTORE_ERLANG_INTEROP="$erlang_root/scripts/glyphastore-interop.escript" \
-"$root/scripts/test-secure-profile-interop.sh"
+common_environment=(
+  GLYPHASTORE_INTEROP_USE_INSTALLED=1
+  PYTHON="$venv/bin/python"
+  PERL="$perl"
+  RUBY="$ruby"
+  PYTHONPATH=
+  PERL5LIB="$perl_lib"
+  RUBYLIB=
+  GEM_HOME="$ruby_gem_home"
+  GEM_PATH="$ruby_gem_home"
+  ERL_LIBS="$erlang_lib"
+  GLYPHASTORED="$daemon"
+  GLYPHASTORE_INTEROP_CLIENT="$work/bin/glyphastore-interop-cpp"
+  GLYPHASTORE_GO_INTEROP="$work/bin/glyphastore-interop-go"
+  GLYPHASTORE_RUBY_INTEROP="$ruby_helper"
+  GLYPHASTORE_ERLANG_INTEROP="$erlang_root/scripts/glyphastore-interop.escript"
+)
 
-echo "Installed C++/Python/Perl/Ruby/Go/Erlang secure-profile interop PASSED"
+if [[ "$profile" == "secure" ]]; then
+  env "${common_environment[@]}" \
+    SECURE_INTEROP_SKIP_RUBY=0 \
+    SECURE_INTEROP_SKIP_ERLANG=0 \
+    "$root/scripts/test-secure-profile-interop.sh"
+  echo "Installed C++/Python/Perl/Ruby/Go/Erlang secure-profile interop PASSED"
+else
+  env "${common_environment[@]}" \
+    INTEROP_WORKERS="${INTEROP_WORKERS:-2}" \
+    INTEROP_KEYED_WORKERS="${INTEROP_KEYED_WORKERS:-2}" \
+    INTEROP_SKIP_TLS=1 \
+    INTEROP_SECURE=0 \
+    INTEROP_REQUIRE_RUBY=1 \
+    INTEROP_REQUIRE_ERLANG=1 \
+    "$root/scripts/test-sdk-interop.sh"
+  echo "Installed C++/Python/Perl/Ruby/Go/Erlang plain interop PASSED"
+fi

@@ -224,6 +224,78 @@ def main() -> int:
                 )
             )
 
+    tagged_store_policy = doc.get("tagged_store_fixture_policy", {})
+    if tagged_store_policy.get("artifact_schema") != 1:
+        errors.append("tagged_store_fixture_policy.artifact_schema must be 1")
+    if tagged_store_policy.get("selection") != (
+        "newest-valid-tagged-release-strictly-older-than-candidate"
+    ):
+        errors.append("tagged_store_fixture_policy selection must be strict N-1")
+    for key in ("metadata_schema", "fixture_tool", "installed_harness"):
+        ref = tagged_store_policy.get(key)
+        if not isinstance(ref, str) or not (root / ref).is_file():
+            errors.append(f"tagged_store_fixture_policy.{key} must reference an existing file")
+    workflow = tagged_store_policy.get("release_workflow")
+    if not isinstance(workflow, str) or not (root / ".github" / "workflows" / workflow).is_file():
+        errors.append("tagged_store_fixture_policy.release_workflow must reference an existing workflow")
+    permanent_drop = tagged_store_policy.get("permanent_drop")
+    if permanent_drop != "tests/fixtures/released-stores/<semver>/":
+        errors.append("tagged_store_fixture_policy.permanent_drop is invalid")
+
+    abi_policy = doc.get("abi_artifact_policy", {})
+    if abi_policy.get("fixture_schema") != 1:
+        errors.append("abi_artifact_policy.fixture_schema must be 1")
+    if abi_policy.get("selection") != (
+        "newest-annotated-release-strictly-older-with-same-abi-major-"
+        "then-require-complete-attested-assets"
+    ):
+        errors.append("abi_artifact_policy selection must be strict and ABI-major matched")
+    for key in (
+        "metadata_schema",
+        "compiled_consumer_packager",
+        "fixture_validator",
+        "prior_release_validator",
+        "installed_harness",
+    ):
+        ref = abi_policy.get(key)
+        if not isinstance(ref, str) or not (root / ref).is_file():
+            errors.append(f"abi_artifact_policy.{key} must reference an existing file")
+    abi_workflow = abi_policy.get("release_workflow")
+    if not isinstance(abi_workflow, str) or not (
+        root / ".github" / "workflows" / abi_workflow
+    ).is_file():
+        errors.append("abi_artifact_policy.release_workflow must reference an existing workflow")
+
+    wire_policy = doc.get("wire_artifact_policy", {})
+    if wire_policy.get("fixture_schema") != 1:
+        errors.append("wire_artifact_policy.fixture_schema must be 1")
+    if wire_policy.get("selection") != (
+        "newest-annotated-release-strictly-older-with-same-abi-major-"
+        "then-require-complete-attested-assets"
+    ):
+        errors.append("wire_artifact_policy selection must be strict and ABI-major matched")
+    if wire_policy.get("directions") != [
+        "new-client-new-server",
+        "old-client-new-server",
+        "new-client-old-server",
+    ]:
+        errors.append("wire_artifact_policy directions must contain the complete ordered matrix")
+    for key in (
+        "metadata_schema",
+        "compiled_client_packager",
+        "fixture_validator",
+        "prior_release_validator",
+        "installed_harness",
+    ):
+        ref = wire_policy.get(key)
+        if not isinstance(ref, str) or not (root / ref).is_file():
+            errors.append(f"wire_artifact_policy.{key} must reference an existing file")
+    wire_workflow = wire_policy.get("release_workflow")
+    if not isinstance(wire_workflow, str) or not (
+        root / ".github" / "workflows" / wire_workflow
+    ).is_file():
+        errors.append("wire_artifact_policy.release_workflow must reference an existing workflow")
+
     if errors:
         for err in errors:
             print(f"ERROR: {err}", file=sys.stderr)

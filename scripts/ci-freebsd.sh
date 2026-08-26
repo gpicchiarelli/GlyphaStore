@@ -63,6 +63,31 @@ echo "== ctest =="
 # Linux Sanitizers / Durability evidence remain the crash-lab authority.
 ctest --preset "$preset" --output-on-failure -LE 'crash|fault-injection'
 
+echo "== installed C/C++ consumers =="
+install_root="$(mktemp -d /tmp/glyphastore-freebsd-install.XXXXXX)"
+consumer_build="$(mktemp -d /tmp/glyphastore-freebsd-consumer.XXXXXX)"
+cleanup_install() {
+  rm -rf "$install_root" "$consumer_build"
+}
+trap cleanup_install EXIT
+cmake --install "$build_dir" --prefix "$install_root"
+test -x "$install_root/bin/glyphastored"
+test -f "$install_root/include/glyphastore/abi/glyphastore.h"
+find "$install_root/lib" -maxdepth 1 -name 'libglyphastore.so.[0-9]*' -type f | grep -q .
+
+cmake -S tests/consumer -B "$consumer_build" -G Ninja \
+  -DCMAKE_PREFIX_PATH="$install_root"
+cmake --build "$consumer_build"
+LD_LIBRARY_PATH="$install_root/lib" \
+  ctest --test-dir "$consumer_build" --output-on-failure
+
+PKG_CONFIG_PATH="$install_root/libdata/pkgconfig:$install_root/lib/pkgconfig" \
+  pkg-config --cflags --libs glyphastore-abi >"$consumer_build/abi.flags"
+# shellcheck disable=SC2046
+cc -std=c11 tests/consumer/abi.c \
+  $(cat "$consumer_build/abi.flags") -o "$consumer_build/pkgconfig-abi-consumer"
+LD_LIBRARY_PATH="$install_root/lib" "$consumer_build/pkgconfig-abi-consumer"
+
 if [[ "${GLYPHASTORE_FREEBSD_FUZZ:-0}" == "1" ]]; then
   echo "== fuzz build (compile only; continuous run stays on Linux Sanitizers) =="
   export CC="${CC:-clang}"
@@ -73,4 +98,5 @@ if [[ "${GLYPHASTORE_FREEBSD_FUZZ:-0}" == "1" ]]; then
 fi
 
 echo "FreeBSD CI gate OK"
+echo "note: installed-prefix ABI proof is not a native ports package/service-lifecycle proof"
 echo "note: this job does not pin UFS/ZFS or claim E3/E4 durability evidence"

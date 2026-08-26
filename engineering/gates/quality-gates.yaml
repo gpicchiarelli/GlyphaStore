@@ -26,11 +26,15 @@ gates:
   requisiti:
   - GS-COMPAT-FIXTURE-001
   - GS-COMPAT-NN1-001
+  - GS-COMPAT-CABI-001
   prove:
   - docs/architecture/public-api-contract.md
   - docs/architecture/version-lifecycle.md
   - docs/architecture/n-n1-compatibility.md
   - engineering/compatibility/n-n1-matrix.yaml
+  - docs/spec/c-abi-v1.md
+  - docs/adr/0038-stable-c-abi-artifact-delivery.md
+  - abi/symbols-v1.txt
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -38,11 +42,11 @@ gates:
   - workflow: assurance.yml
   - path: engineering/compatibility/n-n1-matrix.yaml
   stato: IMPLEMENTATA
-  rischio_residuo: Permanent tagged N−1 fixture trees remain a release-process step
+  rischio_residuo: Permanent tagged N−1 fixtures and the first old-binary/new-library C ABI row remain release-process steps
   riapertura:
   - Policy change without evidence update
   - Matrix row removed without ADR
-  narrative: N↔N-1 policy matrix + ABI not-promised row landed; tagged N−1 drops still residual.
+  narrative: C++ ABI remains not promised; C ABI v1 has an independent contract and local gate, while tagged cross-release proof remains residual.
 - id: GATE-DISK-WIRE-VERSIONS
   titolo: Disk and wire formats versioned with fixtures and matrices
   sezione: public_contract
@@ -444,7 +448,9 @@ gates:
   - .github/workflows/scorecard.yml
   - .github/workflows/dependency-review.yml
   - .github/workflows/actionlint.yml
+  - .github/workflows/release.yml
   - engineering/tools/validate_actions_pins.py
+  - scripts/verify_hardening.py
   piattaforme:
   - linux-x86_64
   evidenze:
@@ -454,12 +460,13 @@ gates:
   - workflow: dependency-review.yml
   - workflow: actionlint.yml
   - workflow: assurance.yml
+  - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs
+  rischio_residuo: Project GPG / full SLSA L3 optional; Dependabot must update SHAs; hosted billing may block runs; no tagged security-matrix evidence has been retained yet
   riapertura:
   - Removing SBOM/checksum gates
   - Reintroducing mutable Action tags
-  narrative: Threat model + SBOM/checksum/Cosign/SLSA path + SHA-pinned Actions + Scorecard/dependency-review; residuals documented.
+  narrative: Threat model, SBOM/checksum/Cosign/SLSA path, SHA-pinned Actions and Scorecard/dependency-review are implemented; the tag graph now closes the Linux sanitizer, CodeQL, static, supply-chain, SBOM and distributed-ELF matrix, but retained tagged evidence remains absent.
 - id: GATE-CMAKE-INSTALL
   titolo: CMake installs versioned package metadata and GlyphaStore::core
   sezione: distribution_lifecycle
@@ -493,6 +500,7 @@ gates:
   livello_rilascio: alpha
   requisiti:
   - GS-CORE-API-001
+  - GS-COMPAT-CABI-001
   prove:
   - tests/consumer
   piattaforme:
@@ -500,17 +508,47 @@ gates:
   - macos-arm64
   evidenze:
   - workflow: ci.yml
-  stato: PROVATA_IN_CI
-  rischio_residuo: None beyond prototype claim ceiling
+  stato: PROVATA_LOCALMENTE
+  rischio_residuo: Existing C++ consumer is proven in CI; the newly added pure-C installed consumer awaits post-merge CI evidence
   riapertura:
   - Consumer job removed
-  narrative: Install-consumer gate present in CI.
+  narrative: Install-consumer job builds supported C++ targets and now also the pure-C ABI target; local proof exists.
+- id: GATE-C-ABI-V1
+  titolo: C ABI v1 layout symbols lifecycle and installed consumption
+  sezione: public_contract
+  livello_rilascio: alpha
+  requisiti:
+  - GS-COMPAT-CABI-001
+  prove:
+  - tests/abi/c_abi_tests.c
+  - tests/abi/c_abi_durable_tests.cpp
+  - tests/consumer/abi.c
+  - engineering/tools/check_abi_symbols.py
+  - tests/abi/unexpected-symbols.txt
+  - abi/symbols-v1.txt
+  piattaforme:
+  - linux-x86_64
+  - linux-arm64
+  - macos-arm64
+  - freebsd
+  - openbsd
+  evidenze:
+  - workflow: ci.yml
+    note: Retained CI evidence begins after merge; current proof is local only
+  stato: PROVATA_LOCALMENTE
+  rischio_residuo: No tagged ABI-1 old consumer fixture and no retained native BSD package evidence yet
+  riapertura:
+  - ABI symbol or layout change without ABI_VERSION and ADR review
+  - Mutation outcome or close lifetime semantic change
+  - Shared facade begins exporting C++ or server symbols
+  narrative: Pure C runtime, negative symbol gate, layout assertions, SONAME authority, CMake target and installed consumer are locally proven; cross-release proof remains open.
 - id: GATE-RELEASE-MATRIX
   titolo: Release CI covers supported compilers OS arch optimized builds
   sezione: distribution_lifecycle
   livello_rilascio: rc
   requisiti:
   - GS-COMPAT-FIXTURE-001
+  - GS-RELEASE-ARTIFACT-001
   prove:
   - .github/workflows/ci.yml
   - .github/workflows/freebsd.yml
@@ -528,30 +566,75 @@ gates:
   - workflow: openbsd-libressl.yml
   - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: Tagged signed release pipeline still prototype wording; Windows out of scope; hosted billing may block runs
+  rischio_residuo: No immutable tag or native BSD package evidence exists; Windows is out of scope; hosted billing may block runs
   riapertura:
   - Dropping a supported OS without lifecycle update
-  narrative: Build/test gates cover gcc/clang x86_64+arm64, macOS, FreeBSD, OpenBSD, release/LTO; GitHub Release attach on tags.
+  narrative: Platform build/test workflows exist; tag publication is now blocked until exact native packages and same-commit evidence enter the sealed manifest.
 - id: GATE-REPRO-SBOM
   titolo: Artifacts reproducible signed checksummed with provenance and SBOM
   sezione: distribution_lifecycle
   livello_rilascio: rc
   requisiti:
   - GS-COMPAT-FIXTURE-001
+  - GS-RELEASE-ARTIFACT-001
   prove:
   - .github/workflows/supply-chain.yml
+  - .github/workflows/release-candidate.yml
   - .github/workflows/release.yml
   - scripts/install-syft.sh
+  - engineering/tools/release_bundle.py
+  - engineering/tools/release_evidence.py
+  - engineering/tools/compare_release_rebuild.py
+  - scripts/verify_hardening.py
+  - engineering/schemas/release-evidence.schema.json
+  - engineering/schemas/candidate-admission.schema.json
+  - engineering/schemas/evidence-import.schema.json
+  - scripts/tests/test_release_artifacts.py
   piattaforme:
   - linux-x86_64
   evidenze:
   - workflow: supply-chain.yml
   - workflow: release.yml
   stato: IMPLEMENTATA
-  rischio_residuo: macOS/Windows builders if those become release hosts; C++ install-prefix SBOM is tag/dispatch only
+  rischio_residuo: First successful tagged independent comparison, full native BSD artifacts, and cross-image/compiler reproducibility evidence remain absent
   riapertura:
   - Disabling digest checks on tags
-  narrative: Checksums SPDX Cosign SLSA path landed for Linux tags/dispatch; Syft install checksum-pinned; Release attaches artifacts.
+  narrative: Deterministic source/install/ABI/wire archives, an isolated second-runner byte comparison, SPDX validation, transitive seals and OIDC attestation are implemented; rebuilt bytes cannot enter promotion and release policy remains intentionally red until retained tag and platform evidence exist.
+- id: GATE-ARTIFACT-DELIVERY
+  titolo: Candidate Verify Publish preserves exact artifact identity
+  sezione: distribution_lifecycle
+  livello_rilascio: rc
+  requisiti:
+  - GS-RELEASE-ARTIFACT-001
+  prove:
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/release.yml
+  - engineering/tools/release_identity.py
+  - engineering/tools/release_bundle.py
+  - engineering/tools/release_evidence.py
+  - engineering/schemas/release-evidence.schema.json
+  - engineering/schemas/candidate-admission.schema.json
+  - engineering/schemas/evidence-import.schema.json
+  - engineering/tools/validate_bsd_packaging.py
+  - scripts/verify_hardening.py
+  - scripts/test-freebsd-package-lifecycle.sh
+  - scripts/tests/test_release_artifacts.py
+  - scripts/tests/test_bsd_packaging.py
+  - scripts/tests/test_artifact_release_workflow.py
+  piattaforme:
+  - linux-x86_64
+  - freebsd
+  - openbsd
+  evidenze:
+  - workflow: release.yml
+    note: Implementation and local negative proofs exist; no complete tag run exists
+  stato: IMPLEMENTATA
+  rischio_residuo: Native BSD package bytes, registered service accounts, the OpenBSD package evidence producer, a prior tagged Store, a complete attested prior ABI/wire release, and retained tagged evidence are still missing
+  riapertura:
+  - Any engine build or package rebuild in Verify or Publish
+  - Asset clobber or publication without verified-seal attestation
+  - Weakening tag identity, native package, SBOM or compatibility gates
+  narrative: Exact candidate admission and a closed same-run evidence import remove the candidate-seal/evidence cycle; SDK, persistence, bidirectional C-ABI, bidirectional wire, the complete Linux security matrix, native FreeBSD package lifecycle and independent reproducibility evidence have same-run producers; FreeBSD generates non-circular distinfo from the sealed source and verifies the real ports account authority; persistence rejects self/current fixtures; ABI/wire require an attested complete prior release and retained compiled consumers; rebuilt comparison bytes cannot enter promotion; publish cannot rebuild; and policy deliberately prevents release until the remaining proofs exist.
 - id: GATE-VERSION-LIFECYCLE
   titolo: Upgrade downgrade deprecation support EOL policies published
   sezione: distribution_lifecycle

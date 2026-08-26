@@ -1,7 +1,7 @@
 # Version lifecycle and compatibility
 
 Status: normative for 0.x promises; descriptive for future 1.0 support windows
-Applies to: persistence v1, wire protocol v2, public C++ API before 1.0
+Applies to: persistence v1, wire protocol v2, C ABI v1, public C++ API before 1.0
 Owner: persistence maintainers
 Last reviewed: 2026-08-01
 
@@ -15,12 +15,12 @@ Operator procedures: [compatibility-and-migration](../operations/compatibility-a
 
 ## Release levels and what is promised
 
-| Level | Disk / wire | Embedded C++ API | C++ ABI | Worker count change |
+| Level | Disk / wire | C ABI | Embedded C++ API / ABI | Worker count change |
 |---|---|---|---|---|
-| Prototype | No promise | Unstable | No promise | Unsupported |
-| Alpha (0.x durable) | Persistence **v1** reopen within declared codec rows; wire **v2** exact | Source may break across minors with changelog notes; patches preserve documented behavior | **No ABI promise**; rebuild required | Offline migrate only ([store-migration](store-migration.md)) |
-| Beta | Same plus tested upgrade/downgrade notes per release | Feature-complete contracts | Still no ABI promise unless announced | Offline migrate; online still out of scope |
-| RC / Stable | Supported upgrade paths and support lifetime | SemVer API policy | Declared only at 1.0+ | Separate project for online reshard |
+| Prototype | No release claim | ABI 1 contract may be implemented; evidence gates still apply | Unstable / no ABI promise | Unsupported |
+| Alpha (0.x durable) | Persistence **v1** reopen within declared codec rows; wire **v2** exact | ABI major 1 symbols/layout/semantics preserved after first publication | Source may break across minors; no C++ ABI promise | Offline migrate only ([store-migration](store-migration.md)) |
+| Beta | Same plus tested upgrade/downgrade notes per release | Old-binary/new-library matrix required | Feature-complete contracts; C++ ABI still not promised | Offline migrate; online still out of scope |
+| RC / Stable | Supported upgrade paths and support lifetime | Declared ABI-major support window | SemVer API; C++ ABI only if separately declared | Separate project for online reshard |
 
 ## Persistence v1: upgrade and downgrade
 
@@ -63,10 +63,15 @@ Operator procedures: [compatibility-and-migration](../operations/compatibility-a
 
 See [store-migration](store-migration.md) and [worker-resharding](../operations/worker-resharding.md).
 
-## Public C++ API and ABI
+## Public APIs and ABIs
 
 Before `1.0`: no C++ ABI stability; consumers rebuild; patch releases preserve documented source
 behavior; minors may break source with changelog notes. Disk/wire follow encoded versions.
+
+The C facade is separately versioned by `ABI_VERSION`. ABI major 1 is governed by ADR 0038 and
+[`docs/spec/c-abi-v1.md`](../spec/c-abi-v1.md); product `0.x` does not cancel or infer that ABI.
+Until a complete prior official ABI-1 release is retained, same-build tests and the implemented
+producer establish mechanism but no release note may claim demonstrated N−1 binary compatibility.
 
 ## Released-artifact evidence
 
@@ -75,6 +80,10 @@ behavior; minors may break source with changelog notes. Disk/wire follow encoded
 | `tests/fixtures/*.hex` | Current-tree canonical codecs |
 | `tests/fixtures/released/<label>/` | Optional dropped fixture trees from a tag or packaging script |
 | `scripts/package-release-compatibility-artifacts.sh` | Packages current fixtures for a release label |
+| `tests/fixtures/released-stores/<semver>/` | Complete stopped Store from a prior tagged release |
+| `engineering/tools/persistence_fixture.py` | Creates, validates, and strictly selects complete Store drops |
+| `glyphastore-abi-v<major>-consumer-<version>-linux-<arch>.tar.xz` | Sealed compiled consumer used by the next ABI release matrix |
+| `engineering/tools/prior_release.py` | Validates a complete official prior release before cross-version use |
 | `scripts/package-release-claim.sh` | Writes `engineering/claims/<tag>.yaml` for a version tag |
 | `engineering/claims/` | Claim ceiling + gate/evidence pointers per tag |
 
@@ -86,6 +95,6 @@ self/tag artifacts on every push/PR and tag, and packages a claim YAML on versio
 
 - Online Worker resharding or dual-ownership routing tables
 - In-place Worker-count rewrite on open
-- C++ ABI guarantees before 1.0
+- C++ ABI guarantees before 1.0 (the independent C ABI v1 is the supported binary boundary)
 - Automatic downgrade of future format versions
 - Preserving sequence numbers or Store identity across migrate

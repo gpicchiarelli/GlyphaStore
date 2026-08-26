@@ -419,10 +419,10 @@ class Validator:
                 # Keep checkbox semantics for humans; state is authoritative.
                 title = gate["titolo"]
                 narrative = (gate.get("narrative") or "").strip()
-                lines.append(f"- [{mark}] **{gate['id']}** — {title}  ")
-                lines.append(f"  State: `{gate['stato']}` · Release target: `{gate['livello_rilascio']}`  ")
+                lines.append(f"- [{mark}] **{gate['id']}** — {title}")
+                lines.append(f"  State: `{gate['stato']}` · Release target: `{gate['livello_rilascio']}`")
                 if gate.get("requisiti"):
-                    lines.append("  Requirements: " + ", ".join(f"`{r}`" for r in gate["requisiti"]) + "  ")
+                    lines.append("  Requirements: " + ", ".join(f"`{r}`" for r in gate["requisiti"]))
                 lines.append(f"  Residual risk: {gate['rischio_residuo']}")
                 if narrative:
                     lines.append(f"  {narrative}")

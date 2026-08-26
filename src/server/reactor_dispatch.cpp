@@ -16,7 +16,8 @@
 
 namespace glyphastore::server {
 
-auto Reactor::process_frames(const ConnectionToken token) -> Status {
+auto Reactor::process_frames(const ConnectionToken token,
+                             const std::uint32_t new_mutation_admission_budget) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
@@ -28,6 +29,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         return {};
     }
     std::uint64_t cached_now_ns{};
+    std::uint32_t new_mutations_admitted{};
     // Sample the reactor clock once per process_frames turn (not per request).
     const auto now = std::chrono::steady_clock::now();
     while (!current->output_lease && current->input_offset < current->input.size()) {
@@ -60,6 +62,15 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
             break;
         }
         current->partial_request_since = {};
+        // An open mutation window may absorb only adjacent mutations. Any
+        // other opcode is an ordering/backpressure boundary and must wait for
+        // the preceding publication completions. In particular, do not let a
+        // large immediate response leap into the output buffer while the
+        // Writer lane is still consuming an earlier PUT/ERASE.
+        if (current->mutations_in_flight > 0 && decoded.frame.opcode != RequestOpcode::put &&
+            decoded.frame.opcode != RequestOpcode::erase) {
+            break;
+        }
         if (shutting_down_ && decoded.frame.opcode != RequestOpcode::health &&
             decoded.frame.opcode != RequestOpcode::ready && decoded.frame.opcode != RequestOpcode::stats) {
             // Connection drain refuses new work; lifecycle probes may still observe live/ready/stats.
@@ -263,7 +274,7 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         }
         case RequestOpcode::get:
         case RequestOpcode::put:
-        case RequestOpcode::erase:
+        case RequestOpcode::erase: {
             if (available.size() > decoded.consumed) {
                 current->pipelined_store_input_observed = true;
             }
@@ -272,10 +283,15 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                 return {};
             }
             immediate_response = false;
+            const auto mutations_before_dispatch = current->mutations_in_flight;
             if (auto dispatched = dispatch_request(token, decoded.frame, cached_now_ns); !dispatched) {
                 return dispatched;
             }
+            if (current->mutations_in_flight > mutations_before_dispatch) {
+                new_mutations_admitted += current->mutations_in_flight - mutations_before_dispatch;
+            }
             break;
+        }
         case RequestOpcode::bind_worker:
             break;
         }
@@ -288,6 +304,14 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         touch_activity(*current, now);
         if (current->request_in_flight) {
             current->in_flight_since = now;
+            // Completion-driven parsing deliberately admits only one follow-up
+            // mutation while decided output drains. Normal read/write turns use
+            // the full publication-window budget. Keeping the budget local to
+            // this turn prevents slow clients from reopening a 32-request
+            // Writer window behind an EAGAIN-blocked response.
+            if (new_mutations_admitted >= new_mutation_admission_budget) {
+                break;
+            }
             // ADR 0037 Phase C: keep parsing PUT/ERASE into the open mutation window.
             if (current->mutations_in_flight > 0 &&
                 current->mutations_in_flight < kMaximumMutationWindow &&
@@ -873,7 +897,7 @@ auto Reactor::process_mutation_completions() -> Status {
         // can be admitted; its Writer work may overlap this socket drain while
         // response bytes remain ordered in the connection output buffer.
         if (!output_was_pending && current->input_offset < current->input.size()) {
-            if (auto resumed = process_frames(completion->connection); !resumed) {
+            if (auto resumed = process_frames(completion->connection, 1U); !resumed) {
                 current = connection(completion->connection);
                 if (current == nullptr || !has_pending_output(*current)) {
                     close_connection(completion->connection);

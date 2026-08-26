@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(GlyphaStoreConsumer LANGUAGES CXX)
+project(GlyphaStoreConsumer LANGUAGES C CXX)
 
 find_package(GlyphaStore 0.1 CONFIG REQUIRED)
 
@@ -15,3 +15,12 @@ add_executable(glyphastore_client_consumer_smoke client.cpp)
 target_link_libraries(glyphastore_client_consumer_smoke PRIVATE GlyphaStore::client)
 target_compile_features(glyphastore_client_consumer_smoke PRIVATE cxx_std_23)
 add_test(NAME glyphastore_client_consumer_smoke COMMAND glyphastore_client_consumer_smoke)
+
+add_executable(glyphastore_abi_consumer_smoke abi.c)
+target_link_libraries(glyphastore_abi_consumer_smoke PRIVATE GlyphaStore::abi)
+set_target_properties(glyphastore_abi_consumer_smoke PROPERTIES
+    C_STANDARD 11
+    C_STANDARD_REQUIRED ON
+    C_EXTENSIONS OFF
+)
+add_test(NAME glyphastore_abi_consumer_smoke COMMAND glyphastore_abi_consumer_smoke)

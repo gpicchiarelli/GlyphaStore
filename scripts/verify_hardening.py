@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify Linux hardening from emitted commands and the final ELF executable."""
+"""Verify Linux hardening from emitted commands and/or a distributed ELF executable."""
 
 from __future__ import annotations
 
@@ -153,8 +153,21 @@ def verify_elf(binary: pathlib.Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("build_dir", type=pathlib.Path)
+    parser.add_argument("build_dir", type=pathlib.Path, nargs="?")
+    parser.add_argument("--binary", type=pathlib.Path)
     args = parser.parse_args()
+    if (args.build_dir is None) == (args.binary is None):
+        parser.error("provide exactly one build directory or --binary")
+    if args.binary is not None:
+        binary_input = args.binary.expanduser()
+        if binary_input.is_symlink() or not binary_input.is_file():
+            fail("distributed ELF binary is missing or unsafe")
+        binary = binary_input.resolve()
+        if binary.stat().st_mode & 0o111 == 0:
+            fail("distributed ELF binary is not executable")
+        verify_elf(binary)
+        print("hardening verification passed: distributed ELF properties")
+        return 0
     build_dir = args.build_dir.resolve()
     verify_commands(build_dir)
     verify_elf(build_dir / "glyphastored")

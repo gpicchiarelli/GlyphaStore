@@ -76,14 +76,9 @@ foreach(man_file IN LISTS _glyphastore_man_install_list)
     else()
         message(FATAL_ERROR "Unrecognized man page section for ${man_file}")
     endif()
-    # Runtime: shipped with binaries. ManPages: install-only component for CI/packaging
-    # without requiring every Runtime binary to be built in the same tree.
+    # Manuals are part of the deployable Runtime component.
     install(FILES "${man_file}"
         DESTINATION "${CMAKE_INSTALL_MANDIR}/${_sec}"
         COMPONENT Runtime
-    )
-    install(FILES "${man_file}"
-        DESTINATION "${CMAKE_INSTALL_MANDIR}/${_sec}"
-        COMPONENT ManPages
     )
 endforeach()

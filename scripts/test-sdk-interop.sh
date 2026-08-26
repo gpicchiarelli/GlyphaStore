@@ -16,6 +16,13 @@ python="${PYTHON:-python3}"
 perl="${PERL:-perl}"
 daemon="${GLYPHASTORED:-}"
 cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
+use_installed="${GLYPHASTORE_INTEROP_USE_INSTALLED:-0}"
+if [[ "$use_installed" != "0" && "$use_installed" != "1" ]]; then
+  echo "GLYPHASTORE_INTEROP_USE_INSTALLED must be 0 or 1" >&2
+  exit 1
+fi
+export GLYPHASTORE_INTEROP_USE_INSTALLED="$use_installed"
+export GLYPHASTORE_SOURCE_ROOT="$root"
 
 prefer_bins=(
   "$root/build/macos-debug"
@@ -66,12 +73,18 @@ if [[ -z "$cpp_client" || ! -x "$cpp_client" ]]; then
   exit 1
 fi
 
-export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
-export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
+if [[ "$use_installed" != "1" ]]; then
+  export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
+  export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
+fi
 py_helper="$root/scripts/sdk_interop_py.py"
 pl_helper="$root/scripts/sdk_interop_perl.pl"
 go_helper="${GLYPHASTORE_GO_INTEROP:-}"
 if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
+  if [[ "$use_installed" == "1" ]]; then
+    echo "installed-artifact mode requires GLYPHASTORE_GO_INTEROP" >&2
+    exit 1
+  fi
   mkdir -p "$root/sdk/go/bin"
   (cd "$root/sdk/go" && "${GO:-go}" build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
   go_helper="$root/sdk/go/bin/glyphastore-interop"
@@ -93,7 +106,9 @@ else
   fi
   if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
     ruby_ready=1
-    export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+    if [[ "$use_installed" != "1" ]]; then
+      export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+    fi
   else
     if [[ "${INTEROP_REQUIRE_RUBY:-0}" == "1" ]]; then
       echo "missing Ruby >= 3.2 for interop (set RUBY= or install via mise)" >&2
@@ -112,7 +127,10 @@ erlang_ready=0
 if [[ -z "$erlang_helper" ]]; then
   erlang_helper="$root/sdk/erlang/scripts/glyphastore-interop.escript"
 fi
-if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+if [[ "$use_installed" == "1" ]] && command -v erl >/dev/null 2>&1 && \
+  command -v escript >/dev/null 2>&1; then
+  erlang_ready=1
+elif command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   (cd "$root/sdk/erlang" && rebar3 compile >/dev/null)
   erlang_ready=1
 elif [[ "${INTEROP_REQUIRE_ERLANG:-0}" == "1" ]]; then
@@ -123,6 +141,17 @@ else
 fi
 chmod +x "$ruby_helper" "$py_helper" "$pl_helper" 2>/dev/null || true
 chmod +x "$erlang_helper" 2>/dev/null || true
+
+if [[ "$use_installed" == "1" ]]; then
+  for entry in "cpp:$cpp_client" "go:$go_helper"; do
+    sdk_name="${entry%%:*}"
+    sdk_path="${entry#*:}"
+    if [[ "$sdk_path" == "$root/"* ]]; then
+      echo "installed-artifact mode refuses source-tree $sdk_name binary: $sdk_path" >&2
+      exit 1
+    fi
+  done
+fi
 
 # Optional TLS client flags populated by run_matrix_for_workers when mode=tls.
 tls_args=()

@@ -3,7 +3,7 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-build_dir="${1:-}"
+artifact_root="${1:-}"
 output="${2:-}"
 cmake_bin="${CMAKE:-}"
 
@@ -16,13 +16,9 @@ if [[ -z "$cmake_bin" && -x "$root/.tools/venv/lib/python3.13/site-packages/cmak
   cmake_bin="$root/.tools/venv/lib/python3.13/site-packages/cmake/data/bin/cmake"
 fi
 
-if [[ -z "$build_dir" || -z "$output" ]]; then
-  echo "usage: $0 BUILD_DIR OUTPUT" >&2
+if [[ -z "$artifact_root" || -z "$output" ]]; then
+  echo "usage: $0 BUILD_DIR_OR_INSTALLED_PREFIX OUTPUT" >&2
   exit 2
-fi
-if [[ ! -f "$build_dir/CMakeCache.txt" ]]; then
-  echo "BUILD_DIR must name a configured GlyphaStore build: $build_dir" >&2
-  exit 1
 fi
 if [[ -z "$cmake_bin" || ! -x "$cmake_bin" ]]; then
   echo "CMake is required to build the installed C++ interop peer" >&2
@@ -37,8 +33,15 @@ prefix="$work/prefix"
 consumer="$work/consumer"
 mkdir -p "$prefix" "$consumer"
 
-"$cmake_bin" --build "$build_dir" --target glyphastore_client
-"$cmake_bin" --install "$build_dir" --prefix "$prefix" --component Development
+if [[ -f "$artifact_root/CMakeCache.txt" ]]; then
+  "$cmake_bin" --build "$artifact_root" --target glyphastore_client
+  "$cmake_bin" --install "$artifact_root" --prefix "$prefix" --component Development
+elif [[ -d "$artifact_root" ]]; then
+  prefix="$(cd "$artifact_root" && pwd -P)"
+else
+  echo "first argument must be a configured build or installed prefix: $artifact_root" >&2
+  exit 1
+fi
 
 configs=()
 if command -v rg >/dev/null 2>&1; then

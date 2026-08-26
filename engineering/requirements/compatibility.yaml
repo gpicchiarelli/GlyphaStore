@@ -5,8 +5,8 @@ requirements:
   criticita: alta
   stato: provato
   descrizione: Manifest/Segment/commit/Record layouts and wire v2 fixtures are golden-tested; released-artifact
-    harness packages per-SHA self artifacts. Permanent fixture drop of tagged trees remains a release
-    process step.
+    harness packages per-SHA self artifacts. Complete tagged Store fixtures have a separate closed
+    format and an artifact-only candidate harness; the first prior-release Store drop remains a release step.
   autorita:
   - docs/spec/persistence-v1.md
   - docs/spec/wire-protocol-v2.md
@@ -14,10 +14,13 @@ requirements:
   implementazione:
   - scripts/generate_format_fixtures.py
   - scripts/package-release-compatibility-artifacts.sh
+  - engineering/tools/persistence_fixture.py
+  - scripts/test-installed-persistence-compat.sh
   - tests/fixtures
   prove:
   - tests/fixtures
   - scripts/generate_format_fixtures.py
+  - scripts/tests/test_persistence_fixture.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -26,7 +29,7 @@ requirements:
   - workflow: release-compat.yml
   - workflow: ci.yml
   rischio_residuo:
-  - Tagged cross-release binary matrices remain open
+  - No complete Store from a prior tagged release exists yet, so cross-release persistence remains open
   hazards:
   - HAZ-022
   gates:
@@ -39,7 +42,9 @@ requirements:
   stato: implementato
   descrizione: Store-open, wire, and ABI N↔N-1 combinations are recorded as supported,
     supported_offline_only, intentionally_rejected, unsupported, or not_promised with a CI
-    validator. Permanent tagged N−1 fixture drops remain a release-process residual.
+    validator. A same-run artifact-only persistence producer selects only a complete, checksummed,
+    strictly older tagged Store. The wire producer retains a compiled client per candidate and
+    exercises new/new plus both N-1 directions against a complete attested prior release.
   autorita:
   - docs/architecture/n-n1-compatibility.md
   - docs/architecture/version-lifecycle.md
@@ -49,12 +54,22 @@ requirements:
   - engineering/compatibility/sdk-release-contract.json
   - engineering/tools/validate_compat_matrix.py
   - engineering/tools/write_sdk_release_index.py
+  - engineering/tools/persistence_fixture.py
+  - scripts/test-installed-persistence-compat.sh
+  - scripts/package-wire-client.py
+  - engineering/schemas/wire-client-fixture.schema.json
+  - engineering/tools/wire_client_fixture.py
+  - scripts/test-installed-wire-compat.sh
+  - .github/workflows/release.yml
   - scripts/package-release-claim.sh
   prove:
   - engineering/compatibility/n-n1-matrix.yaml
   - engineering/compatibility/sdk-release-contract.json
   - engineering/tools/validate_compat_matrix.py
   - engineering/claims
+  - scripts/tests/test_persistence_fixture.py
+  - scripts/tests/test_release_artifacts.py
+  - scripts/tests/test_artifact_release_workflow.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -63,10 +78,125 @@ requirements:
   - workflow: assurance.yml
   - workflow: release-compat.yml
   rischio_residuo:
-  - Prior tagged N−1 trees are not yet committed under tests/fixtures/released/
+  - Prior tagged codec trees, a complete Store, and a complete attested prior wire release are not yet retained; cross-release producers therefore block honestly
   hazards:
   - HAZ-022
   gates:
   - GATE-DISK-WIRE-VERSIONS
   - GATE-VERSION-LIFECYCLE
   - GATE-API-ABI-POLICY
+- id: GS-COMPAT-CABI-001
+  titolo: Stable C ABI v1 isolated from the C++ engine
+  categoria: compatibility
+  criticita: alta
+  stato: implementato
+  descrizione: C ABI major 1 exposes only opaque synchronous Store operations, caller-owned buffers,
+    stable status and mutation-outcome values, extensible options, and an exact symbol allowlist. The
+    daemon remains linked directly to the static core and persistence v1 / wire v2 semantics are unchanged.
+  autorita:
+  - docs/spec/c-abi-v1.md
+  - docs/adr/0038-stable-c-abi-artifact-delivery.md
+  - docs/abi/compatibility-policy.md
+  implementazione:
+  - ABI_VERSION
+  - include/glyphastore/abi/glyphastore.h
+  - src/abi/glyphastore.cpp
+  - abi/symbols-v1.txt
+  - src/CMakeLists.txt
+  - scripts/package-abi-consumer.py
+  - engineering/schemas/abi-consumer-fixture.schema.json
+  - engineering/tools/abi_consumer_fixture.py
+  - engineering/tools/prior_release.py
+  - scripts/test-installed-abi-compat.sh
+  - .github/workflows/release.yml
+  prove:
+  - tests/abi/c_abi_tests.c
+  - tests/abi/c_abi_durable_tests.cpp
+  - tests/consumer/abi.c
+  - engineering/tools/check_abi_symbols.py
+  - tests/abi/unexpected-symbols.txt
+  - tests/abi/c_abi_layout_probe.c
+  - scripts/tests/test_release_artifacts.py
+  - scripts/tests/test_artifact_release_workflow.py
+  piattaforme:
+  - linux-x86_64
+  - linux-arm64
+  - macos-arm64
+  - freebsd
+  - openbsd
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: ci.yml
+    note: C consumer and symbol tests are part of the default CTest graph; CI evidence awaits merge
+  - workflow: release.yml
+    note: Bidirectional same-run producer exists but no complete prior official release can feed it yet
+  rischio_residuo:
+  - No complete prior official release with a sealed ABI-1 consumer exists yet
+  - Native FreeBSD/OpenBSD package installation evidence is not yet retained
+  hazards:
+  - HAZ-029
+  gates:
+  - GATE-C-ABI-V1
+  - GATE-API-ABI-POLICY
+  - GATE-INSTALL-CONSUMER
+- id: GS-RELEASE-ARTIFACT-001
+  titolo: Build-once artifact identity verification and immutable promotion
+  categoria: compatibility
+  criticita: alta
+  stato: implementato
+  descrizione: Le release partono esclusivamente da un tag annotato coerente con VERSION, costruiscono
+    il candidate una sola volta, ammettono l'insieme esatto mediante seal SHA-256, importano package
+    ed evidence in un inventario chiuso, verificano package consumer, SBOM, compatibility evidence e
+    provenance, quindi pubblicano senza rebuild o sostituzione asset.
+  autorita:
+  - docs/adr/0038-stable-c-abi-artifact-delivery.md
+  - docs/distribution/artifact-delivery.md
+  - docs/distribution/bsd-packaging.md
+  implementazione:
+  - .github/workflows/release-candidate.yml
+  - .github/workflows/release.yml
+  - engineering/tools/release_identity.py
+  - engineering/tools/release_bundle.py
+  - engineering/tools/release_evidence.py
+  - engineering/tools/validate_bsd_packaging.py
+  - engineering/schemas/release-evidence.schema.json
+  - engineering/schemas/candidate-admission.schema.json
+  - engineering/schemas/evidence-import.schema.json
+  - scripts/package-source-release.py
+  - scripts/package-install-prefix.py
+  - scripts/package-abi-consumer.py
+  - scripts/package-wire-client.py
+  - engineering/tools/abi_consumer_fixture.py
+  - engineering/tools/wire_client_fixture.py
+  - engineering/tools/compare_release_rebuild.py
+  - scripts/verify_hardening.py
+  - scripts/test-freebsd-package-lifecycle.sh
+  - packaging/freebsd
+  - packaging/openbsd
+  prove:
+  - scripts/tests/test_release_artifacts.py
+  - scripts/tests/test_bsd_packaging.py
+  - scripts/tests/test_artifact_release_workflow.py
+  piattaforme:
+  - linux-x86_64
+  - freebsd
+  - openbsd
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: release.yml
+    note: I producer same-run SDK, persistenza, ABI, wire, security matrix, package FreeBSD e riproducibilita esistono con gate negativi; nessuna release completa e stata ancora promossa
+  rischio_residuo:
+  - Nessun tag annotato e nessun package BSD nativo esistono ancora
+  - Il vecchio consumer ABI e le otto evidenze release-wide potranno nascere solo dalla prima release
+  - Il reusable workflow e locale al repository e non costituisce oggi prova SLSA Build Level 3
+  - Persistenza, SDK, ABI, wire, security matrix, package FreeBSD e riproducibilita hanno producer same-run; il record package OpenBSD resta senza producer completo
+  - Il producer FreeBSD resta bloccato finche l'account glyphastore non e registrato nel ports tree nativo
+  - Il producer persistente resta bloccato finche non esiste un vero Store di una release taggata precedente
+  - Il producer ABI resta bloccato finche non esiste una release completa attestata precedente
+  - Il producer wire resta bloccato finche non esiste una release completa attestata precedente con client v2 sigillato
+  hazards:
+  - HAZ-030
+  gates:
+  - GATE-ARTIFACT-DELIVERY
+  - GATE-RELEASE-MATRIX
+  - GATE-REPRO-SBOM

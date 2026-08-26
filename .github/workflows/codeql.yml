@@ -39,7 +39,7 @@ jobs:
         with:
           category: "/language:c-cpp"
           output: codeql-results-cpp
-          upload: false
+          upload: never
           upload-database: false
       - name: Preserve SARIF report
         if: always()
@@ -70,7 +70,7 @@ jobs:
         with:
           category: "/language:python"
           output: codeql-results-python
-          upload: false
+          upload: never
           upload-database: false
       - name: Preserve SARIF report
         if: always()
@@ -109,7 +109,7 @@ jobs:
         with:
           category: "/language:go"
           output: codeql-results-go
-          upload: false
+          upload: never
           upload-database: false
       - name: Preserve SARIF report
         if: always()
@@ -140,7 +140,7 @@ jobs:
         with:
           category: "/language:actions"
           output: codeql-results-actions
-          upload: false
+          upload: never
           upload-database: false
       - name: Preserve SARIF report
         if: always()

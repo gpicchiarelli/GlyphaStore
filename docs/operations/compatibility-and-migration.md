@@ -86,6 +86,13 @@ CI (`.github/workflows/release-compat.yml`) packages self/tag artifacts; permane
 trees under `tests/fixtures/released/<label>/` remain a **maintainer release step**. See
 [released fixtures README](../../tests/fixtures/released/README.md).
 
+A complete Store baseline is separate from those codec vectors. After a tagged release has created
+and verified a stopped Store through its installed daemon, package it with
+`engineering/tools/persistence_fixture.py create` under
+`tests/fixtures/released-stores/<semver>/`; follow the exact metadata and digest procedure in that
+directory's README. The next release's artifact-only persistence job requires this baseline and
+will not accept a self-generated candidate Store.
+
 ## 6. Backup before upgrade
 
 Always take a verified offline or online-fenced backup before binary upgrades that touch

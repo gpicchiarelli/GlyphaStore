@@ -1,0 +1,32 @@
+#!/bin/sh
+
+# PROVIDE: glyphastored
+# REQUIRE: DAEMON FILESYSTEMS NETWORKING
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+
+name="glyphastored"
+rcvar="glyphastored_enable"
+
+load_rc_config "${name}"
+: ${glyphastored_enable:="NO"}
+: ${glyphastored_user:="glyphastore"}
+: ${glyphastored_config:="%%PREFIX%%/etc/glyphastored.conf"}
+: ${glyphastored_data_dir:="/var/db/glyphastore"}
+: ${glyphastored_runtime_dir:="/var/run/glyphastored"}
+
+pidfile="${glyphastored_runtime_dir}/glyphastored.pid"
+procname="%%PREFIX%%/bin/glyphastored"
+command="/usr/sbin/daemon"
+command_args="-f -p ${pidfile} -u ${glyphastored_user} ${procname} --config ${glyphastored_config}"
+required_files="${glyphastored_config}"
+start_precmd="glyphastored_precmd"
+
+glyphastored_precmd()
+{
+    install -d -o "${glyphastored_user}" -g "${glyphastored_user}" -m 0750 \
+        "${glyphastored_data_dir}" "${glyphastored_runtime_dir}"
+}
+
+run_rc_command "$1"

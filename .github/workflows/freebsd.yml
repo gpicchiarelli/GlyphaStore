@@ -26,13 +26,23 @@ jobs:
           release: "14.3"
           arch: x86_64
           usesh: true
-          copyback: false
+          copyback: true
           sync: rsync
           mem: 8192
           cache-after-prepare: true
           prepare: |
-            pkg install -y cmake ninja git bash openssl
+            pkg install -y cmake ninja git bash openssl pkgconf
           run: |
             set -e
+            mkdir -p engineering/evidence/native-ci
             chmod +x scripts/ci-freebsd.sh
-            bash scripts/ci-freebsd.sh
+            bash -o pipefail -c \
+              'bash scripts/ci-freebsd.sh 2>&1 | tee engineering/evidence/native-ci/freebsd.log'
+            rm -rf build
+      - name: Retain native FreeBSD log
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-native-${{ github.sha }}
+          path: engineering/evidence/native-ci/freebsd.log
+          if-no-files-found: error
+          retention-days: 14

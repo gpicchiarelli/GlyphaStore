@@ -35,3 +35,5 @@ accepted residual risks do not imply production readiness.
 | `HAZ-026` | Starvation | media | media | bassa | mitigato | `GS-OPS-CONFIG-001` |
 | `HAZ-027` | Blocco permanente | alta | bassa | bassa | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-LIVE-001`, `GS-CORE-CLOSE-001` |
 | `HAZ-028` | Errore nella pubblicazione delle generazioni | alta | media | media | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001` |
+| `HAZ-029` | Deriva o contaminazione della C ABI pubblica | alta | media | alta | mitigato | `GS-COMPAT-CABI-001` |
+| `HAZ-030` | Pubblicazione di byte diversi da quelli verificati o con identita non provata | catastrofica | media | alta | mitigato | `GS-RELEASE-ARTIFACT-001` |

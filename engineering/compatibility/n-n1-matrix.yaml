@@ -69,7 +69,8 @@ wire:
       - tests/fixtures/wire_requests_v2.hex
       - tests/fixtures/wire_responses_v2.hex
       - workflow: ci.yml
-    notes: Exact wire v2 only; unknown flags/reserved rejected.
+    notes: Exact wire v2 only; unknown flags/reserved rejected. Every candidate packages a sealed
+      compiled v2 client; the release producer exercises new/new and both N-1 client/server directions.
 
   - id: WIRE-V1-OR-UNKNOWN
     server: "0.1.x"
@@ -83,11 +84,31 @@ wire:
     status: not_promised
     notes: Cross-major wire compatibility is not promised until an explicit matrix row and fixtures exist.
 
-# ABI / installed C++ package
+# Stable C ABI and separately unstable installed C++ package
 abi:
-  - id: ABI-0X-NO-STABLE
+  - id: ABI-C1-CURRENT
+    producer: "C ABI 1.0"
+    consumer: "C ABI 1.0"
+    status: supported
+    conditions:
+      - same_supported_platform_architecture
+      - exact_abi_major_1
+    evidence:
+      - tests/abi/c_abi_tests.c
+      - tests/consumer/abi.c
+      - engineering/tools/check_abi_symbols.py
+    notes: Same-build proof exists; cross-release compatibility requires a retained tagged consumer.
+
+  - id: ABI-C1-N-MINUS-1
+    producer: "future C ABI 1.x library"
+    consumer: "prior tagged C ABI 1.x binary"
     status: not_promised
-    notes: No ABI stability before 1.0; SemVer SameMinorVersion for 0.x CMake package version file.
+    notes: Policy requires compatibility. Every candidate now packages a compiled ABI-1 consumer;
+      the same-run producer requires a complete attested prior release and exercises both library directions.
+
+  - id: ABI-CPP-0X-NO-STABLE
+    status: not_promised
+    notes: The installed C++ ABI remains unstable before product 1.0; SemVer SameMinorVersion applies to the CMake package version file.
 
 released_fixture_policy:
   artifact_schema: 2
@@ -100,6 +121,49 @@ released_fixture_policy:
     Committing prior-release N-1 trees into the permanent fixture drop remains a
     release-process step when tags exist; until then the matrix documents policy
     and self-v1 / per-SHA CI packaging prove the harness.
+
+tagged_store_fixture_policy:
+  artifact_schema: 1
+  permanent_drop: tests/fixtures/released-stores/<semver>/
+  metadata_schema: engineering/schemas/persistent-store-fixture.schema.json
+  fixture_tool: engineering/tools/persistence_fixture.py
+  installed_harness: scripts/test-installed-persistence-compat.sh
+  release_workflow: release.yml
+  selection: newest-valid-tagged-release-strictly-older-than-candidate
+  residual: >
+    The artifact-only producer and fail-closed fixture format are implemented, but no prior tagged
+    complete Store exists yet. Codec vectors and a candidate-created self Store are never accepted
+    as N-1 persistence evidence.
+
+abi_artifact_policy:
+  fixture_schema: 1
+  metadata_schema: engineering/schemas/abi-consumer-fixture.schema.json
+  compiled_consumer_packager: scripts/package-abi-consumer.py
+  fixture_validator: engineering/tools/abi_consumer_fixture.py
+  prior_release_validator: engineering/tools/prior_release.py
+  installed_harness: scripts/test-installed-abi-compat.sh
+  release_workflow: release.yml
+  selection: newest-annotated-release-strictly-older-with-same-abi-major-then-require-complete-attested-assets
+  residual: >
+    The producer and future compiled-consumer asset are implemented, but no prior complete official
+    release exists. Same-build ABI tests do not satisfy either cross-release binary direction.
+
+wire_artifact_policy:
+  fixture_schema: 1
+  metadata_schema: engineering/schemas/wire-client-fixture.schema.json
+  compiled_client_packager: scripts/package-wire-client.py
+  fixture_validator: engineering/tools/wire_client_fixture.py
+  prior_release_validator: engineering/tools/prior_release.py
+  installed_harness: scripts/test-installed-wire-compat.sh
+  release_workflow: release.yml
+  selection: newest-annotated-release-strictly-older-with-same-abi-major-then-require-complete-attested-assets
+  directions:
+    - new-client-new-server
+    - old-client-new-server
+    - new-client-old-server
+  residual: >
+    The producer and future compiled-client asset are implemented, but no prior complete official
+    release exists. Local same-build execution validates the harness, not either N-1 direction.
 
 sdk_artifact_policy:
   contract: engineering/compatibility/sdk-release-contract.json

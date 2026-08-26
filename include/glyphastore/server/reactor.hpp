@@ -262,7 +262,9 @@ class Reactor final {
                                  std::optional<std::uint64_t> request_id_override = {}) noexcept;
     [[nodiscard]] auto read_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto write_ready(ConnectionToken token) -> Status;
-    [[nodiscard]] auto process_frames(ConnectionToken token) -> Status;
+    [[nodiscard]] auto process_frames(
+        ConnectionToken token,
+        std::uint32_t new_mutation_admission_budget = kMaximumMutationWindow) -> Status;
     void prepare_input_append(Connection& connection, std::size_t additional_bytes);
     void prepare_output_append(Connection& connection, std::size_t additional_bytes);
     [[nodiscard]] auto bind_connection(ConnectionToken token, const RequestView& request) -> Status;

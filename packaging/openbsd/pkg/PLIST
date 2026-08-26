@@ -1,0 +1,65 @@
+@newgroup _glyphastore
+@newuser _glyphastore:_glyphastore:daemon:GlyphaStore daemon:/var/glyphastore:/sbin/nologin
+@bin bin/glyphastore_backup_store
+@bin bin/glyphastore_demo
+@bin bin/glyphastore_inspect_segment
+@bin bin/glyphastore_migrate_store
+@bin bin/glyphastore_rebuild_index
+@bin bin/glyphastore_repair_store
+@bin bin/glyphastore_verify_store
+@bin bin/glyphastored
+include/glyphastore/abi/glyphastore.h
+include/glyphastore/client/client.hpp
+include/glyphastore/core/error.hpp
+include/glyphastore/core/types.hpp
+include/glyphastore/core/worker_routing.hpp
+include/glyphastore/persistence/compaction_intent.hpp
+include/glyphastore/persistence/filesystem.hpp
+include/glyphastore/persistence/filesystem_hooks.hpp
+include/glyphastore/persistence/manifest.hpp
+include/glyphastore/persistence/namespace_audit.hpp
+include/glyphastore/persistence/resource_limits.hpp
+include/glyphastore/persistence/store_backup.hpp
+include/glyphastore/persistence/store_verify.hpp
+include/glyphastore/segment/segment_header.hpp
+include/glyphastore/server/protocol.hpp
+include/glyphastore/store/config.hpp
+include/glyphastore/store/maintenance_types.hpp
+include/glyphastore/store/store.hpp
+include/glyphastore/store/value.hpp
+lib/cmake/GlyphaStore/FindGlyphaStoreTls.cmake
+lib/cmake/GlyphaStore/GlyphaStoreConfig.cmake
+lib/cmake/GlyphaStore/GlyphaStoreConfigVersion.cmake
+lib/cmake/GlyphaStore/GlyphaStoreTargets-release.cmake
+lib/cmake/GlyphaStore/GlyphaStoreTargets.cmake
+@lib lib/libglyphastore.so.${LIBglyphastore_VERSION}
+lib/libglyphastore_client.a
+lib/libglyphastore_core.a
+lib/libglyphastore_tls_layer.a
+lib/libglyphastore_wire.a
+lib/pkgconfig/glyphastore-abi.pc
+share/GlyphaStore/ABI_VERSION
+share/GlyphaStore/LICENSE
+share/GlyphaStore/NOTICE
+share/GlyphaStore/THIRD_PARTY_NOTICES.md
+share/GlyphaStore/VERSION
+share/GlyphaStore/examples/glyphastored.conf.sample
+share/examples/glyphastore/glyphastored.conf
+@sample ${SYSCONFDIR}/glyphastored.conf
+@rcscript ${RCDIR}/glyphastored
+@man man/man1/glyphastore_backup_store.1
+@man man/man1/glyphastore_demo.1
+@man man/man1/glyphastore_inspect_segment.1
+@man man/man1/glyphastore_migrate_store.1
+@man man/man1/glyphastore_rebuild_index.1
+@man man/man1/glyphastore_repair_store.1
+@man man/man1/glyphastore_verify_store.1
+@man man/man7/glyphastore.7
+@man man/man8/glyphastored.8
+@mode 0750
+@owner _glyphastore
+@group _glyphastore
+@sample /var/glyphastore/
+@mode
+@owner
+@group

@@ -1,0 +1,11 @@
+#!/bin/ksh
+
+daemon="${TRUEPREFIX}/bin/glyphastored"
+daemon_user="_glyphastore"
+daemon_flags="--config ${SYSCONFDIR}/glyphastored.conf"
+rc_bg=YES
+rc_reload=NO
+
+. /etc/rc.d/rc.subr
+
+rc_cmd $1

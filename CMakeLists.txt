@@ -6,7 +6,15 @@ if(NOT GLYPHASTORE_VERSION MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
     message(FATAL_ERROR "VERSION must contain exactly one semantic version such as 1.2.3")
 endif()
 
-project(GlyphaStore VERSION "${GLYPHASTORE_VERSION}" LANGUAGES CXX)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/ABI_VERSION" GLYPHASTORE_ABI_VERSION)
+string(STRIP "${GLYPHASTORE_ABI_VERSION}" GLYPHASTORE_ABI_VERSION)
+if(NOT GLYPHASTORE_ABI_VERSION MATCHES "^([0-9]+)\\.([0-9]+)$")
+    message(FATAL_ERROR "ABI_VERSION must contain exactly a major.minor version such as 1.0")
+endif()
+set(GLYPHASTORE_ABI_VERSION_MAJOR "${CMAKE_MATCH_1}")
+set(GLYPHASTORE_ABI_VERSION_MINOR "${CMAKE_MATCH_2}")
+
+project(GlyphaStore VERSION "${GLYPHASTORE_VERSION}" LANGUAGES C CXX)
 
 find_package(Threads REQUIRED)
 
@@ -95,14 +103,32 @@ install(TARGETS glyphastore_core glyphastore_wire glyphastore_tls_layer glyphast
     ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Development
     INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
 )
+install(TARGETS glyphastore_abi
+    EXPORT GlyphaStoreTargets
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT AbiRuntime
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT AbiRuntime NAMELINK_COMPONENT Development
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT Development
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+)
 install(TARGETS glyphastore_demo glyphastored glyphastore_inspect_segment glyphastore_verify_store
         glyphastore_backup_store glyphastore_migrate_store glyphastore_repair_store glyphastore_rebuild_index
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
     COMPONENT Runtime
 )
 install(FILES
+    include/glyphastore/abi/glyphastore.h
+    DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/abi"
+    COMPONENT Development
+)
+install(FILES
     include/glyphastore/client/client.hpp
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/glyphastore/client"
+    COMPONENT Development
+)
+
+configure_file(cmake/glyphastore-abi.pc.in "${CMAKE_CURRENT_BINARY_DIR}/glyphastore-abi.pc" @ONLY)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/glyphastore-abi.pc"
+    DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig"
     COMPONENT Development
 )
 install(FILES
@@ -175,7 +201,18 @@ install(
     COMPONENT Development
 )
 install(
-    FILES LICENSE NOTICE VERSION THIRD_PARTY_NOTICES.md
+    FILES LICENSE NOTICE VERSION ABI_VERSION THIRD_PARTY_NOTICES.md
     DESTINATION "${CMAKE_INSTALL_DATADIR}/GlyphaStore"
+    COMPONENT Runtime
+)
+set(GLYPHASTORE_DEFAULT_DATA_DIR "${CMAKE_INSTALL_FULL_LOCALSTATEDIR}/lib/glyphastore")
+configure_file(
+    config/glyphastored.conf.sample.in
+    "${CMAKE_CURRENT_BINARY_DIR}/glyphastored.conf.sample"
+    @ONLY
+)
+install(
+    FILES "${CMAKE_CURRENT_BINARY_DIR}/glyphastored.conf.sample"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/GlyphaStore/examples"
     COMPONENT Runtime
 )
