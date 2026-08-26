@@ -14,10 +14,21 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def write_test_gem(path: Path, *, compresslevel: int, mtime: int) -> None:
+def write_test_gem(
+    path: Path, *, compresslevel: int, mtime: int, data_name: str = "lib/glyphastore.rb"
+) -> None:
+    data = io.BytesIO()
+    with tarfile.open(fileobj=data, mode="w", format=tarfile.USTAR_FORMAT) as archive:
+        payload = b"canonical gem payload"
+        info = tarfile.TarInfo(data_name)
+        info.size = len(payload)
+        info.mtime = mtime
+        info.uid = mtime
+        info.gid = mtime
+        archive.addfile(info, io.BytesIO(payload))
     members = {
         "metadata.gz": gzip.compress(b"---\nname: glyphastore\n", compresslevel=compresslevel, mtime=mtime),
-        "data.tar.gz": gzip.compress(b"canonical data tar payload", compresslevel=compresslevel, mtime=mtime),
+        "data.tar.gz": gzip.compress(data.getvalue(), compresslevel=compresslevel, mtime=mtime),
         "checksums.yaml.gz": gzip.compress(b"stale\n", compresslevel=compresslevel, mtime=mtime),
     }
     with tarfile.open(path, "w") as archive:
@@ -88,10 +99,37 @@ class PackagingReproducibilityTests(unittest.TestCase):
                 metadata_bytes = metadata.read()
                 data_bytes = data.read()
                 checksum_text = gzip.decompress(checksums.read()).decode("utf-8")
+            with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data_bytes)), mode="r:") as data_tar:
+                members = data_tar.getmembers()
+            self.assertEqual([member.name for member in members], ["lib/glyphastore.rb"])
+            self.assertEqual(members[0].mtime, 1_780_000_000)
+            self.assertEqual((members[0].uid, members[0].gid), (0, 0))
+            self.assertEqual(members[0].mode, 0o644)
             self.assertIn(hashlib.sha256(metadata_bytes).hexdigest(), checksum_text)
             self.assertIn(hashlib.sha512(metadata_bytes).hexdigest(), checksum_text)
             self.assertIn(hashlib.sha256(data_bytes).hexdigest(), checksum_text)
             self.assertIn(hashlib.sha512(data_bytes).hexdigest(), checksum_text)
+
+    def test_ruby_gem_normalization_rejects_unsafe_nested_paths_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            archive = Path(directory) / "unsafe.gem"
+            write_test_gem(
+                archive,
+                compresslevel=9,
+                mtime=100,
+                data_name="../outside.rb",
+            )
+            original = archive.read_bytes()
+            result = subprocess.run(
+                [ROOT / "scripts/normalize-ruby-gem.sh", archive],
+                check=False,
+                env=dict(os.environ, SOURCE_DATE_EPOCH="1780000000"),
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("unsafe path", result.stderr)
+            self.assertEqual(archive.read_bytes(), original)
 
 
 if __name__ == "__main__":
