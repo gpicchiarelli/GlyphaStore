@@ -206,6 +206,7 @@ jobs:
           GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
           GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
           INTEROP_SECURE_WORKERS: "2"
+          SECURE_INTEROP_REQUIRE_ALL: "1"
         run: ./scripts/test-secure-profile-interop.sh
 
   install-consumer:

@@ -11,6 +11,7 @@
 #   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT / GLYPHASTORE_GO_INTEROP
 #   INTEROP_WORKER_HASH_SEED (default 13957458623937596)
 #   INTEROP_SECURE_WORKERS (default 2)
+#   SECURE_INTEROP_REQUIRE_ALL=1 (fail instead of skipping Perl/Ruby/Erlang)
 #   PYTHON / PERL / RUBY / GO
 set -euo pipefail
 
@@ -21,6 +22,7 @@ daemon="${GLYPHASTORED:-}"
 cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
 hash_seed="${INTEROP_WORKER_HASH_SEED:-13957458623937596}"
 workers="${INTEROP_SECURE_WORKERS:-2}"
+require_all="${SECURE_INTEROP_REQUIRE_ALL:-0}"
 # Principal extracted by daemon: URI SAN → DNS SAN → CN (secure-profile.md §2).
 client_principal="interop.client"
 
@@ -94,15 +96,8 @@ fi
 
 ruby_bin="${RUBY:-}"
 ruby_ready=0
-if [[ -z "$ruby_bin" ]]; then
-  for candidate in \
-    "$HOME/.local/share/mise/installs/ruby/3.3.12/bin/ruby" \
-    "$HOME/.local/share/mise/installs/ruby/3.3.0/bin/ruby"; do
-    if [[ -x "$candidate" ]]; then
-      ruby_bin="$candidate"
-      break
-    fi
-  done
+if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
+  ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
 fi
 if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
   ruby_bin="$(command -v ruby)"
@@ -125,6 +120,17 @@ if command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   fi
 else
   echo "note: Erlang/OTP + rebar3 not available — excluding erlang from secure-profile matrix" >&2
+fi
+
+if [[ "$require_all" == "1" ]]; then
+  missing_sdks=()
+  [[ "$perl_ready" == "1" ]] || missing_sdks+=(perl)
+  [[ "$ruby_ready" == "1" ]] || missing_sdks+=(ruby)
+  [[ "$erlang_ready" == "1" ]] || missing_sdks+=(erlang)
+  if [[ "${#missing_sdks[@]}" -gt 0 ]]; then
+    echo "secure-profile matrix requires every SDK; unavailable: ${missing_sdks[*]}" >&2
+    exit 1
+  fi
 fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-secure-interop.XXXXXX")"
