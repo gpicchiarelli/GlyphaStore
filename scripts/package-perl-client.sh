@@ -86,6 +86,7 @@ fi
 
 mkdir -p "$sdk/dist"
 cp "${tarball[0]}" "$sdk/dist/"
+"$root/scripts/normalize-perl-dist-metadata.sh" "$sdk/dist/$(basename "${tarball[0]}")"
 "$root/scripts/normalize-tar-gz.sh" "$sdk/dist/$(basename "${tarball[0]}")"
 
 # Dist tarball must retain LICENSE and NOTICE.

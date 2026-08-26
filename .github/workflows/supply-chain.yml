@@ -147,9 +147,16 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.13"
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.23"
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           ruby-version: "3.3"
+      - name: Install Erlang / rebar3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y erlang rebar3
       - name: Export reproducible build env
         run: |
           {
@@ -160,17 +167,29 @@ jobs:
             echo "PERL_HASH_SEED=0"
             echo "DETERMINISTIC_BUILD=1"
           } >>"$GITHUB_ENV"
-      - name: Package Python / Perl / Ruby archives
+      - name: Package SDK archives
         run: |
           ./scripts/package-python-client.sh
           ./scripts/package-perl-client.sh
+          ./scripts/package-go-client.sh
           ./scripts/package-ruby-client.sh
+          ./scripts/package-erlang-client.sh
           ./scripts/checksum-sdk-artifacts.sh dist/sdk-artifacts-cross
       - name: Download reference sums from primary builder
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: sdk-supply-chain-${{ github.sha }}
           path: dist/sdk-artifacts-ref
+      - name: Retain cross-builder artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sdk-cross-builder-${{ github.sha }}
+          path: |
+            dist/sdk-artifacts-cross/SHA256SUMS
+            dist/sdk-artifacts-cross/*.whl
+            dist/sdk-artifacts-cross/*.gem
+            dist/sdk-artifacts-cross/*.tar.gz
+          if-no-files-found: error
       - name: Compare archive digests across builders
         run: |
           ./scripts/compare-sdk-artifact-sums.sh \
