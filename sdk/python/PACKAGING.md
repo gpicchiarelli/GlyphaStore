@@ -27,6 +27,16 @@ The script:
 4. Installs the wheel and normalized sdist into separate clean temporary environments
 5. Runs the complete unittest suite against each installed artifact with `ResourceWarning` fatal
 
+With a TLS daemon and the C++/Go interop peers already built, the wheel can also be exercised through
+the fail-closed installed-artifact secure-profile matrix:
+
+```bash
+GLYPHASTORED=/path/to/glyphastored \
+GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
+GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
+./scripts/test-secure-profile-python-wheel.sh
+```
+
 ## Manual build
 
 ```bash

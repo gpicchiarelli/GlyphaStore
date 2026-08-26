@@ -12,6 +12,7 @@
 #   GLYPHASTORE_PYTHON_INTEROP / GLYPHASTORE_PERL_INTEROP / GLYPHASTORE_GO_INTEROP
 #   GLYPHASTORE_RUBY_INTEROP / GLYPHASTORE_ERLANG_INTEROP
 #   GLYPHASTORE_INTEROP_USE_INSTALLED=1 (forbid SDK libraries/binaries from this source tree)
+#   SECURE_INTEROP_SKIP_PERL / SECURE_INTEROP_SKIP_RUBY / SECURE_INTEROP_SKIP_ERLANG
 #   INTEROP_WORKER_HASH_SEED (default 13957458623937596)
 #   INTEROP_SECURE_WORKERS (default 2)
 #   SECURE_INTEROP_REQUIRE_ALL=1 (fail instead of skipping Perl/Ruby/Erlang)
@@ -126,7 +127,9 @@ if [[ "$use_installed" != "1" ]]; then
 fi
 
 perl_ready=0
-if "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
+if [[ "${SECURE_INTEROP_SKIP_PERL:-0}" == "1" ]]; then
+  echo "note: Perl excluded by SECURE_INTEROP_SKIP_PERL=1" >&2
+elif "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
   perl_ready=1
 else
   echo "note: Perl without IO::Socket::SSL — excluding perl from secure-profile matrix" >&2
@@ -134,25 +137,32 @@ fi
 
 ruby_bin="${RUBY:-}"
 ruby_ready=0
-if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
-  ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
-fi
-if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
-  ruby_bin="$(command -v ruby)"
-fi
-if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
-  "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
-  ruby_ready=1
-  if [[ "$use_installed" != "1" ]]; then
-    export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
-  fi
-else
-  echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
+if [[ "${SECURE_INTEROP_SKIP_RUBY:-0}" == "1" ]]; then
+  echo "note: Ruby excluded by SECURE_INTEROP_SKIP_RUBY=1" >&2
   ruby_bin=""
+else
+  if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
+    ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
+  fi
+  if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
+    ruby_bin="$(command -v ruby)"
+  fi
+  if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
+    "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
+    ruby_ready=1
+    if [[ "$use_installed" != "1" ]]; then
+      export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+    fi
+  else
+    echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
+    ruby_bin=""
+  fi
 fi
 
 erlang_ready=0
-if [[ "$use_installed" == "1" ]] && command -v erl >/dev/null 2>&1 && command -v escript >/dev/null 2>&1; then
+if [[ "${SECURE_INTEROP_SKIP_ERLANG:-0}" == "1" ]]; then
+  echo "note: Erlang excluded by SECURE_INTEROP_SKIP_ERLANG=1" >&2
+elif [[ "$use_installed" == "1" ]] && command -v erl >/dev/null 2>&1 && command -v escript >/dev/null 2>&1; then
   erlang_ready=1
 elif command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   if (cd "$root/sdk/erlang" && rebar3 compile >/dev/null 2>&1); then

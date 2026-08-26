@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add an installed-wheel secure-profile matrix that fails if Python resolves the SDK from the
+  repository instead of the isolated virtual environment.
 - Reuse each batch request's validated Worker assignment while encoding its per-Worker pipeline,
   avoiding a second routing hash in both synchronous and asyncio clients.
 - Add direct sync/async batch benchmark modes using the routing identity negotiated from the server.

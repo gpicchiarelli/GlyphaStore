@@ -208,6 +208,13 @@ jobs:
           INTEROP_SECURE_WORKERS: "2"
           SECURE_INTEROP_REQUIRE_ALL: "1"
         run: ./scripts/test-secure-profile-interop.sh
+      - name: Installed Python wheel secure-profile interop
+        timeout-minutes: 5
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
+          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
+        run: ./scripts/test-secure-profile-python-wheel.sh
 
   install-consumer:
     name: Release install / external consumer
