@@ -177,6 +177,11 @@ GLYPHA_TEST("emergency rejects put and erase with storage_exhausted") {
 
     auto store = glyphastore::Store::open(config);
     GLYPHA_REQUIRE(store.has_value());
+    // Isolate the emergency-gate contract from the initial background
+    // compaction evaluation. A paired volatile mutation racing that evaluation
+    // may legitimately observe the Index-quiesce sequence_conflict covered by
+    // the dedicated compaction/PUT concurrency test.
+    static_cast<void>(wait_for_initial_idle(**store));
     GLYPHA_REQUIRE((**store).put("alive", std::as_bytes(std::span{"v", 1})).has_value());
 
     auto* controller = glyphastore::detail::StoreAccess::maintenance_controller(**store);
