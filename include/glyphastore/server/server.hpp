@@ -23,6 +23,11 @@ namespace glyphastore::server {
 
 struct ServerRuntime;
 
+struct ReactorInputBufferStats final {
+    std::uint64_t compactions{};
+    std::uint64_t bytes_moved{};
+};
+
 class Server final {
   public:
     // A missing Store shard count inherits ReactorConfig::worker_count. An
@@ -52,6 +57,8 @@ class Server final {
     [[nodiscard]] auto adopted_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto active_connections_per_executor() const -> std::vector<std::size_t>;
     [[nodiscard]] auto executor_affinity_results() const -> std::vector<ExecutorAffinityResult>;
+    // Aggregate copy pressure from sliding input buffers across all Reactors.
+    [[nodiscard]] auto reactor_input_buffer_stats() const noexcept -> ReactorInputBufferStats;
     [[nodiscard]] auto pair_writer_stats() const -> std::vector<PairWriterStats>;
     [[nodiscard]] auto durable_batch_stats() const -> std::vector<DurableBatchWorkerStats>;
     [[nodiscard]] auto healthy() const noexcept -> bool {

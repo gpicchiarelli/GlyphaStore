@@ -30,6 +30,10 @@ inconclusive. Only disjoint ranges become improvement or regression candidates.
 The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4
 Worker row, its gain over pipeline depth 1, speedup against the one-Worker cell at the same depth,
 and scaling efficiency. These are descriptive scheduling signals, not capacity claims.
+For every TCP cell the server benchmark also records the median and worst observed Reactor input
+buffer compactions and bytes moved. The scaling summary normalizes median bytes moved by the timed
+operation count; this distinguishes useful pipeline scaling from throughput that hides growing
+input-copy pressure.
 The durable-pipeline subsection requires both an explicit `durable-*` storage mode and completed
 durable mutations; volatile server counters are never relabeled as durability measurements.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing

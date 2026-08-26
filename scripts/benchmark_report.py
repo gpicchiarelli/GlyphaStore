@@ -496,6 +496,25 @@ def build_tcp_scaling_analysis(runs: list[dict[str, Any]]) -> dict[str, Any] | N
                 "max_ops_per_second": number(result.get("max_ops_per_second", 0)),
             }
         )
+        cell = cells[-1]
+        if "median_reactor_input_buffer_compactions" in result:
+            cell["median_input_buffer_compactions"] = number(
+                result.get("median_reactor_input_buffer_compactions", 0)
+            )
+            cell["maximum_input_buffer_compactions"] = number(
+                result.get("maximum_reactor_input_buffer_compactions", 0)
+            )
+            cell["median_input_buffer_bytes_moved"] = number(
+                result.get("median_reactor_input_buffer_bytes_moved", 0)
+            )
+            cell["maximum_input_buffer_bytes_moved"] = number(
+                result.get("maximum_reactor_input_buffer_bytes_moved", 0)
+            )
+            operations = number(result.get("operations", 0))
+            if operations > 0:
+                cell["median_input_buffer_bytes_moved_per_operation"] = (
+                    cell["median_input_buffer_bytes_moved"] / operations
+                )
     if not cells:
         return None
     cells.sort(key=lambda cell: (cell["workers"], cell["pipeline"]))
@@ -673,8 +692,8 @@ def render_markdown(
                 f"Matrix status: **{tcp_scaling['status']}**. Highest observed median per Worker "
                 "count is descriptive; overlapping ranges remain inconclusive.",
                 "",
-                "| Workers | Pipeline | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency |",
-                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Workers | Pipeline | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency | Input compactions | Input bytes copied/op |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         for cell in tcp_scaling["highest_observed_median_by_workers"]:
@@ -686,17 +705,29 @@ def render_markdown(
             efficiency_text = (
                 f"{efficiency:.2f}%" if isinstance(efficiency, (int, float)) else "—"
             )
+            compactions = cell.get("median_input_buffer_compactions")
+            copied_per_operation = cell.get("median_input_buffer_bytes_moved_per_operation")
+            compactions_text = (
+                f"{compactions:,.0f}" if isinstance(compactions, (int, float)) else "—"
+            )
+            copied_text = (
+                f"{copied_per_operation:,.2f} B"
+                if isinstance(copied_per_operation, (int, float))
+                else "—"
+            )
             lines.append(
                 f"| {cell['workers']} | {cell['pipeline']} | "
                 f"{cell['median_ops_per_second']:,.0f} | "
                 f"{cell['min_ops_per_second']:,.0f}–{cell['max_ops_per_second']:,.0f} | "
-                f"{gain_text} | {speedup_text} | {efficiency_text} |"
+                f"{gain_text} | {speedup_text} | {efficiency_text} | "
+                f"{compactions_text} | {copied_text} |"
             )
         lines.extend(
             [
                 "",
                 "Efficiency is the observed throughput speedup divided by Worker count; it is not "
-                "CPU utilization or a production-capacity claim.",
+                "CPU utilization or a production-capacity claim. Input-copy columns expose the "
+                "sliding Reactor buffer's copy pressure for the selected sample.",
                 "",
             ]
         )

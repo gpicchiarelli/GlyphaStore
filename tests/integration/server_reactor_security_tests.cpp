@@ -169,6 +169,9 @@ GLYPHA_TEST("deep mutation pipeline keeps input compaction linear") {
     const auto bytes_moved = stats_counter(*report, "input_buffer_bytes_moved");
     GLYPHA_REQUIRE(compactions.has_value());
     GLYPHA_REQUIRE(bytes_moved.has_value());
+    const auto typed_stats = server.reactor_input_buffer_stats();
+    GLYPHA_REQUIRE(typed_stats.compactions == *compactions);
+    GLYPHA_REQUIRE(typed_stats.bytes_moved == *bytes_moved);
     // Capacity growth can trigger a bounded append-time compaction when TCP splits
     // the pipeline. It must never return to one suffix memmove per completion.
     GLYPHA_REQUIRE(*compactions < kRequests / 4U);

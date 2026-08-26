@@ -93,9 +93,14 @@ def tcp_runs() -> list[dict[str, object]]:
             "results": [
                 {
                     "workers": workers,
+                    "operations": 1_000,
                     "median_ops_per_second": rate,
                     "min_ops_per_second": rate * 0.9,
                     "max_ops_per_second": rate * 1.1,
+                    "median_reactor_input_buffer_compactions": pipeline,
+                    "maximum_reactor_input_buffer_compactions": pipeline + 1,
+                    "median_reactor_input_buffer_bytes_moved": workers * pipeline * 100,
+                    "maximum_reactor_input_buffer_bytes_moved": workers * pipeline * 125,
                 }
             ],
         }
@@ -328,13 +333,15 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(best[4]["speedup_vs_one_worker"], 3.2)
         self.assertAlmostEqual(best[4]["scaling_efficiency_percent"], 80.0)
         self.assertAlmostEqual(best[4]["gain_vs_pipeline_one_percent"], 100.0)
+        self.assertAlmostEqual(best[4]["median_input_buffer_bytes_moved_per_operation"], 3.2)
 
         markdown = render_markdown(
             tcp_runs(), "now", None, {"status": "no-baseline"}, analysis
         )
         self.assertIn("## TCP scaling summary", markdown)
         self.assertIn(
-            "| 4 | 8 | 640 | 576–704 | +100.00% | 3.20× | 80.00% |", markdown
+            "| 4 | 8 | 640 | 576–704 | +100.00% | 3.20× | 80.00% | 8 | 3.20 B |",
+            markdown,
         )
 
     def test_tcp_scaling_analysis_marks_missing_cells_partial(self) -> None:

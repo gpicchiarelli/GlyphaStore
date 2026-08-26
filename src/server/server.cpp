@@ -174,6 +174,15 @@ auto Server::first_failure() const -> std::optional<Error> {
     return failure_;
 }
 
+auto Server::reactor_input_buffer_stats() const noexcept -> ReactorInputBufferStats {
+    ReactorInputBufferStats stats;
+    for (const auto& reactor : reactors_) {
+        stats.compactions += reactor->input_buffer_compactions();
+        stats.bytes_moved += reactor->input_buffer_bytes_moved();
+    }
+    return stats;
+}
+
 auto Server::stats_report() const -> Result<std::string> {
     if (!live()) {
         return fail(ErrorCode::unavailable, "server is not live");
