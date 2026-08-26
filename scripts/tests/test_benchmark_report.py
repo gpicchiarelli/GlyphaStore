@@ -121,7 +121,15 @@ def strict_tcp_run() -> list[dict[str, object]]:
         }
     )
     fixture[0]["results"][0].update(
-        {"workers": 2, "threads": 2, "distribution": "owner-bound"}
+        {
+            "workers": 2,
+            "threads": 2,
+            "distribution": "owner-bound",
+            "median_reactor_input_buffer_compactions": 2,
+            "maximum_reactor_input_buffer_compactions": 3,
+            "median_reactor_input_buffer_bytes_moved": 64,
+            "maximum_reactor_input_buffer_bytes_moved": 96,
+        }
     )
     return fixture
 
@@ -257,10 +265,27 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "metadata.pipeline is 8, expected 32"):
             validate_runs(fixture)
 
+    def test_strict_tcp_requires_ordered_reactor_input_profile(self) -> None:
+        fixture = strict_tcp_run()
+        del fixture[0]["results"][0]["median_reactor_input_buffer_bytes_moved"]
+        with self.assertRaisesRegex(ValueError, "must be finite and non-negative"):
+            validate_runs(fixture)
+
+        fixture = strict_tcp_run()
+        fixture[0]["results"][0]["median_reactor_input_buffer_compactions"] = 4
+        with self.assertRaisesRegex(ValueError, "compactions median/maximum ordering"):
+            validate_runs(fixture)
+
     def test_source_contract_accepts_exact_suite(self) -> None:
         contract = {
-            "schema_version": 2,
+            "schema_version": 3,
             "suite": "fixture",
+            "required_tcp_result_fields": [
+                "median_reactor_input_buffer_compactions",
+                "maximum_reactor_input_buffer_compactions",
+                "median_reactor_input_buffer_bytes_moved",
+                "maximum_reactor_input_buffer_bytes_moved",
+            ],
             "expected_sources": [
                 {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 3}
             ],
@@ -269,8 +294,14 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_rejects_missing_and_extra_suites(self) -> None:
         contract = {
-            "schema_version": 2,
+            "schema_version": 3,
             "suite": "fixture",
+            "required_tcp_result_fields": [
+                "median_reactor_input_buffer_compactions",
+                "maximum_reactor_input_buffer_compactions",
+                "median_reactor_input_buffer_bytes_moved",
+                "maximum_reactor_input_buffer_bytes_moved",
+            ],
             "expected_sources": [
                 {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 3},
                 {"source": "server.txt", "benchmark_warmup": 1, "benchmark_repeats": 3},
@@ -293,7 +324,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             / "hosted-benchmark-contract.json"
         )
         contract = load_source_contract(path)
-        self.assertEqual(contract["schema_version"], 2)
+        self.assertEqual(contract["schema_version"], 3)
         self.assertEqual(len(contract["expected_sources"]), 21)
         validate_source_contract(
             [
@@ -311,8 +342,14 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_rejects_weakened_sampling(self) -> None:
         contract = {
-            "schema_version": 2,
+            "schema_version": 3,
             "suite": "fixture",
+            "required_tcp_result_fields": [
+                "median_reactor_input_buffer_compactions",
+                "maximum_reactor_input_buffer_compactions",
+                "median_reactor_input_buffer_bytes_moved",
+                "maximum_reactor_input_buffer_bytes_moved",
+            ],
             "expected_sources": [
                 {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 7}
             ],

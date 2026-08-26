@@ -28,6 +28,12 @@ ENVIRONMENT_IDENTITY_FIELDS = (
     "benchmark_contract_sha256",
 )
 TCP_SOURCE_PATTERN = re.compile(r"server-tcp-w(?P<workers>\d+)-p(?P<pipeline>\d+)\.txt")
+REACTOR_INPUT_PROFILE_FIELDS = (
+    "median_reactor_input_buffer_compactions",
+    "maximum_reactor_input_buffer_compactions",
+    "median_reactor_input_buffer_bytes_moved",
+    "maximum_reactor_input_buffer_bytes_moved",
+)
 
 
 def identity_value_present(environment: dict[str, Any], field: str) -> bool:
@@ -104,6 +110,15 @@ def positive_integer(value: Any) -> bool:
 
 def nonnegative_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def nonnegative_finite(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and value >= 0
+        and math.isfinite(value)
+    )
 
 
 def validate_runs(runs: list[dict[str, Any]]) -> None:
@@ -205,6 +220,16 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
                     raise ValueError(
                         f"{source}: {field} is {actual!r}, expected {expected!r}"
                     )
+            for field in REACTOR_INPUT_PROFILE_FIELDS:
+                if not nonnegative_finite(result.get(field)):
+                    raise ValueError(f"{source}: {field} must be finite and non-negative")
+            for suffix in ("compactions", "bytes_moved"):
+                if result[f"median_reactor_input_buffer_{suffix}"] > result[
+                    f"maximum_reactor_input_buffer_{suffix}"
+                ]:
+                    raise ValueError(
+                        f"{source}: invalid Reactor input {suffix} median/maximum ordering"
+                    )
 
 
 def load_source_contract(path: Path) -> dict[str, Any]:
@@ -218,10 +243,14 @@ def load_source_contract(path: Path) -> dict[str, Any]:
 
 
 def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any]) -> None:
-    if contract.get("schema_version") != 2:
-        raise ValueError("source contract schema_version must be 2")
+    if contract.get("schema_version") != 3:
+        raise ValueError("source contract schema_version must be 3")
     if not isinstance(contract.get("suite"), str) or not contract["suite"]:
         raise ValueError("source contract suite must be a non-empty string")
+    if contract.get("required_tcp_result_fields") != list(REACTOR_INPUT_PROFILE_FIELDS):
+        raise ValueError(
+            "source contract required_tcp_result_fields must match the Reactor input profile"
+        )
     expected = contract.get("expected_sources")
     if not isinstance(expected, list) or not expected:
         raise ValueError("source contract expected_sources must be a non-empty list")

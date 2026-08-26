@@ -11,8 +11,10 @@ requirements:
     absolute product claim. Retained CI reports fail closed on incomplete or internally inconsistent
     benchmark output and on sampling weaker than the fixed source contract. Complete TCP matrices
     validate filename/runtime coordinates and derive per-depth Worker speedup, scaling efficiency,
-    and the highest observed median pipeline. Durable profile summaries require explicit durable
-    storage metadata and cannot be inferred from shared completion counters alone.
+    and the highest observed median pipeline. The hosted contract also requires ordered Reactor
+    input-buffer compaction and copied-byte profiles, normalized per timed operation in the report.
+    Durable profile summaries require explicit durable storage metadata and cannot be inferred from
+    shared completion counters alone.
   autorita:
   - docs/spec/benchmark-standard.md
   - docs/benchmarks/paired-shards-plan.md
