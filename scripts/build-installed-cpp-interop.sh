@@ -67,6 +67,12 @@ find_package(GlyphaStore $expected EXACT REQUIRED CONFIG)
 add_executable(glyphastore-interop-cpp interop_client.cpp)
 target_link_libraries(glyphastore-interop-cpp PRIVATE GlyphaStore::client)
 target_compile_features(glyphastore-interop-cpp PRIVATE cxx_std_23)
+if(DEFINED ENV{GLYPHASTORE_SANITIZERS} AND NOT "\$ENV{GLYPHASTORE_SANITIZERS}" STREQUAL "")
+  target_compile_options(glyphastore-interop-cpp PRIVATE -fno-omit-frame-pointer
+    "-fsanitize=\$ENV{GLYPHASTORE_SANITIZERS}")
+  target_link_options(glyphastore-interop-cpp PRIVATE
+    "-fsanitize=\$ENV{GLYPHASTORE_SANITIZERS}")
+endif()
 EOF
 
 "$cmake_bin" -S "$consumer" -B "$consumer/build" \

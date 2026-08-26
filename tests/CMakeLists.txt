@@ -107,6 +107,8 @@ if(BUILD_TESTING)
     )
     if(UNIX)
         find_program(GLYPHASTORE_BASH_EXECUTABLE bash REQUIRED)
+        glyphastore_resolve_sanitizers(glyphastore_test_sanitizers)
+        list(JOIN glyphastore_test_sanitizers "," glyphastore_test_sanitizer_flags)
         add_test(
             NAME glyphastore_installed_cpp_interop
             COMMAND "${CMAKE_COMMAND}"
@@ -114,6 +116,8 @@ if(BUILD_TESTING)
                     -DGLYPHASTORE_SOURCE_DIR=${CMAKE_SOURCE_DIR}
                     -DGLYPHASTORE_TEST_ROOT=${CMAKE_BINARY_DIR}/installed-cpp-interop-test
                     -DGLYPHASTORE_BASH=${GLYPHASTORE_BASH_EXECUTABLE}
+                    -DGLYPHASTORE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+                    -DGLYPHASTORE_SANITIZERS=${glyphastore_test_sanitizer_flags}
                     -P "${CMAKE_SOURCE_DIR}/tests/cmake/installed_cpp_interop.cmake"
         )
         set_tests_properties(glyphastore_installed_cpp_interop PROPERTIES

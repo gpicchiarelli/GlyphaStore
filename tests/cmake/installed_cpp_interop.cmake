@@ -23,6 +23,8 @@ endif()
 
 execute_process(
     COMMAND "${CMAKE_COMMAND}" -E env "CMAKE=${CMAKE_COMMAND}"
+            "CXX=${GLYPHASTORE_CXX_COMPILER}"
+            "GLYPHASTORE_SANITIZERS=${GLYPHASTORE_SANITIZERS}"
             "${GLYPHASTORE_BASH}"
             "${GLYPHASTORE_SOURCE_DIR}/scripts/build-installed-cpp-interop.sh"
             "${prefix}" "${output}"
