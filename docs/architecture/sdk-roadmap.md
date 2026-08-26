@@ -40,10 +40,11 @@ Default interop remains FNV; a keyed daemon matrix (`--worker-hash-seed`) is sti
 
 The source-tree smoke `scripts/test-secure-profile-interop.sh` exercises mTLS, `--authz-map`, pinned
 `--worker-hash-seed` and prefix denial for every available SDK. CI `sdk-clients` requires all six
-SDKs and verifies that an out-of-scope mutation is classified as `rejected`,
-`permission_denied`, `never`, rather than accepting any generic failure. CRL and quota scenarios
-are also present, currently driven through Python. Remaining: client-by-client negative coverage
-for quota exhaustion and revoked credentials, plus installed-artifact secure-profile evidence.
+SDKs and verifies that out-of-scope and quota-refused mutations are respectively classified as
+`permission_denied` and `overloaded`, both with `rejected` / `never` semantics rather than accepting
+any generic failure. Each quota assertion gets a fresh server-side budget. The CRL scenario is
+currently driven through Python. Remaining: client-by-client negative coverage for revoked
+credentials, plus installed-artifact secure-profile evidence.
 Documentation must not call the SDK security train complete before that matrix passes.
 
 ### 3. Released-artifact compatibility

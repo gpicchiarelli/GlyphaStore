@@ -24,6 +24,8 @@ parse_args(Opts, ["--value-hex", Hex | Rest]) ->
     parse_args(Opts#{value_hex => Hex}, Rest);
 parse_args(Opts, ["--expire-at-ns", Expire | Rest]) ->
     parse_args(Opts#{expire_at_ns => list_to_integer(Expire)}, Rest);
+parse_args(Opts, ["--burst", Burst | Rest]) ->
+    parse_args(Opts#{burst => list_to_integer(Burst)}, Rest);
 parse_args(Opts, ["--tls" | Rest]) ->
     parse_args(Opts#{tls => true}, Rest);
 parse_args(Opts, ["--tls-ca", Path | Rest]) ->
@@ -55,13 +57,18 @@ run(#{command := Command} = Opts) ->
     Key = parse_hex(maps:get(key_hex, Opts, "")),
     Value = parse_hex(maps:get(value_hex, Opts, "")),
     Expire = maps:get(expire_at_ns, Opts, 0),
+    Burst = maps:get(burst, Opts, 32),
+    case Burst >= 1 andalso Burst =< 10000 of
+        true -> ok;
+        false -> usage(), halt(2)
+    end,
     Config0 = #{host => Host, port => Port},
     Config1 = maybe_tls(Config0, Opts),
     Config = glyphastore_util:merge_config(Config1),
     case glyphastore_client:connect(Config) of
         {ok, Client} ->
             try
-                dispatch(Client, Command, Key, Value, Expire, Config)
+                dispatch(Client, Command, Key, Value, Expire, Config, Burst)
             after
                 glyphastore_client:close(Client)
             end;
@@ -95,12 +102,12 @@ maybe_tls(Config, #{tls := true} = Opts) ->
 maybe_tls(Config, _Opts) ->
     Config.
 
-dispatch(Client, "put", Key, Value, Expire, _Config) ->
+dispatch(Client, "put", Key, Value, Expire, _Config, _Burst) ->
     case glyphastore_client:put(Client, Key, Value, #{expire_at_ns => Expire}) of
         #{outcome := committed} -> halt(0);
         Other -> fail(Other)
     end;
-dispatch(Client, "get", Key, _Value, _Expire, _Config) ->
+dispatch(Client, "get", Key, _Value, _Expire, _Config, _Burst) ->
     case glyphastore_client:get(Client, Key) of
         {ok, Payload} ->
             io:format("~s", [to_hex(Payload)]),
@@ -108,12 +115,12 @@ dispatch(Client, "get", Key, _Value, _Expire, _Config) ->
         {error, Err} ->
             fail(Err)
     end;
-dispatch(Client, "erase", Key, _Value, _Expire, _Config) ->
+dispatch(Client, "erase", Key, _Value, _Expire, _Config, _Burst) ->
     case glyphastore_client:erase(Client, Key) of
         #{outcome := committed} -> halt(0);
         Other -> fail(Other)
     end;
-dispatch(Client, "pipeline-put-get", Key, Value, _Expire, _Config) ->
+dispatch(Client, "pipeline-put-get", Key, Value, _Expire, _Config, _Burst) ->
     case glyphastore_client:execute_pipeline(Client, [
         #{opcode => put, key => Key, value => Value},
         #{opcode => get, key => Key}
@@ -124,7 +131,7 @@ dispatch(Client, "pipeline-put-get", Key, Value, _Expire, _Config) ->
         Other ->
             fail(Other)
     end;
-dispatch(Client, "expect-not-found", Key, _Value, _Expire, _Config) ->
+dispatch(Client, "expect-not-found", Key, _Value, _Expire, _Config, _Burst) ->
     case glyphastore_client:get(Client, Key) of
         {error, Err} ->
             case maps:get(category, Err) =:= not_found andalso maps:get(retryability, Err) =:= new_attempt of
@@ -135,7 +142,7 @@ dispatch(Client, "expect-not-found", Key, _Value, _Expire, _Config) ->
             io:format(standard_error, "GET unexpectedly found the key~n", []),
             halt(1)
     end;
-dispatch(Client, "expect-permission-denied", Key, Value, Expire, _Config) ->
+dispatch(Client, "expect-permission-denied", Key, Value, Expire, _Config, _Burst) ->
     case glyphastore_client:put(Client, Key, Value, #{expire_at_ns => Expire}) of
         #{outcome := rejected,
           error := #{category := permission_denied, retryability := never}} ->
@@ -143,7 +150,12 @@ dispatch(Client, "expect-permission-denied", Key, Value, Expire, _Config) ->
         Other ->
             fail(Other)
     end;
-dispatch(Client, "expect-frame-limit", _Key, _Value, _Expire, Config) ->
+dispatch(Client, "burst-expect-overloaded", Key, Value, Expire, _Config, Burst) ->
+    case burst_expect_overloaded(Client, Key, Value, Expire, Burst) of
+        ok -> halt(0);
+        Error -> fail(Error)
+    end;
+dispatch(Client, "expect-frame-limit", _Key, _Value, _Expire, Config, _Burst) ->
     Oversize = binary:copy(<<165>>, maps:get(maximum_frame_bytes, Config)),
     case glyphastore_client:put(Client, <<"limit">>, Oversize) of
         #{outcome := rejected, error := Err} ->
@@ -157,9 +169,22 @@ dispatch(Client, "expect-frame-limit", _Key, _Value, _Expire, Config) ->
         Other ->
             fail(Other)
     end;
-dispatch(_Client, Command, _K, _V, _E, _C) ->
+dispatch(_Client, Command, _K, _V, _E, _C, _Burst) ->
     io:format(standard_error, "unknown command: ~s~n", [Command]),
     halt(2).
+
+burst_expect_overloaded(_Client, _Key, _Value, _Expire, 0) ->
+    {error, overloaded_not_observed};
+burst_expect_overloaded(Client, Key, Value, Expire, Remaining) ->
+    case glyphastore_client:put(Client, Key, Value, #{expire_at_ns => Expire}) of
+        #{outcome := rejected,
+          error := #{category := overloaded, retryability := never}} ->
+            ok;
+        #{outcome := committed} ->
+            burst_expect_overloaded(Client, Key, Value, Expire, Remaining - 1);
+        Other ->
+            {error, {unexpected_result_before_overloaded, Other}}
+    end.
 
 parse_hex("") -> <<>>;
 parse_hex(Hex) ->
@@ -182,5 +207,6 @@ fail(Term) ->
 usage() ->
     io:format(standard_error,
               "Usage: glyphastore-interop --port N [--tls --tls-ca PATH --server-name NAME] "
-              "<put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|expect-frame-limit>~n",
+              "<put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|"
+              "burst-expect-overloaded|expect-frame-limit>~n",
               []).

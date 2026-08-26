@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Make the interop escript assert the structured `permission_denied` mutation outcome used by the
-  all-SDK secure-profile prefix matrix.
+- Make the interop escript assert structured `permission_denied` and `overloaded` mutation outcomes
+  in the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
 - BACKUP validate-response failure (mismatched `request_id` / metadata) enriches
   `indeterminate` / `reconcile_first` with `bytes_sent=frame_len`. Litmus:
   `set_wrong_request_id` after connect → BACKUP asserts `bytes_sent > 0`.

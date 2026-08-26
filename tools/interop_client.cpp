@@ -72,6 +72,7 @@ void usage(const char* program) {
         << " ... pipeline-put-get --key-hex HEX --value-hex HEX\n  " << program
         << " ... expect-not-found --key-hex HEX\n  " << program
         << " ... expect-permission-denied --key-hex HEX --value-hex HEX\n  " << program
+        << " ... burst-expect-overloaded --key-hex HEX --value-hex HEX [--burst N]\n  " << program
         << " ... expect-frame-limit\n";
 }
 
@@ -97,6 +98,7 @@ int main(int argc, char** argv) try {
     std::string key_hex;
     std::string value_hex;
     std::uint64_t expire_at_ns = 0;
+    std::uint64_t burst = 32;
     glyphastore::client::TlsOptions tls{};
 
     for (int index = 1; index < argc; ++index) {
@@ -116,6 +118,8 @@ int main(int argc, char** argv) try {
             value_hex = std::string{require_flag(argc, argv, index, "--value-hex")};
         } else if (arg == "--expire-at-ns") {
             expire_at_ns = std::stoull(std::string{require_flag(argc, argv, index, "--expire-at-ns")});
+        } else if (arg == "--burst") {
+            burst = std::stoull(std::string{require_flag(argc, argv, index, "--burst")});
         } else if (arg == "--tls") {
             tls.enable = true;
         } else if (arg == "--tls-ca") {
@@ -130,7 +134,7 @@ int main(int argc, char** argv) try {
             tls.insecure_skip_verify = true;
         } else if (arg == "put" || arg == "get" || arg == "erase" || arg == "pipeline-put-get" ||
                    arg == "expect-not-found" || arg == "expect-permission-denied" ||
-                   arg == "expect-frame-limit") {
+                   arg == "burst-expect-overloaded" || arg == "expect-frame-limit") {
             command = std::string{arg};
         } else {
             std::cerr << "unknown argument: " << arg << '\n';
@@ -142,6 +146,9 @@ int main(int argc, char** argv) try {
     if (port == 0 || command.empty()) {
         usage(argv[0]);
         return 2;
+    }
+    if (burst == 0 || burst > 10'000) {
+        throw std::runtime_error("--burst must be between 1 and 10000");
     }
 
     glyphastore::client::ClientConfig config{.host = host, .port = port, .tls = std::move(tls)};
@@ -225,6 +232,24 @@ int main(int argc, char** argv) try {
             return 1;
         }
         return 0;
+    }
+    if (command == "burst-expect-overloaded") {
+        const auto value = parse_hex(value_hex);
+        for (std::uint64_t index = 0; index < burst; ++index) {
+            const auto result = client->put(
+                key, value, glyphastore::client::PutOptions{.expire_at_ns = expire_at_ns});
+            if (result.outcome == glyphastore::client::MutationOutcome::rejected &&
+                result.error.has_value() && result.error->category == "overloaded" &&
+                result.error->retryability == "never") {
+                return 0;
+            }
+            if (!result.committed()) {
+                std::cerr << "PUT produced an unexpected result before OVERLOADED\n";
+                return 1;
+            }
+        }
+        std::cerr << "PUT burst did not produce the expected overloaded rejection\n";
+        return 1;
     }
     if (command == "expect-frame-limit") {
         const std::vector<std::byte> oversized(maximum_frame_bytes, std::byte{0xA5});

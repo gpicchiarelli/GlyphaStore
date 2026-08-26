@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Make the interop CLI assert the structured `permission_denied` mutation outcome used by the
-  all-SDK secure-profile prefix matrix.
+- Make the interop CLI assert structured `permission_denied` and `overloaded` mutation outcomes in
+  the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
 
 ## 0.1.0
 

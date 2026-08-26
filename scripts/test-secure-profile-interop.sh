@@ -428,6 +428,19 @@ expect_permission_denied() {
   esac
 }
 
+expect_overloaded() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    *) return 1 ;;
+  esac
+}
+
 echo "== mint mTLS material + authz map =="
 make_mtls_material "$work"
 cat >"$work/authz.map" <<EOF
@@ -579,23 +592,27 @@ fi
 echo "  revoked client rejected (exit=$crl_rc) OK"
 
 echo "== principal quota → OVERLOADED =="
-stop_server
 cat >"$work/authz.map" <<EOF
 ${client_principal} write
 EOF
 # Allow INIT+BIND+a few PUTs on one connection, then force OVERLOADED on the burst.
-# Connection limit stays loose so bootstrap is not the failure mode.
-start_server \
-  --principal-max-requests-per-sec 4 \
-  --connection-max-requests-per-sec 64 \
-  --principal-max-bytes-per-sec 1048576
-port="$(cat "$port_file")"
-if "$python" "$py_helper" --port "$port" "${tls_args[@]}" \
-  --burst 32 --value-hex "$(printf 'x' | to_hex)" burst-expect-overloaded; then
-  echo "  python single-connection burst → OVERLOADED OK"
-else
-  echo "principal quota did not produce OVERLOADED on a single-connection burst" >&2
-  exit 1
-fi
+# Connection limit stays loose so bootstrap is not the failure mode. Restart for every SDK so
+# principal tokens consumed by one client cannot satisfy the next client's assertion accidentally.
+quota_key="$(printf 'quota-key' | to_hex)"
+quota_val="$(printf 'x' | to_hex)"
+for sdk in "${sdks[@]}"; do
+  stop_server
+  start_server \
+    --principal-max-requests-per-sec 4 \
+    --connection-max-requests-per-sec 64 \
+    --principal-max-bytes-per-sec 1048576
+  port="$(cat "$port_file")"
+  if expect_overloaded "$sdk" "$port" "$quota_key" "$quota_val"; then
+    echo "  $sdk single-connection burst → OVERLOADED OK"
+  else
+    echo "principal quota did not produce structured OVERLOADED for sdk=$sdk" >&2
+    exit 1
+  fi
+done
 
 echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"
