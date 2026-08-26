@@ -29,11 +29,15 @@ ENVIRONMENT_IDENTITY_FIELDS = (
 )
 TCP_SOURCE_PATTERN = re.compile(r"server-tcp-w(?P<workers>\d+)-p(?P<pipeline>\d+)\.txt")
 TCP_NEAR_PEAK_FRACTION = 0.95
-REACTOR_INPUT_PROFILE_FIELDS = (
+REACTOR_BUFFER_PROFILE_FIELDS = (
     "median_reactor_input_buffer_compactions",
     "maximum_reactor_input_buffer_compactions",
     "median_reactor_input_buffer_bytes_moved",
     "maximum_reactor_input_buffer_bytes_moved",
+    "median_reactor_output_buffer_compactions",
+    "maximum_reactor_output_buffer_compactions",
+    "median_reactor_output_buffer_bytes_moved",
+    "maximum_reactor_output_buffer_bytes_moved",
 )
 
 
@@ -221,16 +225,18 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
                     raise ValueError(
                         f"{source}: {field} is {actual!r}, expected {expected!r}"
                     )
-            for field in REACTOR_INPUT_PROFILE_FIELDS:
+            for field in REACTOR_BUFFER_PROFILE_FIELDS:
                 if not nonnegative_finite(result.get(field)):
                     raise ValueError(f"{source}: {field} must be finite and non-negative")
-            for suffix in ("compactions", "bytes_moved"):
-                if result[f"median_reactor_input_buffer_{suffix}"] > result[
-                    f"maximum_reactor_input_buffer_{suffix}"
-                ]:
-                    raise ValueError(
-                        f"{source}: invalid Reactor input {suffix} median/maximum ordering"
-                    )
+            for direction in ("input", "output"):
+                for suffix in ("compactions", "bytes_moved"):
+                    if result[f"median_reactor_{direction}_buffer_{suffix}"] > result[
+                        f"maximum_reactor_{direction}_buffer_{suffix}"
+                    ]:
+                        raise ValueError(
+                            f"{source}: invalid Reactor {direction} {suffix} "
+                            "median/maximum ordering"
+                        )
 
 
 def load_source_contract(path: Path) -> dict[str, Any]:
@@ -244,13 +250,13 @@ def load_source_contract(path: Path) -> dict[str, Any]:
 
 
 def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any]) -> None:
-    if contract.get("schema_version") != 4:
-        raise ValueError("source contract schema_version must be 4")
+    if contract.get("schema_version") != 5:
+        raise ValueError("source contract schema_version must be 5")
     if not isinstance(contract.get("suite"), str) or not contract["suite"]:
         raise ValueError("source contract suite must be a non-empty string")
-    if contract.get("required_tcp_result_fields") != list(REACTOR_INPUT_PROFILE_FIELDS):
+    if contract.get("required_tcp_result_fields") != list(REACTOR_BUFFER_PROFILE_FIELDS):
         raise ValueError(
-            "source contract required_tcp_result_fields must match the Reactor input profile"
+            "source contract required_tcp_result_fields must match the Reactor buffer profile"
         )
     if contract.get("tcp_near_peak_fraction") != TCP_NEAR_PEAK_FRACTION:
         raise ValueError(
@@ -549,6 +555,21 @@ def build_tcp_scaling_analysis(runs: list[dict[str, Any]]) -> dict[str, Any] | N
                 cell["median_input_buffer_bytes_moved_per_operation"] = (
                     cell["median_input_buffer_bytes_moved"] / operations
                 )
+                cell["median_output_buffer_bytes_moved_per_operation"] = number(
+                    result.get("median_reactor_output_buffer_bytes_moved", 0)
+                ) / operations
+            cell["median_output_buffer_compactions"] = number(
+                result.get("median_reactor_output_buffer_compactions", 0)
+            )
+            cell["maximum_output_buffer_compactions"] = number(
+                result.get("maximum_reactor_output_buffer_compactions", 0)
+            )
+            cell["median_output_buffer_bytes_moved"] = number(
+                result.get("median_reactor_output_buffer_bytes_moved", 0)
+            )
+            cell["maximum_output_buffer_bytes_moved"] = number(
+                result.get("maximum_reactor_output_buffer_bytes_moved", 0)
+            )
     if not cells:
         return None
     cells.sort(key=lambda cell: (cell["workers"], cell["pipeline"]))
@@ -748,8 +769,8 @@ def render_markdown(
                 "The economical pipeline is the smallest measured depth whose median retains at "
                 f"least {tcp_scaling['near_peak_fraction'] * 100:.0f}% of that Worker's observed peak.",
                 "",
-                "| Workers | Peak pipeline | Economical pipeline | Retained peak | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency | Economical input compactions | Economical input bytes copied/op |",
-                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "| Workers | Peak pipeline | Economical pipeline | Retained peak | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency | Economical input compactions | Input bytes copied/op | Economical output compactions | Output bytes copied/op |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
         economical_by_workers = {
@@ -767,6 +788,10 @@ def render_markdown(
             )
             compactions = economical.get("median_input_buffer_compactions")
             copied_per_operation = economical.get("median_input_buffer_bytes_moved_per_operation")
+            output_compactions = economical.get("median_output_buffer_compactions")
+            output_copied_per_operation = economical.get(
+                "median_output_buffer_bytes_moved_per_operation"
+            )
             compactions_text = (
                 f"{compactions:,.0f}" if isinstance(compactions, (int, float)) else "—"
             )
@@ -775,13 +800,24 @@ def render_markdown(
                 if isinstance(copied_per_operation, (int, float))
                 else "—"
             )
+            output_compactions_text = (
+                f"{output_compactions:,.0f}"
+                if isinstance(output_compactions, (int, float))
+                else "—"
+            )
+            output_copied_text = (
+                f"{output_copied_per_operation:,.2f} B"
+                if isinstance(output_copied_per_operation, (int, float))
+                else "—"
+            )
             lines.append(
                 f"| {cell['workers']} | {cell['pipeline']} | {economical['pipeline']} | "
                 f"{economical['retained_peak_percent']:.2f}% | "
                 f"{cell['median_ops_per_second']:,.0f} | "
                 f"{cell['min_ops_per_second']:,.0f}–{cell['max_ops_per_second']:,.0f} | "
                 f"{gain_text} | {speedup_text} | {efficiency_text} | "
-                f"{compactions_text} | {copied_text} |"
+                f"{compactions_text} | {copied_text} | {output_compactions_text} | "
+                f"{output_copied_text} |"
             )
         lines.extend(
             [
@@ -898,7 +934,7 @@ def main() -> int:
     generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
     baseline_generated_at = baseline.get("generated_at") if baseline else None
     report = {
-        "schema_version": 5,
+        "schema_version": 6,
         "generated_at": generated_at,
         "baseline_generated_at": baseline_generated_at,
         "environment": environment,

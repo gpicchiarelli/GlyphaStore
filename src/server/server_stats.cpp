@@ -136,6 +136,8 @@ auto ServerStatsReporter::render(const ServerStatsSnapshot& snapshot, const std:
         std::uint64_t output_scatter_completions{};
         std::uint64_t input_buffer_compactions{};
         std::uint64_t input_buffer_bytes_moved{};
+        std::uint64_t output_buffer_compactions{};
+        std::uint64_t output_buffer_bytes_moved{};
         for (const auto& executor : snapshot.executors) {
             connections_active += executor.active_connections;
             connections_adopted += executor.adopted_connections;
@@ -145,6 +147,8 @@ auto ServerStatsReporter::render(const ServerStatsSnapshot& snapshot, const std:
             output_scatter_completions += executor.output_scatter_completions;
             input_buffer_compactions += executor.input_buffer_compactions;
             input_buffer_bytes_moved += executor.input_buffer_bytes_moved;
+            output_buffer_compactions += executor.output_buffer_compactions;
+            output_buffer_bytes_moved += executor.output_buffer_bytes_moved;
         }
         out += "connections_active=";
         out += std::to_string(connections_active);
@@ -169,6 +173,12 @@ auto ServerStatsReporter::render(const ServerStatsSnapshot& snapshot, const std:
         out += '\n';
         out += "input_buffer_bytes_moved=";
         out += std::to_string(input_buffer_bytes_moved);
+        out += '\n';
+        out += "output_buffer_compactions=";
+        out += std::to_string(output_buffer_compactions);
+        out += '\n';
+        out += "output_buffer_bytes_moved=";
+        out += std::to_string(output_buffer_bytes_moved);
         out += '\n';
         out += "abuse_accepts_rejected=";
         out += std::to_string(snapshot.abuse.accepts_rejected);

@@ -34,10 +34,10 @@ The report also selects the smallest measured pipeline whose median throughput i
 the best median in the same Worker row. This “economical pipeline” is a reproducible near-peak
 choice that limits in-flight work; it is advisory and does not override an application's latency or
 memory requirements.
-For every TCP cell the server benchmark also records the median and worst observed Reactor input
-buffer compactions and bytes moved. The scaling summary normalizes median bytes moved by the timed
-operation count; this distinguishes useful pipeline scaling from throughput that hides growing
-input-copy pressure.
+For every TCP cell the server benchmark also records the median and worst observed Reactor input and
+output buffer compactions and bytes moved. The scaling summary normalizes median bytes moved by the
+timed operation count; this distinguishes useful pipeline scaling from throughput that hides growing
+copy pressure.
 The durable-pipeline subsection requires both an explicit `durable-*` storage mode and completed
 durable mutations; volatile server counters are never relabeled as durability measurements.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing

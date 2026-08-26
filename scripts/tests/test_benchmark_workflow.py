@@ -48,7 +48,7 @@ class BenchmarkWorkflowTests(unittest.TestCase):
 
     def test_hosted_matrix_contract_has_all_twenty_one_sources(self) -> None:
         contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-        self.assertEqual(contract["schema_version"], 4)
+        self.assertEqual(contract["schema_version"], 5)
         self.assertEqual(contract["tcp_near_peak_fraction"], 0.95)
         self.assertEqual(
             contract["required_tcp_result_fields"],
@@ -57,6 +57,10 @@ class BenchmarkWorkflowTests(unittest.TestCase):
                 "maximum_reactor_input_buffer_compactions",
                 "median_reactor_input_buffer_bytes_moved",
                 "maximum_reactor_input_buffer_bytes_moved",
+                "median_reactor_output_buffer_compactions",
+                "maximum_reactor_output_buffer_compactions",
+                "median_reactor_output_buffer_bytes_moved",
+                "maximum_reactor_output_buffer_bytes_moved",
             ],
         )
         expected = [

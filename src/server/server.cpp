@@ -174,11 +174,13 @@ auto Server::first_failure() const -> std::optional<Error> {
     return failure_;
 }
 
-auto Server::reactor_input_buffer_stats() const noexcept -> ReactorInputBufferStats {
-    ReactorInputBufferStats stats;
+auto Server::reactor_buffer_stats() const noexcept -> ReactorBufferStats {
+    ReactorBufferStats stats;
     for (const auto& reactor : reactors_) {
-        stats.compactions += reactor->input_buffer_compactions();
-        stats.bytes_moved += reactor->input_buffer_bytes_moved();
+        stats.input_compactions += reactor->input_buffer_compactions();
+        stats.input_bytes_moved += reactor->input_buffer_bytes_moved();
+        stats.output_compactions += reactor->output_buffer_compactions();
+        stats.output_bytes_moved += reactor->output_buffer_bytes_moved();
     }
     return stats;
 }
@@ -206,6 +208,8 @@ auto Server::stats_report() const -> Result<std::string> {
             .output_scatter_completions = reactor->output_scatter_completions(),
             .input_buffer_compactions = reactor->input_buffer_compactions(),
             .input_buffer_bytes_moved = reactor->input_buffer_bytes_moved(),
+            .output_buffer_compactions = reactor->output_buffer_compactions(),
+            .output_buffer_bytes_moved = reactor->output_buffer_bytes_moved(),
         });
     }
     if (!reactors_.empty()) {

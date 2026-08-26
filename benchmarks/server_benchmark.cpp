@@ -101,6 +101,8 @@ struct DurableProfileSample {
 struct ReactorProfileSample {
     std::uint64_t input_buffer_compactions{};
     std::uint64_t input_buffer_bytes_moved{};
+    std::uint64_t output_buffer_compactions{};
+    std::uint64_t output_buffer_bytes_moved{};
 };
 
 struct ClientWork {
@@ -406,8 +408,11 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
 }
 
 [[nodiscard]] auto reactor_profile(const glyphastore::server::Server& server) -> ReactorProfileSample {
-    const auto stats = server.reactor_input_buffer_stats();
-    return {.input_buffer_compactions = stats.compactions, .input_buffer_bytes_moved = stats.bytes_moved};
+    const auto stats = server.reactor_buffer_stats();
+    return {.input_buffer_compactions = stats.input_compactions,
+            .input_buffer_bytes_moved = stats.input_bytes_moved,
+            .output_buffer_compactions = stats.output_compactions,
+            .output_buffer_bytes_moved = stats.output_bytes_moved};
 }
 
 [[nodiscard]] auto options(const int argc, char** argv) -> Options {
@@ -1296,6 +1301,14 @@ class BufferedResponseReader final {
         median_reactor_profile(&ReactorProfileSample::input_buffer_bytes_moved);
     result.maximum_reactor_input_buffer_bytes_moved =
         maximum_reactor_profile(&ReactorProfileSample::input_buffer_bytes_moved);
+    result.median_reactor_output_buffer_compactions =
+        median_reactor_profile(&ReactorProfileSample::output_buffer_compactions);
+    result.maximum_reactor_output_buffer_compactions =
+        maximum_reactor_profile(&ReactorProfileSample::output_buffer_compactions);
+    result.median_reactor_output_buffer_bytes_moved =
+        median_reactor_profile(&ReactorProfileSample::output_buffer_bytes_moved);
+    result.maximum_reactor_output_buffer_bytes_moved =
+        maximum_reactor_profile(&ReactorProfileSample::output_buffer_bytes_moved);
     if (options.maintenance_overlap_seed_operations != 0) {
         std::cout << "# maintenance_profile_scope=median-per-sample-counters-and-cross-sample-maxima\n";
         std::cout << "# maintenance_evaluations_median="

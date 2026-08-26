@@ -222,6 +222,10 @@ struct Result {
     double maximum_reactor_input_buffer_compactions{};
     double median_reactor_input_buffer_bytes_moved{};
     double maximum_reactor_input_buffer_bytes_moved{};
+    double median_reactor_output_buffer_compactions{};
+    double maximum_reactor_output_buffer_compactions{};
+    double median_reactor_output_buffer_bytes_moved{};
+    double maximum_reactor_output_buffer_bytes_moved{};
 };
 
 struct KeyMaterial {
@@ -572,6 +576,14 @@ inline void print_result(std::ostream& out, const Result& result) {
         << ' ' << "median_reactor_input_buffer_bytes_moved=" << result.median_reactor_input_buffer_bytes_moved
         << ' '
         << "maximum_reactor_input_buffer_bytes_moved=" << result.maximum_reactor_input_buffer_bytes_moved
+        << ' '
+        << "median_reactor_output_buffer_compactions=" << result.median_reactor_output_buffer_compactions
+        << ' '
+        << "maximum_reactor_output_buffer_compactions=" << result.maximum_reactor_output_buffer_compactions
+        << ' '
+        << "median_reactor_output_buffer_bytes_moved=" << result.median_reactor_output_buffer_bytes_moved
+        << ' '
+        << "maximum_reactor_output_buffer_bytes_moved=" << result.maximum_reactor_output_buffer_bytes_moved
         << '\n';
 }
 

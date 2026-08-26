@@ -560,12 +560,7 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::response_queue)) {
             throw std::bad_alloc{};
         }
-        if (current->output_offset > 0) {
-            current->output.erase(current->output.begin(),
-                                  current->output.begin() +
-                                      static_cast<std::ptrdiff_t>(current->output_offset));
-            current->output_offset = 0;
-        }
+        prepare_output_append(*current, *encoded_size);
         const auto output_offset = current->output.size();
         current->output.resize(output_offset + *encoded_size);
         auto destination = std::span<std::byte>{current->output}.subspan(output_offset, *encoded_size);
@@ -616,12 +611,6 @@ auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView res
     try {
         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::response_queue)) {
             throw std::bad_alloc{};
-        }
-        if (current->output_offset > 0) {
-            current->output.erase(current->output.begin(),
-                                  current->output.begin() +
-                                      static_cast<std::ptrdiff_t>(current->output_offset));
-            current->output_offset = 0;
         }
         LeasedOutput leased;
         if (auto encoded = encode_response_header(leased.header, response); !encoded) {
@@ -804,6 +793,24 @@ void Reactor::prepare_input_append(Connection& current, const std::size_t additi
     current.input_offset = 0;
     input_buffer_compactions_.fetch_add(1U, std::memory_order_relaxed);
     input_buffer_bytes_moved_.fetch_add(remaining, std::memory_order_relaxed);
+}
+
+void Reactor::prepare_output_append(Connection& current, const std::size_t additional_bytes) {
+    if (current.output_offset == 0 || additional_bytes == 0) {
+        return;
+    }
+    const auto physical_room = current.output.capacity() - current.output.size();
+    const bool would_reallocate = additional_bytes > physical_room;
+    const bool would_cross_limit = current.output.size() > config_.maximum_output_bytes - additional_bytes;
+    if (!would_reallocate && !would_cross_limit) {
+        return;
+    }
+    const auto remaining = current.output.size() - current.output_offset;
+    current.output.erase(current.output.begin(),
+                         current.output.begin() + static_cast<std::ptrdiff_t>(current.output_offset));
+    current.output_offset = 0;
+    output_buffer_compactions_.fetch_add(1U, std::memory_order_relaxed);
+    output_buffer_bytes_moved_.fetch_add(remaining, std::memory_order_relaxed);
 }
 
 auto Reactor::write_ready(const ConnectionToken token) -> Status {

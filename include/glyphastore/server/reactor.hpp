@@ -175,6 +175,12 @@ class Reactor final {
     [[nodiscard]] auto input_buffer_bytes_moved() const noexcept -> std::uint64_t {
         return input_buffer_bytes_moved_.load(std::memory_order_relaxed);
     }
+    [[nodiscard]] auto output_buffer_compactions() const noexcept -> std::uint64_t {
+        return output_buffer_compactions_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] auto output_buffer_bytes_moved() const noexcept -> std::uint64_t {
+        return output_buffer_bytes_moved_.load(std::memory_order_relaxed);
+    }
     [[nodiscard]] auto abuse_stats() const noexcept -> AbuseStats {
         return abuse_ ? abuse_->stats() : AbuseStats{};
     }
@@ -252,6 +258,7 @@ class Reactor final {
     [[nodiscard]] auto write_ready(ConnectionToken token) -> Status;
     [[nodiscard]] auto process_frames(ConnectionToken token) -> Status;
     void prepare_input_append(Connection& connection, std::size_t additional_bytes);
+    void prepare_output_append(Connection& connection, std::size_t additional_bytes);
     [[nodiscard]] auto bind_connection(ConnectionToken token, const RequestView& request) -> Status;
     [[nodiscard]] auto transfer_connection(ConnectionToken token, std::size_t target_worker,
                                            std::uint64_t request_id) -> Status;
@@ -325,6 +332,8 @@ class Reactor final {
     std::atomic_uint64_t output_scatter_completions_{};
     std::atomic_uint64_t input_buffer_compactions_{};
     std::atomic_uint64_t input_buffer_bytes_moved_{};
+    std::atomic_uint64_t output_buffer_compactions_{};
+    std::atomic_uint64_t output_buffer_bytes_moved_{};
     std::size_t disk_reads_outstanding_{};
     std::size_t mutations_outstanding_{};
     std::size_t mutation_bytes_outstanding_{};

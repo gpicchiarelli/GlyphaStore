@@ -378,8 +378,10 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
 - Input buffering uses a sliding consumed-prefix cursor and compacts only before an append that
   would otherwise reallocate or cross the configured byte watermark. Deep asynchronous
   pipelines therefore avoid one suffix memmove per completion; `input_buffer_compactions` and
-  `input_buffer_bytes_moved` expose the residual work. Output still uses a contiguous cursor plus
-  one bounded scatter lease; a bounded multi-extent output queue remains measurement-gated.
+  `input_buffer_bytes_moved` expose the residual work. Contiguous output applies the same rule after
+  partial writes; `output_buffer_compactions` and `output_buffer_bytes_moved` expose its residual
+  work. One bounded scatter lease remains available; a bounded multi-extent output queue remains
+  measurement-gated.
 
 ### Security and storage namespace
 

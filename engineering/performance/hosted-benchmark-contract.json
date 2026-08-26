@@ -1,12 +1,16 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "suite": "hosted-release-benchmarks",
   "tcp_near_peak_fraction": 0.95,
   "required_tcp_result_fields": [
     "median_reactor_input_buffer_compactions",
     "maximum_reactor_input_buffer_compactions",
     "median_reactor_input_buffer_bytes_moved",
-    "maximum_reactor_input_buffer_bytes_moved"
+    "maximum_reactor_input_buffer_bytes_moved",
+    "median_reactor_output_buffer_compactions",
+    "maximum_reactor_output_buffer_compactions",
+    "median_reactor_output_buffer_bytes_moved",
+    "maximum_reactor_output_buffer_bytes_moved"
   ],
   "expected_sources": [
     {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 7},

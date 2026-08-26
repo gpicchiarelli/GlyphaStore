@@ -145,7 +145,9 @@ therefore cannot target a new connection that reused the same descriptor or slot
 Input and output buffering is bounded per connection. Input frames use a consumed-prefix cursor:
 completed frames advance the cursor without moving the buffered suffix, and an append compacts the
 suffix only when it would otherwise reallocate or cross the byte watermark. Aggregate STATS expose
-`input_buffer_compactions` and `input_buffer_bytes_moved`. The one-time connection handoff queue for
+`input_buffer_compactions` and `input_buffer_bytes_moved`. Contiguous output uses the same sliding
+cursor rule after partial socket writes; `output_buffer_compactions` and `output_buffer_bytes_moved`
+expose its residual copy pressure. The one-time connection handoff queue for
 each Reader, every per-pair mutation SPSC, every cold-read SPSC, and every completion path are
 bounded as well. Mutation admission has both a request-count limit and an owned-byte limit, so
 maximum-size payloads cannot multiply up to the count limit. A full handoff queue restores the
