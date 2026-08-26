@@ -281,8 +281,20 @@ def decode_response(
     maximum_frame_bytes: int = MAX_FRAME_BYTES,
 ) -> Response:
     """Decode one complete response and reject noncanonical fields."""
-    if len(frame) < RESPONSE_HEADER_BYTES:
+    return _decode_response_from(frame, 0, len(frame), maximum_frame_bytes)
+
+
+def _decode_response_from(
+    buffer: bytes | bytearray | memoryview,
+    offset: int,
+    extent: int,
+    maximum_frame_bytes: int = MAX_FRAME_BYTES,
+) -> Response:
+    """Decode one complete response at an offset without creating a frame view."""
+    if extent < RESPONSE_HEADER_BYTES:
         raise ValueError("response is shorter than its header")
+    if offset < 0 or extent > len(buffer) - offset:
+        raise ValueError("response frame extent is invalid")
     (
         frame_size,
         version,
@@ -293,8 +305,8 @@ def decode_response(
         worker_count,
         reserved,
         routing_epoch,
-    ) = _RESPONSE_HEADER.unpack_from(frame)
-    if frame_size != len(frame) or frame_size > maximum_frame_bytes:
+    ) = _RESPONSE_HEADER.unpack_from(buffer, offset)
+    if frame_size != extent or frame_size > maximum_frame_bytes:
         raise ValueError("response frame extent is invalid")
     if version != VERSION:
         raise ValueError("response protocol version is unsupported")
@@ -312,7 +324,7 @@ def decode_response(
         owner_worker=owner_worker,
         worker_count=worker_count,
         routing_epoch=routing_epoch,
-        value=bytes(frame[RESPONSE_HEADER_BYTES:]),
+        value=bytes(buffer[offset + RESPONSE_HEADER_BYTES : offset + frame_size]),
     )
 
 

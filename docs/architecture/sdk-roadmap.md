@@ -105,7 +105,11 @@ halves the isolated result-materialization kernel at depth 128 (about 95.7 to 47
 removing 128 immediately discarded failure objects. Consecutive same-host one-Worker observations
 at depth 128 moved from 97.6k to 103.4k ops/s for sync and from 91.6k to 96.0k for asyncio. These
 non-alternating development samples support the removed-work decision but are not retained release
-capacity evidence.
+capacity evidence. The buffered response decoder also accepts an internal buffer offset directly,
+removing one temporary `memoryview` per response while preserving owned values and the public codec.
+Its isolated 256-frame corpus improved from about 455 to 326 microseconds (1.40×); consecutive
+post-change observations moved from 103.4k to 104.7k ops/s for sync and 96.0k to 97.7k for asyncio,
+again as non-alternating development evidence only.
 
 For Perl specifically, the next work is profile-led. Client routing now reuses the normalized INIT
 identity, and the benchmark can generate both default-FNV and keyed-SipHash workloads. Continue to

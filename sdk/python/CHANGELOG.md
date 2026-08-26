@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Decode buffered responses directly by offset, avoiding one temporary `memoryview` object per
+  response while retaining owned result values.
 - Materialize each pipeline response slot only at its final outcome instead of allocating and
   immediately replacing eager failure placeholders.
 - Assemble each sync and asyncio pipeline from validated headers and payload views with one native

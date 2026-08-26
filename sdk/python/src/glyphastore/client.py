@@ -19,8 +19,8 @@ from .protocol import (
     Response,
     Status,
     WorkerRouting,
+    _decode_response_from,
     decode_init_identity,
-    decode_response,
     encode_request,
     worker_for,
     _encode_validated_request_header,
@@ -838,13 +838,15 @@ class Client:
                     raise ProtocolError("server response size is outside client limits")
                 if available >= frame_size:
                     start = connection.input_offset
-                    encoded = memoryview(connection.input)[start : start + frame_size]
                     try:
-                        response = decode_response(encoded, self._config.maximum_frame_bytes)
+                        response = _decode_response_from(
+                            connection.input,
+                            start,
+                            frame_size,
+                            self._config.maximum_frame_bytes,
+                        )
                     except ValueError as error:
                         raise ProtocolError(str(error)) from error
-                    finally:
-                        encoded.release()
                     connection.input_offset += frame_size
                     if connection.input_offset == len(connection.input):
                         connection.input.clear()
