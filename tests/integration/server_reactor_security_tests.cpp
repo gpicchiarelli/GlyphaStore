@@ -189,9 +189,10 @@ GLYPHA_TEST("deep mutation pipeline keeps input compaction linear") {
 }
 
 GLYPHA_TEST("partial output appends compact only when retained capacity is exhausted") {
-#if defined(__OpenBSD__)
-    // SO_RCVBUF and kqueue scheduling under qemu do not reliably retain a
-    // user-space suffix. Linux and macOS exercise the copy-avoidance path.
+#if defined(__OpenBSD__) || defined(__FreeBSD__)
+    // SO_RCVBUF and BSD readiness scheduling under qemu do not reliably retain
+    // the user-space suffix required by this timing test. Linux and macOS
+    // exercise the copy-avoidance path; BSD still runs the protocol suites.
     return;
 #endif
     auto opened = glyphastore::server::Server::create({
