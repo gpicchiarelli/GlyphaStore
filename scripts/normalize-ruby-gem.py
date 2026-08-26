@@ -9,6 +9,7 @@ import hashlib
 import io
 import os
 from pathlib import Path, PurePosixPath
+import re
 import stat
 import sys
 import tarfile
@@ -122,6 +123,12 @@ def _canonical_gzip(payload: bytes) -> bytes:
     return bytes(output)
 
 
+def _canonical_metadata_yaml(payload: bytes) -> bytes:
+    for field in (b"autorequire", b"post_install_message", b"signing_key"):
+        payload = re.sub(rb"(?m)^" + field + rb":[ \t]*$", field + b":", payload)
+    return payload
+
+
 def _checksums(metadata: bytes, data: bytes) -> bytes:
     return (
         "---\n"
@@ -148,7 +155,9 @@ def normalize(path: Path, epoch: int) -> None:
     except tarfile.TarError as error:
         raise NormalizationError(f"invalid gem tar: {error}") from error
 
-    metadata_raw = _decompress_bounded(parts["metadata.gz"], "metadata.gz")
+    metadata_raw = _canonical_metadata_yaml(
+        _decompress_bounded(parts["metadata.gz"], "metadata.gz")
+    )
 
     metadata = _canonical_gzip(metadata_raw)
     data = _canonical_gzip(_canonical_data_tar(parts["data.tar.gz"], epoch))

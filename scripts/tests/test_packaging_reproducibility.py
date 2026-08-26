@@ -15,7 +15,12 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 def write_test_gem(
-    path: Path, *, compresslevel: int, mtime: int, data_name: str = "lib/glyphastore.rb"
+    path: Path,
+    *,
+    compresslevel: int,
+    mtime: int,
+    data_name: str = "lib/glyphastore.rb",
+    null_spacing: bytes = b"",
 ) -> None:
     data = io.BytesIO()
     with tarfile.open(fileobj=data, mode="w", format=tarfile.USTAR_FORMAT) as archive:
@@ -27,7 +32,15 @@ def write_test_gem(
         info.gid = mtime
         archive.addfile(info, io.BytesIO(payload))
     members = {
-        "metadata.gz": gzip.compress(b"---\nname: glyphastore\n", compresslevel=compresslevel, mtime=mtime),
+        "metadata.gz": gzip.compress(
+            b"---\nname: glyphastore\nautorequire:"
+            + null_spacing
+            + b"\nsigning_key:"
+            + null_spacing
+            + b"\n",
+            compresslevel=compresslevel,
+            mtime=mtime,
+        ),
         "data.tar.gz": gzip.compress(data.getvalue(), compresslevel=compresslevel, mtime=mtime),
         "checksums.yaml.gz": gzip.compress(b"stale\n", compresslevel=compresslevel, mtime=mtime),
     }
@@ -83,8 +96,8 @@ class PackagingReproducibilityTests(unittest.TestCase):
             root = Path(directory)
             first = root / "first.gem"
             second = root / "second.gem"
-            write_test_gem(first, compresslevel=1, mtime=100)
-            write_test_gem(second, compresslevel=9, mtime=200)
+            write_test_gem(first, compresslevel=1, mtime=100, null_spacing=b"")
+            write_test_gem(second, compresslevel=9, mtime=200, null_spacing=b" ")
             env = dict(os.environ, SOURCE_DATE_EPOCH="1780000000")
             normalizer = ROOT / "scripts/normalize-ruby-gem.sh"
             subprocess.run([normalizer, first], check=True, env=env, capture_output=True, text=True)
