@@ -116,7 +116,8 @@ struct ShardPairRuntime::Lane final {
         generation.writer_generation = std::move(initial);
         generation.retired_generations.reserve(ShardPairRuntime::kMaximumRetiredReadGenerations);
         generation.writer_epoch.store(generation.writer_generation->epoch(), std::memory_order_relaxed);
-        generation.delta_entries.store(generation.writer_generation->delta_entries(), std::memory_order_relaxed);
+        generation.delta_entries.store(generation.writer_generation->delta_entries(),
+                                       std::memory_order_relaxed);
         generation.delta_record_versions.store(generation.writer_generation->delta_record_versions(),
                                                std::memory_order_relaxed);
         generation.delta_arena_record_bytes.store(generation.writer_generation->delta_arena_record_bytes(),
@@ -379,9 +380,10 @@ auto ShardPairRuntime::release_payload(const std::size_t shard, const std::uint3
         return false;
     }
     lane.metrics.payload_slots_in_use.store(lane.payloads.slots_in_use(), std::memory_order_relaxed);
-    lane.metrics.payload_arena_bytes_in_use.store(lane.payloads.payload_bytes_in_use(), std::memory_order_relaxed);
+    lane.metrics.payload_arena_bytes_in_use.store(lane.payloads.payload_bytes_in_use(),
+                                                  std::memory_order_relaxed);
     lane.metrics.payload_admission_bytes_in_use.store(lane.payloads.admission_bytes_in_use(),
-                                              std::memory_order_relaxed);
+                                                      std::memory_order_relaxed);
     return true;
 }
 
@@ -399,8 +401,10 @@ auto ShardPairRuntime::adopt_read_generation(const std::size_t shard,
         // additionally keep an older epoch borrowed. The minimum is the sole
         // reclamation boundary published by Reader to Writer.
         const auto safe_epoch = std::min(generation->epoch(), minimum_leased_epoch);
-        const auto previous = lane.generation.reader_safe_epoch.exchange(safe_epoch, std::memory_order_acq_rel);
-        if (previous != safe_epoch && !lane.generation.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
+        const auto previous =
+            lane.generation.reader_safe_epoch.exchange(safe_epoch, std::memory_order_acq_rel);
+        if (previous != safe_epoch &&
+            !lane.generation.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
             lane.async.signal.fetch_add(1U, std::memory_order_release);
             lane.async.signal.notify_one();
         }
@@ -414,7 +418,8 @@ void ShardPairRuntime::request_read_refresh(const std::size_t shard) noexcept {
     }
     auto& lane = *lanes_[shard];
     const auto current = detail::StoreAccess::durable_read_catalog_revision(store_, shard);
-    if (current == 0U || current == lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
+    if (current == 0U ||
+        current == lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
         return;
     }
     if (!lane.generation.refresh_requested.exchange(true, std::memory_order_acq_rel)) {
@@ -448,7 +453,8 @@ auto ShardPairRuntime::stats() const -> std::vector<ShardPairStats> {
                  lane.metrics.maximum_payload_slots_in_use.load(std::memory_order_relaxed),
              .payload_arena_capacity_bytes = lane.payloads.byte_capacity(),
              .payload_arena_storage_bytes = lane.payloads.storage_bytes(),
-             .payload_arena_bytes_in_use = lane.metrics.payload_arena_bytes_in_use.load(std::memory_order_relaxed),
+             .payload_arena_bytes_in_use =
+                 lane.metrics.payload_arena_bytes_in_use.load(std::memory_order_relaxed),
              .maximum_payload_arena_bytes_in_use =
                  lane.metrics.maximum_payload_arena_bytes_in_use.load(std::memory_order_relaxed),
              .payload_admission_bytes_in_use =
@@ -456,7 +462,8 @@ auto ShardPairRuntime::stats() const -> std::vector<ShardPairStats> {
              .maximum_payload_admission_bytes_in_use =
                  lane.metrics.maximum_payload_admission_bytes_in_use.load(std::memory_order_relaxed),
              .payload_slot_full_total = lane.metrics.payload_slot_full_total.load(std::memory_order_relaxed),
-             .payload_arena_full_total = lane.metrics.payload_arena_full_total.load(std::memory_order_relaxed),
+             .payload_arena_full_total =
+                 lane.metrics.payload_arena_full_total.load(std::memory_order_relaxed),
              .payload_too_large_total = lane.metrics.payload_too_large_total.load(std::memory_order_relaxed),
              .admitted = lane.metrics.admitted.load(std::memory_order_relaxed),
              .rejected = lane.metrics.rejected.load(std::memory_order_relaxed),
@@ -468,16 +475,19 @@ auto ShardPairRuntime::stats() const -> std::vector<ShardPairStats> {
              .maximum_queue_wait_ns = lane.metrics.maximum_queue_wait_ns.load(std::memory_order_relaxed),
              .total_service_ns = lane.metrics.total_service_ns.load(std::memory_order_relaxed),
              .maximum_service_ns = lane.metrics.maximum_service_ns.load(std::memory_order_relaxed),
-             .read_catalog_revision = lane.generation.published_catalog_revision.load(std::memory_order_relaxed),
+             .read_catalog_revision =
+                 lane.generation.published_catalog_revision.load(std::memory_order_relaxed),
              .read_refresh_attempts = lane.metrics.read_refresh_attempts.load(std::memory_order_relaxed),
              .read_refresh_successes = lane.metrics.read_refresh_successes.load(std::memory_order_relaxed),
              .read_refresh_failures = lane.metrics.read_refresh_failures.load(std::memory_order_relaxed),
              .read_refresh_deferrals = lane.metrics.read_refresh_deferrals.load(std::memory_order_relaxed),
              .generations_retired = lane.generation.generations_retired.load(std::memory_order_relaxed),
-             .retired_generation_count = lane.generation.retired_generation_count.load(std::memory_order_relaxed),
+             .retired_generation_count =
+                 lane.generation.retired_generation_count.load(std::memory_order_relaxed),
              .delta_entries = lane.generation.delta_entries.load(std::memory_order_relaxed),
              .delta_record_versions = lane.generation.delta_record_versions.load(std::memory_order_relaxed),
-             .delta_arena_record_bytes = lane.generation.delta_arena_record_bytes.load(std::memory_order_relaxed),
+             .delta_arena_record_bytes =
+                 lane.generation.delta_arena_record_bytes.load(std::memory_order_relaxed),
              .delta_arena_key_bytes = lane.generation.delta_arena_key_bytes.load(std::memory_order_relaxed),
              .delta_arena_key_storage_bytes =
                  lane.generation.delta_arena_key_storage_bytes.load(std::memory_order_relaxed),
@@ -487,7 +497,8 @@ auto ShardPairRuntime::stats() const -> std::vector<ShardPairStats> {
              .read_merge_completions = lane.merge.read_merge_completions.load(std::memory_order_relaxed),
              .read_merge_failures = lane.merge.read_merge_failures.load(std::memory_order_relaxed),
              .read_merge_backpressure = lane.merge.read_merge_backpressure.load(std::memory_order_relaxed),
-             .read_merge_slots_processed = lane.merge.read_merge_slots_processed.load(std::memory_order_relaxed),
+             .read_merge_slots_processed =
+                 lane.merge.read_merge_slots_processed.load(std::memory_order_relaxed),
              .sync_admitted = lane.sync.sync_admitted.load(std::memory_order_relaxed),
              .queue_wait_histogram = lane.metrics.queue_wait_histogram.snapshot(),
              .service_histogram = lane.metrics.service_histogram.snapshot()});
@@ -631,15 +642,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         fail_closed.arm(fail_closed_wakes, FailClosedScope::pair_only);
     };
     const auto update_delta_stats = [&]() noexcept {
-        lane.generation.delta_entries.store(lane.generation.writer_generation->delta_entries(), std::memory_order_relaxed);
-        lane.generation.delta_record_versions.store(lane.generation.writer_generation->delta_record_versions(),
-                                         std::memory_order_relaxed);
-        lane.generation.delta_arena_record_bytes.store(lane.generation.writer_generation->delta_arena_record_bytes(),
+        lane.generation.delta_entries.store(lane.generation.writer_generation->delta_entries(),
                                             std::memory_order_relaxed);
-        lane.generation.delta_arena_key_bytes.store(lane.generation.writer_generation->delta_arena_key_bytes(),
-                                         std::memory_order_relaxed);
-        lane.generation.delta_arena_key_storage_bytes.store(lane.generation.writer_generation->delta_arena_key_storage_bytes(),
-                                                 std::memory_order_relaxed);
+        lane.generation.delta_record_versions.store(
+            lane.generation.writer_generation->delta_record_versions(), std::memory_order_relaxed);
+        lane.generation.delta_arena_record_bytes.store(
+            lane.generation.writer_generation->delta_arena_record_bytes(), std::memory_order_relaxed);
+        lane.generation.delta_arena_key_bytes.store(
+            lane.generation.writer_generation->delta_arena_key_bytes(), std::memory_order_relaxed);
+        lane.generation.delta_arena_key_storage_bytes.store(
+            lane.generation.writer_generation->delta_arena_key_storage_bytes(), std::memory_order_relaxed);
     };
     const auto reclaim_quiescent = [&]() noexcept {
         if (lane.generation.retired_generations.empty()) {
@@ -662,7 +674,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                   : std::uint64_t{0};
         }
         if (quiescent_epoch == 0) {
-            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(), std::memory_order_relaxed);
+            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                           std::memory_order_relaxed);
             return;
         }
         std::erase_if(lane.generation.retired_generations,
@@ -671,7 +684,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         if (retired != 0U) {
             lane.generation.generations_retired.fetch_add(retired, std::memory_order_relaxed);
         }
-        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(), std::memory_order_relaxed);
+        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                       std::memory_order_relaxed);
     };
     // Drain durable Index authority into the published generation before sticky
     // close (allow_fail_closed: durable may already be unhealthy). Sync single-op
@@ -685,16 +699,19 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             if (!snapshot) {
                 return false;
             }
-            auto next =
-                PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation, snapshot->records);
+            auto next = PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation,
+                                                                     snapshot->records);
             if (!next) {
                 return false;
             }
             install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
-                                      lane.generation.retired_generation_count, lane.generation.writer_epoch, std::move(*next));
+                                      lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                                      std::move(*next));
             update_delta_stats();
-            publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
-            lane.generation.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
+            publish_read_generation(lane.generation.published_generation,
+                                    lane.generation.writer_generation.get());
+            lane.generation.published_catalog_revision.store(snapshot->catalog_revision,
+                                                             std::memory_order_release);
             lane.merge.read_merge.reset();
             lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
             lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -712,10 +729,12 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     const auto reclaim_proportional = [&]() noexcept {
         constexpr std::size_t kReclaimPublishQuantum = 8;
         if (lane.generation.retired_generations.size() >= kReclaimPublishQuantum ||
-            lane.generation.retired_generations.size() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            lane.generation.retired_generations.size() + 1U >=
+                ShardPairRuntime::kMaximumRetiredReadGenerations) {
             reclaim_quiescent();
         } else {
-            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(), std::memory_order_relaxed);
+            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                           std::memory_order_relaxed);
         }
     };
     const auto process_reclamation = [&]() noexcept {
@@ -743,10 +762,12 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             }
             return;
         }
-        if (snapshot->catalog_revision == lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
+        if (snapshot->catalog_revision ==
+            lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
             return;
         }
-        auto next = PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation, snapshot->records);
+        auto next = PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation,
+                                                                 snapshot->records);
         if (!next) {
             lane.metrics.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
             if (next.error().code != ErrorCode::resource_exhausted) {
@@ -755,10 +776,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             return;
         }
         install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
-                                  lane.generation.retired_generation_count, lane.generation.writer_epoch, std::move(*next));
+                                  lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                                  std::move(*next));
         update_delta_stats();
-        publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
-        lane.generation.published_catalog_revision.store(snapshot->catalog_revision, std::memory_order_release);
+        publish_read_generation(lane.generation.published_generation,
+                                lane.generation.writer_generation.get());
+        lane.generation.published_catalog_revision.store(snapshot->catalog_revision,
+                                                         std::memory_order_release);
         lane.merge.read_merge.reset();
         lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
         lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -789,8 +813,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             return;
         }
         if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
-            auto advanced =
-                PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, config_.merge_quantum_slots);
+            auto advanced = PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge,
+                                                                          config_.merge_quantum_slots);
             if (!advanced) {
                 lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
                 if (advanced.error().code == ErrorCode::resource_exhausted) {
@@ -812,7 +836,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         if (lane.generation.retired_generations.size() >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
             return;
         }
-        auto next = PairReadGeneration::finish_incremental_merge(lane.generation.writer_generation, *lane.merge.read_merge);
+        auto next = PairReadGeneration::finish_incremental_merge(lane.generation.writer_generation,
+                                                                 *lane.merge.read_merge);
         if (!next) {
             lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
             lane.merge.read_merge.reset();
@@ -826,11 +851,14 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             return;
         }
         lane.generation.retired_generations.push_back(lane.generation.writer_generation);
-        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(), std::memory_order_relaxed);
+        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                       std::memory_order_relaxed);
         lane.generation.writer_generation = std::move(*next);
         update_delta_stats();
-        lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(), std::memory_order_relaxed);
-        publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+        lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
+                                           std::memory_order_relaxed);
+        publish_read_generation(lane.generation.published_generation,
+                                lane.generation.writer_generation.get());
         lane.merge.read_merge.reset();
         lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
         lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -847,7 +875,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             continue;
         }
         process_reclamation();
-        if (!lane.async.stopping.load(std::memory_order_acquire) && healthy_.load(std::memory_order_acquire)) {
+        if (!lane.async.stopping.load(std::memory_order_acquire) &&
+            healthy_.load(std::memory_order_acquire)) {
             process_refresh();
             process_merge();
         }
@@ -899,7 +928,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 std::vector<SyncMutation*> sticky_committed_nodes;
                 sticky_committed_nodes.reserve(8);
                 const auto ack_sticky_after_visibility = [&]() noexcept {
-                    const auto* published = lane.generation.published_generation.load(std::memory_order_acquire);
+                    const auto* published =
+                        lane.generation.published_generation.load(std::memory_order_acquire);
                     if (published == nullptr) {
                         return;
                     }
@@ -960,9 +990,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             break;
                         }
                         const std::size_t end = durable_subbatch_end(
-                            begin, nodes.size(), [&](const std::size_t index) -> const HashedKey& {
-                                return *nodes[index]->key;
-                            });
+                            begin, nodes.size(),
+                            [&](const std::size_t index) -> const HashedKey& { return *nodes[index]->key; });
                         views.clear();
                         for (std::size_t index = begin; index < end; ++index) {
                             auto* node = nodes[index];
@@ -1034,15 +1063,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             }
                         } else {
                             lane.generation.retired_generations.push_back(lane.generation.writer_generation);
-                            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                                std::memory_order_relaxed);
+                            lane.generation.retired_generation_count.store(
+                                lane.generation.retired_generations.size(), std::memory_order_relaxed);
                             lane.generation.writer_generation = std::move(*next);
                             update_delta_stats();
                             lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
-                                                    std::memory_order_relaxed);
-                            publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+                                                               std::memory_order_relaxed);
+                            publish_read_generation(lane.generation.published_generation,
+                                                    lane.generation.writer_generation.get());
                             lane.generation.published_catalog_revision.store(snapshot->catalog_revision,
-                                                                  std::memory_order_release);
+                                                                             std::memory_order_release);
                             lane.merge.read_merge.reset();
                             lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
                             lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
@@ -1167,15 +1197,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         chunk[chunk_size++] = rev;
                         rev = rev->next;
                     }
-                    for (unsigned spin = 0; !PairReadGeneration::can_publish_incremental(
-                                                *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size) &&
-                                            spin < 256U;
+                    for (unsigned spin = 0;
+                         !PairReadGeneration::can_publish_incremental(
+                             *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size) &&
+                         spin < 256U;
                          ++spin) {
                         reclaim_quiescent();
                         process_merge();
                     }
-                    if (!PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                     lane.merge.read_merge.get(), chunk_size)) {
+                    if (!PairReadGeneration::can_publish_incremental(
+                            *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size)) {
                         lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                         for (std::size_t index = 0; index < chunk_size; ++index) {
                             // Never Store-entered — same polarity as async merge pressure.
@@ -1246,7 +1277,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                             {
                                 GS_PHASE_PUT(publish);
                                 next = PairReadGeneration::publish_incremental(
-                                    lane.generation.writer_generation, std::span{publications.data(), publication_count},
+                                    lane.generation.writer_generation,
+                                    std::span{publications.data(), publication_count},
                                     lane.merge.read_merge.get());
                                 if (!next && next.error().code == ErrorCode::resource_exhausted) {
                                     reclaim_quiescent();
@@ -1264,13 +1296,14 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                         Status{fail(ErrorCode::unavailable, "read publication failed")};
                                 }
                             } else {
-                                lane.generation.retired_generations.push_back(lane.generation.writer_generation);
-                                lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                                    std::memory_order_relaxed);
+                                lane.generation.retired_generations.push_back(
+                                    lane.generation.writer_generation);
+                                lane.generation.retired_generation_count.store(
+                                    lane.generation.retired_generations.size(), std::memory_order_relaxed);
                                 lane.generation.writer_generation = std::move(*next);
                                 update_delta_stats();
                                 lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
-                                                        std::memory_order_relaxed);
+                                                                   std::memory_order_relaxed);
                                 publish_read_generation(lane.generation.published_generation,
                                                         lane.generation.writer_generation.get());
                                 // Mark published before reclaim so catch cannot invert RAW.
@@ -1422,7 +1455,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         // After drain/publish: success ACK iff published generation matches the
                         // mutation (put hit / erase miss). Index-insert-fail stays error+miss.
                         const auto ack_after_published_visibility = [&]() -> Status {
-                            const auto* published = lane.generation.published_generation.load(std::memory_order_acquire);
+                            const auto* published =
+                                lane.generation.published_generation.load(std::memory_order_acquire);
                             if (published == nullptr) {
                                 return Status{fail(ErrorCode::unavailable,
                                                    "paired read generation missing after drain")};
@@ -1491,13 +1525,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                                    "read publication failed")};
                                         shadow_resolve_status();
                                     } else {
-                                        lane.generation.retired_generations.push_back(lane.generation.writer_generation);
-                                        lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                                            std::memory_order_relaxed);
+                                        lane.generation.retired_generations.push_back(
+                                            lane.generation.writer_generation);
+                                        lane.generation.retired_generation_count.store(
+                                            lane.generation.retired_generations.size(),
+                                            std::memory_order_relaxed);
                                         lane.generation.writer_generation = std::move(*next);
                                         update_delta_stats();
-                                        lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
-                                                                std::memory_order_relaxed);
+                                        lane.generation.writer_epoch.store(
+                                            lane.generation.writer_generation->epoch(),
+                                            std::memory_order_relaxed);
                                         publish_read_generation(lane.generation.published_generation,
                                                                 lane.generation.writer_generation.get());
                                         // Mark published before reclaim so catch cannot invert RAW.
@@ -1527,13 +1564,16 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                             : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                     shadow_resolve_status();
                                 } else {
-                                    lane.generation.retired_generations.push_back(lane.generation.writer_generation);
-                                    lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                                        std::memory_order_relaxed);
+                                    lane.generation.retired_generations.push_back(
+                                        lane.generation.writer_generation);
+                                    lane.generation.retired_generation_count.store(
+                                        lane.generation.retired_generations.size(),
+                                        std::memory_order_relaxed);
                                     lane.generation.writer_generation = std::move(*next);
                                     update_delta_stats();
-                                    lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
-                                                            std::memory_order_relaxed);
+                                    lane.generation.writer_epoch.store(
+                                        lane.generation.writer_generation->epoch(),
+                                        std::memory_order_relaxed);
                                     publish_read_generation(lane.generation.published_generation,
                                                             lane.generation.writer_generation.get());
                                     generation_published = true;
@@ -1693,7 +1733,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             }
             if (!task && !sync_pending && !lane.async.stopping.load(std::memory_order_acquire) &&
                 !lane.generation.refresh_requested.load(std::memory_order_acquire) &&
-                !lane.generation.reclaim_requested.load(std::memory_order_acquire) && !lane.merge.read_merge) {
+                !lane.generation.reclaim_requested.load(std::memory_order_acquire) &&
+                !lane.merge.read_merge) {
                 bool woke = false;
                 for (unsigned spin = 0; spin < 16U; ++spin) {
                     if (lane.async.signal.load(std::memory_order_acquire) != observed) {
@@ -1852,8 +1893,9 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 throw std::bad_alloc{};
             }
             if (lane.merge.read_merge) {
-                lane.merge.read_merge_post_entries.store(PairReadGeneration::merge_post_entries(*lane.merge.read_merge),
-                                                   std::memory_order_relaxed);
+                lane.merge.read_merge_post_entries.store(
+                    PairReadGeneration::merge_post_entries(*lane.merge.read_merge),
+                    std::memory_order_relaxed);
             }
             merge_retry_blocked = false;
             reclaim_quiescent();
@@ -2251,8 +2293,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 }
                 publish_fail_closed();
             } else if (post_commit_publication_failure && !read_mutations.empty()) {
-                auto next = PairReadGeneration::publish_incremental(lane.generation.writer_generation, read_mutations,
-                                                                    lane.merge.read_merge.get());
+                auto next = PairReadGeneration::publish_incremental(
+                    lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
                 if (!next) {
                     for (const auto index : read_mutation_indices) {
                         if (!completions[index].error) {
@@ -2264,11 +2306,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 } else {
                     lane.generation.retired_generations.push_back(lane.generation.writer_generation);
                     lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                        std::memory_order_relaxed);
+                                                                   std::memory_order_relaxed);
                     lane.generation.writer_generation = std::move(*next);
                     update_delta_stats();
-                    lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(), std::memory_order_relaxed);
-                    publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+                    lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
+                                                       std::memory_order_relaxed);
+                    publish_read_generation(lane.generation.published_generation,
+                                            lane.generation.writer_generation.get());
                     generation_published = true;
                     finish_published_generation();
                 }
@@ -2276,8 +2320,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             } else if (post_commit_publication_failure) {
                 publish_fail_closed();
             } else if (!read_mutations.empty()) {
-                auto next = PairReadGeneration::publish_incremental(lane.generation.writer_generation, read_mutations,
-                                                                    lane.merge.read_merge.get());
+                auto next = PairReadGeneration::publish_incremental(
+                    lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
                 if (!next) {
                     // Durable happy-path incremental fail: drain Index before sticky close
                     // (mirror sync single-op). Volatile has nothing to drain.
@@ -2300,11 +2344,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 } else {
                     lane.generation.retired_generations.push_back(lane.generation.writer_generation);
                     lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                        std::memory_order_relaxed);
+                                                                   std::memory_order_relaxed);
                     lane.generation.writer_generation = std::move(*next);
                     update_delta_stats();
-                    lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(), std::memory_order_relaxed);
-                    publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+                    lane.generation.writer_epoch.store(lane.generation.writer_generation->epoch(),
+                                                       std::memory_order_relaxed);
+                    publish_read_generation(lane.generation.published_generation,
+                                            lane.generation.writer_generation.get());
                     generation_published = true;
                     finish_published_generation();
                 }
@@ -2356,8 +2402,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             lane.metrics.completed.fetch_add(1U, std::memory_order_relaxed);
             atomic_saturating_add(lane.metrics.total_service_ns, service_ns);
             atomic_max(lane.metrics.maximum_service_ns, service_ns);
-            completions[index].writer_epoch =
-                lane.generation.writer_epoch.load(std::memory_order_relaxed);
+            completions[index].writer_epoch = lane.generation.writer_epoch.load(std::memory_order_relaxed);
             if (!deliver_outcome(batch[index].sink, std::move(completions[index]))) {
                 std::terminate();
             }
@@ -2408,7 +2453,7 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard) noexcept {
         }
         if (quiescent_epoch == 0) {
             lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                          std::memory_order_relaxed);
+                                                           std::memory_order_relaxed);
             return;
         }
         const auto before = lane.generation.retired_generations.size();
@@ -2419,7 +2464,7 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard) noexcept {
             lane.generation.generations_retired.fetch_add(retired, std::memory_order_relaxed);
         }
         lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                      std::memory_order_relaxed);
+                                                       std::memory_order_relaxed);
     };
     if (lane.generation.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
         reclaim_quiescent();
@@ -2445,8 +2490,8 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard) noexcept {
         return;
     }
     if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
-        auto advanced =
-            PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, config_.merge_quantum_slots);
+        auto advanced = PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge,
+                                                                      config_.merge_quantum_slots);
         if (!advanced) {
             lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
             lane.merge.read_merge.reset();
@@ -2460,8 +2505,8 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard) noexcept {
         return;
     }
     reclaim_quiescent();
-    auto next =
-        PairReadGeneration::finish_incremental_merge(lane.generation.writer_generation, *lane.merge.read_merge);
+    auto next = PairReadGeneration::finish_incremental_merge(lane.generation.writer_generation,
+                                                             *lane.merge.read_merge);
     if (!next) {
         lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
         lane.merge.read_merge.reset();
@@ -2501,12 +2546,13 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
     const auto reclaim_proportional = [&]() noexcept {
         constexpr std::size_t kReclaimPublishQuantum = 8;
         if (lane.generation.retired_generations.size() >= kReclaimPublishQuantum ||
-            lane.generation.retired_generations.size() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            lane.generation.retired_generations.size() + 1U >=
+                ShardPairRuntime::kMaximumRetiredReadGenerations) {
             lane.generation.reclaim_requested.store(true, std::memory_order_release);
             combiner_housekeeping(shard);
         } else {
             lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                          std::memory_order_relaxed);
+                                                           std::memory_order_relaxed);
         }
     };
     const auto try_drain_durable_snapshot = [&]() noexcept -> bool {
@@ -2518,8 +2564,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
             if (!snapshot) {
                 return false;
             }
-            auto next =
-                PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation, snapshot->records);
+            auto next = PairReadGeneration::replace_durable_snapshot(lane.generation.writer_generation,
+                                                                     snapshot->records);
             if (!next) {
                 return false;
             }
@@ -2528,7 +2574,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                       std::move(*next));
             lane.generation.delta_entries.store(lane.generation.writer_generation->delta_entries(),
                                                 std::memory_order_relaxed);
-            publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+            publish_read_generation(lane.generation.published_generation,
+                                    lane.generation.writer_generation.get());
             lane.generation.published_catalog_revision.store(snapshot->catalog_revision,
                                                              std::memory_order_release);
             lane.merge.read_merge.reset();
@@ -2561,8 +2608,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
         if (!healthy_.load(std::memory_order_acquire)) {
             for (auto* node = rev; node != nullptr;) {
                 auto* const next = node->next;
-                node->status =
-                    Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                node->status = Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                 node->done.store(true, std::memory_order_release);
                 node->done.notify_one();
                 node = next;
@@ -2590,19 +2636,19 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     rev = rev->next;
                 }
                 for (unsigned spin = 0;
-                     !PairReadGeneration::can_publish_incremental(
-                         *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size) &&
+                     !PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
+                                                                  lane.merge.read_merge.get(), chunk_size) &&
                      spin < 256U;
                      ++spin) {
                     combiner_housekeeping(shard);
                 }
-                if (!PairReadGeneration::can_publish_incremental(
-                        *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size)) {
+                if (!PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
+                                                                 lane.merge.read_merge.get(), chunk_size)) {
                     lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                     for (std::size_t index = 0; index < chunk_size; ++index) {
-                        chunk[index]->status = Status{fail(
-                            ErrorCode::resource_exhausted,
-                            "mutation rejected until incremental read merge advances")};
+                        chunk[index]->status =
+                            Status{fail(ErrorCode::resource_exhausted,
+                                        "mutation rejected until incremental read merge advances")};
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
@@ -2687,9 +2733,9 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                         if (!node->status) {
                             continue;
                         }
-                        node->status = Status{fail(store_mutated ? ErrorCode::unavailable
-                                                                 : ErrorCode::resource_exhausted,
-                                                   "paired mutation allocation failed")};
+                        node->status = Status{
+                            fail(store_mutated ? ErrorCode::unavailable : ErrorCode::resource_exhausted,
+                                 "paired mutation allocation failed")};
                     }
                 }
                 for (std::size_t index = 0; index < chunk_size; ++index) {
@@ -2753,8 +2799,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 const auto& key = *node->key;
                 durable_mutate_entered = true;
                 static_cast<void>(life.mark_durable_started());
-                auto result = execute_durable_single(store_, shard, node->kind, key, node->value,
-                                                     node->expire_at_ns);
+                auto result =
+                    execute_durable_single(store_, shard, node->kind, key, node->value, node->expire_at_ns);
                 if (result.committed()) {
                     durable_committed = true;
                 }
@@ -2763,8 +2809,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     const auto* published =
                         lane.generation.published_generation.load(std::memory_order_acquire);
                     if (published == nullptr) {
-                        return Status{fail(ErrorCode::unavailable,
-                                           "paired read generation missing after drain")};
+                        return Status{
+                            fail(ErrorCode::unavailable, "paired read generation missing after drain")};
                     }
                     const auto view = published->prepare_durable(key);
                     if (node->kind == MutationKind::put) {
@@ -2779,10 +2825,9 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                              "committed erase still visible after drain")};
                 };
                 if (!result.committed() || result.error) {
-                    auto error = result.error ? *result.error
-                                              : Error{ErrorCode::io_error, "durable mutation failed"};
-                    if (result.committed() ||
-                        result.outcome == DurableMutationOutcome::indeterminate) {
+                    auto error =
+                        result.error ? *result.error : Error{ErrorCode::io_error, "durable mutation failed"};
+                    if (result.committed() || result.outcome == DurableMutationOutcome::indeterminate) {
                         error.code = ErrorCode::unavailable;
                         generation_published = try_drain_durable_snapshot();
                         shadow_mark_published(generation_published);
@@ -2798,19 +2843,20 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     }
                     shadow_resolve_status();
                 } else {
-                    ReadMutation publication{
-                        .key = key,
-                        .record = RecordRef{.sequence = *result.sequence},
-                        .opcode = node->kind == MutationKind::put ? Opcode::put : Opcode::erase};
+                    ReadMutation publication{.key = key,
+                                             .record = RecordRef{.sequence = *result.sequence},
+                                             .opcode = node->kind == MutationKind::put ? Opcode::put
+                                                                                       : Opcode::erase};
                     if (node->kind == MutationKind::put) {
                         auto captured = detail::StoreAccess::capture_durable_read(store_, shard, key);
                         if (!captured) {
                             generation_published = try_drain_durable_snapshot();
                             shadow_mark_published(generation_published);
                             publish_fail_closed();
-                            status = generation_published
-                                         ? ack_after_published_visibility()
-                                         : Status{fail(ErrorCode::unavailable, "durable read capture failed")};
+                            status =
+                                generation_published
+                                    ? ack_after_published_visibility()
+                                    : Status{fail(ErrorCode::unavailable, "durable read capture failed")};
                             shadow_resolve_status();
                         } else {
                             publication.record = captured->reference();
@@ -2823,15 +2869,16 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                 generation_published = try_drain_durable_snapshot();
                                 shadow_mark_published(generation_published);
                                 publish_fail_closed();
-                                status = generation_published
-                                             ? ack_after_published_visibility()
-                                             : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                status =
+                                    generation_published
+                                        ? ack_after_published_visibility()
+                                        : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                 shadow_resolve_status();
                             } else {
-                                install_writer_generation(
-                                    lane.generation.writer_generation, lane.generation.retired_generations,
-                                    lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                    std::move(*next));
+                                install_writer_generation(lane.generation.writer_generation,
+                                                          lane.generation.retired_generations,
+                                                          lane.generation.retired_generation_count,
+                                                          lane.generation.writer_epoch, std::move(*next));
                                 lane.generation.delta_entries.store(
                                     lane.generation.writer_generation->delta_entries(),
                                     std::memory_order_relaxed);
@@ -2849,9 +2896,9 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                         }
                     } else {
                         static_cast<void>(life.mark_publication_staged());
-                        auto next = PairReadGeneration::publish_incremental(
-                            lane.generation.writer_generation, std::span{&publication, 1},
-                            lane.merge.read_merge.get());
+                        auto next = PairReadGeneration::publish_incremental(lane.generation.writer_generation,
+                                                                            std::span{&publication, 1},
+                                                                            lane.merge.read_merge.get());
                         if (!next) {
                             generation_published = try_drain_durable_snapshot();
                             shadow_mark_published(generation_published);
@@ -2861,10 +2908,10 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                          : Status{fail(ErrorCode::unavailable, "read publication failed")};
                             shadow_resolve_status();
                         } else {
-                            install_writer_generation(
-                                lane.generation.writer_generation, lane.generation.retired_generations,
-                                lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                std::move(*next));
+                            install_writer_generation(lane.generation.writer_generation,
+                                                      lane.generation.retired_generations,
+                                                      lane.generation.retired_generation_count,
+                                                      lane.generation.writer_epoch, std::move(*next));
                             lane.generation.delta_entries.store(
                                 lane.generation.writer_generation->delta_entries(),
                                 std::memory_order_relaxed);
@@ -2899,11 +2946,11 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 if (recovery.fail_closed) {
                     publish_fail_closed();
                 }
-                const auto status_plan = plan_sync_durable_exception_status(
-                    {.durable_committed = durable_committed,
-                     .durable_mutate_entered = durable_mutate_entered,
-                     .generation_published = generation_published,
-                     .status_resolved = status_resolved});
+                const auto status_plan =
+                    plan_sync_durable_exception_status({.durable_committed = durable_committed,
+                                                        .durable_mutate_entered = durable_mutate_entered,
+                                                        .generation_published = generation_published,
+                                                        .status_resolved = status_resolved});
                 switch (status_plan.kind) {
                 case SyncDurableExceptionStatusKind::keep_resolved:
                     break;
@@ -2916,8 +2963,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     shadow_resolve_status();
                     break;
                 case SyncDurableExceptionStatusKind::resource_exhausted_never_entered:
-                    status =
-                        Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                    status = Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                     shadow_resolve_status();
                     break;
                 }
@@ -2939,11 +2985,11 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 if (recovery.fail_closed) {
                     publish_fail_closed();
                 }
-                const auto status_plan = plan_sync_durable_exception_status(
-                    {.durable_committed = durable_committed,
-                     .durable_mutate_entered = durable_mutate_entered,
-                     .generation_published = generation_published,
-                     .status_resolved = status_resolved});
+                const auto status_plan =
+                    plan_sync_durable_exception_status({.durable_committed = durable_committed,
+                                                        .durable_mutate_entered = durable_mutate_entered,
+                                                        .generation_published = generation_published,
+                                                        .status_resolved = status_resolved});
                 switch (status_plan.kind) {
                 case SyncDurableExceptionStatusKind::keep_resolved:
                     break;

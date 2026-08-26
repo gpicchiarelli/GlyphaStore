@@ -22,11 +22,8 @@ GLYPHA_TEST("property OVERLOADED wire code iff known_not_committed completion") 
         CommitKnowledge::indeterminate,
     };
     const std::array publications{
-        PublicationState::not_required,
-        PublicationState::required,
-        PublicationState::staged,
-        PublicationState::published,
-        PublicationState::failed,
+        PublicationState::not_required, PublicationState::required, PublicationState::staged,
+        PublicationState::published,    PublicationState::failed,
     };
     for (const auto commit : knowledge) {
         for (const auto publication : publications) {

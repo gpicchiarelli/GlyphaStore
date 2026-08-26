@@ -722,8 +722,8 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             if (received->kind == TlsIoKind::closed) {
                 current->peer_read_closed = true;
                 if (connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                           current->request_in_flight, has_pending_output(*current),
-                                           current->input_offset < current->input.size()) ==
+                                          current->request_in_flight, has_pending_output(*current),
+                                          current->input_offset < current->input.size()) ==
                     ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
@@ -738,8 +738,8 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             } else if (received == 0) {
                 current->peer_read_closed = true;
                 if (connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                           current->request_in_flight, has_pending_output(*current),
-                                           current->input_offset < current->input.size()) ==
+                                          current->request_in_flight, has_pending_output(*current),
+                                          current->input_offset < current->input.size()) ==
                     ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
@@ -1066,9 +1066,9 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
 
         touch_activity(*current, std::chrono::steady_clock::now());
         if (connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                           current->request_in_flight, has_pending_output(*current),
-                                           current->input_offset < current->input.size()) ==
-                    ConnectionAction::close_now) {
+                                  current->request_in_flight, has_pending_output(*current),
+                                  current->input_offset < current->input.size()) ==
+            ConnectionAction::close_now) {
             close_connection(token);
             return {};
         }
@@ -1100,9 +1100,9 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         }
         if (current->peer_read_closed &&
             connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                           current->request_in_flight, has_pending_output(*current),
-                                           current->input_offset < current->input.size()) ==
-                    ConnectionAction::close_now) {
+                                  current->request_in_flight, has_pending_output(*current),
+                                  current->input_offset < current->input.size()) ==
+                ConnectionAction::close_now) {
             close_connection(token);
             return {};
         }
@@ -1195,9 +1195,9 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
             if (connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                           current->request_in_flight, has_pending_output(*current),
-                                           current->input_offset < current->input.size()) ==
-                    ConnectionAction::close_now) {
+                                      current->request_in_flight, has_pending_output(*current),
+                                      current->input_offset < current->input.size()) ==
+                ConnectionAction::close_now) {
                 close_connection(token);
             } else if (auto drained = write_ready(token); !drained) {
                 close_connection(token);

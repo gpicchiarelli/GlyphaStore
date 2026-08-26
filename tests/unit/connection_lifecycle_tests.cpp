@@ -1,14 +1,14 @@
 #include "glyphastore/server/connection_lifecycle.hpp"
 #include "test.hpp"
 
+using glyphastore::server::connection_lifecycle_of;
 using glyphastore::server::ConnectionAction;
 using glyphastore::server::ConnectionDrainSnapshot;
 using glyphastore::server::ConnectionLifecycle;
-using glyphastore::server::DecidedOutput;
-using glyphastore::server::InputLifecycle;
-using glyphastore::server::connection_lifecycle_of;
 using glyphastore::server::decide_connection_action;
+using glyphastore::server::DecidedOutput;
 using glyphastore::server::input_lifecycle_of;
+using glyphastore::server::InputLifecycle;
 
 GLYPHA_TEST("connection_lifecycle decide close_now only when drained") {
     ConnectionDrainSnapshot open{};

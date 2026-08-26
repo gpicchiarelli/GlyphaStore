@@ -13,8 +13,8 @@ inline constexpr std::size_t kMaximumPublicationBatch = 32U;
 // Advance [begin, end) over same-key-distinct items for durable_group sub-batches.
 // Stops before the first key that duplicates an earlier key in the window.
 template <typename KeyFn>
-[[nodiscard]] auto durable_subbatch_end(const std::size_t begin, const std::size_t size,
-                                        KeyFn&& key_at) -> std::size_t {
+[[nodiscard]] auto durable_subbatch_end(const std::size_t begin, const std::size_t size, KeyFn&& key_at)
+    -> std::size_t {
     std::size_t end = begin;
     for (; end < size; ++end) {
         bool duplicate = false;
@@ -34,8 +34,7 @@ template <typename KeyFn>
 }
 
 // Cap a sync volatile publication chunk at kMaximumPublicationBatch.
-[[nodiscard]] constexpr auto sync_publication_chunk_cap(const std::size_t remaining) noexcept
-    -> std::size_t {
+[[nodiscard]] constexpr auto sync_publication_chunk_cap(const std::size_t remaining) noexcept -> std::size_t {
     return remaining < kMaximumPublicationBatch ? remaining : kMaximumPublicationBatch;
 }
 

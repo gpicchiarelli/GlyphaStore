@@ -24,11 +24,11 @@ auto require(const bool condition, const char* expression, const int line) -> bo
     return condition;
 }
 
-#define REQUIRE(expression)                                                                          \
-    do {                                                                                             \
-        if (!require((expression), #expression, __LINE__)) {                                         \
-            return 1;                                                                                \
-        }                                                                                            \
+#define REQUIRE(expression)                                                                                  \
+    do {                                                                                                     \
+        if (!require((expression), #expression, __LINE__)) {                                                 \
+            return 1;                                                                                        \
+        }                                                                                                    \
     } while (false)
 
 struct DirectoryGuard final {
@@ -43,8 +43,8 @@ struct DirectoryGuard final {
 
 int main() {
     const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
-    DirectoryGuard directory{
-        std::filesystem::temp_directory_path() / ("glyphastore-c-abi-" + std::to_string(nonce))};
+    DirectoryGuard directory{std::filesystem::temp_directory_path() /
+                             ("glyphastore-c-abi-" + std::to_string(nonce))};
     const auto native_path = directory.path.string();
 
     gs_store_options options{};
@@ -77,11 +77,16 @@ int main() {
     for (std::uint32_t thread_id = 0; thread_id < 4; ++thread_id) {
         threads.emplace_back([&, thread_id] {
             for (std::uint32_t iteration = 0; iteration < 50; ++iteration) {
-                const std::array<std::uint8_t, 8> payload{
-                    static_cast<std::uint8_t>(thread_id), static_cast<std::uint8_t>(iteration),
-                    2, 3, 4, 5, 6, 7};
-                const auto result =
-                    gs_store_put(store, view(key.data(), key.size()), view(payload.data(), payload.size()), 0);
+                const std::array<std::uint8_t, 8> payload{static_cast<std::uint8_t>(thread_id),
+                                                          static_cast<std::uint8_t>(iteration),
+                                                          2,
+                                                          3,
+                                                          4,
+                                                          5,
+                                                          6,
+                                                          7};
+                const auto result = gs_store_put(store, view(key.data(), key.size()),
+                                                 view(payload.data(), payload.size()), 0);
                 if (result.status.code != GS_OK || result.outcome != GS_MUTATION_COMMITTED) {
                     failed.store(true, std::memory_order_relaxed);
                     return;

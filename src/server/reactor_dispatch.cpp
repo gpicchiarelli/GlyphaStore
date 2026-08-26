@@ -16,8 +16,8 @@
 
 namespace glyphastore::server {
 
-auto Reactor::process_frames(const ConnectionToken token,
-                             const std::uint32_t new_mutation_admission_budget) -> Status {
+auto Reactor::process_frames(const ConnectionToken token, const std::uint32_t new_mutation_admission_budget)
+    -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
         return {};
@@ -313,8 +313,7 @@ auto Reactor::process_frames(const ConnectionToken token,
                 break;
             }
             // ADR 0037 Phase C: keep parsing PUT/ERASE into the open mutation window.
-            if (current->mutations_in_flight > 0 &&
-                current->mutations_in_flight < kMaximumMutationWindow &&
+            if (current->mutations_in_flight > 0 && current->mutations_in_flight < kMaximumMutationWindow &&
                 current->input_offset < current->input.size()) {
                 continue;
             }

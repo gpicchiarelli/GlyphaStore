@@ -125,9 +125,7 @@ constexpr auto mutation_result(const gs_status status, const std::uint32_t outco
 constexpr auto engine_mutation_result(const gs_status status) noexcept -> gs_mutation_result {
     // The supported C++ Store status intentionally hides internal commit knowledge.
     // A clean success is committed; any engine error is conservatively indeterminate.
-    return mutation_result(status,
-                           status.code == GS_OK ? GS_MUTATION_COMMITTED
-                                                : GS_MUTATION_INDETERMINATE);
+    return mutation_result(status, status.code == GS_OK ? GS_MUTATION_COMMITTED : GS_MUTATION_INDETERMINATE);
 }
 
 constexpr auto invalid_argument() noexcept -> gs_status {
@@ -167,8 +165,8 @@ auto reserved_bytes_are_zero(const gs_store_options& options) noexcept -> bool {
     if (options.struct_size <= reserved_offset) {
         return true;
     }
-    const auto visible = std::min<std::size_t>(options.struct_size - reserved_offset,
-                                               sizeof(options.reserved));
+    const auto visible =
+        std::min<std::size_t>(options.struct_size - reserved_offset, sizeof(options.reserved));
     const auto* bytes = reinterpret_cast<const unsigned char*>(options.reserved);
     return std::all_of(bytes, bytes + visible, [](const unsigned char value) { return value == 0; });
 }
@@ -188,12 +186,10 @@ auto validate_options(const gs_store_options* options) noexcept -> gs_status {
         !valid_view(options->data_directory) || !reserved_bytes_are_zero(*options)) {
         return invalid_argument();
     }
-    if (options->storage_mode != GS_STORAGE_VOLATILE &&
-        options->storage_mode != GS_STORAGE_DURABLE_SYNC) {
+    if (options->storage_mode != GS_STORAGE_VOLATILE && options->storage_mode != GS_STORAGE_DURABLE_SYNC) {
         return invalid_argument();
     }
-    if (options->durable_open_mode != GS_OPEN_OR_CREATE &&
-        options->durable_open_mode != GS_OPEN_EXISTING &&
+    if (options->durable_open_mode != GS_OPEN_OR_CREATE && options->durable_open_mode != GS_OPEN_EXISTING &&
         options->durable_open_mode != GS_CREATE_NEW) {
         return invalid_argument();
     }
@@ -212,20 +208,34 @@ auto validate_options(const gs_store_options* options) noexcept -> gs_status {
 
 auto status_text(const std::uint32_t code) noexcept -> const char* {
     switch (code) {
-    case GS_OK: return "ok";
-    case GS_NOT_FOUND: return "not found";
-    case GS_INVALID_ARGUMENT: return "invalid argument";
-    case GS_RESOURCE_EXHAUSTED: return "resource exhausted";
-    case GS_BUFFER_TOO_SMALL: return "buffer too small";
-    case GS_UNAVAILABLE: return "unavailable";
-    case GS_IO_ERROR: return "I/O error";
-    case GS_CORRUPTED_DATA: return "corrupted data";
-    case GS_RECORD_TOO_LARGE: return "record too large";
-    case GS_STORAGE_EXHAUSTED: return "storage exhausted";
-    case GS_CONFLICT: return "conflict";
-    case GS_INTERNAL_ERROR: return "internal error";
-    case GS_INCOMPATIBLE_ABI: return "incompatible ABI";
-    default: return "unknown status";
+    case GS_OK:
+        return "ok";
+    case GS_NOT_FOUND:
+        return "not found";
+    case GS_INVALID_ARGUMENT:
+        return "invalid argument";
+    case GS_RESOURCE_EXHAUSTED:
+        return "resource exhausted";
+    case GS_BUFFER_TOO_SMALL:
+        return "buffer too small";
+    case GS_UNAVAILABLE:
+        return "unavailable";
+    case GS_IO_ERROR:
+        return "I/O error";
+    case GS_CORRUPTED_DATA:
+        return "corrupted data";
+    case GS_RECORD_TOO_LARGE:
+        return "record too large";
+    case GS_STORAGE_EXHAUSTED:
+        return "storage exhausted";
+    case GS_CONFLICT:
+        return "conflict";
+    case GS_INTERNAL_ERROR:
+        return "internal error";
+    case GS_INCOMPATIBLE_ABI:
+        return "incompatible ABI";
+    default:
+        return "unknown status";
     }
 }
 
@@ -256,7 +266,7 @@ extern "C" GS_API const char* gs_product_version_string(void) noexcept {
 }
 
 extern "C" GS_API size_t gs_status_message(const gs_status status, char* const buffer,
-                                             const size_t capacity) noexcept {
+                                           const size_t capacity) noexcept {
     const char* const message = status_text(status.code);
     const auto required = std::strlen(message) + 1U;
     if (buffer != nullptr && capacity != 0) {
@@ -281,7 +291,7 @@ extern "C" GS_API gs_status gs_store_options_init(gs_store_options* const option
 }
 
 extern "C" GS_API gs_status gs_store_open(const gs_store_options* const options,
-                                            gs_store** const out_store) noexcept try {
+                                          gs_store** const out_store) noexcept try {
     if (out_store == nullptr) {
         return invalid_argument();
     }
@@ -296,14 +306,20 @@ extern "C" GS_API gs_status gs_store_open(const gs_store_options* const options,
     config.maintenance.mode = glyphastore::MaintenanceMode::cooperative;
     if (options->storage_mode == GS_STORAGE_DURABLE_SYNC) {
         config.storage_mode = glyphastore::StorageMode::durable_sync;
-        config.data_directory = std::filesystem::path{
-            std::string{reinterpret_cast<const char*>(options->data_directory.data),
-                        options->data_directory.size}};
+        config.data_directory = std::filesystem::path{std::string{
+            reinterpret_cast<const char*>(options->data_directory.data), options->data_directory.size}};
         switch (options->durable_open_mode) {
-        case GS_OPEN_OR_CREATE: config.durable_open_mode = glyphastore::DurableOpenMode::open_or_create; break;
-        case GS_OPEN_EXISTING: config.durable_open_mode = glyphastore::DurableOpenMode::open_existing; break;
-        case GS_CREATE_NEW: config.durable_open_mode = glyphastore::DurableOpenMode::create_new; break;
-        default: return invalid_argument();
+        case GS_OPEN_OR_CREATE:
+            config.durable_open_mode = glyphastore::DurableOpenMode::open_or_create;
+            break;
+        case GS_OPEN_EXISTING:
+            config.durable_open_mode = glyphastore::DurableOpenMode::open_existing;
+            break;
+        case GS_CREATE_NEW:
+            config.durable_open_mode = glyphastore::DurableOpenMode::create_new;
+            break;
+        default:
+            return invalid_argument();
         }
     }
     auto opened = glyphastore::Store::open(config);
@@ -332,8 +348,8 @@ extern "C" GS_API gs_status gs_store_close(gs_store* const store) noexcept try {
 }
 
 extern "C" GS_API gs_status gs_store_get(gs_store* const store, const gs_bytes_view key,
-                                           uint8_t* const output, const size_t output_capacity,
-                                           size_t* const output_required) noexcept try {
+                                         uint8_t* const output, const size_t output_capacity,
+                                         size_t* const output_required) noexcept try {
     if (output_required == nullptr) {
         return invalid_argument();
     }
@@ -360,8 +376,8 @@ extern "C" GS_API gs_status gs_store_get(gs_store* const store, const gs_bytes_v
 }
 
 extern "C" GS_API gs_mutation_result gs_store_put(gs_store* const store, const gs_bytes_view key,
-                                                    const gs_bytes_view value,
-                                                    const uint64_t expire_at_ns) noexcept try {
+                                                  const gs_bytes_view value,
+                                                  const uint64_t expire_at_ns) noexcept try {
     if (store == nullptr || !valid_view(key) || !valid_view(value)) {
         return mutation_result(invalid_argument(), GS_MUTATION_REJECTED);
     }
@@ -373,8 +389,8 @@ extern "C" GS_API gs_mutation_result gs_store_put(gs_store* const store, const g
     return mutation_result(internal_error(), GS_MUTATION_INDETERMINATE);
 }
 
-extern "C" GS_API gs_mutation_result gs_store_erase(gs_store* const store,
-                                                      const gs_bytes_view key) noexcept try {
+extern "C" GS_API gs_mutation_result gs_store_erase(gs_store* const store, const gs_bytes_view key) noexcept
+    try {
     if (store == nullptr || !valid_view(key)) {
         return mutation_result(invalid_argument(), GS_MUTATION_REJECTED);
     }
@@ -385,10 +401,9 @@ extern "C" GS_API gs_mutation_result gs_store_erase(gs_store* const store,
     return mutation_result(internal_error(), GS_MUTATION_INDETERMINATE);
 }
 
-extern "C" GS_API gs_status gs_store_put_batch(gs_store* const store,
-                                                 const gs_put_request* const requests,
-                                                 const size_t request_count,
-                                                 gs_mutation_result* const results) noexcept try {
+extern "C" GS_API gs_status gs_store_put_batch(gs_store* const store, const gs_put_request* const requests,
+                                               const size_t request_count,
+                                               gs_mutation_result* const results) noexcept try {
     if (store == nullptr || request_count > GS_MAX_BATCH_ITEMS ||
         (request_count != 0 && (requests == nullptr || results == nullptr))) {
         return invalid_argument();
