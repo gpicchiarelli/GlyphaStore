@@ -99,6 +99,14 @@ samples: the second pass measured about +0.8% at depth 1 and −0.4% at depth 8,
 benefit justified the extra state in the validation loop. The benchmark remains as the retained
 improvement and uses routing negotiated at INIT.
 
+For Python, sync and asyncio pipelines now assemble validated header/key/value parts with one native
+final join and leave response slots empty until their actual outcome is known. The second change
+halves the isolated result-materialization kernel at depth 128 (about 95.7 to 47.3 microseconds) by
+removing 128 immediately discarded failure objects. Consecutive same-host one-Worker observations
+at depth 128 moved from 97.6k to 103.4k ops/s for sync and from 91.6k to 96.0k for asyncio. These
+non-alternating development samples support the removed-work decision but are not retained release
+capacity evidence.
+
 For Perl specifically, the next work is profile-led. Client routing now reuses the normalized INIT
 identity, and the benchmark can generate both default-FNV and keyed-SipHash workloads. Continue to
 measure scalar/hash allocation, frame copies, buffer compaction, parser cost, `IO::Select`, syscalls

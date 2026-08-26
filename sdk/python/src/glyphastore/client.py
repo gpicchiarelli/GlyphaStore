@@ -10,6 +10,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
+from typing import cast
 
 from .protocol import (
     MAX_FRAME_BYTES,
@@ -224,6 +225,13 @@ class PipelineResponse:
     @property
     def succeeded(self) -> bool:
         return self.outcome is PipelineOutcome.SUCCEEDED
+
+
+def _resolved_pipeline(
+    responses: list[PipelineResponse | None],
+) -> list[PipelineResponse]:
+    """Narrow a slot vector after every position has been decided exactly once."""
+    return cast(list[PipelineResponse], responses)
 
 
 @dataclass(frozen=True, slots=True)
@@ -513,7 +521,7 @@ class Client:
 
         assert worker is not None
         output = b"".join(parts)
-        responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
+        responses: list[PipelineResponse | None] = [None] * len(requests)
         connection = self._connections[worker]
         with connection.lock:
             if not self._healthy:
@@ -555,7 +563,7 @@ class Client:
             except _SendFailure as error:
                 connection.reset()
                 mark_unresolved(0, error.error, error.bytes_sent)
-                return responses
+                return _resolved_pipeline(responses)
 
             for index, (opcode, _, _, _) in enumerate(normalized):
                 try:
@@ -564,7 +572,7 @@ class Client:
                 except (TransportError, ProtocolError, Unavailable) as error:
                     connection.reset()
                     mark_unresolved(index, error, len(output))
-                    return responses
+                    return _resolved_pipeline(responses)
                 if response.status is Status.OK:
                     if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE) and response.value:
                         connection.reset()
@@ -573,7 +581,7 @@ class Client:
                             ProtocolError("mutation response value must be empty"),
                             len(output),
                         )
-                        return responses
+                        return _resolved_pipeline(responses)
                     responses[index] = PipelineResponse(
                         PipelineOutcome.SUCCEEDED, value=response.value
                     )
@@ -600,7 +608,7 @@ class Client:
                 )
                 if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                     self._healthy = False
-            return responses
+            return _resolved_pipeline(responses)
 
     def execute_batch(
         self,

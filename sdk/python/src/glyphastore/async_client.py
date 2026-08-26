@@ -28,6 +28,7 @@ from .client import (
     _clone_error,
     _enrich,
     _pipeline_op_name,
+    _resolved_pipeline,
     build_ssl_context,
 )
 from .protocol import (
@@ -285,7 +286,7 @@ class AsyncClient:
 
         assert worker is not None
         output = b"".join(parts)
-        responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
+        responses: list[PipelineResponse | None] = [None] * len(requests)
         connection = self._connections[worker]
         async with connection.lock:
             if not self._healthy:
@@ -330,7 +331,7 @@ class AsyncClient:
                     mark_unresolved(0, error.error, error.bytes_sent)
                     completed = True
                     await connection.reset()
-                    return responses
+                    return _resolved_pipeline(responses)
 
                 for index, (opcode, _, _, _) in enumerate(normalized):
                     try:
@@ -340,7 +341,7 @@ class AsyncClient:
                         mark_unresolved(index, error, len(output))
                         completed = True
                         await connection.reset()
-                        return responses
+                        return _resolved_pipeline(responses)
                     except asyncio.CancelledError:
                         # Classify before poison: reset() awaits close and must not
                         # re-raise CancelledError over indeterminate slots (§6.3).
@@ -354,7 +355,7 @@ class AsyncClient:
                             await connection.reset()
                         except asyncio.CancelledError:
                             pass
-                        return responses
+                        return _resolved_pipeline(responses)
                     if response.status is Status.OK:
                         if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE) and response.value:
                             mark_unresolved(
@@ -364,7 +365,7 @@ class AsyncClient:
                             )
                             completed = True
                             await connection.reset()
-                            return responses
+                            return _resolved_pipeline(responses)
                         responses[index] = PipelineResponse(
                             PipelineOutcome.SUCCEEDED, value=response.value
                         )
@@ -394,7 +395,7 @@ class AsyncClient:
                     if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                         self._healthy = False
                 completed = True
-                return responses
+                return _resolved_pipeline(responses)
             finally:
                 if not completed:
                     await connection.reset()

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Materialize each pipeline response slot only at its final outcome instead of allocating and
+  immediately replacing eager failure placeholders.
 - Assemble each sync and asyncio pipeline from validated headers and payload views with one native
   final join, avoiding one complete frame allocation and payload copy per request.
 - Add an installed-wheel secure-profile matrix that fails if Python resolves the SDK from the
