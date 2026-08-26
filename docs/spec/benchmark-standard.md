@@ -3,7 +3,7 @@
 Status: normative measurement methodology
 Applies to: performance claims and regression reports
 Owner: performance maintainers
-Last reviewed: 2026-07-19
+Last reviewed: 2026-08-26
 
 ## 1. Purpose
 
@@ -109,7 +109,10 @@ For scaling tests, reserve CPUs for load generation or run clients in a separate
 
 ## 9. Comparing revisions
 
-Use identical hardware, build type, CLI, data placement, and environmental policy. Interleave old/new runs when practical to reduce drift. Report absolute medians and ratios, not only percentages.
+Use identical hardware, build type, CLI, data placement, and environmental policy. Automated
+revision reports must suppress deltas when their recorded runner OS/architecture, image version,
+kernel, CPU model/count, compiler, or build preset differ or are absent. Interleave old/new runs
+when practical to reduce drift. Report absolute medians and ratios, not only percentages.
 
 A change is a plausible regression only when it repeats across runs and exceeds normal spread. Treat a result inside the combined min/max range as inconclusive unless paired/statistical evidence says otherwise. Optimize a named bottleneck only after decomposing relevant time (hashing, Index, record codec, I/O, queue, wakeup, parsing, response).
 

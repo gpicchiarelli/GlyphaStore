@@ -4,8 +4,9 @@ requirements:
   categoria: performance
   criticita: media
   stato: implementato
-  descrizione: Benchmark CI fails when matched median ops/s regresses more than 10% versus the previous
-    baseline. Hosted results are regression signals, not absolute product claims.
+  descrizione: Benchmark CI emits median ops/s deltas against the previous baseline only when the
+    recorded environment identity matches. Hosted results and the 10% review threshold are advisory
+    regression signals, not a hard release gate or absolute product claim.
   autorita:
   - docs/spec/benchmark-standard.md
   - docs/benchmarks/paired-shards-plan.md
@@ -15,6 +16,7 @@ requirements:
   - scripts/sdk_benchmark_report.py
   prove:
   - benchmarks
+  - scripts/tests/test_benchmark_report.py
   - scripts/tests/test_sdk_benchmark_report.py
   piattaforme:
   - linux-x86_64

@@ -20,7 +20,9 @@ and any focused benchmark. Build directories and generated Xcode projects are ne
 on a weekly schedule, and by manual dispatch. The workflow records the runner environment and
 uploads raw benchmark output, `results.json`, and the rendered `summary.md` for 90 days. The same
 summary is shown directly on the GitHub Actions run page and includes throughput deltas against
-the latest successful retained run on `main`.
+the latest successful retained run on `main` only when the machine-readable runner identity matches.
+CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-preset changes
+suppress deltas and are listed in the report rather than being mislabeled as code regressions.
 
 The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
 depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined

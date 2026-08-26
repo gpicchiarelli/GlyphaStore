@@ -36,8 +36,15 @@ jobs:
           mkdir -p "$RESULTS_DIR"
           {
             echo "github_sha=${GITHUB_SHA}"
+            echo "runner_os=${RUNNER_OS}"
+            echo "runner_arch=${RUNNER_ARCH}"
             echo "runner_image=${ImageOS:-unknown}"
             echo "runner_image_version=${ImageVersion:-unknown}"
+            echo "kernel_release=$(uname -r)"
+            echo "cpu_model=$(lscpu -B | awk -F: '/^Model name:/ {sub(/^[[:space:]]+/, "", $2); print $2; exit}')"
+            echo "logical_cpu_count=$(nproc)"
+            echo "compiler_identity=$(clang++ --version | head -1)"
+            echo "build_preset=unix-release"
             echo "kernel=$(uname -srmo)"
             echo "cpu_count=$(nproc)"
             lscpu
@@ -157,10 +164,11 @@ jobs:
           python scripts/benchmark_report.py "$RESULTS_DIR"/*.txt \
             --json "$RESULTS_DIR/results.json" \
             --markdown "$RESULTS_DIR/summary.md" \
+            --environment "$RESULTS_DIR/environment.txt" \
             "${baseline[@]}"
           # Hosted runners are too noisy for a hard regression fail gate (docs
-          # already warn absolute claims are out of scope). Still emit Δ vs
-          # baseline in the summary when a prior artifact exists.
+          # already warn absolute claims are out of scope). Emit Δ only when
+          # the retained baseline has an identical environment identity.
           cat "$RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload benchmark results

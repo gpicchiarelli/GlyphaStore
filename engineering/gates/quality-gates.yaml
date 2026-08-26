@@ -326,7 +326,8 @@ gates:
   riapertura:
   - Quietly raising regression thresholds
   - Treating advisory snapshots as release gates
-  narrative: Median ops/s regression + budget catalog landed; absolute claims still hardware-gated.
+  narrative: Environment-compatible hosted median signals + budget catalog landed; hard regression
+    and absolute claims remain hardware-gated.
 - id: GATE-CONFIG
   titolo: Configuration precedence validation safe defaults limits
   sezione: operations_security

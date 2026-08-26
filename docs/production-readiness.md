@@ -112,7 +112,7 @@ The volatile engine under `src/experimental/` is lab-only.
   State: `PROVATA_IN_CI` · Release target: `beta`  
   Requirements: `GS-PERF-REGRESSION-001`, `GS-PERF-BUDGET-001`  
   Residual risk: Absolute hardware budgets wait for glyphastore-linux-perf pass-candidate
-  Median ops/s regression + budget catalog landed; absolute claims still hardware-gated.
+  Environment-compatible hosted median signals + budget catalog landed; hard regression and absolute claims remain hardware-gated.
 
 - [x] **GATE-SOAK** — Long-running stress and soak coverage  
   State: `PROVATA_IN_CI` · Release target: `beta`  

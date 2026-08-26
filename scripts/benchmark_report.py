@@ -5,12 +5,30 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import math
 import shlex
 import sys
 from pathlib import Path
 from typing import Any
+
+
+ENVIRONMENT_IDENTITY_FIELDS = (
+    "runner_os",
+    "runner_arch",
+    "runner_image",
+    "runner_image_version",
+    "kernel_release",
+    "cpu_model",
+    "logical_cpu_count",
+    "compiler_identity",
+    "build_preset",
+)
+
+
+def identity_value_present(environment: dict[str, Any], field: str) -> bool:
+    return field in environment and environment[field] not in ("", "unknown", None)
 
 
 def scalar(value: str) -> str | int | float:
@@ -47,6 +65,71 @@ def parse_output(path: Path) -> dict[str, Any]:
             if result:
                 results.append(result)
     return {"source": path.name, "metadata": metadata, "results": results}
+
+
+def parse_environment(path: Path | None) -> dict[str, Any]:
+    if path is None or not path.is_file():
+        return {}
+    environment: dict[str, Any] = {}
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        if "=" not in raw_line:
+            continue
+        key, value = raw_line.split("=", 1)
+        key = key.strip()
+        if key:
+            environment[key] = scalar(value.strip())
+    return environment
+
+
+def environment_identity(environment: dict[str, Any]) -> dict[str, Any]:
+    fields = {
+        field: environment[field]
+        for field in ENVIRONMENT_IDENTITY_FIELDS
+        if identity_value_present(environment, field)
+    }
+    encoded = json.dumps(fields, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return {
+        "fields": fields,
+        "sha256": hashlib.sha256(encoded).hexdigest() if fields else None,
+    }
+
+
+def comparison_environment_status(
+    current: dict[str, Any], baseline: dict[str, Any] | None
+) -> dict[str, Any]:
+    if baseline is None:
+        return {"status": "no-baseline", "differences": {}}
+    prior = baseline.get("environment")
+    if not isinstance(prior, dict):
+        return {
+            "status": "incompatible",
+            "reason": "baseline-environment-missing",
+            "differences": {},
+        }
+    missing_current = [
+        field for field in ENVIRONMENT_IDENTITY_FIELDS if not identity_value_present(current, field)
+    ]
+    missing_prior = [
+        field for field in ENVIRONMENT_IDENTITY_FIELDS if not identity_value_present(prior, field)
+    ]
+    if missing_current or missing_prior:
+        return {
+            "status": "incompatible",
+            "reason": "identity-fields-missing",
+            "missing_current": missing_current,
+            "missing_baseline": missing_prior,
+            "differences": {},
+        }
+    differences = {
+        field: {"current": current[field], "baseline": prior[field]}
+        for field in ENVIRONMENT_IDENTITY_FIELDS
+        if current[field] != prior[field]
+    }
+    return {
+        "status": "compatible" if not differences else "incompatible",
+        "reason": "identity-match" if not differences else "identity-mismatch",
+        "differences": differences,
+    }
 
 
 def number(value: Any) -> float:
@@ -133,6 +216,14 @@ def add_comparisons(runs: list[dict[str, Any]], baseline: dict[str, Any] | None)
     return matched
 
 
+def compare_with_baseline(
+    runs: list[dict[str, Any]], baseline: dict[str, Any] | None, environment: dict[str, Any]
+) -> tuple[dict[str, Any], int]:
+    status = comparison_environment_status(environment, baseline)
+    matched = add_comparisons(runs, baseline) if status["status"] == "compatible" else 0
+    return status, matched
+
+
 def delta(result: dict[str, Any]) -> str:
     comparison = result.get("comparison")
     if not isinstance(comparison, dict):
@@ -142,7 +233,10 @@ def delta(result: dict[str, Any]) -> str:
 
 
 def render_markdown(
-    runs: list[dict[str, Any]], generated_at: str, baseline_generated_at: str | None
+    runs: list[dict[str, Any]],
+    generated_at: str,
+    baseline_generated_at: str | None,
+    comparison_environment: dict[str, Any],
 ) -> str:
     result_count = sum(len(run["results"]) for run in runs)
     lines = [
@@ -156,6 +250,44 @@ def render_markdown(
     ]
     if baseline_generated_at:
         lines.extend([f"Baseline report: `{baseline_generated_at}`.", ""])
+    status = comparison_environment["status"]
+    if status == "compatible":
+        lines.extend(["Environment identity: **compatible**; throughput deltas are shown.", ""])
+    elif status == "no-baseline":
+        lines.extend(["No retained baseline is available; throughput deltas are not shown.", ""])
+    elif status == "incompatible":
+        reason = comparison_environment.get("reason", "unknown")
+        lines.extend(
+            [
+                f"Environment identity: **incompatible** (`{reason}`); throughput deltas "
+                "are suppressed.",
+                "",
+            ]
+        )
+        differences = comparison_environment.get("differences", {})
+        if isinstance(differences, dict) and differences:
+            lines.extend(
+                [
+                    "| Environment field | Current | Baseline |",
+                    "| --- | --- | --- |",
+                ]
+            )
+            for field, values in differences.items():
+                lines.append(
+                    f"| {escape(field)} | {escape(values['current'])} | "
+                    f"{escape(values['baseline'])} |"
+                )
+            lines.append("")
+        missing_current = comparison_environment.get("missing_current", [])
+        missing_baseline = comparison_environment.get("missing_baseline", [])
+        if missing_current or missing_baseline:
+            lines.extend(
+                [
+                    f"Missing current identity fields: `{', '.join(missing_current) or 'none'}`.",
+                    f"Missing baseline identity fields: `{', '.join(missing_baseline) or 'none'}`.",
+                    "",
+                ]
+            )
     if result_count == 0:
         lines.extend(["No benchmark results were produced.", ""])
         return "\n".join(lines)
@@ -281,24 +413,38 @@ def main() -> int:
     parser.add_argument("--markdown", required=True, type=Path, dest="markdown_path")
     parser.add_argument("--baseline", type=Path)
     parser.add_argument(
+        "--environment",
+        type=Path,
+        help="Machine-readable key=value environment record used to authorize baseline deltas.",
+    )
+    parser.add_argument(
         "--fail-regression-threshold",
         type=float,
-        help="Exit with status 1 when median ops/s regresses more than this percent versus baseline.",
+        help=(
+            "Exit with status 1 when median ops/s regresses more than this percent versus an "
+            "environment-compatible baseline."
+        ),
     )
     args = parser.parse_args()
+    if args.fail_regression_threshold is not None and args.fail_regression_threshold < 0:
+        parser.error("fail-regression-threshold must be non-negative")
 
     inputs = sorted(path for path in args.inputs if path.name != "environment.txt")
     runs = [parse_output(path) for path in inputs if path.is_file()]
     baseline = None
     if args.baseline and args.baseline.is_file():
         baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
-    matched_results = add_comparisons(runs, baseline)
+    environment = parse_environment(args.environment)
+    comparison_environment, matched_results = compare_with_baseline(runs, baseline, environment)
     generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
     baseline_generated_at = baseline.get("generated_at") if baseline else None
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "generated_at": generated_at,
         "baseline_generated_at": baseline_generated_at,
+        "environment": environment,
+        "environment_identity": environment_identity(environment),
+        "baseline_comparison": comparison_environment,
         "matched_baseline_results": matched_results,
         "runs": runs,
     }
@@ -307,7 +453,8 @@ def main() -> int:
     args.markdown_path.parent.mkdir(parents=True, exist_ok=True)
     args.json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     args.markdown_path.write_text(
-        render_markdown(runs, generated_at, baseline_generated_at), encoding="utf-8"
+        render_markdown(runs, generated_at, baseline_generated_at, comparison_environment),
+        encoding="utf-8",
     )
 
     if args.fail_regression_threshold is not None:
