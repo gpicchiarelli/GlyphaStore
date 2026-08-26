@@ -145,9 +145,7 @@ class FakeServer:
                     except ssl.SSLError:
                         connection.close()
                         continue
-                thread = threading.Thread(
-                    target=self._serve, args=(connection,), daemon=True
-                )
+                thread = threading.Thread(target=self._serve, args=(connection,), daemon=True)
                 self._threads.append(thread)
                 thread.start()
         finally:
@@ -186,10 +184,7 @@ class FakeServer:
                         with self._bind_counts_lock:
                             count = self._bind_counts.get(request.target_worker, 0) + 1
                             self._bind_counts[request.target_worker] = count
-                        if (
-                            request.target_worker in self._fail_rebind_workers
-                            and count > 1
-                        ):
+                        if request.target_worker in self._fail_rebind_workers and count > 1:
                             # Close without BIND OK so ensure_connected fails on rebind.
                             return
                         bound_worker = request.target_worker
@@ -528,14 +523,10 @@ class ClientTests(unittest.TestCase):
             assert responses[0].error is not None
             self.assertGreater(responses[0].error.bytes_sent, 0)
             self.assertEqual(responses[0].error.retryability, "reconcile_first")
-            self.assertEqual(
-                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE)
             assert responses[2].error is not None
             self.assertEqual(responses[2].error.retryability, "reconcile_first")
-            self.assertEqual(
-                responses[2].error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(responses[2].error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
 
     def test_pipeline_internal_error_mutation_is_reconcile_first(self) -> None:
@@ -547,18 +538,14 @@ class ClientTests(unittest.TestCase):
             self.assertEqual(responses[0].outcome, PipelineOutcome.INDETERMINATE)
             assert responses[0].error is not None
             self.assertEqual(responses[0].error.retryability, "reconcile_first")
-            self.assertEqual(
-                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE)
             self.assertEqual(responses[0].error.wire_status, int(Status.INTERNAL_ERROR))
             self.assertGreater(responses[0].error.bytes_sent, 0)
         server.join()
 
     def test_pipeline_limits_fail_before_network_transmission(self) -> None:
         server = FakeServer()
-        with Client.connect(
-            ClientConfig(port=server.port, maximum_pipeline_requests=1)
-        ) as client:
+        with Client.connect(ClientConfig(port=server.port, maximum_pipeline_requests=1)) as client:
             with self.assertRaises(InvalidArgument):
                 client.execute_pipeline(
                     [
@@ -570,9 +557,7 @@ class ClientTests(unittest.TestCase):
 
     def test_per_call_timeout_overrides_config(self) -> None:
         server = FakeServer(stall_on_get=True)
-        with Client.connect(
-            ClientConfig(port=server.port, request_timeout=5.0)
-        ) as client:
+        with Client.connect(ClientConfig(port=server.port, request_timeout=5.0)) as client:
             with self.assertRaises(TransportError):
                 client.get(b"key", timeout=0.05)
             with self.assertRaises(InvalidArgument):
@@ -585,15 +570,39 @@ class ClientTests(unittest.TestCase):
             keys = [f"batch-{index}".encode() for index in range(64)]
             owners = {key: client.worker_for(key) for key in keys}
             self.assertEqual(set(owners.values()), {0, 1})
-            requests = [
-                PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys
-            ] + [PipelineRequest(PipelineOpcode.GET, key) for key in keys]
-            responses = client.execute_batch(requests)
+            requests = [PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys] + [
+                PipelineRequest(PipelineOpcode.GET, key) for key in keys
+            ]
+            with mock.patch.object(client, "worker_for", wraps=client.worker_for) as routed:
+                responses = client.execute_batch(requests)
+            self.assertEqual(routed.call_count, len(requests))
             self.assertEqual(len(responses), len(requests))
             for response in responses:
                 self.assertTrue(response.succeeded)
             for index, key in enumerate(keys):
                 self.assertEqual(responses[len(keys) + index].value, key[::-1])
+        server.join()
+
+    def test_batch_freezes_mutable_key_with_routing_decision(self) -> None:
+        server = FakeServer(worker_count=2)
+        with Client.connect(ClientConfig(port=server.port)) as client:
+            keys = [f"freeze-{index:04d}".encode() for index in range(128)]
+            key0 = next(key for key in keys if client.worker_for(key) == 0)
+            key1 = next(key for key in keys if client.worker_for(key) == 1)
+            mutable_key = bytearray(key0)
+            owner_for = client.worker_for
+
+            def route_then_mutate(frozen_key: bytes) -> int:
+                owner = owner_for(frozen_key)
+                mutable_key[:] = key1
+                return owner
+
+            with mock.patch.object(client, "worker_for", side_effect=route_then_mutate):
+                responses = client.execute_batch(
+                    [PipelineRequest(PipelineOpcode.PUT, mutable_key, b"frozen")]
+                )
+            self.assertTrue(responses[0].succeeded)
+            self.assertEqual(client.get(key0), b"frozen")
         server.join()
 
     def test_batch_preserves_sibling_results_when_one_worker_fails(self) -> None:
@@ -620,18 +629,14 @@ class ClientTests(unittest.TestCase):
             self.assertTrue(responses[0].succeeded)
             self.assertEqual(responses[1].outcome, PipelineOutcome.FAILED)
             self.assertIsNotNone(responses[1].error)
-            self.assertEqual(
-                responses[1].error.mutation_outcome, MutationOutcome.REJECTED
-            )
+            self.assertEqual(responses[1].error.mutation_outcome, MutationOutcome.REJECTED)
             self.assertEqual(responses[1].error.bytes_sent, 0)
             self.assertEqual(client.get(keys[0]), b"a")
         server.join()
 
     def test_batch_per_worker_pipeline_limit(self) -> None:
         server = FakeServer(worker_count=2)
-        with Client.connect(
-            ClientConfig(port=server.port, maximum_pipeline_requests=1)
-        ) as limited:
+        with Client.connect(ClientConfig(port=server.port, maximum_pipeline_requests=1)) as limited:
             key0 = next(
                 key
                 for key in (f"batch-limit-{index}".encode() for index in range(64))
@@ -684,15 +689,39 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
             keys = [f"abatch-{index}".encode() for index in range(32)]
             self.assertEqual({client.worker_for(key) for key in keys}, {0, 1})
-            requests = [
-                PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys
-            ] + [PipelineRequest(PipelineOpcode.GET, key) for key in keys]
-            responses = await client.execute_batch(requests)
+            requests = [PipelineRequest(PipelineOpcode.PUT, key, key[::-1]) for key in keys] + [
+                PipelineRequest(PipelineOpcode.GET, key) for key in keys
+            ]
+            with mock.patch.object(client, "worker_for", wraps=client.worker_for) as routed:
+                responses = await client.execute_batch(requests)
+            self.assertEqual(routed.call_count, len(requests))
             self.assertEqual(len(responses), len(requests))
             for response in responses:
                 self.assertTrue(response.succeeded)
             for index, key in enumerate(keys):
                 self.assertEqual(responses[len(keys) + index].value, key[::-1])
+        server.join()
+
+    async def test_async_batch_freezes_mutable_key_with_routing_decision(self) -> None:
+        server = FakeServer(worker_count=2)
+        async with await AsyncClient.connect(ClientConfig(port=server.port)) as client:
+            keys = [f"afreeze-{index:04d}".encode() for index in range(128)]
+            key0 = next(key for key in keys if client.worker_for(key) == 0)
+            key1 = next(key for key in keys if client.worker_for(key) == 1)
+            mutable_key = bytearray(key0)
+            owner_for = client.worker_for
+
+            def route_then_mutate(frozen_key: bytes) -> int:
+                owner = owner_for(frozen_key)
+                mutable_key[:] = key1
+                return owner
+
+            with mock.patch.object(client, "worker_for", side_effect=route_then_mutate):
+                responses = await client.execute_batch(
+                    [PipelineRequest(PipelineOpcode.PUT, mutable_key, b"frozen")]
+                )
+            self.assertTrue(responses[0].succeeded)
+            self.assertEqual(await client.get(key0), b"frozen")
         server.join()
 
     async def test_async_batch_cancel_preserves_sibling_results(self) -> None:
@@ -728,9 +757,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
             assert responses[1].error is not None
             self.assertGreater(responses[1].error.bytes_sent, 0)
             self.assertEqual(responses[1].error.retryability, "reconcile_first")
-            self.assertEqual(
-                responses[1].error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(responses[1].error.mutation_outcome, MutationOutcome.INDETERMINATE)
             self.assertEqual(await client.get(keys[0]), b"a")
         server.join()
 
@@ -746,10 +773,12 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
 
             async def reset_raises_cancel(self: ac_mod._Connection) -> None:
-                self.writer = None
+                writer, self.writer = self.writer, None
                 self.reader = None
                 self.input.clear()
                 self.input_offset = 0
+                if writer is not None:
+                    writer.close()
                 raise asyncio.CancelledError()
 
             with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):
@@ -761,9 +790,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
             assert result.error is not None
             self.assertGreater(result.error.bytes_sent, 0)
             self.assertEqual(result.error.retryability, "reconcile_first")
-            self.assertEqual(
-                result.error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(result.error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
 
     async def test_async_pipeline_cancel_classifies_despite_cancel_during_reset(
@@ -777,17 +804,17 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
         ) as client:
 
             async def reset_raises_cancel(self: ac_mod._Connection) -> None:
-                self.writer = None
+                writer, self.writer = self.writer, None
                 self.reader = None
                 self.input.clear()
                 self.input_offset = 0
+                if writer is not None:
+                    writer.close()
                 raise asyncio.CancelledError()
 
             with mock.patch.object(ac_mod._Connection, "reset", reset_raises_cancel):
                 task = asyncio.create_task(
-                    client.execute_pipeline(
-                        [PipelineRequest(PipelineOpcode.PUT, b"key", b"value")]
-                    )
+                    client.execute_pipeline([PipelineRequest(PipelineOpcode.PUT, b"key", b"value")])
                 )
                 await asyncio.sleep(0.05)
                 task.cancel()
@@ -796,9 +823,7 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
             assert responses[0].error is not None
             self.assertGreater(responses[0].error.bytes_sent, 0)
             self.assertEqual(responses[0].error.retryability, "reconcile_first")
-            self.assertEqual(
-                responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE
-            )
+            self.assertEqual(responses[0].error.mutation_outcome, MutationOutcome.INDETERMINATE)
         server.join()
 
     async def test_async_disconnect_after_mutation_is_indeterminate(self) -> None:
@@ -859,14 +884,10 @@ class AsyncClientTests(unittest.IsolatedAsyncioTestCase):
 class ClientTlsTests(unittest.TestCase):
     def test_tls_config_requires_cert_and_key_pair(self) -> None:
         with self.assertRaises(InvalidArgument):
-            Client.connect(
-                ClientConfig(port=1, tls=True, cert_file="only-cert.pem")
-            )
+            Client.connect(ClientConfig(port=1, tls=True, cert_file="only-cert.pem"))
 
     def test_build_ssl_context_requires_tls_1_3(self) -> None:
-        context = build_ssl_context(
-            ClientConfig(tls=True, insecure_skip_verify=True)
-        )
+        context = build_ssl_context(ClientConfig(tls=True, insecure_skip_verify=True))
         self.assertEqual(context.minimum_version, ssl.TLSVersion.TLSv1_3)
         self.assertEqual(context.maximum_version, ssl.TLSVersion.TLSv1_3)
         self.assertEqual(context.verify_mode, ssl.CERT_NONE)
@@ -918,9 +939,7 @@ def _self_signed_material() -> tuple[str, str] | None:
         "/CN=localhost",
     ]
     try:
-        completed = subprocess.run(
-            command, check=False, capture_output=True, timeout=30
-        )
+        completed = subprocess.run(command, check=False, capture_output=True, timeout=30)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return None
     if completed.returncode != 0:

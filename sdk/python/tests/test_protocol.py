@@ -17,6 +17,7 @@ from glyphastore.protocol import (  # noqa: E402
     Opcode,
     Status,
     WorkerRouting,
+    _decode_response_from,
     decode_init_identity,
     decode_request,
     decode_response,
@@ -45,6 +46,21 @@ def frames(corpus: bytes) -> list[bytes]:
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_internal_response_decoder_reads_nonzero_buffer_offset(self) -> None:
+        frame = encode_response(
+            Status.OK,
+            91,
+            value=b"owned\x00value",
+            owner_worker=2,
+            worker_count=4,
+            routing_epoch=9,
+        )
+        buffered = bytearray(b"prefix" + frame + b"suffix")
+        self.assertEqual(
+            _decode_response_from(buffered, len(b"prefix"), len(frame)),
+            decode_response(frame),
+        )
+
     def test_request_encoder_matches_every_canonical_fixture(self) -> None:
         expected = frames(fixture("wire_requests_v2.hex"))
         encoded = [

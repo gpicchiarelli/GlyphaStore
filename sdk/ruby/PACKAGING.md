@@ -22,7 +22,20 @@ The script:
 2. Asserts `GlyphaStore::VERSION` matches `VERSION`
 3. Builds `sdk/ruby/dist/glyphastore-VERSION.gem`
 4. Installs the gem into a clean `GEM_HOME`
-5. Runs the Minitest suite against the installed gem (plus development gems `async`, `minitest`)
+5. Runs the installed `glyphastore-interop` executable with no source-tree load path
+6. Runs the Minitest suite against the installed gem (plus development gems `async`, `minitest`)
+
+With Python/Perl packages and TLS daemon/client peers already built, the installed gem participates
+in the fail-closed secure-profile matrix through:
+
+```bash
+RUBY=/path/to/ruby-3.2-or-newer \
+PERL=/path/to/perl-with-TLS-1.3 \
+GLYPHASTORED=/path/to/glyphastored \
+GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
+GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
+./scripts/test-secure-profile-installed-artifacts.sh
+```
 
 ## Manual build
 

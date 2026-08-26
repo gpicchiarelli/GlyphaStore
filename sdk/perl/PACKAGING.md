@@ -30,6 +30,19 @@ The script:
 3. Runs `make disttest` (configure, build, and test from the tarball)
 4. Builds `GlyphaStore-VERSION.tar.gz`
 5. Checks that `META.json` declares the expected provides and BSD license
+6. Normalizes and extracts the final tarball, installs it under an isolated prefix, and reruns all
+   tests from a separate directory that cannot resolve the distribution's source `lib/`
+
+With the packaged Python peer and TLS daemon/client helpers already built, the installed Perl
+tarball participates in the fail-closed secure-profile matrix through:
+
+```bash
+PERL=/path/to/perl-with-IO-Socket-SSL \
+GLYPHASTORED=/path/to/glyphastored \
+GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
+GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
+./scripts/test-secure-profile-installed-artifacts.sh
+```
 
 ## Manual build
 

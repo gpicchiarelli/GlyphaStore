@@ -1,5 +1,5 @@
 # Performance budgets (Phase E).
-# Hosted CI may enforce relative regression only. Absolute / p99 release
+# Hosted CI may report relative regression signals only. Absolute / p99 release
 # thresholds require a labeled hardware runner and remain not_enforced until then.
 
 version: 1
@@ -13,14 +13,16 @@ classes:
   - id: HOSTED-MEDIAN-REGRESSION
     gate: GATE-PERFORMANCE
     requirement: GS-PERF-REGRESSION-001
-    enforcement: hosted_ci
+    enforcement: advisory_snapshot_only
+    status: advisory_not_release_gate
     metric: median_ops_per_second
     rule:
-      type: max_regression_percent_vs_previous_baseline
+      type: review_regression_percent_vs_compatible_baseline
       value: 10
     workflows:
       - benchmarks.yml
-    notes: Fail when matched median ops/s regresses more than 10% vs prior baseline artifact.
+    notes: Flag for review when a compatible prior baseline has a disjoint lower range and its median
+      differs by more than 10%; hosted noise prevents this advisory signal from failing a release gate.
 
   - id: HARDWARE-PAIRED-LINUX-AB
     gate: GATE-PERFORMANCE

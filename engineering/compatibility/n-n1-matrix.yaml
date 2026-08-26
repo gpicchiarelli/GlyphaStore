@@ -90,6 +90,7 @@ abi:
     notes: No ABI stability before 1.0; SemVer SameMinorVersion for 0.x CMake package version file.
 
 released_fixture_policy:
+  artifact_schema: 2
   in_tree_labels:
     - self-v1
   permanent_drop: tests/fixtures/released/<label>/
@@ -99,3 +100,12 @@ released_fixture_policy:
     Committing prior-release N-1 trees into the permanent fixture drop remains a
     release-process step when tags exist; until then the matrix documents policy
     and self-v1 / per-SHA CI packaging prove the harness.
+
+sdk_artifact_policy:
+  contract: engineering/compatibility/sdk-release-contract.json
+  generated_index: sdk-release-index.json
+  index_writer: engineering/tools/write_sdk_release_index.py
+  compatibility_evidence: not-inferred-from-index
+  residual: >
+    The index makes a prior release machine-selectable but does not prove old-client/new-server
+    behavior until at least one prior official SDK release exists and the cross-version matrix runs.

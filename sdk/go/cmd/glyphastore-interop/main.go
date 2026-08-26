@@ -26,9 +26,10 @@ func main() {
 	tlsKey := flag.String("tls-key", "", "client private key for mTLS")
 	serverName := flag.String("server-name", "", "SNI / hostname verification name")
 	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
+	burst := flag.Int("burst", 32, "PUT attempts for burst-expect-overloaded")
 	flag.Parse()
-	if *port == 0 || flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|backup|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]")
+	if *port == 0 || flag.NArg() != 1 || *burst < 1 || *burst > 10000 {
+		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|backup|pipeline-put-get|expect-not-found|expect-permission-denied|burst-expect-overloaded|expect-frame-limit> [tls flags...]")
 		os.Exit(2)
 	}
 	command := flag.Arg(0)
@@ -107,6 +108,28 @@ func main() {
 			structured.Retryability != client.RetryNewAttempt {
 			fail(fmt.Errorf("GET did not produce structured not_found: %v", err))
 		}
+	case "expect-permission-denied":
+		result := c.Put(key, value, *expireAtNs)
+		structured, ok := result.Err.(*client.Error)
+		if result.Outcome != client.MutationRejected || !ok ||
+			structured.Category != client.CategoryPermissionDenied ||
+			structured.Retryability != client.RetryNever {
+			fail(fmt.Errorf("PUT did not produce structured permission_denied: %v", result.Err))
+		}
+	case "burst-expect-overloaded":
+		for index := 0; index < *burst; index++ {
+			result := c.Put(key, value, *expireAtNs)
+			structured, ok := result.Err.(*client.Error)
+			if result.Outcome == client.MutationRejected && ok &&
+				structured.Category == client.CategoryOverloaded &&
+				structured.Retryability == client.RetryNever {
+				return
+			}
+			if !result.Committed() {
+				fail(fmt.Errorf("PUT produced an unexpected result before OVERLOADED: %v", result.Err))
+			}
+		}
+		fail(fmt.Errorf("burst of %d PUTs did not observe OVERLOADED", *burst))
 	case "expect-frame-limit":
 		value := bytes.Repeat([]byte{0xA5}, protocol.MaxFrameBytes)
 		result := c.Put([]byte("limit"), value, 0)

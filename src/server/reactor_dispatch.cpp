@@ -258,11 +258,8 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
                 current->pipelined_store_input_observed = true;
             }
             immediate_response = false;
-            {
-                GS_PHASE_TCP(dispatch);
-                if (auto dispatched = dispatch_request(token, decoded.frame, cached_now_ns); !dispatched) {
-                    return dispatched;
-                }
+            if (auto dispatched = dispatch_request(token, decoded.frame, cached_now_ns); !dispatched) {
+                return dispatched;
             }
             break;
         case RequestOpcode::bind_worker:
@@ -286,10 +283,6 @@ auto Reactor::process_frames(const ConnectionToken token) -> Status {
         if (!current->request_in_flight) {
             current->partial_request_since = {};
         }
-    } else if (current->input_offset > 0) {
-        current->input.erase(current->input.begin(),
-                             current->input.begin() + static_cast<std::ptrdiff_t>(current->input_offset));
-        current->input_offset = 0;
     }
     return {};
 }
@@ -488,8 +481,13 @@ auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& r
         return {};
     }
     const auto key = reactor_detail::key_text(request.key);
-    const auto key_hash = hash_key_routing(key, worker_routing_);
-    const auto owner = route_worker(key_hash, mesh_.size());
+    std::uint64_t key_hash{};
+    std::size_t owner{};
+    {
+        GS_PHASE_TCP(route);
+        key_hash = hash_key_routing(key, worker_routing_);
+        owner = route_worker(key_hash, mesh_.size());
+    }
     if (!current->bound_worker.has_value()) {
         return queue_response(token, {.status = ResponseStatus::not_bound,
                                       .request_id = request.request_id,
@@ -512,7 +510,6 @@ auto Reactor::dispatch_request(const ConnectionToken token, const RequestView& r
 
 auto Reactor::execute_local(const ConnectionToken token, const RequestView& request,
                             const std::uint64_t key_hash, std::uint64_t& cached_now_ns) -> Status {
-    GS_PHASE_TCP(store_op);
     const auto key_string = reactor_detail::key_text(request.key);
     const HashedKey key{.key = key_string, .hash = key_hash};
     ResponseView response{.status = ResponseStatus::ok,
@@ -521,6 +518,12 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                           .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                           .routing_epoch = kRoutingEpoch};
     OwnedValue owned_response;
+    // process_frames is entered only from read_ready or write_ready. The read
+    // path already owns readable interest and flushes queued output; the write
+    // path reconciles interest after process_frames returns. Async submissions
+    // therefore leave the next poller transition to their caller—modifying it
+    // here would be overwritten before any intervening poller wait.
+    GS_PHASE_TCP_NAMED(store_phase, store_op);
     switch (request.opcode) {
     case RequestOpcode::get: {
         if (cached_now_ns == 0) {
@@ -602,7 +605,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             }
             current->request_in_flight = true;
             current->cold_read_in_flight = true;
-            return update_connection_interest(token);
+            return {};
         }
         break;
     }
@@ -650,7 +653,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         ++mutations_outstanding_;
         mutation_bytes_outstanding_ += *admitted;
         current->request_in_flight = true;
-        return update_connection_interest(token);
+        return {};
     } break;
     case RequestOpcode::erase: {
         auto* current = connection(token);
@@ -690,7 +693,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         ++mutations_outstanding_;
         mutation_bytes_outstanding_ += *admitted;
         current->request_in_flight = true;
-        return update_connection_interest(token);
+        return {};
     } break;
     case RequestOpcode::init:
     case RequestOpcode::ping:
@@ -702,6 +705,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         response.status = ResponseStatus::invalid_request;
         break;
     }
+    GS_PHASE_FINISH(store_phase);
     return queue_response(token, response);
 }
 
@@ -804,6 +808,7 @@ auto Reactor::process_mutation_completions() -> Status {
         if (!current->request_in_flight || current->cold_read_in_flight) {
             return fail(ErrorCode::corrupted_data, "unexpected mutation completion");
         }
+        const bool output_was_pending = has_pending_output(*current);
         current->request_in_flight = false;
         current->in_flight_since = {};
         touch_activity(*current, std::chrono::steady_clock::now());
@@ -819,8 +824,24 @@ auto Reactor::process_mutation_completions() -> Status {
             close_connection(completion->connection);
             continue;
         }
-        // Flush the decided response; write_ready processes pipelined input only
-        // after output fully drains. process_frames-on-EAGAIN discarded ACKs.
+        // Resume already-buffered frames after the completed mutation, before
+        // flushing its decided response. At most one new asynchronous request
+        // can be admitted; its Writer work may overlap this socket drain while
+        // response bytes remain ordered in the connection output buffer.
+        if (!output_was_pending && current->input_offset < current->input.size()) {
+            if (auto resumed = process_frames(completion->connection); !resumed) {
+                current = connection(completion->connection);
+                if (current == nullptr || !has_pending_output(*current)) {
+                    close_connection(completion->connection);
+                    continue;
+                }
+                // A later malformed frame must not discard responses already
+                // decided earlier in the pipeline.
+                current->close_after_flush = true;
+                current->input.clear();
+                current->input_offset = 0;
+            }
+        }
         if (auto flushed = write_ready(completion->connection); !flushed) {
             close_connection(completion->connection);
         }

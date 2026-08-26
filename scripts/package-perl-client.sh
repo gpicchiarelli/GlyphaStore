@@ -101,4 +101,34 @@ for required in LICENSE NOTICE; do
   fi
 done
 
+# Verify the normalized release artifact as an installed package. Tests run from a separate tree so
+# FindBin cannot resolve the distribution's source lib/ directory and mask a broken installation.
+artifact_root="$work/artifact"
+install_root="$work/install"
+test_root="$work/installed-test"
+mkdir -p "$artifact_root" "$install_root" "$test_root"
+tar -xzf "$tar_tz" -C "$artifact_root"
+(
+  cd "$artifact_root/$prefix"
+  "$perl" Makefile.PL INSTALL_BASE="$install_root"
+  "$make"
+  "$make" install
+)
+installed_lib="$install_root/lib/perl5"
+if [[ ! -f "$installed_lib/GlyphaStore/Client.pm" ]]; then
+  echo "ERROR: installed Perl package is missing GlyphaStore::Client" >&2
+  exit 1
+fi
+cp -R "$artifact_root/$prefix/t" "$test_root/t"
+PERL5LIB="$installed_lib" "$perl" -e '
+  use GlyphaStore;
+  my $root = shift;
+  die "loaded GlyphaStore from outside isolated install: $INC{q{GlyphaStore.pm}}\n"
+      if index($INC{q{GlyphaStore.pm}}, $root) != 0;
+' "$installed_lib"
+PERL5LIB="$installed_lib" "$perl" -MTest::Harness -e \
+  'runtests(@ARGV)' "$test_root/t/01-protocol.t" "$test_root/t/02-client.t" \
+  "$test_root/t/03-error-taxonomy.t"
+echo "Installed Perl artifact conformance OK ($installed_lib)"
+
 echo "Perl packaging verification OK ($sdk/dist/$(basename "${tarball[0]}"))"

@@ -6,6 +6,7 @@ use File::Temp;
 use IO::Select;
 use IO::Socket::INET;
 use POSIX qw(_exit);
+use Socket qw(AF_UNIX PF_UNSPEC SOCK_STREAM);
 use Test::More;
 
 use lib "$FindBin::Bin/../lib";
@@ -50,6 +51,7 @@ sub send_response {
 sub start_server {
     my (%options) = @_;
     my $worker_count = $options{worker_count} // 1;
+    my $routing = $options{routing};
     my $listener = IO::Socket::INET->new(
         LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp',
         Listen => $worker_count, ReuseAddr => 1)
@@ -86,7 +88,7 @@ sub start_server {
                         send_response($handle,
                             status => STATUS_OK,
                             request_id => $request->{request_id},
-                            value => GlyphaStore::Protocol::encode_init_identity(),
+                            value => GlyphaStore::Protocol::encode_init_identity($routing),
                             owner_worker => 0,
                             worker_count => $worker_count,
                             routing_epoch => 9);
@@ -123,7 +125,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_PUT) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -155,7 +157,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_GET) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -173,7 +175,7 @@ sub start_server {
                             worker_count => $worker_count,
                             routing_epoch => 9);
                     } elsif ($opcode == OP_ERASE) {
-                        my $owner = worker_for($request->{key}, $worker_count);
+                        my $owner = worker_for($request->{key}, $worker_count, $routing);
                         if ($owner != $bound{$handle}) {
                             send_response($handle,
                                 status => STATUS_WRONG_OWNER,
@@ -222,6 +224,59 @@ sub start_server {
     }
     close($listener);
     return ($port, $pid);
+}
+
+{
+    socketpair(my $reader, my $writer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+        or die "socketpair failed: $!";
+    my $frame = encode_response(
+        status => STATUS_OK, request_id => 41, value => 'partial-ready', owner_worker => 0,
+        worker_count => 1, routing_epoch => 9,
+    );
+    is(syswrite($writer, $frame, 4), 4, 'readiness test writes response prefix');
+    my $fragment_pid = fork();
+    die "fork failed: $!" if !defined($fragment_pid);
+    if (!$fragment_pid) {
+        select undef, undef, undef, 0.05;
+        my $offset = 4;
+        while ($offset < length($frame)) {
+            my $written = syswrite($writer, $frame, length($frame) - $offset, $offset);
+            _exit(1) if !$written;
+            $offset += $written;
+        }
+        close($reader);
+        close($writer);
+        _exit(0);
+    }
+    close($writer);
+
+    my $probe = bless {
+        request_timeout     => 1,
+        maximum_frame_bytes => GlyphaStore::Protocol::MAX_FRAME_BYTES(),
+        connections         => [],
+    }, 'GlyphaStore::Client';
+    my $connection = {
+        socket => $reader, selector => undef, input => '', input_offset => 0,
+    };
+    my $wait_io = \&GlyphaStore::Client::_wait_io;
+    my $waits = 0;
+    my $response;
+    {
+        no warnings 'redefine';
+        local *GlyphaStore::Client::_wait_io = sub {
+            ++$waits;
+            return $wait_io->(@_);
+        };
+        $response = $probe->_receive_response(
+            $connection, GlyphaStore::Client::_now() + 1, undef, 1
+        );
+    }
+    is($response->[GlyphaStore::Client::RESPONSE_VALUE()], 'partial-ready',
+        'readiness fast path preserves a fragmented response');
+    is($waits, 1, 'readiness skips only the first wait and partial input waits with its deadline');
+    close($reader);
+    waitpid($fragment_pid, 0);
+    is($?, 0, 'fragmented response writer exits cleanly');
 }
 
 my ($port, $pid) = start_server();
@@ -357,6 +412,21 @@ for my $key (@keys) {
 $client->close;
 waitpid($pid, 0);
 
+my $keyed_routing = {
+    algorithm => GlyphaStore::Protocol::ROUTING_ALG_SIPHASH24_V1(),
+    seed => 1_229_801_703_532_086_340,
+};
+($port, $pid) = start_server(worker_count => 2, routing => $keyed_routing);
+$client = GlyphaStore::Client->connect(port => $port);
+my $keyed_key = 'tenant-a/orders/1';
+is($client->worker_for($keyed_key), worker_for($keyed_key, 2, $keyed_routing),
+    'client Worker routing reuses the validated keyed INIT identity');
+is($client->put($keyed_key, 'keyed-value')->{outcome}, 'committed',
+    'keyed-routing client sends PUT to the selected Worker');
+is($client->get($keyed_key), 'keyed-value', 'keyed-routing client reads from the selected Worker');
+$client->close;
+waitpid($pid, 0);
+
 ($port, $pid) = start_server(worker_count => 2);
 $client = GlyphaStore::Client->connect(port => $port);
 {
@@ -378,6 +448,14 @@ $client = GlyphaStore::Client->connect(port => $port);
                 "concurrent GET worker $worker ordered");
         }
     }
+
+    my $worker_zero_key = (grep { $owners{$_} == 0 } @keys)[0];
+    my $misrouted = $client->execute_worker_pipelines(
+        [[], [{ opcode => 'get', key => $worker_zero_key }]]);
+    is($misrouted->[1][0]{outcome}, 'failed',
+        'public worker pipeline still rejects a key assigned to another Worker');
+    is($misrouted->[1][0]{error}->category, 'invalid_argument',
+        'misrouted public worker pipeline preserves its error category');
 }
 $client->close;
 waitpid($pid, 0);

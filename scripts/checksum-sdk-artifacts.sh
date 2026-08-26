@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Write SHA-256 checksums (and optional SBOM) for packaged SDK artifacts.
+# Write SHA-256 checksums, a release index, and optional SBOMs for packaged SDK artifacts.
 # Set SYFT_REQUIRED=1 to fail closed when syft is missing (CI supply-chain gate).
 set -euo pipefail
 
@@ -46,6 +46,12 @@ done
 for f in "$root/sdk/ruby/dist"/glyphastore-*.gem; do
   add "$f"
 done
+for f in "$root/sdk/erlang/dist"/glyphastore-erlang-*.tar.gz; do
+  add "$f"
+done
+for f in "$root/sdk/go/dist"/glyphastore-go-*.tar.gz; do
+  add "$f"
+done
 add "$root/sdk/go/dist/package-info.txt" "go-package-info.txt"
 add "$root/sdk/erlang/dist/package-info.txt" "erlang-package-info.txt"
 add "$root/sdk/cpp-dist/package-info.txt" "cpp-package-info.txt"
@@ -53,6 +59,12 @@ shopt -u nullglob
 
 if [[ -s "$manifest" ]]; then
   sort -u "$manifest" -o "$manifest"
+fi
+
+if [[ "${SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE:-0}" == "1" ]]; then
+  python3 "$root/engineering/tools/write_sdk_release_index.py" "$outdir" --require-complete
+else
+  python3 "$root/engineering/tools/write_sdk_release_index.py" "$outdir"
 fi
 
 syft_available=0

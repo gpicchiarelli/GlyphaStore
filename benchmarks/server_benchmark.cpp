@@ -98,6 +98,13 @@ struct DurableProfileSample {
     std::uint64_t maintenance_last_foreground_p99_ns{};
 };
 
+struct ReactorProfileSample {
+    std::uint64_t input_buffer_compactions{};
+    std::uint64_t input_buffer_bytes_moved{};
+    std::uint64_t output_buffer_compactions{};
+    std::uint64_t output_buffer_bytes_moved{};
+};
+
 struct ClientWork {
     std::vector<std::vector<std::byte>> batches;
     std::size_t response_count{};
@@ -110,6 +117,7 @@ struct Sample {
     std::vector<double> latency_ns;
     bool valid{};
     DurableProfileSample durable;
+    ReactorProfileSample reactor;
 };
 
 struct ClientResult {
@@ -397,6 +405,14 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
     result.maintenance_foreground_latency_samples = maintenance.foreground_latency_samples;
     result.maintenance_last_foreground_p99_ns = maintenance.last_foreground_p99_ns;
     return result;
+}
+
+[[nodiscard]] auto reactor_profile(const glyphastore::server::Server& server) -> ReactorProfileSample {
+    const auto stats = server.reactor_buffer_stats();
+    return {.input_buffer_compactions = stats.input_compactions,
+            .input_buffer_bytes_moved = stats.input_bytes_moved,
+            .output_buffer_compactions = stats.output_compactions,
+            .output_buffer_bytes_moved = stats.output_bytes_moved};
 }
 
 [[nodiscard]] auto options(const int argc, char** argv) -> Options {
@@ -950,6 +966,7 @@ class BufferedResponseReader final {
         static_cast<void>(::close(descriptor));
     }
     const auto profile = durable_profile(**server);
+    const auto reactor = reactor_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
     return {.hits = hits,
@@ -957,7 +974,8 @@ class BufferedResponseReader final {
             .resources = resources,
             .latency_ns = std::move(latency_ns),
             .valid = stopped.has_value() && hits == expected,
-            .durable = profile};
+            .durable = profile,
+            .reactor = reactor};
 }
 
 [[nodiscard]] auto run_client_api_sample(const Options& options,
@@ -1131,6 +1149,7 @@ class BufferedResponseReader final {
     }
     client.close();
     const auto profile = durable_profile(**server);
+    const auto reactor = reactor_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
     const auto expected = options.config.operations * 2U;
@@ -1139,7 +1158,8 @@ class BufferedResponseReader final {
             .resources = resources,
             .latency_ns = std::move(latency_ns),
             .valid = stopped.has_value() && hits == expected,
-            .durable = profile};
+            .durable = profile,
+            .reactor = reactor};
 }
 
 [[nodiscard]] auto percentile(const std::vector<double>& sorted, const double quantile) -> double {
@@ -1171,9 +1191,11 @@ class BufferedResponseReader final {
     std::vector<glyphastore::bench::ResourceSample> resources;
     std::vector<double> latency_ns;
     std::vector<DurableProfileSample> durable_profiles;
+    std::vector<ReactorProfileSample> reactor_profiles;
     seconds.reserve(options.settings.measured_iterations);
     resources.reserve(options.settings.measured_iterations);
     durable_profiles.reserve(options.settings.measured_iterations);
+    reactor_profiles.reserve(options.settings.measured_iterations);
     std::size_t hits{};
     for (std::size_t iteration = 0; iteration < options.settings.measured_iterations; ++iteration) {
         auto measured = sample();
@@ -1184,6 +1206,7 @@ class BufferedResponseReader final {
         seconds.push_back(measured.seconds);
         resources.push_back(measured.resources);
         durable_profiles.push_back(measured.durable);
+        reactor_profiles.push_back(measured.reactor);
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
                           std::make_move_iterator(measured.latency_ns.end()));
     }
@@ -1255,6 +1278,37 @@ class BufferedResponseReader final {
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::adaptive_target_closes));
     result.durable_deadline_closes =
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::deadline_closes));
+    const auto median_reactor_profile = [&](auto member) {
+        std::vector<double> values;
+        values.reserve(reactor_profiles.size());
+        for (const auto& profile : reactor_profiles) {
+            values.push_back(static_cast<double>(profile.*member));
+        }
+        return glyphastore::bench::median(std::move(values));
+    };
+    const auto maximum_reactor_profile = [&](auto member) {
+        double maximum{};
+        for (const auto& profile : reactor_profiles) {
+            maximum = std::max(maximum, static_cast<double>(profile.*member));
+        }
+        return maximum;
+    };
+    result.median_reactor_input_buffer_compactions =
+        median_reactor_profile(&ReactorProfileSample::input_buffer_compactions);
+    result.maximum_reactor_input_buffer_compactions =
+        maximum_reactor_profile(&ReactorProfileSample::input_buffer_compactions);
+    result.median_reactor_input_buffer_bytes_moved =
+        median_reactor_profile(&ReactorProfileSample::input_buffer_bytes_moved);
+    result.maximum_reactor_input_buffer_bytes_moved =
+        maximum_reactor_profile(&ReactorProfileSample::input_buffer_bytes_moved);
+    result.median_reactor_output_buffer_compactions =
+        median_reactor_profile(&ReactorProfileSample::output_buffer_compactions);
+    result.maximum_reactor_output_buffer_compactions =
+        maximum_reactor_profile(&ReactorProfileSample::output_buffer_compactions);
+    result.median_reactor_output_buffer_bytes_moved =
+        median_reactor_profile(&ReactorProfileSample::output_buffer_bytes_moved);
+    result.maximum_reactor_output_buffer_bytes_moved =
+        maximum_reactor_profile(&ReactorProfileSample::output_buffer_bytes_moved);
     if (options.maintenance_overlap_seed_operations != 0) {
         std::cout << "# maintenance_profile_scope=median-per-sample-counters-and-cross-sample-maxima\n";
         std::cout << "# maintenance_evaluations_median="

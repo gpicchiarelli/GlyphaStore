@@ -1,7 +1,7 @@
 Status: lab notes
 Applies to: 2026-08-01 hot-path performance program
 Owner: performance maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-25
 
 # Rejected hot-path optimizations
 
@@ -24,6 +24,10 @@ Companion to [hot-path-performance-2026-08-01.md](hot-path-performance-2026-08-0
 | Writer post-sync busy-spin (64 yields) before merge/park | Collapsed `store_put` ~378 k → ~170 k; dual-sided spin tax |
 | Writer sync-before-merge reorder alone | No reliable 1t PUT win vs merge-first; affine mixed; keep merge-first |
 | Conditional `notify_one` gated on `writer_waiting` | Same-machine A/B vs unconditional wake: `store_put` 359 k vs 349 k (noise), affine 502 k vs 509 k; no reliable win. Sync PUT parks the Writer every op so notify almost always fires anyway. Evidence: `benchmarks/results/local-macos-2026-08-02-writer-waiting/` |
+| Coalesce only buffered GET responses, stopping before the next mutation | Halved measured socket-write calls, but decoded the following non-GET twice and serialized the next Writer admission behind the socket drain. It produced no stable gain. The accepted completion-resume path instead preserves one-in-flight overlap. |
+| BSD `write(2)` for contiguous socket output after `SO_NOSIGPIPE` | macOS pipeline-128 dropped from 269–273 k to ~200 k ops/s; instrumented syscall mean rose from ~2.49 µs to ~2.80 µs. Keep `send(2)` and its platform signal-suppression contract. |
+| Skip fresh `steady_clock` reads when idle timeout is disabled | Best pipeline-128 samples were identical (~274 k ops/s); median movement followed host outliers and did not establish a repeatable gain. The extra branch/helper was not justified. |
+| Suppress completion wakeup syscalls while the Reactor appears active | A generation/CAS handshake improved one-pair pipeline-128 by ~2%, but four-pair throughput fell from 404–427 k to 307–308 k ops/s. Kernel wakeups materially aided Reader/Writer scheduling under contention; the candidate was fully reverted. |
 
 Accepted residuals remain documented in the main performance report (PUT ack cost,
 uniform embedded PUT vs owner-bound daemon model).

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Perl SDK client benchmark suite (sequential + concurrent) against glyphastored.
+# Perl SDK client benchmark suite (sequential + concurrent + mixed-owner batch) against glyphastored.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -12,6 +12,7 @@ host="127.0.0.1"
 ops="${OPS:-100000}"
 warmup="${WARMUP:-1}"
 repeats="${REPEATS:-7}"
+worker_hash_seed="${WORKER_HASH_SEED:-}"
 
 prefer_bins=(
   "$root/build/macos-native-release"
@@ -45,13 +46,18 @@ export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
   echo "ops=$ops warmup=$warmup repeats=$repeats"
   echo "workload=ordered PUT/GET pipeline read-after-write, value_size=64"
   echo "storage_mode=volatile"
-  echo "note=publishes both sequential and execute_worker_pipelines concurrent modes"
+  echo "worker_hash_seed=${worker_hash_seed:-default-fnv}"
+  echo "note=publishes sequential, execute_worker_pipelines, and execute_batch modes"
 } >"$outdir/environment.txt"
 
 start_server() {
   local workers="$1" port_file="$2" log_file="$3"
+  local routing_args=()
+  if [[ -n "$worker_hash_seed" ]]; then
+    routing_args=(--worker-hash-seed "$worker_hash_seed")
+  fi
   "$daemon" --bind "$host" --port 0 --workers "$workers" \
-    --storage-mode volatile --executor-affinity --quiet \
+    --storage-mode volatile --executor-affinity "${routing_args[@]}" --quiet \
     >"$log_file" 2>&1 &
   local pid=$!
   echo "$pid" >"${port_file}.pid"
@@ -97,7 +103,7 @@ pipelines=(1 8 32 128)
   echo "- SDK version: \`$sdk_version\`"
   echo "- Ops (PUT/GET pairs): \`$ops\`"
   echo "- Warmup/repeats: \`$warmup\` / \`$repeats\`"
-  echo "- Modes: sequential drain + concurrent \`execute_worker_pipelines\` (when workers>1)"
+  echo "- Modes: sequential drain + concurrent \`execute_worker_pipelines\` + mixed-owner \`execute_batch\`"
   echo
 } >"$outdir/commands.md"
 
@@ -124,6 +130,13 @@ for w in "${workers[@]}"; do
         --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
         --concurrent \
         | tee "$outdir/perl/concurrent-${label}.txt"
+
+      echo "running perl mixed-owner batch $label"
+      "$perl" "$root/sdk/perl/benchmarks/client_benchmark.pl" \
+        --host "$host" --port "$port" --workers "$w" --ops "$ops" \
+        --pipeline "$p" --warmup "$warmup" --repeats "$repeats" \
+        --batch \
+        | tee "$outdir/perl/batch-${label}.txt"
     fi
   done
   stop_server "$port_file"
@@ -220,6 +233,7 @@ lines.extend([
     "## Notes",
     "",
     "- `concurrent` uses `execute_worker_pipelines` (one select loop, overlap across Workers).",
+    "- `batch` interleaves owners, groups once, overlaps Workers, and restores caller order.",
     "- `sequential` drains Workers one after another (fair compare to Python sequential).",
     "- Workers=1 has no concurrent mode (single connection).",
     "- Same-host loopback; do not treat as production capacity.",
@@ -230,7 +244,8 @@ lines.extend([
 (outdir / "README.md").write_text(
     f"""# GlyphaStore Perl SDK benchmarks — {sdk_version}
 
-Sequential and concurrent (`execute_worker_pipelines`) matrix for the pure-Perl client.
+Sequential, concurrent (`execute_worker_pipelines`), and mixed-owner (`execute_batch`) matrix for
+the pure-Perl client.
 
 ## Reproduce
 
@@ -238,7 +253,7 @@ Sequential and concurrent (`execute_worker_pipelines`) matrix for the pure-Perl 
 ./scripts/benchmark_perl_client.sh
 ```
 
-Optional: `OPS`, `WARMUP`, `REPEATS`, `GLYPHASTORED`, `PERL`.
+Optional: `OPS`, `WARMUP`, `REPEATS`, `WORKER_HASH_SEED`, `GLYPHASTORED`, `PERL`.
 """,
     encoding="utf-8",
 )

@@ -20,7 +20,38 @@ and any focused benchmark. Build directories and generated Xcode projects are ne
 on a weekly schedule, and by manual dispatch. The workflow records the runner environment and
 uploads raw benchmark output, `results.json`, and the rendered `summary.md` for 90 days. The same
 summary is shown directly on the GitHub Actions run page and includes throughput deltas against
-the latest successful retained run on `main`.
+the latest successful retained run on `main` only when the machine-readable runner identity matches.
+CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-preset changes
+suppress deltas and are listed in the report rather than being mislabeled as code regressions. The
+same identity includes the SHA-256 digest of the hosted matrix contract; individual matches include
+operation count, warmup, and measured repeats.
+For compatible environments, the report classifies overlapping min/max throughput ranges as
+inconclusive. Only disjoint ranges become improvement or regression candidates.
+The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4
+Worker row, its gain over pipeline depth 1, speedup against the one-Worker cell at the same depth,
+and scaling efficiency. These are descriptive scheduling signals, not capacity claims.
+The report also selects the smallest measured pipeline whose median throughput is at least 95% of
+the best median in the same Worker row. This “economical pipeline” is a reproducible near-peak
+choice that limits in-flight work; it is advisory and does not override an application's latency or
+memory requirements.
+For every TCP cell the server benchmark also records the median and worst observed Reactor input and
+output buffer compactions and bytes moved. The scaling summary normalizes median bytes moved by the
+timed operation count; this distinguishes useful pipeline scaling from throughput that hides growing
+copy pressure.
+The durable-pipeline subsection requires both an explicit `durable-*` storage mode and completed
+durable mutations; volatile server counters are never relabeled as durability measurements.
+The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
+metadata, count mismatches, invalid numbers, inconsistent statistical ordering, or disagreement
+between a TCP filename and its runtime coordinates fail the report.
+The machine-readable `engineering/performance/hosted-benchmark-contract.json` enumerates all 21
+expected core, parallel, durable, TCP-scaling, and TCP-latency source files. Missing or unexpected
+files invalidate the report before baseline comparison. The same contract fixes one warmup and the
+expected three, five, or seven measured repeats for each source, preventing silent sampling cuts.
+
+To avoid spending hosted-runner time on unrelated changes, the push trigger is limited to engine,
+server, public headers, benchmark sources, CMake configuration, the canonical version, and the
+report generator. Documentation, artwork, and non-C++ SDK-only changes rely on their focused CI;
+the weekly and manual full-benchmark safety nets remain unconditional.
 
 The TCP portion is a scalability matrix with 1, 2, and 4 owner-bound clients/workers and pipeline
 depths 1, 8, 32, and 128. A separate `--latency` run reports p50, p95, p99, and p99.9 pipelined
@@ -34,6 +65,10 @@ python3 scripts/benchmark_report.py benchmark-results/*.txt \
   --json benchmark-results/results.json \
   --markdown benchmark-results/summary.md
 ```
+
+Add `--strict` when the local outputs are intended to exercise the CI evidence contract.
+Pass `--source-contract engineering/performance/hosted-benchmark-contract.json` with the complete
+hosted matrix to enforce its exact source set.
 
 The durable TCP audit matrix runs v1 sync, strict group, and periodic policies at pipeline depths
 1, 8, and 32. It includes both 1/2/4 client-to-Worker scaling and four clients per Worker at each

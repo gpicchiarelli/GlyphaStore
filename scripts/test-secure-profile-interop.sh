@@ -8,9 +8,14 @@
 # Usage:
 #   ./scripts/test-secure-profile-interop.sh
 # Env:
-#   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT / GLYPHASTORE_GO_INTEROP
+#   GLYPHASTORED / GLYPHASTORE_INTEROP_CLIENT
+#   GLYPHASTORE_PYTHON_INTEROP / GLYPHASTORE_PERL_INTEROP / GLYPHASTORE_GO_INTEROP
+#   GLYPHASTORE_RUBY_INTEROP / GLYPHASTORE_ERLANG_INTEROP
+#   GLYPHASTORE_INTEROP_USE_INSTALLED=1 (forbid SDK libraries/binaries from this source tree)
+#   SECURE_INTEROP_SKIP_PERL / SECURE_INTEROP_SKIP_RUBY / SECURE_INTEROP_SKIP_ERLANG
 #   INTEROP_WORKER_HASH_SEED (default 13957458623937596)
 #   INTEROP_SECURE_WORKERS (default 2)
+#   SECURE_INTEROP_REQUIRE_ALL=1 (fail instead of skipping Perl/Ruby/Erlang)
 #   PYTHON / PERL / RUBY / GO
 set -euo pipefail
 
@@ -21,6 +26,14 @@ daemon="${GLYPHASTORED:-}"
 cpp_client="${GLYPHASTORE_INTEROP_CLIENT:-}"
 hash_seed="${INTEROP_WORKER_HASH_SEED:-13957458623937596}"
 workers="${INTEROP_SECURE_WORKERS:-2}"
+require_all="${SECURE_INTEROP_REQUIRE_ALL:-0}"
+use_installed="${GLYPHASTORE_INTEROP_USE_INSTALLED:-0}"
+if [[ "$use_installed" != "0" && "$use_installed" != "1" ]]; then
+  echo "GLYPHASTORE_INTEROP_USE_INSTALLED must be 0 or 1" >&2
+  exit 1
+fi
+export GLYPHASTORE_INTEROP_USE_INSTALLED="$use_installed"
+export GLYPHASTORE_SOURCE_ROOT="$root"
 # Principal extracted by daemon: URI SAN → DNS SAN → CN (secure-profile.md §2).
 client_principal="interop.client"
 
@@ -40,7 +53,7 @@ if [[ -z "$daemon" ]]; then
     fi
   done
 fi
-if [[ -z "$cpp_client" ]]; then
+if [[ -z "$cpp_client" && "$use_installed" != "1" ]]; then
   daemon_dir="$(dirname "${daemon:-.}")"
   if [[ -n "$daemon" && -x "$daemon_dir/glyphastore_interop_client" ]]; then
     cpp_client="$daemon_dir/glyphastore_interop_client"
@@ -52,6 +65,10 @@ if [[ -z "$cpp_client" ]]; then
       fi
     done
   fi
+fi
+if [[ "$use_installed" == "1" && -z "$cpp_client" ]]; then
+  echo "installed-artifact mode requires GLYPHASTORE_INTEROP_CLIENT" >&2
+  exit 1
 fi
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
@@ -71,22 +88,48 @@ if ! "$daemon" --help 2>&1 | grep -q -- '--tls-client-ca'; then
   exit 1
 fi
 
-export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
-export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
-py_helper="$root/scripts/sdk_interop_py.py"
-pl_helper="$root/scripts/sdk_interop_perl.pl"
-ruby_helper="$root/sdk/ruby/exe/glyphastore-interop"
-erlang_helper="$root/sdk/erlang/scripts/glyphastore-interop.escript"
+if [[ "$use_installed" != "1" ]]; then
+  export PYTHONPATH="$root/sdk/python/src${PYTHONPATH:+:$PYTHONPATH}"
+  export PERL5LIB="$root/sdk/perl/lib${PERL5LIB:+:$PERL5LIB}"
+fi
+py_helper="${GLYPHASTORE_PYTHON_INTEROP:-$root/scripts/sdk_interop_py.py}"
+pl_helper="${GLYPHASTORE_PERL_INTEROP:-$root/scripts/sdk_interop_perl.pl}"
+ruby_helper="${GLYPHASTORE_RUBY_INTEROP:-$root/sdk/ruby/exe/glyphastore-interop}"
+erlang_helper="${GLYPHASTORE_ERLANG_INTEROP:-$root/sdk/erlang/scripts/glyphastore-interop.escript}"
 go_helper="${GLYPHASTORE_GO_INTEROP:-}"
 if [[ -z "$go_helper" || ! -x "$go_helper" ]]; then
+  if [[ "$use_installed" == "1" ]]; then
+    echo "installed-artifact mode requires GLYPHASTORE_GO_INTEROP" >&2
+    exit 1
+  fi
   mkdir -p "$root/sdk/go/bin"
   (cd "$root/sdk/go" && "${GO:-go}" build -o bin/glyphastore-interop ./cmd/glyphastore-interop)
   go_helper="$root/sdk/go/bin/glyphastore-interop"
 fi
-chmod +x "$py_helper" "$ruby_helper" "$erlang_helper" 2>/dev/null || true
+if [[ "$use_installed" == "1" ]]; then
+  for entry in "cpp:$cpp_client" "go:$go_helper"; do
+    sdk_name="${entry%%:*}"
+    sdk_path="${entry#*:}"
+    if [[ "$sdk_path" == "$root/"* ]]; then
+      echo "installed-artifact mode refuses source-tree $sdk_name binary: $sdk_path" >&2
+      exit 1
+    fi
+  done
+fi
+for helper in "$py_helper" "$pl_helper" "$ruby_helper" "$erlang_helper"; do
+  if [[ ! -f "$helper" ]]; then
+    echo "missing SDK interop helper: $helper" >&2
+    exit 1
+  fi
+done
+if [[ "$use_installed" != "1" ]]; then
+  chmod +x "$py_helper" "$ruby_helper" "$erlang_helper" 2>/dev/null || true
+fi
 
 perl_ready=0
-if "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
+if [[ "${SECURE_INTEROP_SKIP_PERL:-0}" == "1" ]]; then
+  echo "note: Perl excluded by SECURE_INTEROP_SKIP_PERL=1" >&2
+elif "$perl" -MIO::Socket::SSL -e1 >/dev/null 2>&1; then
   perl_ready=1
 else
   echo "note: Perl without IO::Socket::SSL — excluding perl from secure-profile matrix" >&2
@@ -94,30 +137,34 @@ fi
 
 ruby_bin="${RUBY:-}"
 ruby_ready=0
-if [[ -z "$ruby_bin" ]]; then
-  for candidate in \
-    "$HOME/.local/share/mise/installs/ruby/3.3.12/bin/ruby" \
-    "$HOME/.local/share/mise/installs/ruby/3.3.0/bin/ruby"; do
-    if [[ -x "$candidate" ]]; then
-      ruby_bin="$candidate"
-      break
-    fi
-  done
-fi
-if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
-  ruby_bin="$(command -v ruby)"
-fi
-if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
-  "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
-  ruby_ready=1
-  export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
-else
-  echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
+if [[ "${SECURE_INTEROP_SKIP_RUBY:-0}" == "1" ]]; then
+  echo "note: Ruby excluded by SECURE_INTEROP_SKIP_RUBY=1" >&2
   ruby_bin=""
+else
+  if [[ -z "$ruby_bin" && -x "$HOME/.local/bin/mise" ]]; then
+    ruby_bin="$("$HOME/.local/bin/mise" which ruby@3.3 2>/dev/null || true)"
+  fi
+  if [[ -z "$ruby_bin" ]] && command -v ruby >/dev/null 2>&1; then
+    ruby_bin="$(command -v ruby)"
+  fi
+  if [[ -n "$ruby_bin" && -x "$ruby_bin" ]] && \
+    "$ruby_bin" -e 'v=RUBY_VERSION.split(".").map!(&:to_i); exit(v[0] > 3 || (v[0]==3 && v[1] >= 2) ? 0 : 1)' 2>/dev/null; then
+    ruby_ready=1
+    if [[ "$use_installed" != "1" ]]; then
+      export RUBYLIB="$root/sdk/ruby/lib${RUBYLIB:+:$RUBYLIB}"
+    fi
+  else
+    echo "note: Ruby >= 3.2 not available — excluding ruby from secure-profile matrix" >&2
+    ruby_bin=""
+  fi
 fi
 
 erlang_ready=0
-if command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
+if [[ "${SECURE_INTEROP_SKIP_ERLANG:-0}" == "1" ]]; then
+  echo "note: Erlang excluded by SECURE_INTEROP_SKIP_ERLANG=1" >&2
+elif [[ "$use_installed" == "1" ]] && command -v erl >/dev/null 2>&1 && command -v escript >/dev/null 2>&1; then
+  erlang_ready=1
+elif command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   if (cd "$root/sdk/erlang" && rebar3 compile >/dev/null 2>&1); then
     erlang_ready=1
   else
@@ -125,6 +172,17 @@ if command -v escript >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   fi
 else
   echo "note: Erlang/OTP + rebar3 not available — excluding erlang from secure-profile matrix" >&2
+fi
+
+if [[ "$require_all" == "1" ]]; then
+  missing_sdks=()
+  [[ "$perl_ready" == "1" ]] || missing_sdks+=(perl)
+  [[ "$ruby_ready" == "1" ]] || missing_sdks+=(ruby)
+  [[ "$erlang_ready" == "1" ]] || missing_sdks+=(erlang)
+  if [[ "${#missing_sdks[@]}" -gt 0 ]]; then
+    echo "secure-profile matrix requires every SDK; unavailable: ${missing_sdks[*]}" >&2
+    exit 1
+  fi
 fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-secure-interop.XXXXXX")"
@@ -377,6 +435,13 @@ tls_args=(
   --tls-key "$work/client.key"
   --server-name localhost
 )
+revoked_tls_args=(
+  --tls
+  --tls-ca "$work/ca.crt"
+  --tls-cert "$work/revoked.crt"
+  --tls-key "$work/revoked.key"
+  --server-name localhost
+)
 
 put_sdk() {
   local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
@@ -407,6 +472,51 @@ expect_get() {
     echo "GET mismatch sdk=$sdk want=$want_hex got=$got" >&2
     return 1
   fi
+}
+
+expect_permission_denied() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    *) return 1 ;;
+  esac
+}
+
+expect_overloaded() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    *) return 1 ;;
+  esac
+}
+
+sdk_origin_mode="source-tree"
+if [[ "$use_installed" == "1" ]]; then
+  sdk_origin_mode="installed-artifact"
+fi
+echo "== SDK origin mode: $sdk_origin_mode =="
+
+run_revoked_put() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    python) "$python" "$py_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    go) "$go_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    erlang) escript "$erlang_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    *) return 1 ;;
+  esac
 }
 
 echo "== mint mTLS material + authz map =="
@@ -518,12 +628,13 @@ bad_val="$(printf 'out' | to_hex)"
 echo "  cpp PUT tenant-a/… → python GET"
 put_sdk cpp "$port" "$ok_key" "$ok_val"
 expect_get python "$port" "$ok_key" "$ok_val"
-echo "  python PUT outside prefix → PERMISSION_DENIED"
-if ! "$python" "$py_helper" --port "$port" "${tls_args[@]}" \
-  --key-hex "$bad_key" --value-hex "$bad_val" expect-permission-denied; then
-  echo "prefix mismatch PUT was not denied" >&2
-  exit 1
-fi
+for sdk in "${sdks[@]}"; do
+  echo "  $sdk PUT outside prefix → PERMISSION_DENIED"
+  if ! expect_permission_denied "$sdk" "$port" "$bad_key" "$bad_val"; then
+    echo "prefix mismatch PUT did not produce PERMISSION_DENIED for sdk=$sdk" >&2
+    exit 1
+  fi
+done
 
 echo "== CRL revoke restart =="
 make_revoked_client_and_crl "$work"
@@ -536,46 +647,46 @@ stop_server
 start_server --tls-crl "$work/clients.crl"
 port="$(cat "$port_file")"
 
-crl_key="$(printf 'crl-alive' | to_hex)"
 crl_val="$(printf 'still' | to_hex)"
-echo "  allowed client still works under --tls-crl"
-put_sdk python "$port" "$crl_key" "$crl_val"
-expect_get go "$port" "$crl_key" "$crl_val"
+for sdk in "${sdks[@]}"; do
+  crl_key="$(printf 'crl-alive-%s' "$sdk" | to_hex)"
+  revoked_key="$(printf 'crl-revoked-%s' "$sdk" | to_hex)"
+  crl_log="$work/crl-${sdk}.err"
 
-echo "  revoked.client must fail handshake / connect"
-set +e
-"$python" "$py_helper" --port "$port" \
-  --tls --tls-ca "$work/ca.crt" \
-  --tls-cert "$work/revoked.crt" --tls-key "$work/revoked.key" \
-  --server-name localhost \
-  --key-hex "$crl_key" --value-hex "$crl_val" put >/tmp/glyphastore-crl-put.err 2>&1
-crl_rc=$?
-set -e
-if [[ "$crl_rc" -eq 0 ]]; then
-  echo "revoked client PUT unexpectedly succeeded" >&2
-  cat /tmp/glyphastore-crl-put.err >&2 || true
-  exit 1
-fi
-echo "  revoked client rejected (exit=$crl_rc) OK"
+  echo "  $sdk allowed client works under --tls-crl"
+  put_sdk "$sdk" "$port" "$crl_key" "$crl_val"
+
+  echo "  $sdk revoked.client must fail handshake / connect"
+  if run_revoked_put "$sdk" "$port" "$revoked_key" "$crl_val" >"$crl_log" 2>&1; then
+    echo "revoked client PUT unexpectedly succeeded for sdk=$sdk" >&2
+    cat "$crl_log" >&2 || true
+    exit 1
+  fi
+  echo "  $sdk revoked client rejected OK"
+done
 
 echo "== principal quota → OVERLOADED =="
-stop_server
 cat >"$work/authz.map" <<EOF
 ${client_principal} write
 EOF
 # Allow INIT+BIND+a few PUTs on one connection, then force OVERLOADED on the burst.
-# Connection limit stays loose so bootstrap is not the failure mode.
-start_server \
-  --principal-max-requests-per-sec 4 \
-  --connection-max-requests-per-sec 64 \
-  --principal-max-bytes-per-sec 1048576
-port="$(cat "$port_file")"
-if "$python" "$py_helper" --port "$port" "${tls_args[@]}" \
-  --burst 32 --value-hex "$(printf 'x' | to_hex)" burst-expect-overloaded; then
-  echo "  python single-connection burst → OVERLOADED OK"
-else
-  echo "principal quota did not produce OVERLOADED on a single-connection burst" >&2
-  exit 1
-fi
+# Connection limit stays loose so bootstrap is not the failure mode. Restart for every SDK so
+# principal tokens consumed by one client cannot satisfy the next client's assertion accidentally.
+quota_key="$(printf 'quota-key' | to_hex)"
+quota_val="$(printf 'x' | to_hex)"
+for sdk in "${sdks[@]}"; do
+  stop_server
+  start_server \
+    --principal-max-requests-per-sec 4 \
+    --connection-max-requests-per-sec 64 \
+    --principal-max-bytes-per-sec 1048576
+  port="$(cat "$port_file")"
+  if expect_overloaded "$sdk" "$port" "$quota_key" "$quota_val"; then
+    echo "  $sdk single-connection burst → OVERLOADED OK"
+  else
+    echo "principal quota did not produce structured OVERLOADED for sdk=$sdk" >&2
+    exit 1
+  fi
+done
 
-echo "secure-profile interop PASSED (mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"
+echo "secure-profile interop PASSED (origin=$sdk_origin_mode; mTLS + authz + keyed + prefix + CRL + quotas; ${sdks[*]})"

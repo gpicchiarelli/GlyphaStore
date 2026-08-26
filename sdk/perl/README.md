@@ -67,6 +67,8 @@ cd sdk/perl && perl Makefile.PL && make && make test && make install
 `./scripts/test-perl-client.sh` runs **Perl::Critic at severity 1** (brutal) against
 `lib/` using `.perlcriticrc`, then the unit tests. Install the develop tools with
 `cpanm --installdeps --with-develop .` from `sdk/perl/`, or `cpanm Perl::Critic Perl::Tidy`.
+The packaging script also installs the normalized tarball under an isolated prefix and reruns the
+suite away from its source tree, preventing local `lib/` files from masking packaging defects.
 
 `GlyphaStore::Protocol` exposes the full bidirectional codec and FNV-1a Worker routing. See
 [PACKAGING.md](PACKAGING.md) for PAUSE/MetaCPAN upload steps.
@@ -77,17 +79,26 @@ The client is pure Perl, but its design is deliberately pipeline-first rather th
 object-heavy synchronous calls:
 
 - one TCP connection is created and bound per Worker;
-- a Worker pipeline is encoded into one contiguous scalar and drained under one absolute deadline;
+- a Worker pipeline appends validated header/key/value fragments into one contiguous scalar, without
+  constructing a complete temporary frame per request, and drains it under one absolute deadline;
 - response bytes accumulate in a reusable connection buffer and multiple complete frames are parsed
   from each `sysread`;
-- `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
-- `execute_batch` hashes once to group requests, overlaps the Worker pipelines, then restores caller
-  order.
+- the client decoder keeps response metadata in a compact internal tuple, avoiding one transient
+  six-field hash per frame; the public protocol decoder retains its named-hash contract;
+- pipeline result slots are materialized once, at their decided success or failure outcome, rather
+  than allocating placeholder failure hashes that the success path immediately replaces;
+- `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop and
+  consumes the readiness already returned by that loop before waiting again; a fragmented response
+  returns to the same absolute-deadline wait path;
+- `execute_batch` hashes each key exactly once while grouping, reuses that validated ownership while
+  encoding, overlaps the Worker pipelines, then restores caller order.
+- Worker routing reuses the immutable identity validated during `INIT`; arbitrary routing hashes
+  passed to the public protocol helpers are still normalized and checked on every call.
 
 Those choices reduce syscalls and expose server parallelism. They do **not** make the current Perl
 path allocation-free: public requests and results are hash references, encoded frames are assembled
-for each call, and successful GET values become owned Perl scalars. These are measurable costs and
-must not be described as negligible without a profile.
+for non-pipeline calls, and successful GET values become owned Perl scalars. These are measurable
+costs and must not be described as negligible without a profile.
 
 For a throughput-sensitive application:
 
@@ -109,11 +120,13 @@ adapter may improve application concurrency without improving single-pipeline CP
 ```bash
 # Sequential and concurrent matrix from the repository root:
 ./scripts/benchmark_perl_client.sh
+# Set WORKER_HASH_SEED to run the same matrix with the server's keyed SipHash routing.
 
 # One configuration (default overlaps Workers when workers > 1):
 perl sdk/perl/benchmarks/client_benchmark.pl --port 7379 --workers 4 \
   --ops 100000 --pipeline 128 --warmup 1 --repeats 7
 # --no-concurrent forces sequential drain across Workers
+# --batch measures mixed-owner execute_batch grouping and ordered results
 ```
 
 Compare SDKs only through `./scripts/benchmark_sdk_clients.sh`, which fixes the validated workload

@@ -1171,6 +1171,193 @@ GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded
     GLYPHA_REQUIRE(server.join().has_value());
 }
 
+GLYPHA_TEST("mutation completion resumes a bounded pipeline without reordering decided responses") {
+    ServerTemporaryDirectory temporary;
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto put_a = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 501,
+        .key = bytes("resume-a"),
+        .value = bytes("one"),
+    });
+    const auto get_a = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 502,
+        .key = bytes("resume-a"),
+    });
+    const auto put_b = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 503,
+        .key = bytes("resume-b"),
+        .value = bytes("two"),
+    });
+    const auto get_b = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::get,
+        .request_id = 504,
+        .key = bytes("resume-b"),
+    });
+    GLYPHA_REQUIRE(put_a.has_value());
+    GLYPHA_REQUIRE(get_a.has_value());
+    GLYPHA_REQUIRE(put_b.has_value());
+    GLYPHA_REQUIRE(get_b.has_value());
+
+    std::vector<std::byte> pipeline;
+    for (const auto* frame : {&*put_a, &*get_a, &*put_b, &*get_b}) {
+        pipeline.insert(pipeline.end(), frame->begin(), frame->end());
+    }
+    // The second completion encounters this only after ACK/GET responses have
+    // been decided. They must drain in order before the connection closes.
+    std::array<std::byte, glyphastore::server::kRequestHeaderBytes> malformed{};
+    malformed[0] = std::byte{static_cast<unsigned char>(glyphastore::server::kRequestHeaderBytes)};
+    malformed[4] = std::byte{0xff};
+    pipeline.insert(pipeline.end(), malformed.begin(), malformed.end());
+
+    blocker.arm();
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    blocker.release();
+
+    for (const auto& [request_id, expected_value] :
+         {std::pair{501ULL, std::string_view{}}, std::pair{502ULL, std::string_view{"one"}},
+          std::pair{503ULL, std::string_view{}}, std::pair{504ULL, std::string_view{"two"}}}) {
+        const auto frame = receive_response(socket);
+        const auto response = glyphastore::server::decode_response(frame);
+        GLYPHA_REQUIRE(response.has_value());
+        GLYPHA_REQUIRE(response->frame.request_id == request_id);
+        GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::ok);
+        if (!expected_value.empty()) {
+            GLYPHA_REQUIRE(text(response->frame.value) == expected_value);
+        }
+    }
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("pending output stops mutation completion pipeline resume until socket drain") {
+#if defined(__OpenBSD__)
+    // This backpressure timing test depends on a small SO_RCVBUF retaining the
+    // large response in user space. OpenBSD under hosted qemu can drain it while
+    // the VM is descheduled; ordered pipeline responses remain covered above.
+    return;
+#endif
+    ServerTemporaryDirectory temporary;
+    BlockingFileSync blocker;
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0, .maximum_connections = 1, .accepted_socket_send_buffer_bytes = 4U * 1024U},
+        {.storage_mode = glyphastore::StorageMode::durable_sync,
+         .data_directory = temporary.store_path(),
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .filesystem_hooks = {.file_io = {.context = &blocker, .sync_file = &BlockingFileSync::sync_file}}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    SyncReleaseGuard release_on_exit{blocker};
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    int receive_buffer_bytes = 4 * 1024;
+    GLYPHA_REQUIRE(::setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &receive_buffer_bytes,
+                                sizeof(receive_buffer_bytes)) == 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+
+    const auto put_a = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 511,
+        .key = bytes("slow-a"),
+        .value = bytes("one"),
+    });
+    constexpr std::size_t kPingBytes = 512U * 1024U;
+    const std::vector<std::byte> ping_value(kPingBytes, std::byte{0x61});
+    const auto ping = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 512,
+        .value = ping_value,
+    });
+    const auto put_b = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 513,
+        .key = bytes("slow-b"),
+        .value = bytes("two"),
+    });
+    const auto put_c = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 514,
+        .key = bytes("slow-c"),
+        .value = bytes("three"),
+    });
+    GLYPHA_REQUIRE(put_a.has_value());
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(put_b.has_value());
+    GLYPHA_REQUIRE(put_c.has_value());
+
+    std::vector<std::byte> pipeline;
+    for (const auto* frame : {&*put_a, &*ping, &*put_b, &*put_c}) {
+        pipeline.insert(pipeline.end(), frame->begin(), frame->end());
+    }
+
+    blocker.arm();
+    GLYPHA_REQUIRE(send_all(socket, pipeline));
+    GLYPHA_REQUIRE(blocker.wait_until_blocked());
+    blocker.release();
+
+    // Completion A resumes the buffered PING and admits B. Its large response
+    // cannot drain into the deliberately small TCP windows. Completion B must
+    // therefore leave C buffered instead of advancing the Writer lane.
+    bool two_completed = false;
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+    while (std::chrono::steady_clock::now() < completion_deadline) {
+        const auto stats = server.pair_writer_stats();
+        if (stats.size() == 1 && stats[0].completed == 2) {
+            GLYPHA_REQUIRE(stats[0].admitted == 2);
+            two_completed = true;
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+    GLYPHA_REQUIRE(two_completed);
+    std::this_thread::sleep_for(std::chrono::milliseconds{50});
+    auto stats = server.pair_writer_stats();
+    GLYPHA_REQUIRE(stats.size() == 1);
+    GLYPHA_REQUIRE(stats[0].admitted == 2);
+
+    for (const auto request_id : {511ULL, 512ULL, 513ULL, 514ULL}) {
+        const auto frame = receive_response(socket);
+        const auto response = glyphastore::server::decode_response(frame);
+        GLYPHA_REQUIRE(response.has_value());
+        GLYPHA_REQUIRE(response->frame.request_id == request_id);
+        GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::ok);
+        if (request_id == 512) {
+            GLYPHA_REQUIRE(response->frame.value.size() == kPingBytes);
+        }
+    }
+
+    stats = server.pair_writer_stats();
+    GLYPHA_REQUIRE(stats.size() == 1);
+    GLYPHA_REQUIRE(stats[0].admitted == 3);
+    GLYPHA_REQUIRE(stats[0].completed == 3);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
 GLYPHA_TEST("mutation payload arena applies byte backpressure independently of queue slots") {
     ServerTemporaryDirectory temporary;
     BlockingFileSync blocker;

@@ -12,6 +12,8 @@ or hostile-public deployment readiness.
 Baseline reference: [`benchmarks/results/local-macos-2026-08-01/`](../../benchmarks/results/local-macos-2026-08-01/)
 (`629bc68`). Candidate measurements:
 [`benchmarks/results/local-macos-2026-08-01-perf/`](../../benchmarks/results/local-macos-2026-08-01-perf/).
+HEAD recon (2026-08-26, `94f1307`):
+[`benchmarks/results/local-macos-2026-08-26-head-94f1307/`](../../benchmarks/results/local-macos-2026-08-26-head-94f1307/).
 
 ## Goal
 
@@ -27,6 +29,9 @@ Optional compile-time counters (`-DGLYPHASTORE_HOT_PATH_PHASES=ON`):
 - Preallocated `alignas(64)` atomic buckets; no global mutex; no hot-path logging
 - Dump via `GLYPHASTORE_HOT_PATH_PHASE_REPORT=1` at process exit
 - Default builds keep macros as no-ops
+- TCP reports only additive leaf spans: decode, route, store operation, response
+  encode, transport write call, and poller update. In particular, `socket_write`
+  does not include pipeline resumption or request dispatch.
 
 ### Cost map (lab, phases ON; relative %)
 
@@ -41,7 +46,82 @@ enabled (absolute ns include timer overhead; use **percentages** for attribution
 | PUT | `ack` | ~93% | Caller wait for Writer apply+publish |
 | PUT | `enqueue` | ~4% | Sync list push + wake |
 | PUT | `admit` | ~3% | Submission admission |
-| TCP | decode / dispatch / store_op / encode / write | instrumented | See phase dump after server benches |
+| TCP | `socket_write` | ~76% | `send` / `sendmsg` / TLS write call only |
+| TCP | `store_op` | ~11% | Local GET or mutation submission; excludes response encode |
+| TCP | `poller_update` | ~10% | kqueue/epoll interest modification |
+| TCP | decode / route / encode | ~3% | Additive remainder of instrumented leaf spans |
+
+The TCP shares above are from a same-machine Apple Silicon lab run with phase
+instrumentation enabled: volatile read-after-write, one Worker, one client,
+pipeline 128, 200k PUT+GET pairs, two warmups and seven measured repeats. They
+are diagnostic attribution, not release evidence or a production claim.
+
+### Redundant poller-transition removal (2026-08-25)
+
+Async store submission used to modify poller interest inside `execute_local`.
+Both callers then reconciled that interest before any intervening poller wait:
+`read_ready` immediately flushed queued output, while `write_ready` performed
+its own final transition. Interest ownership now remains with those callers.
+No queue, acknowledgement point, request ordering, output watermark, or wire
+outcome changed.
+
+In the instrumented pipeline-128 workload, poller-update samples fell from
+about 3.59M to 1.79M across warmups plus measured runs. A non-instrumented
+Release A/B, alternated to reduce order bias, measured:
+
+| Run | Baseline | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 228,212 ops/s | 241,696 ops/s | +5.9% |
+| B (reverse order) | 229,004 ops/s | 243,526 ops/s | +6.3% |
+
+Pipeline 1 remained effectively flat in a shorter check (47,011 vs 47,278
+ops/s, +0.6%). These local figures are advisory and retain the same-machine,
+non-isolated benchmark limitations.
+
+A second same-state transition remained after a synchronous output flush. When
+`write_ready` is entered from `read_ready`, drains the queued response, and has
+never armed writable interest, an in-flight request leaves the socket already
+registered for reads. Skipping that redundant `read → read` modification is
+behavior-neutral; half-closed and write-armed sockets still take the complete
+reconciliation path.
+
+With phase instrumentation, this reduced poller-update samples from about 1.79M
+to zero in the same pipeline-128 workload. A Release A/B against `fe32cfc`,
+alternated to reduce order bias, measured:
+
+| Run | `fe32cfc` | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 242,112 ops/s | 268,755 ops/s | +11.0% |
+| B (reverse order) | 243,485 ops/s | 272,709 ops/s | +12.0% |
+
+Pipeline 1 remained flat in a shorter check (47,606 vs 47,755 ops/s, +0.3%).
+The figures remain advisory same-machine evidence, not a release claim.
+
+### Completion resume with Writer/socket overlap (2026-08-25)
+
+The mutation completion path now resumes already-buffered frames before draining
+its contiguous decided output. `process_frames` still admits at most one new
+asynchronous operation on the connection. Consequently the next Writer request
+can overlap the socket write of prior ordered responses without a response
+reorder buffer, queue widening, or early acknowledgement. A trailing decode or
+admission failure preserves prior decided responses through `close_after_flush`.
+Resume is suppressed when output was already pending at completion, retaining
+the historical slow-client backpressure boundary.
+
+In the instrumented pipeline-128 workload, socket-write samples fell from about
+3.60M to 1.80M while poller-update samples remained zero. A Release A/B against
+`dbf246d`, alternated to reduce order bias, measured under the same host state:
+
+| Run | `dbf246d` | Candidate | Difference |
+| --- | ---: | ---: | ---: |
+| A | 197,994 ops/s | 306,616 ops/s | +54.9% |
+| B (reverse order) | 200,705 ops/s | 309,928 ops/s | +54.4% |
+
+An earlier candidate reached 419,101 ops/s under a less contended host state;
+after adding the explicit pending-output backpressure guard, a fresh seven-sample
+Release run measured 423,376 ops/s median. Neither absolute value is used for the
+A/B ratio. Pipeline 1 showed no regression in the sampled check. All figures
+remain advisory same-machine evidence.
 
 ## Hot-path diagram (embedded paired)
 
@@ -119,9 +199,18 @@ Quantitative targets:
    lease vs sync atomics.
 3. PUT: adaptive spin before park (bounded); Writer short spin before park;
    proportional reclaim (skip empty / non-quiescent; quantum reclaim).
-4. TCP: phase scopes; clock comment / single sample per `process_frames` turn;
-   encode/write scopes. p128 improvement attributed to reduced GET↔Writer wake
+4. TCP: additive leaf phase scopes; clock comment / single sample per
+   `process_frames` turn; encode, socket-write, and poller-update scopes. p128
+   improvement attributed to reduced GET↔Writer wake
    storms under pipelined load plus encode/write path hygiene — **not** queue widening.
+5. TCP: removed redundant async-submission poller modifications; the read/write
+   caller remains the sole owner of the next interest transition.
+6. TCP: skip the remaining same-state read-interest update after a synchronous
+   flush that never armed writable interest; half-close and writable states
+   still reconcile through the poller.
+7. TCP: resume bounded buffered work after mutation completion before draining
+   contiguous output, preserving one-in-flight response order while overlapping
+   the next Writer operation with the socket write.
 
 ## Rejected optimizations
 

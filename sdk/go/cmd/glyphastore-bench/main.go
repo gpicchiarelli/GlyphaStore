@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gpicchiarelli/GlyphaStore/sdk/go/client"
-	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
 )
 
 func main() {
@@ -22,7 +21,7 @@ func main() {
 	pipeline := flag.Int("pipeline", 64, "PUT/GET pairs per batch")
 	warmup := flag.Int("warmup", 1, "warmup iterations")
 	repeats := flag.Int("repeats", 7, "timed iterations")
-	execution := flag.String("execution", "concurrent", "concurrent|sequential")
+	execution := flag.String("execution", "concurrent", "concurrent|sequential|batch")
 	tlsEnable := flag.Bool("tls", false, "opt-in TLS 1.3 (same harness as cleartext)")
 	tlsCA := flag.String("tls-ca", "", "PEM CA / trust anchor")
 	tlsCert := flag.String("tls-cert", "", "client certificate for mTLS")
@@ -34,11 +33,10 @@ func main() {
 	if *port <= 0 || *workers < 1 || *ops < 1 || *pipeline < 1 || *repeats < 1 || *warmup < 0 {
 		fail("numeric arguments are outside benchmark limits")
 	}
-	if *execution != "concurrent" && *execution != "sequential" {
-		fail("--execution must be concurrent or sequential")
+	if *execution != "concurrent" && *execution != "sequential" && *execution != "batch" {
+		fail("--execution must be concurrent, sequential, or batch")
 	}
 
-	batches := material(*ops, uint32(*workers), *pipeline)
 	operationCount := *ops * 2
 	transport := "cleartext"
 	if *tlsEnable {
@@ -65,10 +63,13 @@ func main() {
 	if int(c.WorkerCount()) != *workers {
 		fail("server Worker count does not match --workers")
 	}
+	batches := material(*ops, uint32(*workers), *pipeline, c.WorkerFor)
 
 	runOnce := runSequential
 	if *execution == "concurrent" {
 		runOnce = runConcurrent
+	} else if *execution == "batch" {
+		runOnce = runBatch
 	}
 	for i := 0; i < *warmup; i++ {
 		if err := runOnce(c, batches); err != nil {
@@ -93,18 +94,27 @@ func main() {
 		"# sdk_version=%s runtime=sync execution=%s transport=%s workers=%d pipeline_pairs=%d operations=%d\n",
 		client.Version, *execution, transport, *workers, *pipeline, operationCount,
 	)
+	name := "go_client_pipeline_read_after_write"
+	if *execution == "batch" {
+		name = "go_client_batch_read_after_write"
+	}
 	fmt.Printf(
-		"name=go_client_pipeline_read_after_write sdk_version=%s runtime=sync execution=%s "+
+		"name=%s sdk_version=%s runtime=sync execution=%s "+
 			"transport=%s workers=%d pipeline_pairs=%d operations=%d samples=%d "+
 			"median_seconds=%.9f min_seconds=%.9f max_seconds=%.9f "+
 			"median_ops_per_second=%.3f min_ops_per_second=%.3f max_ops_per_second=%.3f\n",
-		client.Version, *execution, transport, *workers, *pipeline, operationCount, len(samples),
+		name, client.Version, *execution, transport, *workers, *pipeline, operationCount, len(samples),
 		median(samples), minFloat(samples), maxFloat(samples),
 		median(rates), minFloat(rates), maxFloat(rates),
 	)
 }
 
-func material(operations int, workers uint32, pipeline int) [][][]client.PipelineRequest {
+func material(
+	operations int,
+	workers uint32,
+	pipeline int,
+	ownerFor func([]byte) (uint32, error),
+) [][][]client.PipelineRequest {
 	quotas := make([]int, workers)
 	base := operations / int(workers)
 	rem := operations % int(workers)
@@ -117,7 +127,7 @@ func material(operations int, workers uint32, pipeline int) [][][]client.Pipelin
 	requests := make([][]client.PipelineRequest, workers)
 	for candidate := 0; anyPositive(quotas); candidate++ {
 		key := []byte(fmt.Sprintf("go-bench-%012d", candidate))
-		owner, err := protocol.WorkerFor(key, workers)
+		owner, err := ownerFor(key)
 		if err != nil {
 			fail(err.Error())
 		}
@@ -143,6 +153,26 @@ func material(operations int, workers uint32, pipeline int) [][][]client.Pipelin
 		}
 	}
 	return out
+}
+
+func batchRounds(batches [][][]client.PipelineRequest) [][]client.PipelineRequest {
+	maxRounds := 0
+	for _, workerBatches := range batches {
+		if len(workerBatches) > maxRounds {
+			maxRounds = len(workerBatches)
+		}
+	}
+	rounds := make([][]client.PipelineRequest, 0, maxRounds)
+	for offset := 0; offset < maxRounds; offset++ {
+		var round []client.PipelineRequest
+		for _, workerBatches := range batches {
+			if offset < len(workerBatches) {
+				round = append(round, workerBatches[offset]...)
+			}
+		}
+		rounds = append(rounds, round)
+	}
+	return rounds
 }
 
 func runSequential(c *client.Client, batches [][][]client.PipelineRequest) error {
@@ -185,11 +215,28 @@ func runConcurrent(c *client.Client, batches [][][]client.PipelineRequest) error
 	return nil
 }
 
+func runBatch(c *client.Client, batches [][][]client.PipelineRequest) error {
+	for _, batch := range batchRounds(batches) {
+		responses, err := c.ExecuteBatch(batch)
+		if err != nil {
+			return err
+		}
+		if err := validateResponses(batch, responses); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func validatePipeline(c *client.Client, batch []client.PipelineRequest) error {
 	responses, err := c.ExecutePipeline(batch)
 	if err != nil {
 		return err
 	}
+	return validateResponses(batch, responses)
+}
+
+func validateResponses(batch []client.PipelineRequest, responses []client.PipelineResponse) error {
 	if len(responses) != len(batch) {
 		return fmt.Errorf("pipeline response count mismatch")
 	}

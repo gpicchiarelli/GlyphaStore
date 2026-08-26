@@ -4,8 +4,19 @@ use strict;
 use warnings;
 use FindBin;
 use Getopt::Long qw(GetOptions);
-use lib "$FindBin::Bin/../sdk/perl/lib";
+use Cwd qw(abs_path);
+BEGIN {
+    unshift @INC, "$FindBin::Bin/../sdk/perl/lib"
+      if ($ENV{GLYPHASTORE_INTEROP_USE_INSTALLED} // '0') ne '1';
+}
 use GlyphaStore::Client;
+
+if (($ENV{GLYPHASTORE_INTEROP_USE_INSTALLED} // '0') eq '1') {
+    my $source_root = abs_path($ENV{GLYPHASTORE_SOURCE_ROOT} // '');
+    my $loaded_from = abs_path($INC{'GlyphaStore/Client.pm'} // '');
+    die "installed-artifact mode loaded Perl SDK from source: $loaded_from\n"
+      if !$source_root || !$loaded_from || index($loaded_from, "$source_root/") == 0;
+}
 
 sub parse_hex {
     my ($text) = @_;
@@ -25,6 +36,7 @@ my %options = (
     expire_at_ns         => 0,
     tls                  => 0,
     insecure_skip_verify => 0,
+    burst                => 32,
 );
 GetOptions(
     'host=s'                 => \$options{host},
@@ -38,11 +50,14 @@ GetOptions(
     'tls-key=s'              => \$options{tls_key},
     'server-name=s'          => \$options{server_name},
     'insecure-skip-verify!'  => \$options{insecure_skip_verify},
+    'burst=i'                => \$options{burst},
 ) or die "invalid arguments\n";
 my $command = shift @ARGV // '';
 die "--port and command are required\n"
   if !$options{port}
-  || $command !~ /\A(?:put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit)\z/;
+  || $command !~ /\A(?:put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|burst-expect-overloaded|expect-frame-limit)\z/
+  || $options{burst} < 1
+  || $options{burst} > 10_000;
 
 my $key   = parse_hex($options{key_hex});
 my $value = parse_hex($options{value_hex});
@@ -81,6 +96,30 @@ elsif ($command eq 'expect-not-found') {
       if ref($error) ne 'GlyphaStore::Error'
       || $error->category ne 'not_found'
       || $error->retryability ne 'new_attempt';
+}
+elsif ($command eq 'expect-permission-denied') {
+    my $result = $client->put($key, $value, expire_at_ns => $options{expire_at_ns});
+    die "PUT did not produce structured permission_denied\n"
+      if $result->{outcome} ne 'rejected'
+      || ref($result->{error}) ne 'GlyphaStore::Error'
+      || $result->{error}->category ne 'permission_denied'
+      || $result->{error}->retryability ne 'never';
+}
+elsif ($command eq 'burst-expect-overloaded') {
+    for (1 .. $options{burst}) {
+        my $result = $client->put($key, $value, expire_at_ns => $options{expire_at_ns});
+        if ($result->{outcome} eq 'rejected'
+            && ref($result->{error}) eq 'GlyphaStore::Error'
+            && $result->{error}->category eq 'overloaded'
+            && $result->{error}->retryability eq 'never')
+        {
+            $client->close;
+            exit 0;
+        }
+        die "PUT produced an unexpected result before OVERLOADED\n"
+          if $result->{outcome} ne 'committed';
+    }
+    die "PUT burst did not produce structured OVERLOADED\n";
 }
 elsif ($command eq 'expect-frame-limit') {
     my $result = $client->put('limit', "\xA5" x $client->{maximum_frame_bytes});

@@ -27,8 +27,18 @@ Related: [sdk-roadmap](sdk-roadmap.md), per-SDK `PACKAGING.md` under `sdk/*/`, r
 
 CI job `sdk-clients` runs version lock, language tests, and package scripts for
 Python/Perl/Go/Ruby/Erlang.
+The Python package script installs its wheel and normalized sdist into separate virtual environments;
+the Perl package script installs its normalized tarball into an isolated prefix; the Ruby package
+script installs its gem under a clean `GEM_HOME`. Each runs its complete suite from a separate test
+tree, proving that the installed modules—not the source checkout—satisfy conformance. Tar
+normalization suppresses macOS AppleDouble/xattr members so a nominally reproducible sdist retains
+its single-root installable layout. Go has no registry archive in this workflow: its packaging gate
+reconstructs the nested module from tracked files, reruns tests there, and builds an external module
+consumer matching the VCS-tag distribution model.
 The `install-consumer` job covers CMake install + external consumer smokes (requires OpenSSL when
 the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the package config).
+The installed secure-profile matrix additionally uses `scripts/build-installed-cpp-interop.sh` to
+build its C++ peer strictly through `GlyphaStore::client` from an isolated installation prefix.
 
 ## Version policy
 
@@ -47,12 +57,15 @@ the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the
 
 1. Run `./scripts/package-all-sdk-clients.sh` (exports `SOURCE_DATE_EPOCH` from HEAD)
 2. Optionally `./scripts/verify-sdk-artifact-reproducibility.sh` (two-pass digest compare for
-   wheels, gems, and normalized sdists/Perl tarballs). Supply-chain CI also rebuilds on
-   `ubuntu-22.04` and runs `./scripts/compare-sdk-artifact-sums.sh` against the primary sums.
+   wheels, gems, and normalized Python/Perl/Go/Erlang source archives). Supply-chain CI also
+   rebuilds on `ubuntu-22.04` and runs `./scripts/compare-sdk-artifact-sums.sh` against the primary
+   sums.
 3. Attach `dist/sdk-artifacts/SHA256SUMS` and `*.spdx.json` from the supply-chain workflow
    (or `SYFT_REQUIRED=1 ./scripts/checksum-sdk-artifacts.sh`) to the GitHub Release
    (Python/Perl sdist names are prefixed `python-` / `perl-` in that directory so they remain
-   distinct on case-insensitive filesystems)
+   distinct on case-insensitive filesystems). The generated `sdk-release-index.json` binds every
+   package name and digest to its SDK role and wire/client
+   contract. It is an artifact catalog, not evidence that two different releases interoperate.
 4. On tagged releases the supply-chain workflow keyless-signs blobs with Cosign/Sigstore
    (`.cosign.bundle` next to each artifact + `SHA256SUMS`). Optional project GPG remains
    operator-owned.

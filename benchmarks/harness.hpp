@@ -218,6 +218,14 @@ struct Result {
     std::uint64_t durable_byte_limit_closes{};
     std::uint64_t durable_adaptive_target_closes{};
     std::uint64_t durable_deadline_closes{};
+    double median_reactor_input_buffer_compactions{};
+    double maximum_reactor_input_buffer_compactions{};
+    double median_reactor_input_buffer_bytes_moved{};
+    double maximum_reactor_input_buffer_bytes_moved{};
+    double median_reactor_output_buffer_compactions{};
+    double maximum_reactor_output_buffer_compactions{};
+    double median_reactor_output_buffer_bytes_moved{};
+    double maximum_reactor_output_buffer_bytes_moved{};
 };
 
 struct KeyMaterial {
@@ -562,7 +570,21 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "durable_record_limit_closes=" << result.durable_record_limit_closes << ' '
         << "durable_byte_limit_closes=" << result.durable_byte_limit_closes << ' '
         << "durable_adaptive_target_closes=" << result.durable_adaptive_target_closes << ' '
-        << "durable_deadline_closes=" << result.durable_deadline_closes << '\n';
+        << "durable_deadline_closes=" << result.durable_deadline_closes << ' '
+        << "median_reactor_input_buffer_compactions=" << result.median_reactor_input_buffer_compactions << ' '
+        << "maximum_reactor_input_buffer_compactions=" << result.maximum_reactor_input_buffer_compactions
+        << ' ' << "median_reactor_input_buffer_bytes_moved=" << result.median_reactor_input_buffer_bytes_moved
+        << ' '
+        << "maximum_reactor_input_buffer_bytes_moved=" << result.maximum_reactor_input_buffer_bytes_moved
+        << ' '
+        << "median_reactor_output_buffer_compactions=" << result.median_reactor_output_buffer_compactions
+        << ' '
+        << "maximum_reactor_output_buffer_compactions=" << result.maximum_reactor_output_buffer_compactions
+        << ' '
+        << "median_reactor_output_buffer_bytes_moved=" << result.median_reactor_output_buffer_bytes_moved
+        << ' '
+        << "maximum_reactor_output_buffer_bytes_moved=" << result.maximum_reactor_output_buffer_bytes_moved
+        << '\n';
 }
 
 [[nodiscard]] inline auto parse_kind(std::string_view value) -> BenchmarkKind {

@@ -17,9 +17,10 @@ echo "reproducible packaging SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 if command -v erl >/dev/null 2>&1 && command -v rebar3 >/dev/null 2>&1; then
   "$root/scripts/package-erlang-client.sh"
 else
-  echo "note: skipping Erlang packaging (erl/rebar3 not on PATH)" >&2
+  echo "Erlang/OTP and rebar3 are required to package every official SDK" >&2
+  exit 1
 fi
 "$root/scripts/verify-cpp-client-package.sh"
-"$root/scripts/checksum-sdk-artifacts.sh"
+SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE=1 "$root/scripts/checksum-sdk-artifacts.sh"
 
 echo "All SDK packaging gates passed"

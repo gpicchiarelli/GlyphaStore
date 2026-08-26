@@ -115,21 +115,31 @@ GLYPHA_TEST("server request timeout closes socket without cancelling admitted du
     GLYPHA_REQUIRE(report[count_begin] != '0');
 
     blocker.release();
-    // Allow the Writer to finish after the peer was already reset.
-    std::this_thread::sleep_for(std::chrono::milliseconds{50});
-
-    const auto get = glyphastore::server::encode_request({
-        .opcode = glyphastore::server::RequestOpcode::get,
-        .request_id = 83,
-        .key = bytes("timeout-survives"),
-    });
-    GLYPHA_REQUIRE(get.has_value());
-    GLYPHA_REQUIRE(send_all(probe_socket, *get));
-    const auto get_frame = receive_response(probe_socket);
-    const auto decoded = glyphastore::server::decode_response(get_frame);
-    GLYPHA_REQUIRE(decoded.has_value());
-    GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::ok);
-    GLYPHA_REQUIRE(text(decoded->frame.value) == "committed");
+    // The Writer completes asynchronously after the timed-out peer is reset.
+    // Poll visibility instead of assuming a scheduler-dependent fixed delay.
+    bool mutation_visible = false;
+    std::uint64_t request_id = 83;
+    const auto visibility_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (!mutation_visible && std::chrono::steady_clock::now() < visibility_deadline) {
+        const auto get = glyphastore::server::encode_request({
+            .opcode = glyphastore::server::RequestOpcode::get,
+            .request_id = request_id++,
+            .key = bytes("timeout-survives"),
+        });
+        GLYPHA_REQUIRE(get.has_value());
+        GLYPHA_REQUIRE(send_all(probe_socket, *get));
+        const auto get_frame = receive_response(probe_socket);
+        const auto decoded = glyphastore::server::decode_response(get_frame);
+        GLYPHA_REQUIRE(decoded.has_value());
+        if (decoded->frame.status == glyphastore::server::ResponseStatus::ok) {
+            GLYPHA_REQUIRE(text(decoded->frame.value) == "committed");
+            mutation_visible = true;
+            break;
+        }
+        GLYPHA_REQUIRE(decoded->frame.status == glyphastore::server::ResponseStatus::not_found);
+        std::this_thread::sleep_for(std::chrono::milliseconds{10});
+    }
+    GLYPHA_REQUIRE(mutation_visible);
 
     static_cast<void>(::close(mutation_socket));
     static_cast<void>(::close(probe_socket));

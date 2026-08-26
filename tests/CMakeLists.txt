@@ -89,6 +89,11 @@ if(BUILD_TESTING)
     glyphastore_enable_hardening(glyphastore_tests)
     glyphastore_enable_ipo(glyphastore_tests)
     add_test(NAME glyphastore_tests COMMAND glyphastore_tests)
+    add_test(
+        NAME glyphastore_released_artifact_compat
+        COMMAND glyphastore_tests "released artifact harness"
+    )
+    set_tests_properties(glyphastore_released_artifact_compat PROPERTIES LABELS "compatibility")
     set_target_properties(glyphastore_tests PROPERTIES FOLDER "Quality")
     glyphastore_xcode_scheme(glyphastore_tests)
 
@@ -330,4 +335,3 @@ if(BUILD_TESTING)
     set_target_properties(check PROPERTIES FOLDER "Quality")
     glyphastore_xcode_scheme(check)
 endif()
-

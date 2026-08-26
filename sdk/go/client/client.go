@@ -326,7 +326,8 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		begin     int
 	}
 	normalized := make([]meta, 0, len(requests))
-	var worker *uint32
+	var worker uint32
+	workerSet := false
 	needed := 0
 	for _, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
@@ -336,10 +337,10 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		if err != nil {
 			return nil, err
 		}
-		if worker == nil {
-			w := owner
-			worker = &w
-		} else if owner != *worker {
+		if !workerSet {
+			worker = owner
+			workerSet = true
+		} else if owner != worker {
 			return nil, invalidArgument("every pipeline key must route to the same Worker")
 		}
 		if (request.Opcode == PipelineGet || request.Opcode == PipelineErase) &&
@@ -360,7 +361,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 	for i := range responses {
 		responses[i] = PipelineResponse{Outcome: PipelineFailed}
 	}
-	conn := c.connections[*worker]
+	conn := c.connections[worker]
 	conn.mu.Lock()
 	defer conn.mu.Unlock()
 	if !c.healthy.Load() {
@@ -417,7 +418,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 				case PipelineErase:
 					op = "erase"
 				}
-				annotated := annotate(ge, op, normalized[index].requestID, *worker, c.routingEpoch).
+				annotated := annotate(ge, op, normalized[index].requestID, worker, c.routingEpoch).
 					withBytesSent(posBytes)
 				if isMut {
 					mutOutcome := MutationRejected
@@ -456,7 +457,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 			markUnresolved(index, err, len(output))
 			return responses, nil
 		}
-		if err := c.validateResponse(response, item.requestID, *worker); err != nil {
+		if err := c.validateResponse(response, item.requestID, worker); err != nil {
 			conn.reset()
 			markUnresolved(index, err, len(output))
 			return responses, nil
@@ -483,7 +484,7 @@ func (c *Client) executePipelineDeadline(requests []PipelineRequest, deadline ti
 		case PipelineErase:
 			op = "erase"
 		}
-		statusErr := annotate(statusError(response.Status), op, item.requestID, *worker, c.routingEpoch).
+		statusErr := annotate(statusError(response.Status), op, item.requestID, worker, c.routingEpoch).
 			withBytesSent(len(output) - item.begin)
 		if isMut {
 			mutOutcome := MutationRejected
@@ -513,12 +514,40 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 	if err != nil {
 		return nil, err
 	}
-
-	type item struct {
-		index   int
-		request PipelineRequest
+	if c.workerCount == 1 {
+		if len(requests) > c.cfg.MaximumPipelineRequests {
+			return nil, invalidArgument("batch exceeds the configured per-Worker request limit")
+		}
+		for _, request := range requests {
+			if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
+				return nil, invalidArgument("batch request contains an invalid opcode")
+			}
+			if (request.Opcode == PipelineGet || request.Opcode == PipelineErase) &&
+				(len(request.Value) != 0 || request.ExpireAtNs != 0) {
+				return nil, invalidArgument("GET and ERASE batch requests cannot carry PUT fields")
+			}
+		}
+		responses, err := c.executePipelineDeadline(requests, deadline)
+		if err != nil {
+			return c.failedBatchGroup(requests, err), nil
+		}
+		return responses, nil
 	}
-	groups := make(map[uint32][]item)
+
+	type workerGroup struct {
+		requests []PipelineRequest
+		indices  []int
+	}
+	groups := make([]workerGroup, c.workerCount)
+	activeGroups := 0
+	workerCount := int(c.workerCount)
+	capacityHint := len(requests) / workerCount
+	if len(requests)%workerCount != 0 {
+		capacityHint++
+	}
+	if capacityHint > c.cfg.MaximumPipelineRequests {
+		capacityHint = c.cfg.MaximumPipelineRequests
+	}
 	for index, request := range requests {
 		if request.Opcode != PipelineGet && request.Opcode != PipelinePut && request.Opcode != PipelineErase {
 			return nil, invalidArgument("batch request contains an invalid opcode")
@@ -531,11 +560,17 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		if err != nil {
 			return nil, err
 		}
-		bucket := groups[worker]
-		if len(bucket) >= c.cfg.MaximumPipelineRequests {
+		group := &groups[worker]
+		if len(group.requests) >= c.cfg.MaximumPipelineRequests {
 			return nil, invalidArgument("batch exceeds the configured per-Worker request limit")
 		}
-		groups[worker] = append(bucket, item{index: index, request: request})
+		if len(group.requests) == 0 {
+			activeGroups++
+			group.requests = make([]PipelineRequest, 0, capacityHint)
+			group.indices = make([]int, 0, capacityHint)
+		}
+		group.requests = append(group.requests, request)
+		group.indices = append(group.indices, index)
 	}
 
 	responses := make([]PipelineResponse, len(requests))
@@ -543,81 +578,72 @@ func (c *Client) ExecuteBatch(requests []PipelineRequest, opts ...CallOptions) (
 		responses[i] = PipelineResponse{Outcome: PipelineFailed}
 	}
 
-	type result struct {
-		indices []int
-		resps   []PipelineResponse
-	}
-
-	runGroup := func(items []item) result {
-		indices := make([]int, len(items))
-		reqs := make([]PipelineRequest, len(items))
-		for i, it := range items {
-			indices[i] = it.index
-			reqs[i] = it.request
-		}
-		resps, err := c.executePipelineDeadline(reqs, deadline)
+	runGroup := func(group *workerGroup) []PipelineResponse {
+		resps, err := c.executePipelineDeadline(group.requests, deadline)
 		if err != nil {
-			// Match C++/Erlang: convert group-level pre-admission errors into
-			// per-index failed slots with rejected polarity (bytes_sent=0).
-			failed := make([]PipelineResponse, len(items))
-			for i, it := range items {
-				enriched := err
-				if ge, ok := err.(*Error); ok {
-					op := "get"
-					switch it.request.Opcode {
-					case PipelinePut:
-						op = "put"
-					case PipelineErase:
-						op = "erase"
-					}
-					worker, _ := c.WorkerFor(it.request.Key)
-					annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
-					if it.request.Opcode == PipelinePut || it.request.Opcode == PipelineErase {
-						annotated = annotated.withMutation(MutationRejected)
-					}
-					enriched = annotated
-				}
-				failed[i] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
-			}
-			return result{indices: indices, resps: failed}
+			return c.failedBatchGroup(group.requests, err)
 		}
-		return result{indices: indices, resps: resps}
+		return resps
 	}
 
-	if len(groups) == 1 {
-		for _, items := range groups {
-			out := runGroup(items)
-			for i, index := range out.indices {
-				responses[index] = out.resps[i]
+	applyGroup := func(group *workerGroup) {
+		groupResponses := runGroup(group)
+		for i, index := range group.indices {
+			responses[index] = groupResponses[i]
+		}
+	}
+
+	if activeGroups == 1 {
+		for index := range groups {
+			group := &groups[index]
+			if len(group.requests) != 0 {
+				applyGroup(group)
+				break
 			}
 		}
 		return responses, nil
 	}
 
-	type groupOut struct {
-		out result
-	}
-	outs := make([]groupOut, 0, len(groups))
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-	for _, items := range groups {
-		items := items
+	for index := range groups {
+		group := &groups[index]
+		if len(group.requests) == 0 {
+			continue
+		}
 		wg.Add(1)
-		go func() {
+		go func(group *workerGroup) {
 			defer wg.Done()
-			out := runGroup(items)
-			mu.Lock()
-			defer mu.Unlock()
-			outs = append(outs, groupOut{out: out})
-		}()
+			applyGroup(group)
+		}(group)
 	}
 	wg.Wait()
-	for _, item := range outs {
-		for i, index := range item.out.indices {
-			responses[index] = item.out.resps[i]
-		}
-	}
 	return responses, nil
+}
+
+// Group-level pre-admission failures become positional failed slots with
+// bytes_sent=0 and rejected mutation polarity, matching C++ and Erlang.
+func (c *Client) failedBatchGroup(requests []PipelineRequest, err error) []PipelineResponse {
+	failed := make([]PipelineResponse, len(requests))
+	for index, request := range requests {
+		enriched := err
+		if ge, ok := err.(*Error); ok {
+			op := "get"
+			switch request.Opcode {
+			case PipelinePut:
+				op = "put"
+			case PipelineErase:
+				op = "erase"
+			}
+			worker, _ := c.WorkerFor(request.Key)
+			annotated := annotate(ge, op, 0, worker, c.routingEpoch).withBytesSent(0)
+			if request.Opcode == PipelinePut || request.Opcode == PipelineErase {
+				annotated = annotated.withMutation(MutationRejected)
+			}
+			enriched = annotated
+		}
+		failed[index] = PipelineResponse{Outcome: PipelineFailed, Err: enriched}
+	}
+	return failed
 }
 
 // Close marks the client unhealthy and closes every Worker connection.
@@ -788,7 +814,7 @@ func (c *Client) receiveResponse(conn *connection, deadline time.Time) (protocol
 		}
 		if conn.offset > 0 {
 			copy(conn.input, conn.input[conn.offset:])
-			conn.input = conn.input[: len(conn.input)-conn.offset]
+			conn.input = conn.input[:len(conn.input)-conn.offset]
 			conn.offset = 0
 		}
 		if cap(conn.input)-len(conn.input) < 64*1024 {

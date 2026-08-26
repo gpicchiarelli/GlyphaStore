@@ -85,4 +85,8 @@ prefork worker process. Publish loopback numbers with:
 ./scripts/benchmark_ruby_client.sh
 ```
 
+The cross-SDK `./scripts/benchmark_sdk_clients.sh` harness also includes sequential and per-Worker
+threaded Ruby rows when `RUBY` resolves to version 3.2 or newer. Older system Rubies are reported as
+skipped rather than benchmarked outside the gem's supported runtime contract.
+
 Optional C extension for framing remains roadmap Phase 2.6 (measure first).

@@ -479,6 +479,14 @@ L'output lease cleartext è chiusa in forma adattiva. Una futura coda scatter mu
 `get-into` diretto non verranno promossi senza dimostrare memoria bounded e vantaggio anche con
 pipeline: la singola lease intenzionalmente non sostituisce il percorso contiguo di quel profilo.
 
+Dopo una mutation completion il Reader può riprendere i frame già buffered prima di scaricare
+l'output contiguo. Rimane ammessa al massimo una nuova operazione asincrona per connessione: il suo
+lavoro Writer può sovrapporsi alla write delle risposte precedenti, ma l'encoding resta ordinato e
+avviene solo dopo il rispettivo contratto Store. Un errore successivo arma `close_after_flush` e non
+scarta ACK già decisi. Se alla completion esisteva già output pendente, il resume è vietato fino al
+drain: un client lento non può avanzare la lane. Watermark, lane e classificazione
+indeterminate-on-disconnect non cambiano.
+
 I primi tentativi di rimuovere gli handle Delta sono documentati in
 `docs/benchmarks/paired-compact-delta-2026-07-29.md`. Sia record inline nelle pagine COW sia blocchi
 immutabili per publication sono stati respinti: il primo amplifica le copie, il secondo perde

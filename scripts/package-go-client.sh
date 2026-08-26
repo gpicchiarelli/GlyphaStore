@@ -50,7 +50,80 @@ fi
   fi
 )
 
+# Go consumers receive the nested module from a VCS tag. Reconstruct that tag-shaped source from
+# tracked files only, then test it and compile an external module against its public packages.
+work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-go-pack.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
+module_snapshot="$work/glyphastore-go-$got"
+consumer="$work/consumer"
+mkdir -p "$module_snapshot" "$consumer"
+while IFS= read -r -d '' path; do
+  relative="${path#sdk/go/}"
+  mkdir -p "$module_snapshot/$(dirname "$relative")"
+  cp "$root/$path" "$module_snapshot/$relative"
+done < <(git -C "$root" ls-files -z -- sdk/go)
+(
+  cd "$module_snapshot"
+  "$go_bin" test ./...
+)
+cat >"$consumer/go.mod" <<EOF
+module glyphastore-package-consumer
+
+go 1.22
+
+require github.com/gpicchiarelli/GlyphaStore/sdk/go v0.0.0
+
+replace github.com/gpicchiarelli/GlyphaStore/sdk/go => ../$(basename "$module_snapshot")
+EOF
+cat >"$consumer/main.go" <<'EOF'
+package main
+
+import (
+	"fmt"
+
+	"github.com/gpicchiarelli/GlyphaStore/sdk/go/client"
+	"github.com/gpicchiarelli/GlyphaStore/sdk/go/protocol"
+)
+
+func main() {
+	config := client.DefaultConfig()
+	owner, err := protocol.WorkerFor([]byte("consumer-key"), 4)
+	if err != nil || config.Host == "" {
+		panic("invalid installed Go module")
+	}
+	fmt.Printf("glyphastore=%s owner=%d\n", client.Version, owner)
+}
+EOF
+(
+  cd "$consumer"
+  "$go_bin" build ./...
+  output="$("$go_bin" run .)"
+  [[ "$output" == "glyphastore=$got owner="* ]] || {
+    echo "unexpected Go consumer output: $output" >&2
+    exit 1
+  }
+)
+
 mkdir -p "$sdk/dist"
+archive_name="glyphastore-go-$got.tar.gz"
+rm -f "$sdk/dist"/glyphastore-go-*.tar.gz
+tar -czf "$sdk/dist/$archive_name" -C "$work" "$(basename "$module_snapshot")"
+"$root/scripts/normalize-tar-gz.sh" "$sdk/dist/$archive_name"
+
+artifact_root="$work/artifact"
+mkdir -p "$artifact_root"
+tar -xzf "$sdk/dist/$archive_name" -C "$artifact_root"
+(
+  cd "$artifact_root/$(basename "$module_snapshot")"
+  "$go_bin" test ./...
+  "$go_bin" build -o "$work/glyphastore-interop-artifact" ./cmd/glyphastore-interop
+)
+if [[ ! -x "$work/glyphastore-interop-artifact" ]]; then
+  echo "Go source archive did not produce glyphastore-interop" >&2
+  exit 1
+fi
+
 {
   echo "module=github.com/gpicchiarelli/GlyphaStore/sdk/go"
   echo "version=$got"
@@ -58,6 +131,10 @@ mkdir -p "$sdk/dist"
   echo "go=$("$go_bin" version)"
   echo "source_date_epoch=$SOURCE_DATE_EPOCH"
   echo "built_at=$(glyphastore_repro_iso8601)"
+  echo "tracked_source_snapshot=tested"
+  echo "external_module_consumer=passed"
+  echo "source_archive=$archive_name"
+  echo "external_archive_build=passed"
 } >"$sdk/dist/package-info.txt"
 
 for required in LICENSE NOTICE; do
@@ -67,5 +144,5 @@ for required in LICENSE NOTICE; do
   fi
 done
 
-echo "Go packaging verification OK ($sdk/dist/package-info.txt)"
+echo "Go packaging verification OK ($sdk/dist/$archive_name)"
 echo "Publish path: git tag sdk/go/v$got && git push origin sdk/go/v$got"

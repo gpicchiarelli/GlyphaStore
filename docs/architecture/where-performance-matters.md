@@ -68,9 +68,9 @@ gitignored and must not be cited as durable repository documentation.
 ## Perl SDK: where further speed comes from
 
 The Perl client already aggregates a Worker pipeline, buffers reads and overlaps Worker sockets in
-one `IO::Select` loop. It still creates public request/result hashes, assembles encoded frames per
-call and materializes owned GET scalars. Those costs are candidates for profiling, not presumed
-single-digit details.
+one `IO::Select` loop. Pipeline encoding now appends validated header/key/value fragments directly
+to the aggregate scalar; public request/result hashes and owned GET scalars remain. Those costs are
+candidates for profiling, not presumed single-digit details.
 
 | Priority | Action | Effect |
 | --- | --- | --- |
@@ -83,6 +83,49 @@ single-digit details.
 
 The performance mindset is empirical: preserve semantics, change one cost centre, and rerun the same
 validated workload. XS is one possible outcome of that process, not the starting assumption.
+
+The first allocation pass now leaves pipeline result slots unmaterialized until their actual
+success or failure is known. Previously every slot eagerly allocated a placeholder failure hash
+that the normal success path immediately discarded. The error paths already materialized every
+unresolved slot, so outcome ordering and mutation classification are unchanged. Alternated
+same-process A/B runs on Perl 5.44, four Workers and pipeline 128 measured 74.2–74.5 k ops/s before
+and 75.9–77.3 k ops/s after (about +2–4%). Pipeline 1 remained flat in a shorter check; a pipeline-32
+sample moved from 66.3 k to 71.4 k ops/s. These are same-machine advisory measurements, not release
+capacity claims.
+
+The next accepted pass removed duplicate FNV-1a routing from Perl `execute_batch`. The public
+`execute_worker_pipelines` API still validates that every key belongs to its supplied Worker;
+`execute_batch` instead reuses the ownership it has already established while grouping. Two
+same-server A/B pairs on Perl 5.44, four Workers and pipeline 128 measured about
+57.5–58.9 k ops/s before and 72.2–74.7 k ops/s after (about +25–27%). The benchmark now exposes a
+`--batch` mode and the Perl matrix records it separately. This is local advisory evidence, not a
+release capacity claim.
+
+The connected-client routing path now also reuses the normalized identity accepted during `INIT`,
+rather than allocating and validating a new routing hash for every key. Public protocol helpers
+retain full validation, and dedicated client tests cover both default FNV and keyed SipHash routing.
+Alternated same-server FNV runs at four Workers and pipeline 128 measured 74.0–74.5 k ops/s before
+and 79.5–79.9 k ops/s after (about +7–8%). A keyed SipHash check measured 9.09 k before and 9.19 k
+after; the smaller gain confirms that pure-Perl SipHash rounds, rather than routing-state setup,
+dominate that profile. The benchmark now connects before generating keys and therefore exercises
+the routing identity actually advertised by the server.
+
+Five nearby pure-Perl candidates were rejected on the same workload: re-selecting avoidance after
+an outer readiness event, join-at-end frame assembly, an intermediate flat response decoder, and
+parallel request-id/frame-offset arrays in place of per-request metadata pairs. Replacing FNV's
+`unpack C*` byte list with an indexed `vec` loop was also rejected after an isolated Perl 5.44 run
+measured about 452 k versus 479 k hashes/s (roughly -6%). The first three candidates regressed by
+roughly 2–4%; flattened metadata varied from a small gain to a 4.3% regression when run order was
+reversed. Perl's existing scalar copy-on-write, incremental concatenation, byte unpacking, and small
+array representation were cheaper or more stable than the alternatives in this profile.
+
+A later fragment-assembly pass removed a different cost than the rejected join-at-end candidate:
+the client keeps Perl's efficient incremental aggregate scalar, but no longer constructs a complete
+temporary frame containing a copied key and value for every request. An isolated Perl 5.44 A/B at
+pipeline 128 measured 346.7 to 318.5 microseconds per encoded batch with 64-byte values and 352.5 to
+323.9 microseconds with 1 KiB values (about +9% in the encoding kernel). A current one-Worker
+end-to-end sample at pipeline 128 measured 86.3 k ops/s; without an alternating server A/B that
+figure is a post-change observation, not an attributed throughput gain or release capacity claim.
 
 ## Lab hot-path evidence
 

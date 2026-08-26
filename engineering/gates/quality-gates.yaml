@@ -326,7 +326,8 @@ gates:
   riapertura:
   - Quietly raising regression thresholds
   - Treating advisory snapshots as release gates
-  narrative: Median ops/s regression + budget catalog landed; absolute claims still hardware-gated.
+  narrative: Environment-compatible hosted median signals + budget catalog landed; hard regression
+    and absolute claims remain hardware-gated.
 - id: GATE-CONFIG
   titolo: Configuration precedence validation safe defaults limits
   sezione: operations_security
@@ -401,6 +402,8 @@ gates:
   prove:
   - docs/security/secure-profile.md
   - scripts/test-secure-profile-interop.sh
+  - scripts/test-secure-profile-installed-artifacts.sh
+  - engineering/evidence/sdk-installed-secure-profile.md
   piattaforme:
   - linux-x86_64
   - macos-arm64

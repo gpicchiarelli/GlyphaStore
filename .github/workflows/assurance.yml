@@ -40,3 +40,5 @@ jobs:
         run: python engineering/tools/validate_claims.py
       - name: Validate performance / soak budgets
         run: python engineering/tools/validate_perf_budgets.py
+      - name: Validate benchmark tooling contracts
+        run: python -m unittest discover -s scripts/tests

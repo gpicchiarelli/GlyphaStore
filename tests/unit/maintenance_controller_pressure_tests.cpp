@@ -196,7 +196,9 @@ GLYPHA_TEST("emergency rejects put and erase with storage_exhausted") {
 
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
     while (std::chrono::steady_clock::now() < deadline) {
-        if ((**store).maintenance_snapshot().mutations_rejected) {
+        const auto snap = (**store).maintenance_snapshot();
+        if (snap.mutations_rejected &&
+            snap.last_activation_reason == glyphastore::MaintenanceActivationReason::emergency_capacity) {
             break;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds{5});

@@ -126,6 +126,60 @@ def encode_request(
     target_worker: int = NO_WORKER,
 ) -> bytes:
     """Encode one canonical protocol-v2 request frame."""
+    frame_size, key, value = _validated_request_size(
+        opcode,
+        request_id,
+        key=key,
+        value=value,
+        expire_at_ns=expire_at_ns,
+        target_worker=target_worker,
+    )
+    return _encode_validated_request_header(
+        frame_size,
+        opcode,
+        request_id,
+        key_size=len(key),
+        value_size=len(value),
+        expire_at_ns=expire_at_ns,
+        target_worker=target_worker,
+    ) + key + value
+
+
+def _encode_validated_request_header(
+    frame_size: int,
+    opcode: Opcode,
+    request_id: int,
+    *,
+    key_size: int,
+    value_size: int,
+    expire_at_ns: int = 0,
+    target_worker: int = NO_WORKER,
+) -> bytes:
+    """Encode the header of a request whose fields and frame size were validated."""
+    return _REQUEST_HEADER.pack(
+        frame_size,
+        VERSION,
+        opcode,
+        0,
+        request_id,
+        key_size,
+        value_size,
+        expire_at_ns,
+        target_worker,
+        0,
+    )
+
+
+def _validated_request_size(
+    opcode: Opcode,
+    request_id: int,
+    *,
+    key: bytes | bytearray | memoryview = b"",
+    value: bytes | bytearray | memoryview = b"",
+    expire_at_ns: int = 0,
+    target_worker: int = NO_WORKER,
+) -> tuple[int, bytes, bytes]:
+    """Validate one request and return its size plus immutable payload views."""
     if not isinstance(opcode, Opcode):
         raise ValueError("opcode is not defined by wire protocol v2")
     if not isinstance(key, (bytes, bytearray, memoryview)) or not isinstance(
@@ -141,18 +195,7 @@ def encode_request(
     frame_size = REQUEST_HEADER_BYTES + len(key) + len(value)
     if frame_size > MAX_FRAME_BYTES:
         raise ValueError("request exceeds the protocol frame limit")
-    return _REQUEST_HEADER.pack(
-        frame_size,
-        VERSION,
-        opcode,
-        0,
-        request_id,
-        len(key),
-        len(value),
-        expire_at_ns,
-        target_worker,
-        0,
-    ) + key + value
+    return frame_size, key, value
 
 
 def decode_request(
@@ -238,8 +281,20 @@ def decode_response(
     maximum_frame_bytes: int = MAX_FRAME_BYTES,
 ) -> Response:
     """Decode one complete response and reject noncanonical fields."""
-    if len(frame) < RESPONSE_HEADER_BYTES:
+    return _decode_response_from(frame, 0, len(frame), maximum_frame_bytes)
+
+
+def _decode_response_from(
+    buffer: bytes | bytearray | memoryview,
+    offset: int,
+    extent: int,
+    maximum_frame_bytes: int = MAX_FRAME_BYTES,
+) -> Response:
+    """Decode one complete response at an offset without creating a frame view."""
+    if extent < RESPONSE_HEADER_BYTES:
         raise ValueError("response is shorter than its header")
+    if offset < 0 or extent > len(buffer) - offset:
+        raise ValueError("response frame extent is invalid")
     (
         frame_size,
         version,
@@ -250,8 +305,8 @@ def decode_response(
         worker_count,
         reserved,
         routing_epoch,
-    ) = _RESPONSE_HEADER.unpack_from(frame)
-    if frame_size != len(frame) or frame_size > maximum_frame_bytes:
+    ) = _RESPONSE_HEADER.unpack_from(buffer, offset)
+    if frame_size != extent or frame_size > maximum_frame_bytes:
         raise ValueError("response frame extent is invalid")
     if version != VERSION:
         raise ValueError("response protocol version is unsupported")
@@ -269,7 +324,7 @@ def decode_response(
         owner_worker=owner_worker,
         worker_count=worker_count,
         routing_epoch=routing_epoch,
-        value=bytes(frame[RESPONSE_HEADER_BYTES:]),
+        value=bytes(buffer[offset + RESPONSE_HEADER_BYTES : offset + frame_size]),
     )
 
 

@@ -176,6 +176,8 @@ jobs:
       - name: Package and verify Erlang client
         run: ./scripts/package-erlang-client.sh
       - name: Checksum packaged SDK artifacts
+        env:
+          SDK_ARTIFACT_INDEX_REQUIRE_COMPLETE: "1"
         run: ./scripts/checksum-sdk-artifacts.sh
       - name: Build daemon and interop client
         env:
@@ -206,7 +208,28 @@ jobs:
           GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
           GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
           INTEROP_SECURE_WORKERS: "2"
+          SECURE_INTEROP_REQUIRE_ALL: "1"
         run: ./scripts/test-secure-profile-interop.sh
+      - name: Installed SDK artifact secure-profile interop
+        timeout-minutes: 5
+        env:
+          GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
+        run: |
+          evidence="build/evidence/sdk-installed-secure-profile"
+          mkdir -p "$evidence"
+          result=passed
+          ./scripts/test-secure-profile-installed-artifacts.sh 2>&1 | tee "$evidence/run.log" \
+            || result=failed
+          ./scripts/write-sdk-interop-evidence.sh "$evidence" "$result"
+          test "$result" = passed
+      - name: Retain installed SDK secure-profile evidence
+        if: always() && github.event_name == 'push'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: sdk-installed-secure-${{ github.sha }}
+          path: build/evidence/sdk-installed-secure-profile/
+          if-no-files-found: error
+          retention-days: 30
 
   install-consumer:
     name: Release install / external consumer

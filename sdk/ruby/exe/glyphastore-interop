@@ -2,7 +2,16 @@
 # frozen_string_literal: true
 
 require "optparse"
-require_relative "../lib/glypha_store"
+require "glypha_store"
+
+if ENV["GLYPHASTORE_INTEROP_USE_INSTALLED"] == "1"
+  source_root = File.expand_path(ENV.fetch("GLYPHASTORE_SOURCE_ROOT"))
+  loaded_from = $LOADED_FEATURES.find { |path| path.end_with?("/glypha_store.rb") }
+  abort("installed-artifact mode cannot identify the loaded Ruby SDK") if loaded_from.nil?
+  if File.expand_path(loaded_from).start_with?("#{source_root}/")
+    abort("installed-artifact mode loaded Ruby SDK from source: #{loaded_from}")
+  end
+end
 
 options = {
   host: "127.0.0.1",
@@ -14,10 +23,11 @@ options = {
   tls_cert: nil,
   tls_key: nil,
   server_name: nil,
-  insecure_skip_verify: false
+  insecure_skip_verify: false,
+  burst: 32
 }
 parser = OptionParser.new do |opts|
-  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]"
+  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|burst-expect-overloaded|expect-frame-limit> [tls flags...]"
   opts.on("--host HOST", String) { |v| options[:host] = v }
   opts.on("--port PORT", Integer) { |v| options[:port] = v }
   opts.on("--key-hex HEX", String) { |v| options[:key_hex] = v }
@@ -29,10 +39,15 @@ parser = OptionParser.new do |opts|
   opts.on("--tls-key PATH", String) { |v| options[:tls_key] = v }
   opts.on("--server-name NAME", String) { |v| options[:server_name] = v }
   opts.on("--insecure-skip-verify", "lab escape: skip cert/hostname verify") { options[:insecure_skip_verify] = true }
+  opts.on("--burst N", Integer) { |v| options[:burst] = v }
+  opts.on("-h", "--help", "show this help") do
+    puts opts
+    exit 0
+  end
 end
 parser.parse!
 command = ARGV.shift
-abort(parser.help) if options[:port].nil? || command.nil?
+abort(parser.help) if options[:port].nil? || command.nil? || !options[:burst].between?(1, 10_000)
 
 def parse_hex(text)
   cleaned = text.to_s.gsub(/\s+/, "")
@@ -89,6 +104,23 @@ begin
     else
       abort("GET unexpectedly found the key")
     end
+  when "expect-permission-denied"
+    result = client.put(key, value, expire_at_ns: options[:expire_at_ns])
+    unless result.rejected? &&
+           result.error&.category == GlyphaStore::Category::PERMISSION_DENIED &&
+           result.error.retryability == GlyphaStore::Retryability::NEVER
+      abort("PUT did not produce structured permission_denied")
+    end
+  when "burst-expect-overloaded"
+    observed = options[:burst].times.any? do
+      result = client.put(key, value, expire_at_ns: options[:expire_at_ns])
+      overloaded = result.rejected? &&
+                   result.error&.category == GlyphaStore::Category::OVERLOADED &&
+                   result.error.retryability == GlyphaStore::Retryability::NEVER
+      abort("PUT produced an unexpected result before OVERLOADED") unless overloaded || result.committed?
+      overloaded
+    end
+    abort("PUT burst did not produce structured OVERLOADED") unless observed
   when "expect-frame-limit"
     result = client.put("limit".b, "\xA5".b * config.maximum_frame_bytes)
     unless result.rejected? &&

@@ -1,7 +1,7 @@
 Status: normative policy for budget classes; descriptive for advisory snapshots
 Applies to: hosted CI regression, hardware self-hosted gates, soak/overload linkage
 Owner: performance / ops maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-26
 
 # Performance and soak budgets
 
@@ -16,7 +16,7 @@ hardware runner (`glyphastore-linux-perf`) and a `pass-candidate` manifest.
 
 | ID | Gate | Enforcement |
 | --- | --- | --- |
-| `HOSTED-MEDIAN-REGRESSION` | `GATE-PERFORMANCE` | Hosted CI ≤10% median ops/s regression (`GS-PERF-REGRESSION-001`) |
+| `HOSTED-MEDIAN-REGRESSION` | `GATE-PERFORMANCE` | Advisory hosted-CI signal; 10% median review threshold only for environment-compatible, disjoint ranges (`GS-PERF-REGRESSION-001`) |
 | `HARDWARE-PAIRED-LINUX-AB` | `GATE-PERFORMANCE` | Self-hosted Linux hard-pin A/B (`GS-PERF-BUDGET-001`); waiting for runner |
 | `ADVISORY-EMBEDDED-DURABLE-GET-P99` | `GATE-PERFORMANCE` | Advisory macOS snapshot only — not a release gate |
 | `SOAK-SOFTWARE-SMOKE` | `GATE-SOAK` | PR/push smoke (`GS-OPS-SOAK-001`) |

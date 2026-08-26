@@ -28,19 +28,21 @@ from .client import (
     _clone_error,
     _enrich,
     _pipeline_op_name,
+    _resolved_pipeline,
     build_ssl_context,
 )
 from .protocol import (
-    MAX_FRAME_BYTES,
     RESPONSE_HEADER_BYTES,
     Opcode,
     Response,
     Status,
     WorkerRouting,
+    _decode_response_from,
     decode_init_identity,
-    decode_response,
     encode_request,
     worker_for,
+    _encode_validated_request_header,
+    _validated_request_size,
 )
 
 
@@ -179,11 +181,7 @@ class AsyncClient:
         timeout: float | None = None,
     ) -> bytes:
         # Online fenced BACKUP (opcode 10): not hot zero-impact; admin under secure authz.
-        path = (
-            destination.encode("utf-8")
-            if isinstance(destination, str)
-            else bytes(destination)
-        )
+        path = destination.encode("utf-8") if isinstance(destination, str) else bytes(destination)
         if not path:
             raise InvalidArgument("backup destination must be non-empty")
         return await self._read(Opcode.BACKUP, path, b"", timeout=timeout)
@@ -213,7 +211,16 @@ class AsyncClient:
         requests: Sequence[PipelineRequest],
         *,
         timeout: float | None = None,
-        _deadline: float | None = None,
+    ) -> list[PipelineResponse]:
+        return await self._execute_pipeline(requests, timeout=timeout)
+
+    async def _execute_pipeline(
+        self,
+        requests: Sequence[PipelineRequest],
+        *,
+        timeout: float | None = None,
+        deadline_override: float | None = None,
+        routed_worker: int | None = None,
     ) -> list[PipelineResponse]:
         if not requests:
             return []
@@ -221,29 +228,32 @@ class AsyncClient:
             raise Unavailable("client is closed or routing metadata changed")
         if len(requests) > self._config.maximum_pipeline_requests:
             raise InvalidArgument("pipeline exceeds the configured request limit")
-        deadline = _deadline if _deadline is not None else self._request_deadline(timeout)
+        deadline = (
+            deadline_override if deadline_override is not None else self._request_deadline(timeout)
+        )
 
         normalized: list[tuple[PipelineOpcode, bytes, bytes, int]] = []
-        frames: list[bytes] = []
+        parts: list[bytes] = []
         metadata: list[tuple[int, int]] = []
         output_size = 0
-        worker: int | None = None
+        worker = routed_worker
         for request in requests:
             if not isinstance(request.opcode, PipelineOpcode):
                 raise InvalidArgument("pipeline request contains an invalid opcode")
             key, value = bytes(request.key), bytes(request.value)
-            request_worker = self.worker_for(key)
-            if worker is None:
-                worker = request_worker
-            elif request_worker != worker:
-                raise InvalidArgument("every pipeline key must route to the same Worker")
+            if routed_worker is None:
+                request_worker = self.worker_for(key)
+                if worker is None:
+                    worker = request_worker
+                elif request_worker != worker:
+                    raise InvalidArgument("every pipeline key must route to the same Worker")
             if request.opcode in (PipelineOpcode.GET, PipelineOpcode.ERASE) and (
                 value or request.expire_at_ns != 0
             ):
                 raise InvalidArgument("GET and ERASE pipeline requests cannot carry PUT fields")
             request_id = await self._next_request_id()
             try:
-                frame = encode_request(
+                frame_size, key, value = _validated_request_size(
                     request.opcode.value,
                     request_id,
                     key=key,
@@ -252,18 +262,31 @@ class AsyncClient:
                 )
             except ValueError as error:
                 raise InvalidArgument(str(error)) from error
-            if len(frame) > self._config.maximum_frame_bytes:
+            if frame_size > self._config.maximum_frame_bytes:
                 raise InvalidArgument("pipeline request exceeds the configured frame limit")
-            if len(frame) > self._config.maximum_pipeline_bytes - output_size:
+            if frame_size > self._config.maximum_pipeline_bytes - output_size:
                 raise InvalidArgument("pipeline exceeds the configured aggregate byte limit")
             normalized.append((request.opcode, key, value, request.expire_at_ns))
             metadata.append((request_id, output_size))
-            frames.append(frame)
-            output_size += len(frame)
+            parts.extend(
+                (
+                    _encode_validated_request_header(
+                        frame_size,
+                        request.opcode.value,
+                        request_id,
+                        key_size=len(key),
+                        value_size=len(value),
+                        expire_at_ns=request.expire_at_ns,
+                    ),
+                    key,
+                    value,
+                )
+            )
+            output_size += frame_size
 
         assert worker is not None
-        output = b"".join(frames)
-        responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
+        output = b"".join(parts)
+        responses: list[PipelineResponse | None] = [None] * len(requests)
         connection = self._connections[worker]
         async with connection.lock:
             if not self._healthy:
@@ -277,9 +300,7 @@ class AsyncClient:
                     is_mutation = opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
                     mutation_may_have_arrived = is_mutation and bytes_sent > metadata[index][1]
                     pos_bytes = (
-                        bytes_sent - metadata[index][1]
-                        if bytes_sent > metadata[index][1]
-                        else 0
+                        bytes_sent - metadata[index][1] if bytes_sent > metadata[index][1] else 0
                     )
                     mutation_outcome = None
                     if is_mutation:
@@ -310,7 +331,7 @@ class AsyncClient:
                     mark_unresolved(0, error.error, error.bytes_sent)
                     completed = True
                     await connection.reset()
-                    return responses
+                    return _resolved_pipeline(responses)
 
                 for index, (opcode, _, _, _) in enumerate(normalized):
                     try:
@@ -320,7 +341,7 @@ class AsyncClient:
                         mark_unresolved(index, error, len(output))
                         completed = True
                         await connection.reset()
-                        return responses
+                        return _resolved_pipeline(responses)
                     except asyncio.CancelledError:
                         # Classify before poison: reset() awaits close and must not
                         # re-raise CancelledError over indeterminate slots (§6.3).
@@ -334,7 +355,7 @@ class AsyncClient:
                             await connection.reset()
                         except asyncio.CancelledError:
                             pass
-                        return responses
+                        return _resolved_pipeline(responses)
                     if response.status is Status.OK:
                         if opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE) and response.value:
                             mark_unresolved(
@@ -344,7 +365,7 @@ class AsyncClient:
                             )
                             completed = True
                             await connection.reset()
-                            return responses
+                            return _resolved_pipeline(responses)
                         responses[index] = PipelineResponse(
                             PipelineOutcome.SUCCEEDED, value=response.value
                         )
@@ -374,7 +395,7 @@ class AsyncClient:
                     if response.status in (Status.WRONG_OWNER, Status.NOT_BOUND):
                         self._healthy = False
                 completed = True
-                return responses
+                return _resolved_pipeline(responses)
             finally:
                 if not completed:
                     await connection.reset()
@@ -406,43 +427,55 @@ class AsyncClient:
             bucket = groups.setdefault(worker, [])
             if len(bucket) >= self._config.maximum_pipeline_requests:
                 raise InvalidArgument("batch exceeds the configured per-Worker request limit")
-            bucket.append((index, request))
+            # Freeze bytes at admission: the trusted Worker and encoded key must
+            # describe the same snapshot even for mutable buffer inputs.
+            bucket.append(
+                (
+                    index,
+                    PipelineRequest(request.opcode, key, value, request.expire_at_ns),
+                )
+            )
 
         responses: list[PipelineResponse | None] = [None] * len(requests)
 
         def _cancelled_group(
+            worker: int,
             items: list[tuple[int, PipelineRequest]],
         ) -> list[PipelineResponse]:
             # Pre-pipeline / unclassified cancel: known not newly committed.
             cancelled = TransportError("request cancelled")
             failed: list[PipelineResponse] = []
             for _, request in items:
-                is_mutation = request.opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                is_mutation = request.opcode in (
+                    PipelineOpcode.PUT,
+                    PipelineOpcode.ERASE,
+                )
                 failed.append(
                     PipelineResponse(
                         PipelineOutcome.FAILED,
                         error=_enrich(
                             _clone_error(cancelled),
                             operation=_pipeline_op_name(request.opcode),
-                            worker=self.worker_for(bytes(request.key)),
+                            worker=worker,
                             routing_epoch=self._routing_epoch,
                             bytes_sent=0,
-                            mutation_outcome=(
-                                MutationOutcome.REJECTED if is_mutation else None
-                            ),
+                            mutation_outcome=(MutationOutcome.REJECTED if is_mutation else None),
                         ),
                     )
                 )
             return failed
 
         async def run_group(
+            worker: int,
             items: list[tuple[int, PipelineRequest]],
         ) -> tuple[list[int], list[PipelineResponse]]:
             indices = [index for index, _ in items]
             group_requests = [request for _, request in items]
             try:
-                return indices, await self.execute_pipeline(
-                    group_requests, _deadline=shared_deadline
+                return indices, await self._execute_pipeline(
+                    group_requests,
+                    deadline_override=shared_deadline,
+                    routed_worker=worker,
                 )
             except GlyphaError as error:
                 failed = [
@@ -451,13 +484,12 @@ class AsyncClient:
                         error=_enrich(
                             _clone_error(error),
                             operation=_pipeline_op_name(request.opcode),
-                            worker=self.worker_for(bytes(request.key)),
+                            worker=worker,
                             routing_epoch=self._routing_epoch,
                             bytes_sent=0,
                             mutation_outcome=(
                                 MutationOutcome.REJECTED
-                                if request.opcode
-                                in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
+                                if request.opcode in (PipelineOpcode.PUT, PipelineOpcode.ERASE)
                                 else None
                             ),
                         ),
@@ -468,10 +500,10 @@ class AsyncClient:
             except asyncio.CancelledError:
                 # Cancel escaped execute_pipeline (lock / bootstrap / pre-send).
                 # After-send cancel is classified inside the pipeline and returned.
-                return indices, _cancelled_group(items)
+                return indices, _cancelled_group(worker, items)
 
-        group_items = list(groups.values())
-        tasks = [asyncio.create_task(run_group(items)) for items in group_items]
+        group_items = list(groups.items())
+        tasks = [asyncio.create_task(run_group(worker, items)) for worker, items in group_items]
         try:
             await asyncio.wait(tasks)
         except asyncio.CancelledError:
@@ -483,9 +515,9 @@ class AsyncClient:
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-        for task, items in zip(tasks, group_items, strict=True):
+        for task, (worker, items) in zip(tasks, group_items, strict=True):
             if task.cancelled():
-                group_responses = _cancelled_group(items)
+                group_responses = _cancelled_group(worker, items)
                 indices = [index for index, _ in items]
             else:
                 exc = task.exception()
@@ -500,7 +532,7 @@ class AsyncClient:
                                 error=_enrich(
                                     _clone_error(exc),
                                     operation=_pipeline_op_name(request.opcode),
-                                    worker=self.worker_for(bytes(request.key)),
+                                    worker=worker,
                                     routing_epoch=self._routing_epoch,
                                     bytes_sent=0,
                                     mutation_outcome=(
@@ -515,7 +547,7 @@ class AsyncClient:
                         ]
                     elif isinstance(exc, asyncio.CancelledError):
                         indices = [index for index, _ in items]
-                        group_responses = _cancelled_group(items)
+                        group_responses = _cancelled_group(worker, items)
                     else:
                         raise exc
                 else:
@@ -640,9 +672,7 @@ class AsyncClient:
         except OSError as error:
             raise _SendFailure(TransportError(f"request send failed: {error}"), 0) from error
         try:
-            await asyncio.wait_for(
-                connection.writer.drain(), timeout=_remaining(deadline)
-            )
+            await asyncio.wait_for(connection.writer.drain(), timeout=_remaining(deadline))
         except (OSError, asyncio.TimeoutError, TransportError) as error:
             wrapped = (
                 error
@@ -668,13 +698,15 @@ class AsyncClient:
                     raise ProtocolError("server response size is outside client limits")
                 if available >= frame_size:
                     start = connection.input_offset
-                    encoded = memoryview(connection.input)[start : start + frame_size]
                     try:
-                        response = decode_response(encoded, self._config.maximum_frame_bytes)
+                        response = _decode_response_from(
+                            connection.input,
+                            start,
+                            frame_size,
+                            self._config.maximum_frame_bytes,
+                        )
                     except ValueError as error:
                         raise ProtocolError(str(error)) from error
-                    finally:
-                        encoded.release()
                     connection.input_offset += frame_size
                     if connection.input_offset == len(connection.input):
                         connection.input.clear()
@@ -695,9 +727,7 @@ class AsyncClient:
                     raise
                 raise TransportError(f"response receive failed: {error}") from error
 
-    async def _exchange(
-        self, connection: _Connection, frame: bytes, deadline: float
-    ) -> Response:
+    async def _exchange(self, connection: _Connection, frame: bytes, deadline: float) -> Response:
         await self._send(connection, frame, deadline)
         return await self._receive_response(connection, deadline)
 

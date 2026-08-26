@@ -1,7 +1,7 @@
 Status: roadmap
 Applies to: implemented official Ruby SDK under `sdk/ruby`
 Owner: client maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-26
 
 # Ruby SDK implementation status and roadmap
 
@@ -17,7 +17,7 @@ usage belongs in the [package README](../../sdk/ruby/README.md).
 | Capability | Source-tree state |
 | --- | --- |
 | Wire codec | 40-byte request/response headers, canonical field checks, frame limits and binary-safe strings |
-| Default routing | FNV-1a 64-bit over the complete key |
+| Worker routing | FNV-1a 64-bit by default; keyed SipHash-2-4 from the strict extended `INIT` identity |
 | Session | `INIT`, one `BIND_WORKER` connection per Worker, `TCP_NODELAY`, routing epoch/count checks |
 | Sync API | `get`, `put`, `erase`, `ping`, `execute_pipeline`, `execute_batch` |
 | Async API | Optional `GlyphaStore::AsyncClient` using the `async` gem |
@@ -25,6 +25,11 @@ usage belongs in the [package README](../../sdk/ruby/README.md).
 | TLS | Opt-in TLS 1.3, CA/hostname verification, optional mTLS, fail-closed configuration |
 | Packaging | Gemspec, package verification script and release checklist in `sdk/ruby/PACKAGING.md` |
 | Evidence | Unit/fake-server tests, shared fixtures, cleartext/TLS interop and benchmark harness |
+
+The keyed-routing path strictly decodes the extended `INIT` identity, applies the advertised
+SipHash-2-4 seed, preserves routing identity across reconnects and is covered by protocol vectors
+and fake-server client tests. This records source-tree capability, not release or production-gate
+closure.
 
 `execute_pipeline` is ordered and single-Worker. `execute_batch` groups requests by Worker, overlaps
 the groups and restores caller order; it is not a transaction. Sync calls accept `timeout:` and the
@@ -43,28 +48,14 @@ a late response cannot attach to another request.
 
 ## Open gates
 
-### 1. Keyed Worker routing
-
-Ruby currently accepts only the plain `GlyphaStore/2` identity and routes with FNV. It intentionally
-fails closed on the extended SipHash identity. Before claiming full wire-v2 and secure-profile
-parity, implement:
-
-- strict extended-identity parsing;
-- SipHash-2-4 using the advertised seed;
-- routing-state equality across reconnect;
-- shared golden vectors and keyed-routing interop.
-
-Because `--secure-profile` selects keyed routing, this gap prevents the Ruby client from using the
-complete daemon profile today. TLS/mTLS/authz configured explicitly with default FNV remains usable.
-
-### 2. Installed-artifact and release evidence
+### 1. Installed-artifact and release evidence
 
 `./scripts/package-ruby-client.sh` must continue to build the gem, install it into an isolated
 location and run package checks. A registry release additionally needs the repository version bump,
 checksums/provenance, release notes and post-publish install verification. Source presence is not
 proof that the gem is already published.
 
-### 3. Performance evidence
+### 2. Performance evidence
 
 Use `./scripts/benchmark_ruby_client.sh` and the shared SDK harness. Record runtime, server commit,
 pipeline depth, Worker/client counts, value size, TLS mode, warmup, repeats and validation. Compare
@@ -80,7 +71,7 @@ The pure-Ruby optimization order is profile-led:
 
 A C extension is optional, not part of the correctness definition.
 
-### 4. Shared protocol candidates
+### 3. Shared protocol candidates
 
 Connections-per-Worker and mutation idempotency are cross-SDK/protocol decisions, not Ruby-only
 features. They remain governed by the [shared SDK roadmap](sdk-roadmap.md).
@@ -92,6 +83,7 @@ features. They remain governed by the [shared SDK roadmap](sdk-roadmap.md).
 ./scripts/package-ruby-client.sh
 ./scripts/test-sdk-interop.sh
 ./scripts/benchmark_ruby_client.sh
+./scripts/benchmark_sdk_clients.sh
 ```
 
 ## Non-goals

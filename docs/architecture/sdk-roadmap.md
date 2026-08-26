@@ -1,7 +1,7 @@
 Status: roadmap
 Applies to: native SDKs (C++, Python, Perl, Go, Erlang, Ruby) and shared wire contract
 Owner: client maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-26
 
 # SDK and client roadmap
 
@@ -38,20 +38,46 @@ Default interop remains FNV; a keyed daemon matrix (`--worker-hash-seed`) is sti
 
 ### 2. Secure-profile interoperability
 
-First-slice smoke exists: `scripts/test-secure-profile-interop.sh` (CI `sdk-clients`) proves mTLS +
-`--authz-map` + pinned `--worker-hash-seed` under `--secure-profile` for cpp/python/go. The broader
-TLS matrix in `test-sdk-interop.sh` is not equivalent to a full secure-profile matrix. Remaining:
-every SDK plus prefix scope, quotas and CRL. Documentation must not call the SDK security train
-complete before that matrix passes.
+The source-tree smoke `scripts/test-secure-profile-interop.sh` exercises mTLS, `--authz-map`, pinned
+`--worker-hash-seed` and prefix denial for every available SDK. CI `sdk-clients` requires all six
+SDKs and verifies that out-of-scope and quota-refused mutations are respectively classified as
+`permission_denied` and `overloaded`, both with `rejected` / `never` semantics rather than accepting
+any generic failure. Each quota assertion gets a fresh server-side budget. Under the CRL scenario,
+every SDK must first connect with an allowed certificate and then fail with the revoked certificate,
+so a broken client TLS configuration cannot satisfy the negative assertion. Remaining:
+installed-artifact secure-profile evidence.
+Documentation must not call the SDK security train complete before that matrix passes.
+
+The harness now has a fail-closed `GLYPHASTORE_INTEROP_USE_INSTALLED=1` mode: C++ and Go binaries
+inside the checkout are refused, source load paths are not injected, and Python/Perl/Ruby/Erlang
+helpers verify that their loaded module is outside the repository. This is the isolation mechanism,
+while package orchestration supplies the artifact proof described below.
+
+The package slice installs the built Python wheel, Perl tarball and Ruby gem, and extracts the Go and
+Erlang tracked-source archives into clean isolated prefixes before rerunning the secure-profile
+matrix with source injection disabled. The C++ peer is rebuilt as an external consumer linked only
+through the installed CMake package. The existing `sdk-clients` job is configured to run this after
+packaging and daemon build. Registry-shaped Erlang Hex publication and retained cross-version
+artifact records remain open. On pushes to `main`, that same job retains a 30-day bundle containing
+the complete run log, commit/platform metadata, toolchain identities and package checksums. This is
+run evidence, not a permanent release claim.
 
 ### 3. Released-artifact compatibility
 
 Source-tree interoperability is implemented. Still required:
 
-- install every built package artifact and rerun conformance from the installed copy;
+- install every built package artifact and rerun conformance from the installed copy (Python wheel
+  and sdist, Perl tarball, Ruby gem and the C++ installed consumer are covered; Go's tracked tag
+  snapshot has an external consumer proof; Erlang now has an externally compiled tracked-source
+  archive, while the registry-shaped Hex artifact remains open);
 - test supported old-client/new-server combinations under the 0.x compatibility policy;
 - publish checksums, provenance and SBOMs with tagged artifacts;
 - record registry publication state rather than saying “install from registry” unconditionally.
+
+Each SDK bundle now carries a checksummed `sdk-release-index.json` with exact client roles,
+distribution models and protocol/semantics versions. This makes a future N−1 artifact selectable
+without filename heuristics; the index deliberately records that compatibility evidence is not
+inferred from catalog presence.
 
 ### 4. Comparable performance evidence
 
@@ -59,12 +85,66 @@ Source-tree interoperability is implemented. Still required:
 commit, routing mode, Worker/client counts, pipeline depth, value size, operation mix, validation,
 TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
 where the harness exposes latency; do not infer a language limit from one pipeline depth.
+The harness reads the canonical root version, validates the exact expected matrix, and labels a run
+with an unavailable SDK as exploratory. Set `SDK_BENCH_REQUIRE_ALL=1` when producing a complete
+cross-SDK comparison; this fails before the expensive matrix starts if Ruby or Erlang is unavailable.
+Ruby sequential and per-Worker threaded modes participate when a supported Ruby >= 3.2 runtime is
+available; older or absent runtimes are recorded as an explicit skip rather than producing
+out-of-contract measurements.
 
-For Perl specifically, the next work is profile-led. Measure scalar/hash allocation, frame copies,
-buffer compaction, parser cost, `IO::Select`, syscalls and cross-Worker overlap before choosing an
-implementation technique. Reduce pure-Perl allocation/copy costs first; evaluate a narrow XS
+The public C++ reference client now has `glyphastore_client_benchmark` with sequential, concurrent,
+and mixed-owner batch modes; the shared matrix runs the concurrent mode once per Worker/depth cell.
+An attempted removal of its duplicate first-key pipeline hash was rejected after alternating local
+samples: the second pass measured about +0.8% at depth 1 and −0.4% at depth 8, so no stable throughput
+benefit justified the extra state in the validation loop. The benchmark remains as the retained
+improvement and uses routing negotiated at INIT.
+
+For Python, sync and asyncio pipelines now assemble validated header/key/value parts with one native
+final join and leave response slots empty until their actual outcome is known. The second change
+halves the isolated result-materialization kernel at depth 128 (about 95.7 to 47.3 microseconds) by
+removing 128 immediately discarded failure objects. Consecutive same-host one-Worker observations
+at depth 128 moved from 97.6k to 103.4k ops/s for sync and from 91.6k to 96.0k for asyncio. These
+non-alternating development samples support the removed-work decision but are not retained release
+capacity evidence. The buffered response decoder also accepts an internal buffer offset directly,
+removing one temporary `memoryview` per response while preserving owned values and the public codec.
+Its isolated 256-frame corpus improved from about 455 to 326 microseconds (1.40×); consecutive
+post-change observations moved from 103.4k to 104.7k ops/s for sync and 96.0k to 97.7k for asyncio,
+again as non-alternating development evidence only.
+
+For Perl specifically, the next work is profile-led. Client routing now reuses the normalized INIT
+identity, and the benchmark can generate both default-FNV and keyed-SipHash workloads. Continue to
+measure scalar/hash allocation, frame copies, buffer compaction, parser cost, `IO::Select`, syscalls
+and cross-Worker overlap before choosing an implementation technique. Reduce pure-Perl
+allocation/copy costs first; evaluate a narrow XS
 codec/routing kernel only if profiles show that boundary dominates. XS is not assumed to be the only
-large lever. See the [Perl README](../../sdk/perl/README.md).
+large lever. The shared Worker loop no longer performs a second readiness wait immediately after
+`IO::Select` dispatched a readable socket; partial reads still re-enter the absolute-deadline wait.
+Two local macOS-arm64 four-Worker passes at 200,000 PUT/GET pairs measured depth 8 at about +2.4%
+and +4.4%; depth 128 alternated between +1.3% and −0.9% and is therefore treated as flat. These are
+development measurements, not retained release evidence. A later profile showed the public decoder's
+six-field hash was immediately discarded by every client path. Retaining the public named hash while
+using a compact internal tuple removed that transient allocation; two alternating local passes
+measured +1.3%/+2.3% at depth 8 and +2.9%/+2.4% at depth 128. See the
+[Perl README](../../sdk/perl/README.md).
+
+For Go, pipeline ownership validation now hashes the first key once rather than twice. A local
+macOS-arm64 loopback A/B at four Workers, pipeline depth 8 and 200,000 operations measured about
+225k versus 205k operations/s (~9.8%); this is development evidence, not a retained release gate.
+Passing the batch's precomputed Worker into its internal pipeline was rejected: depth 128 was flat
+(~312k operations/s both ways), while depth 8 regressed about 1.9%. The batch benchmark mode remains
+to keep this decision reproducible, and its workload uses the routing identity negotiated at INIT.
+Worker-indexed batch groups and disjoint positional result writes were retained: end-to-end
+`benchmem` at four Workers and eight PUT/GET pairs per Worker reduced one batch call from 78 to 73
+allocations (−6.4%) and from about 26.25 KiB to 25.55 KiB (−2.7%), while throughput remained flat
+within noise. Lazily preallocating parallel request/index vectors then removed the second request
+copy: 73 to 61 allocations (−16.4%) and about 25.55 KiB to 16.40 KiB (−35.8%), again with flat
+throughput. The benchmark is opt-in and requires a live daemon via `GLYPHASTORE_BENCH_PORT`.
+Moving the two local batch closures into private helpers reduced the four-Worker case from 61 to 55
+allocations but raised repeat median latency from about 306–308 µs to about 315 µs; that candidate
+was reverted. A dedicated one-Worker fast path was retained: it removes grouping/fan-out and reduced
+the 8-pair live benchmark from 16 to 10 allocations (−37.5%) and 4,112 to 1,664 B/op (−59.5%). Host
+throughput samples were too noisy to claim a speedup; the acceptance is limited to removed work and
+stable allocation evidence, with positional admission-failure semantics covered by a unit test.
 
 Configurable connections per Worker remains measurement-gated for every SDK. It may improve
 same-Worker concurrency but changes ordering, memory, reconnect and backpressure behavior.
@@ -83,7 +163,9 @@ bounded server retention and recovery semantics. It is not part of wire v2 today
   pipelines, structured `NOT_FOUND`, oversized local rejection and cross-client PUT→GET; TLS
   (FNV) is covered when dependencies are available.
 - `scripts/test-secure-profile-interop.sh` covers mTLS + authz + prefix + CRL + principal quotas +
-  keyed seed (cpp/python/go; perl/ruby/erlang when available) and is wired into CI `sdk-clients`.
+  keyed seed. Local runs may explicitly report unavailable optional toolchains; CI `sdk-clients`
+  sets `SECURE_INTEROP_REQUIRE_ALL=1`, so cpp/python/go/perl/ruby/erlang cannot disappear from the
+  matrix through a silent skip.
 - Supply-chain CI packages SDKs, writes `SHA256SUMS`, requires syft SPDX JSON, Cosign-signs tags,
   and cross-checks archive digests across Linux builders (`.github/workflows/supply-chain.yml`).
 - Pipeline APIs operate on one Worker and never auto-retry. Batch APIs group by Worker, overlap

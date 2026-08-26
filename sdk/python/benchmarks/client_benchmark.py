@@ -10,6 +10,7 @@ import sys
 import threading
 from pathlib import Path
 from time import perf_counter
+from typing import Callable
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PACKAGE_ROOT / "src"))
@@ -20,12 +21,17 @@ from glyphastore import (  # noqa: E402
     ClientConfig,
     PipelineOpcode,
     PipelineRequest,
+    PipelineResponse,
     __version__,
 )
-from glyphastore.protocol import worker_for  # noqa: E402
 
 
-def material(operations: int, workers: int, pipeline: int) -> list[list[list[PipelineRequest]]]:
+def material(
+    operations: int,
+    workers: int,
+    pipeline: int,
+    owner_for: Callable[[bytes], int],
+) -> list[list[list[PipelineRequest]]]:
     quotas = [
         operations // workers + (1 if worker < operations % workers else 0)
         for worker in range(workers)
@@ -34,7 +40,7 @@ def material(operations: int, workers: int, pipeline: int) -> list[list[list[Pip
     candidate = 0
     while any(quotas):
         key = f"python-bench-{candidate:012d}".encode()
-        owner = worker_for(key, workers)
+        owner = owner_for(key)
         if quotas[owner]:
             value = bytes([candidate & 0xFF]) * 64
             requests[owner].append(PipelineRequest(PipelineOpcode.PUT, key, value))
@@ -51,6 +57,30 @@ def material(operations: int, workers: int, pipeline: int) -> list[list[list[Pip
     ]
 
 
+def batch_rounds(
+    batches: list[list[list[PipelineRequest]]],
+) -> list[list[PipelineRequest]]:
+    rounds: list[list[PipelineRequest]] = []
+    for offset in range(max(map(len, batches), default=0)):
+        rounds.append(
+            [
+                request
+                for worker_batches in batches
+                if offset < len(worker_batches)
+                for request in worker_batches[offset]
+            ]
+        )
+    return rounds
+
+
+def validate_responses(batch: list[PipelineRequest], responses: list[PipelineResponse]) -> None:
+    if len(responses) != len(batch) or not all(response.succeeded for response in responses):
+        raise RuntimeError("pipeline request failed")
+    for index in range(1, len(batch), 2):
+        if responses[index].value != bytes(batch[index - 1].value):
+            raise RuntimeError("pipeline GET value mismatch")
+
+
 def run_pipeline_concurrent(client: Client, batches: list[list[list[PipelineRequest]]]) -> float:
     barrier = threading.Barrier(len(batches) + 1)
     failures: list[str] = []
@@ -59,7 +89,9 @@ def run_pipeline_concurrent(client: Client, batches: list[list[list[PipelineRequ
         barrier.wait()
         for batch in worker_batches:
             responses = client.execute_pipeline(batch)
-            if len(responses) != len(batch) or not all(response.succeeded for response in responses):
+            if len(responses) != len(batch) or not all(
+                response.succeeded for response in responses
+            ):
                 failures.append("pipeline request failed")
                 return
             for index in range(1, len(batch), 2):
@@ -85,11 +117,21 @@ def run_pipeline_sequential(client: Client, batches: list[list[list[PipelineRequ
     for worker_batches in batches:
         for batch in worker_batches:
             responses = client.execute_pipeline(batch)
-            if len(responses) != len(batch) or not all(response.succeeded for response in responses):
+            if len(responses) != len(batch) or not all(
+                response.succeeded for response in responses
+            ):
                 raise RuntimeError("pipeline request failed")
             for index in range(1, len(batch), 2):
                 if responses[index].value != bytes(batch[index - 1].value):
                     raise RuntimeError("pipeline GET value mismatch")
+    return perf_counter() - started
+
+
+def run_batch(client: Client, batches: list[list[list[PipelineRequest]]]) -> float:
+    started = perf_counter()
+    for batch in batch_rounds(batches):
+        responses = client.execute_batch(batch)
+        validate_responses(batch, responses)
     return perf_counter() - started
 
 
@@ -99,7 +141,9 @@ async def run_pipeline_async(
     async def run(worker_batches: list[list[PipelineRequest]]) -> None:
         for batch in worker_batches:
             responses = await client.execute_pipeline(batch)
-            if len(responses) != len(batch) or not all(response.succeeded for response in responses):
+            if len(responses) != len(batch) or not all(
+                response.succeeded for response in responses
+            ):
                 raise RuntimeError("pipeline request failed")
             for index in range(1, len(batch), 2):
                 if responses[index].value != bytes(batch[index - 1].value):
@@ -107,6 +151,14 @@ async def run_pipeline_async(
 
     started = perf_counter()
     await asyncio.gather(*(run(worker_batches) for worker_batches in batches))
+    return perf_counter() - started
+
+
+async def run_batch_async(client: AsyncClient, batches: list[list[list[PipelineRequest]]]) -> float:
+    started = perf_counter()
+    for batch in batch_rounds(batches):
+        responses = await client.execute_batch(batch)
+        validate_responses(batch, responses)
     return perf_counter() - started
 
 
@@ -149,9 +201,12 @@ def main() -> int:
     parser.add_argument("--runtime", choices=("sync", "async"), default="sync")
     parser.add_argument(
         "--execution",
-        choices=("concurrent", "sequential"),
+        choices=("concurrent", "sequential", "batch"),
         default="concurrent",
-        help="concurrent uses one thread/task per Worker; sequential drains Workers in order",
+        help=(
+            "concurrent uses one thread/task per Worker; sequential drains Workers in order; "
+            "batch delegates Worker grouping to execute_batch"
+        ),
     )
     args = parser.parse_args()
     if min(args.workers, args.ops, args.pipeline, args.repeats) <= 0 or args.warmup < 0:
@@ -160,42 +215,53 @@ def main() -> int:
         # Async sequential is still one event loop; keep the flag for report parity.
         pass
 
-    batches = material(args.ops, args.workers, args.pipeline)
     operation_count = args.ops * 2
     config = ClientConfig(host=args.host, port=args.port)
 
     if args.runtime == "sync":
-        runner = (
-            run_pipeline_concurrent
-            if args.execution == "concurrent"
-            else run_pipeline_sequential
-        )
+        runners = {
+            "concurrent": run_pipeline_concurrent,
+            "sequential": run_pipeline_sequential,
+            "batch": run_batch,
+        }
+        runner = runners[args.execution]
         with Client.connect(config) as client:
             if client.worker_count != args.workers:
                 parser.error("server Worker count does not match --workers")
+            batches = material(args.ops, args.workers, args.pipeline, client.worker_for)
             for _ in range(args.warmup):
                 runner(client, batches)
             samples = [runner(client, batches) for _ in range(args.repeats)]
-        name = "python_client_pipeline_read_after_write"
+        name = (
+            "python_client_batch_read_after_write"
+            if args.execution == "batch"
+            else "python_client_pipeline_read_after_write"
+        )
     else:
 
         async def measure() -> list[float]:
             async with await AsyncClient.connect(config) as client:
                 if client.worker_count != args.workers:
                     raise SystemExit("server Worker count does not match --workers")
+                batches = material(args.ops, args.workers, args.pipeline, client.worker_for)
+                runner = run_batch_async if args.execution == "batch" else run_pipeline_async
                 for _ in range(args.warmup):
-                    await run_pipeline_async(client, batches)
-                return [
-                    await run_pipeline_async(client, batches) for _ in range(args.repeats)
-                ]
+                    await runner(client, batches)
+                return [await runner(client, batches) for _ in range(args.repeats)]
 
         samples = asyncio.run(measure())
-        name = "python_async_client_pipeline_read_after_write"
+        name = (
+            "python_async_client_batch_read_after_write"
+            if args.execution == "batch"
+            else "python_async_client_pipeline_read_after_write"
+        )
 
     report(
         name=name,
         runtime=args.runtime,
-        execution=args.execution if args.runtime == "sync" else "concurrent",
+        execution=args.execution
+        if args.execution == "batch"
+        else (args.execution if args.runtime == "sync" else "concurrent"),
         version=__version__,
         workers=args.workers,
         pipeline=args.pipeline,

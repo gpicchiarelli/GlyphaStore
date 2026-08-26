@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+- Lab hot-path recon on `94f1307` (`benchmarks/results/local-macos-2026-08-26-head-94f1307/`): PUT end-to-end dominated by Writer ack/handoff (~67%); publication ~14%; `put_batch` ≤32 already amortizes publication (+48% vs single PUT). Rejected wait-based adaptive publication on single-op PUT. Wire `GS_PHASE_GET(index_lookup)` in `PairReadGeneration::get` so phase builds attribute GET lookup cost (~68%).
+
 - Structural refactor (behavior-neutral, phase 0–2): document as-implemented mutation and
   connection lifecycle (`docs/spec/mutation-lifecycle.md`,
   `docs/spec/connection-drain-state-machine.md`); introduce typed `mutation_state`

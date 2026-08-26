@@ -37,13 +37,12 @@ enum class PutPhase : std::uint8_t {
 };
 
 enum class TcpPhase : std::uint8_t {
-    accept_read = 0,
-    decode,
-    dispatch,
+    decode = 0,
+    route,
     store_op,
     encode,
-    write,
-    wait_inflight,
+    socket_write,
+    poller_update,
     count,
 };
 
@@ -93,20 +92,18 @@ enum class TcpPhase : std::uint8_t {
 
 [[nodiscard]] constexpr auto tcp_phase_name(const TcpPhase phase) noexcept -> const char* {
     switch (phase) {
-    case TcpPhase::accept_read:
-        return "accept_read";
     case TcpPhase::decode:
         return "decode";
-    case TcpPhase::dispatch:
-        return "dispatch";
+    case TcpPhase::route:
+        return "route";
     case TcpPhase::store_op:
         return "store_op";
     case TcpPhase::encode:
         return "encode";
-    case TcpPhase::write:
-        return "write";
-    case TcpPhase::wait_inflight:
-        return "wait_inflight";
+    case TcpPhase::socket_write:
+        return "socket_write";
+    case TcpPhase::poller_update:
+        return "poller_update";
     case TcpPhase::count:
         break;
     }
@@ -141,6 +138,7 @@ class PhaseScope final {
     explicit PhaseScope(void (*observe)(std::uint8_t, std::uint64_t) noexcept,
                         const std::uint8_t phase) noexcept;
     ~PhaseScope();
+    void finish() noexcept;
 
     PhaseScope(const PhaseScope&) = delete;
     auto operator=(const PhaseScope&) -> PhaseScope& = delete;
@@ -208,8 +206,16 @@ inline auto format_report() -> std::string {
         &::glyphastore::hot_path::observe_tcp_u8,                                                            \
             static_cast<std::uint8_t>(::glyphastore::hot_path::TcpPhase::phase)                              \
     }
+#define GS_PHASE_TCP_NAMED(name, phase)                                                                      \
+    ::glyphastore::hot_path::PhaseScope name {                                                               \
+        &::glyphastore::hot_path::observe_tcp_u8,                                                            \
+            static_cast<std::uint8_t>(::glyphastore::hot_path::TcpPhase::phase)                              \
+    }
+#define GS_PHASE_FINISH(name) name.finish()
 #else
 #define GS_PHASE_GET(phase) static_cast<void>(0)
 #define GS_PHASE_PUT(phase) static_cast<void>(0)
 #define GS_PHASE_TCP(phase) static_cast<void>(0)
+#define GS_PHASE_TCP_NAMED(name, phase) static_cast<void>(0)
+#define GS_PHASE_FINISH(name) static_cast<void>(0)
 #endif

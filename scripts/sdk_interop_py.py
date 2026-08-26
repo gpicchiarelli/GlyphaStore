@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
+USE_INSTALLED = os.environ.get("GLYPHASTORE_INTEROP_USE_INSTALLED") == "1"
+if not USE_INSTALLED:
+    sys.path.insert(0, str(ROOT / "sdk" / "python" / "src"))
 
+import glyphastore  # noqa: E402
 from glyphastore import (  # noqa: E402
     Client,
     ClientConfig,
@@ -18,6 +22,12 @@ from glyphastore import (  # noqa: E402
     PipelineOpcode,
     PipelineRequest,
 )
+
+if USE_INSTALLED:
+    source_root = Path(os.environ["GLYPHASTORE_SOURCE_ROOT"]).resolve()
+    loaded_from = Path(glyphastore.__file__).resolve()
+    if loaded_from.is_relative_to(source_root):
+        raise RuntimeError(f"installed-artifact mode loaded Python SDK from source: {loaded_from}")
 
 
 def parse_hex(text: str) -> bytes:

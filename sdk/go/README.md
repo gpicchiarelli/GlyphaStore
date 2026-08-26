@@ -16,6 +16,9 @@ Version: `client.Version` (must match repository `VERSION`)
 License: BSD-3-Clause. Requires Go ≥ 1.22.  
 Packaging: [PACKAGING.md](PACKAGING.md)
 
+The packaging gate reconstructs the nested module from tracked files only, tests that snapshot, and
+builds an external consumer before a `sdk/go/vVERSION` tag is considered publishable.
+
 ```go
 package main
 
@@ -90,13 +93,22 @@ cd sdk/go && go build -o bin/glyphastore-bench ./cmd/glyphastore-bench
 ./bin/glyphastore-bench --port 7379 --workers 4 --ops 100000 --pipeline 128 --execution concurrent
 ```
 
+Use `--execution batch` to measure mixed-owner `ExecuteBatch` grouping and fan-out. The benchmark
+generates keys through the connected client's negotiated routing identity rather than assuming
+default FNV routing.
+
 ## Performance notes
 
 - Contiguous little-endian frame encoding into pre-sized, connection-local scratch buffers
 - One write deadline per send and one read deadline per exchange (or per pipeline receive phase)
 - `DecodeResponseView` + `OwnBytes` avoid allocating empty values; GET payloads are copied once
 - One TCP connection and `sync.Mutex` per Worker; `ExecuteBatch` fans out one goroutine per Worker
+- `ExecuteBatch` uses lazily preallocated, Worker-indexed request/index vectors and writes disjoint
+  caller-order result slots, avoiding request recopying and a result-collection mutex
+- One-Worker `ExecuteBatch` calls the validated pipeline path directly and retains positional
+  rejected results for group-level pre-admission failures
 - Atomic request IDs and fail-closed health (no nested lock under connection mutex)
+- Pipeline ownership validation hashes every key once; the first key is not routed twice
 - Prefer pipeline depth around **8–32** pairs for peak Go throughput; depth 128 often regresses
   on client CPU while raw TCP continues to climb
 

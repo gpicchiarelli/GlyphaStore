@@ -601,6 +601,33 @@ func TestBatchPreservesSiblingResultsWhenOneWorkerFails(t *testing.T) {
 	}
 }
 
+func TestSingleWorkerBatchConvertsAdmissionFailureToSlots(t *testing.T) {
+	server := startFakeServer(t, 1, false, false)
+	server.failRebindWorkers[0] = struct{}{}
+	defer server.close()
+
+	c, err := client.Connect(client.Config{Port: server.port()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.ResetWorkerConnection(0)
+
+	responses, err := c.ExecuteBatch([]client.PipelineRequest{
+		{Opcode: client.PipelinePut, Key: []byte("single"), Value: []byte("value")},
+	})
+	if err != nil {
+		t.Fatalf("batch must return positional failure, got %v", err)
+	}
+	if len(responses) != 1 || responses[0].Outcome != client.PipelineFailed {
+		t.Fatalf("responses=%+v", responses)
+	}
+	ge, ok := responses[0].Err.(*client.Error)
+	if !ok || ge.BytesSent != 0 || ge.MutationOutcome != client.MutationRejected {
+		t.Fatalf("enrichment=%+v", responses[0].Err)
+	}
+}
+
 func TestPerCallTimeoutOverridesConfig(t *testing.T) {
 	server := startFakeServer(t, 1, false, false)
 	server.stallOnGet = true

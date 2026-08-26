@@ -22,7 +22,19 @@ The script:
 2. Runs `rebar3 compile` and `rebar3 ct`
 3. Asserts `glyphastore_version:version/0` matches `VERSION`
 4. Smoke-checks `scripts/glyphastore-version.escript`
-5. Writes `sdk/erlang/dist/package-info.txt`
+5. Builds a normalized `sdk/erlang/dist/glyphastore-erlang-VERSION.tar.gz` from tracked files only
+6. Extracts and compiles that archive outside the checkout, then verifies its runtime version
+7. Writes `sdk/erlang/dist/package-info.txt`
+
+With the other SDK packages and TLS daemon/client peers built, the extracted archive participates in
+the fail-closed secure-profile matrix through:
+
+```bash
+GLYPHASTORED=/path/to/glyphastored \
+GLYPHASTORE_INTEROP_CLIENT=/path/to/glyphastore_interop_client \
+GLYPHASTORE_GO_INTEROP=/path/to/glyphastore-interop \
+./scripts/test-secure-profile-installed-artifacts.sh
+```
 
 ## Consumers
 
@@ -45,5 +57,6 @@ copy the OTP application into your release.
 
 ## Release artifacts
 
-Hex packages are the primary distribution. Optional CI may attach `dist/package-info.txt` and
-checksums via `scripts/checksum-sdk-artifacts.sh`.
+Hex packages are the primary distribution. Until registry publication exists, CI attaches the
+normalized tracked-source archive, `dist/package-info.txt`, checksums and SBOM through
+`scripts/checksum-sdk-artifacts.sh`. The source archive is not described as a Hex package.

@@ -57,7 +57,8 @@ for arg in "$@"; do
         -name '*.whl' -o \
         -name '*.gem' -o \
         -name '*.tar.gz' -o \
-        -name '*package-info.txt' \
+        -name '*package-info.txt' -o \
+        -name 'sdk-release-index.json' \
       \) -print0 | sort -z
     )
   elif [[ -f "$arg" ]]; then

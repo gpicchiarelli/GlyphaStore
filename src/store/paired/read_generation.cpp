@@ -1405,6 +1405,7 @@ auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& curre
 }
 
 auto PairReadGeneration::get(const HashedKey& key, const std::uint64_t now_ns) const -> Result<OwnedValue> {
+    GS_PHASE_GET(index_lookup);
     const auto* delta_record = delta_->find(key);
     if (delta_record == nullptr) {
         return base_->get(key, now_ns);

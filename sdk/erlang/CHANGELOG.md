@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Package a normalized tracked-source archive, then extract and compile it outside the checkout;
+  Hex publication remains a separate release action.
+- Compile that extracted archive into an isolated `ERL_LIBS` tree for secure-profile interop.
+- Make the interop escript assert structured `permission_denied` and `overloaded` mutation outcomes
+  in the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
+- In installed-artifact interop mode, use the configured Erlang code path and fail if the client
+  beam resolves inside the repository.
 - BACKUP validate-response failure (mismatched `request_id` / metadata) enriches
   `indeterminate` / `reconcile_first` with `bytes_sent=frame_len`. Litmus:
   `set_wrong_request_id` after connect → BACKUP asserts `bytes_sent > 0`.
