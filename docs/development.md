@@ -29,7 +29,8 @@ The workflow invokes the report parser in strict mode: empty suites, duplicate i
 metadata, count mismatches, invalid numbers, and inconsistent statistical ordering fail the report.
 The machine-readable `engineering/performance/hosted-benchmark-contract.json` enumerates all 21
 expected core, parallel, durable, TCP-scaling, and TCP-latency source files. Missing or unexpected
-files invalidate the report before baseline comparison.
+files invalidate the report before baseline comparison. The same contract fixes one warmup and the
+expected three, five, or seven measured repeats for each source, preventing silent sampling cuts.
 
 To avoid spending hosted-runner time on unrelated changes, the push trigger is limited to engine,
 server, public headers, benchmark sources, CMake configuration, the canonical version, and the

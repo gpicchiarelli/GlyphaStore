@@ -38,7 +38,8 @@ missing, a result identity is duplicated, counts disagree with the run metadata,
 non-finite/non-positive, or min/median/max ordering is invalid. Exploratory parsing may be more
 permissive only when it is explicitly excluded from CI evidence.
 When CI promises a fixed matrix, a machine-readable source contract must enumerate the complete
-expected file set; missing and unexpected suite files both invalidate the retained report.
+expected file set and per-source warmup/repeat policy. Missing and unexpected suite files or weaker
+sampling both invalidate the retained report.
 
 ## 4. Canonical workloads
 

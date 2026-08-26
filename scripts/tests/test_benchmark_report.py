@@ -186,22 +186,29 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_accepts_exact_suite(self) -> None:
         contract = {
-            "schema_version": 1,
+            "schema_version": 2,
             "suite": "fixture",
-            "expected_sources": ["core.txt"],
+            "expected_sources": [
+                {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 3}
+            ],
         }
         validate_source_contract(strict_runs(), contract)
 
     def test_source_contract_rejects_missing_and_extra_suites(self) -> None:
         contract = {
-            "schema_version": 1,
+            "schema_version": 2,
             "suite": "fixture",
-            "expected_sources": ["core.txt", "server.txt"],
+            "expected_sources": [
+                {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 3},
+                {"source": "server.txt", "benchmark_warmup": 1, "benchmark_repeats": 3},
+            ],
         }
         with self.assertRaisesRegex(ValueError, "missing sources: server.txt"):
             validate_source_contract(strict_runs(), contract)
 
-        contract["expected_sources"] = ["server.txt"]
+        contract["expected_sources"] = [
+            {"source": "server.txt", "benchmark_warmup": 1, "benchmark_repeats": 3}
+        ]
         with self.assertRaisesRegex(ValueError, "unexpected sources: core.txt"):
             validate_source_contract(strict_runs(), contract)
 
@@ -213,11 +220,32 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             / "hosted-benchmark-contract.json"
         )
         contract = load_source_contract(path)
-        self.assertEqual(contract["schema_version"], 1)
+        self.assertEqual(contract["schema_version"], 2)
         self.assertEqual(len(contract["expected_sources"]), 21)
         validate_source_contract(
-            [{"source": source} for source in contract["expected_sources"]], contract
+            [
+                {
+                    "source": entry["source"],
+                    "metadata": {
+                        "benchmark_warmup": entry["benchmark_warmup"],
+                        "benchmark_repeats": entry["benchmark_repeats"],
+                    },
+                }
+                for entry in contract["expected_sources"]
+            ],
+            contract,
         )
+
+    def test_source_contract_rejects_weakened_sampling(self) -> None:
+        contract = {
+            "schema_version": 2,
+            "suite": "fixture",
+            "expected_sources": [
+                {"source": "core.txt", "benchmark_warmup": 1, "benchmark_repeats": 7}
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "benchmark_repeats is 3, expected 7"):
+            validate_source_contract(strict_runs(), contract)
 
 
 if __name__ == "__main__":

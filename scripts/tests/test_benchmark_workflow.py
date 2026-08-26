@@ -64,7 +64,23 @@ class BenchmarkWorkflowTests(unittest.TestCase):
             ],
             "server-latency-w2-p32.txt",
         ]
-        self.assertEqual(contract["expected_sources"], expected)
+        self.assertEqual(
+            [entry["source"] for entry in contract["expected_sources"]], expected
+        )
+        sampling = {
+            entry["source"]: (entry["benchmark_warmup"], entry["benchmark_repeats"])
+            for entry in contract["expected_sources"]
+        }
+        self.assertEqual(sampling["durable-sync.txt"], (1, 3))
+        self.assertEqual(sampling["durable-periodic.txt"], (1, 5))
+        self.assertEqual(sampling["durable-group.txt"], (1, 3))
+        self.assertTrue(
+            all(
+                values == (1, 7)
+                for source, values in sampling.items()
+                if source not in {"durable-sync.txt", "durable-periodic.txt", "durable-group.txt"}
+            )
+        )
         text = WORKFLOW.read_text(encoding="utf-8")
         self.assertIn("for distribution in uniform worker-affine single-worker zipf", text)
         self.assertIn("for workers in 1 2 4", text)
@@ -72,6 +88,17 @@ class BenchmarkWorkflowTests(unittest.TestCase):
         self.assertIn(
             "--source-contract engineering/performance/hosted-benchmark-contract.json", text
         )
+        for command_fragment in (
+            "--filter all --ops 200000 --warmup 1 --repeats 7 --pin-cpu",
+            '--distribution "$distribution" --warmup 1 --repeats 7',
+            "--filter store-durable-put --ops 256 --workers 1 --warmup 1 --repeats 3",
+            "--filter store-durable-periodic-read-after-write",
+            "--ops 20000 --workers 1 --warmup 1 --repeats 5",
+            '--latency --warmup 1 --repeats 3',
+            '--executor-affinity --warmup 1 --repeats 7',
+            '--executor-affinity --latency --warmup 1 --repeats 7',
+        ):
+            self.assertIn(command_fragment, text)
 
 
 if __name__ == "__main__":

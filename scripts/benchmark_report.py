@@ -95,6 +95,10 @@ def positive_integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
+def nonnegative_integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def validate_runs(runs: list[dict[str, Any]]) -> None:
     if not runs:
         raise ValueError("benchmark report contains no input suites")
@@ -125,7 +129,7 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
         ]
         if missing_metadata:
             raise ValueError(f"{source}: missing metadata: {', '.join(missing_metadata)}")
-        if not isinstance(metadata["benchmark_warmup"], int) or metadata["benchmark_warmup"] < 0:
+        if not nonnegative_integer(metadata["benchmark_warmup"]):
             raise ValueError(f"{source}: benchmark_warmup must be a non-negative integer")
         if not positive_integer(metadata["benchmark_repeats"]):
             raise ValueError(f"{source}: benchmark_repeats must be a positive integer")
@@ -145,7 +149,7 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
             for field in ("operations", "samples"):
                 if not positive_integer(result.get(field)):
                     raise ValueError(f"{source}/{name}: {field} must be a positive integer")
-            if not isinstance(result.get("warmup"), int) or result["warmup"] < 0:
+            if not nonnegative_integer(result.get("warmup")):
                 raise ValueError(f"{source}/{name}: warmup must be a non-negative integer")
             for field in (
                 "median_seconds",
@@ -183,20 +187,32 @@ def load_source_contract(path: Path) -> dict[str, Any]:
 
 
 def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any]) -> None:
-    if contract.get("schema_version") != 1:
-        raise ValueError("source contract schema_version must be 1")
+    if contract.get("schema_version") != 2:
+        raise ValueError("source contract schema_version must be 2")
     if not isinstance(contract.get("suite"), str) or not contract["suite"]:
         raise ValueError("source contract suite must be a non-empty string")
     expected = contract.get("expected_sources")
     if not isinstance(expected, list) or not expected:
         raise ValueError("source contract expected_sources must be a non-empty list")
-    for source in expected:
+    required_entry_keys = {"source", "benchmark_warmup", "benchmark_repeats"}
+    source_names: list[str] = []
+    for entry in expected:
+        if not isinstance(entry, dict) or set(entry) != required_entry_keys:
+            raise ValueError(
+                "source contract entries require source, benchmark_warmup, benchmark_repeats"
+            )
+        source = entry["source"]
         if not isinstance(source, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.txt", source):
             raise ValueError(f"source contract contains unsafe source name: {source!r}")
-    if len(expected) != len(set(expected)):
+        if not nonnegative_integer(entry["benchmark_warmup"]):
+            raise ValueError(f"source contract {source}: benchmark_warmup must be non-negative")
+        if not positive_integer(entry["benchmark_repeats"]):
+            raise ValueError(f"source contract {source}: benchmark_repeats must be positive")
+        source_names.append(source)
+    if len(source_names) != len(set(source_names)):
         raise ValueError("source contract expected_sources contains duplicates")
     actual = {str(run.get("source", "")) for run in runs}
-    wanted = set(expected)
+    wanted = set(source_names)
     missing = sorted(wanted - actual)
     unexpected = sorted(actual - wanted)
     if missing or unexpected:
@@ -206,6 +222,16 @@ def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any
         if unexpected:
             details.append(f"unexpected sources: {', '.join(unexpected)}")
         raise ValueError("source contract mismatch; " + "; ".join(details))
+    runs_by_source = {str(run["source"]): run for run in runs}
+    for entry in expected:
+        source = entry["source"]
+        metadata = runs_by_source[source].get("metadata", {})
+        for field in ("benchmark_warmup", "benchmark_repeats"):
+            if metadata.get(field) != entry[field]:
+                raise ValueError(
+                    f"source contract {source}: {field} is {metadata.get(field)!r}, "
+                    f"expected {entry[field]!r}"
+                )
 
 
 def environment_identity(environment: dict[str, Any]) -> dict[str, Any]:
