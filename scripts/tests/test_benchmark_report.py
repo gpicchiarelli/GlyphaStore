@@ -32,6 +32,7 @@ def environment(**overrides: object) -> dict[str, object]:
         "logical_cpu_count": 4,
         "compiler_identity": "clang version 20.1.0",
         "build_preset": "unix-release",
+        "benchmark_contract_sha256": "a" * 64,
     }
     values.update(overrides)
     return values
@@ -162,6 +163,23 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertIn("throughput deltas are suppressed", markdown)
         self.assertIn("Current CPU", markdown)
         self.assertNotIn("-10.00%", markdown)
+
+    def test_contract_change_suppresses_all_deltas(self) -> None:
+        current = environment(benchmark_contract_sha256="b" * 64)
+        baseline = {"environment": environment(benchmark_contract_sha256="a" * 64)}
+        current_runs = runs(90.0)
+        status, matched = compare_with_baseline(current_runs, baseline, current)
+        self.assertEqual(status["status"], "incompatible")
+        self.assertIn("benchmark_contract_sha256", status["differences"])
+        self.assertEqual(matched, 0)
+
+    def test_sampling_change_does_not_match_result_identity(self) -> None:
+        current = runs(90.0)
+        prior = runs(100.0)
+        current[0]["results"][0].update({"warmup": 1, "samples": 7})
+        prior[0]["results"][0].update({"warmup": 1, "samples": 3})
+        self.assertEqual(add_comparisons(current, {"runs": prior}), 0)
+        self.assertNotIn("comparison", current[0]["results"][0])
 
     def test_old_baseline_without_environment_is_not_compared(self) -> None:
         status = comparison_environment_status(environment(), {"schema_version": 2})

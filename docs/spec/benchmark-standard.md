@@ -135,8 +135,9 @@ For scaling tests, reserve CPUs for load generation or run clients in a separate
 
 Use identical hardware, build type, CLI, data placement, and environmental policy. Automated
 revision reports must suppress deltas when their recorded runner OS/architecture, image version,
-kernel, CPU model/count, compiler, or build preset differ or are absent. Interleave old/new runs
-when practical to reduce drift. Report absolute medians and ratios, not only percentages.
+kernel, CPU model/count, compiler, build preset, or benchmark-contract digest differ or are absent.
+Result matching must include operations, warmups, and measured repeats. Interleave old/new runs when
+practical to reduce drift. Report absolute medians and ratios, not only percentages.
 
 A change is a plausible regression only when it repeats across runs and exceeds normal spread.
 Automated reports must classify overlapping current/baseline min/max throughput ranges as

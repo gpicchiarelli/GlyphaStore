@@ -85,6 +85,7 @@ class BenchmarkWorkflowTests(unittest.TestCase):
         self.assertIn("for distribution in uniform worker-affine single-worker zipf", text)
         self.assertIn("for workers in 1 2 4", text)
         self.assertIn("for pipeline in 1 8 32 128", text)
+        self.assertIn("benchmark_contract_sha256=$(sha256sum", text)
         self.assertIn(
             "--source-contract engineering/performance/hosted-benchmark-contract.json", text
         )

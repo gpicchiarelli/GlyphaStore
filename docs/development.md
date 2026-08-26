@@ -22,7 +22,9 @@ uploads raw benchmark output, `results.json`, and the rendered `summary.md` for 
 summary is shown directly on the GitHub Actions run page and includes throughput deltas against
 the latest successful retained run on `main` only when the machine-readable runner identity matches.
 CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-preset changes
-suppress deltas and are listed in the report rather than being mislabeled as code regressions.
+suppress deltas and are listed in the report rather than being mislabeled as code regressions. The
+same identity includes the SHA-256 digest of the hosted matrix contract; individual matches include
+operation count, warmup, and measured repeats.
 For compatible environments, the report classifies overlapping min/max throughput ranges as
 inconclusive. Only disjoint ranges become improvement or regression candidates.
 The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4

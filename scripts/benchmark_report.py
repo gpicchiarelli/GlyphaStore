@@ -25,12 +25,18 @@ ENVIRONMENT_IDENTITY_FIELDS = (
     "logical_cpu_count",
     "compiler_identity",
     "build_preset",
+    "benchmark_contract_sha256",
 )
 TCP_SOURCE_PATTERN = re.compile(r"server-tcp-w(?P<workers>\d+)-p(?P<pipeline>\d+)\.txt")
 
 
 def identity_value_present(environment: dict[str, Any], field: str) -> bool:
-    return field in environment and environment[field] not in ("", "unknown", None)
+    if field not in environment or environment[field] in ("", "unknown", None):
+        return False
+    if field == "benchmark_contract_sha256":
+        value = environment[field]
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+    return True
 
 
 def scalar(value: str) -> str | int | float:
@@ -362,6 +368,8 @@ def result_key(source: str, result: dict[str, Any]) -> tuple[Any, ...]:
         # distribution (e.g. single-worker) without treating it as a regression
         # against a prior larger working set.
         result.get("operations"),
+        result.get("warmup"),
+        result.get("samples"),
     )
 
 

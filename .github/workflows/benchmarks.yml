@@ -56,6 +56,7 @@ jobs:
             echo "logical_cpu_count=$(nproc)"
             echo "compiler_identity=$(clang++ --version | head -1)"
             echo "build_preset=unix-release"
+            echo "benchmark_contract_sha256=$(sha256sum engineering/performance/hosted-benchmark-contract.json | awk '{print $1}')"
             echo "kernel=$(uname -srmo)"
             echo "cpu_count=$(nproc)"
             lscpu
