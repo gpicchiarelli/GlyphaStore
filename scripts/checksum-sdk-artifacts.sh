@@ -82,7 +82,7 @@ if [[ "$syft_available" == "1" ]]; then
   for f in "$outdir"/*; do
     [[ -f "$f" && "$(basename "$f")" != "SHA256SUMS" && "$f" != *.spdx.json && "$f" != SBOM.README ]] || continue
     base="$(basename "$f")"
-    syft "path:$f" -o "spdx-json=$outdir/${base}.spdx.json"
+    syft "file:$f" -o "spdx-json=$outdir/${base}.spdx.json"
     sbom_count=$((sbom_count + 1))
   done
   if [[ "$sbom_count" -eq 0 && "${SYFT_REQUIRED:-0}" == "1" ]]; then
@@ -95,7 +95,7 @@ else
 No SBOM generator found on PATH.
 
 For release perfection, generate SPDX/CycloneDX with one of:
-  - syft path:./artifact -o spdx-json=artifact.spdx.json
+  - syft file:./artifact -o spdx-json=artifact.spdx.json
   - cyclonedx-py / cyclonedx-gomod / etc.
 
 CI sets SYFT_REQUIRED=1 so this README path is not accepted on the supply-chain gate.
