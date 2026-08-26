@@ -312,6 +312,11 @@ def create_evidence(
         raise EvidenceError(f"release evidence subject is missing or not regular: {subject}")
     if not SAFE_NAME.fullmatch(subject.name):
         raise EvidenceError("release evidence subject filename is unsafe")
+    if require_ci and any(
+        not os.environ.get(name, "").strip()
+        for name in ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_WORKFLOW_REF")
+    ):
+        raise EvidenceError("release promotion requires retained CI evidence")
     output.parent.mkdir(parents=True, exist_ok=True)
     version = (root / "VERSION").read_text(encoding="utf-8").strip()
     timestamp = (
