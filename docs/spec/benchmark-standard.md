@@ -62,6 +62,11 @@ Single-thread reports should cover key sizes 8, 16, 32, 64, and 256 bytes and va
 
 TCP reports must state connection count, pipeline depth, request mix, payload sizes, executor affinity, and whether server/client share a process and CPUs. A same-process loopback result must be labeled as such because load generation competes for CPU and caches.
 
+Cross-SDK reports must validate the exact expected language/runtime/execution/Worker/pipeline grid.
+A run that omits an SDK is exploratory and must name every omission; it is not a complete SDK
+comparison. The result contract must reject missing or extra cells, SDK version drift, wrong
+operation/sample counts, non-finite values, and inconsistent min/median/max ordering.
+
 ## 6. RAM measurement
 
 Report baseline, peak, and final resident set size (RSS), plus peak delta over baseline. State the scope: current server process, client process, or whole benchmark process. On platforms where RSS includes file-backed mapped pages, say so.

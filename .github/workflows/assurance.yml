@@ -40,3 +40,5 @@ jobs:
         run: python engineering/tools/validate_claims.py
       - name: Validate performance / soak budgets
         run: python engineering/tools/validate_perf_budgets.py
+      - name: Validate SDK benchmark matrix contract
+        run: python -m unittest scripts.tests.test_sdk_benchmark_report

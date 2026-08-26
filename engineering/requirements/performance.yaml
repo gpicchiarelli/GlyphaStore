@@ -12,8 +12,10 @@ requirements:
   implementazione:
   - benchmarks
   - scripts/benchmark_report.py
+  - scripts/sdk_benchmark_report.py
   prove:
   - benchmarks
+  - scripts/tests/test_sdk_benchmark_report.py
   piattaforme:
   - linux-x86_64
   - macos-arm64

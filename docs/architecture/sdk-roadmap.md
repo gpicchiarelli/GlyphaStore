@@ -85,6 +85,9 @@ inferred from catalog presence.
 commit, routing mode, Worker/client counts, pipeline depth, value size, operation mix, validation,
 TLS/durability mode, affinity, warmup and sample count. Report throughput together with p50/p95/p99
 where the harness exposes latency; do not infer a language limit from one pipeline depth.
+The harness reads the canonical root version, validates the exact expected matrix, and labels a run
+with an unavailable SDK as exploratory. Set `SDK_BENCH_REQUIRE_ALL=1` when producing a complete
+cross-SDK comparison; this fails before the expensive matrix starts if Ruby or Erlang is unavailable.
 Ruby sequential and per-Worker threaded modes participate when a supported Ruby >= 3.2 runtime is
 available; older or absent runtimes are recorded as an explicit skip rather than producing
 out-of-contract measurements.
