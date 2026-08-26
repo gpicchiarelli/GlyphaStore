@@ -37,6 +37,8 @@ reconstructs the nested module from tracked files, reruns tests there, and build
 consumer matching the VCS-tag distribution model.
 The `install-consumer` job covers CMake install + external consumer smokes (requires OpenSSL when
 the tree was built with TLS; `FindGlyphaStoreTls.cmake` is installed next to the package config).
+The installed secure-profile matrix additionally uses `scripts/build-installed-cpp-interop.sh` to
+build its C++ peer strictly through `GlyphaStore::client` from an isolated installation prefix.
 
 ## Version policy
 

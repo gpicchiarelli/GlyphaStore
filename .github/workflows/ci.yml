@@ -212,8 +212,6 @@ jobs:
         timeout-minutes: 5
         env:
           GLYPHASTORED: ${{ github.workspace }}/build/unix-release/glyphastored
-          GLYPHASTORE_INTEROP_CLIENT: ${{ github.workspace }}/build/unix-release/glyphastore_interop_client
-          GLYPHASTORE_GO_INTEROP: ${{ github.workspace }}/sdk/go/bin/glyphastore-interop
         run: ./scripts/test-secure-profile-installed-artifacts.sh
 
   install-consumer:

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove installed Python/Perl/Ruby/Go/Erlang artifacts against the real secure-profile daemon.
+# Prove installed C++/Python/Perl/Ruby/Go/Erlang artifacts against the secure-profile daemon.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -8,15 +8,18 @@ perl="${PERL:-perl}"
 ruby="${RUBY:-}"
 make="${MAKE:-make}"
 daemon="${GLYPHASTORED:-}"
-cpp_source="${GLYPHASTORE_INTEROP_CLIENT:-}"
+cpp_build="${GLYPHASTORE_CPP_BUILD:-}"
 go_bin="${GO:-go}"
 
 if [[ -z "$daemon" || ! -x "$daemon" ]]; then
   echo "GLYPHASTORED must name a TLS-capable daemon" >&2
   exit 1
 fi
-if [[ -z "$cpp_source" || ! -x "$cpp_source" ]]; then
-  echo "GLYPHASTORE_INTEROP_CLIENT must name the built C++ interop peer" >&2
+if [[ -z "$cpp_build" ]]; then
+  cpp_build="$(cd "$(dirname "$daemon")" && pwd -P)"
+fi
+if [[ ! -f "$cpp_build/CMakeCache.txt" ]]; then
+  echo "GLYPHASTORE_CPP_BUILD must name the daemon's configured CMake build" >&2
   exit 1
 fi
 if ! command -v "$go_bin" >/dev/null 2>&1; then
@@ -95,7 +98,8 @@ go_artifact="$work/go-artifact"
 erlang_artifact="$work/erlang-artifact"
 mkdir -p "$work/bin" "$perl_artifact" "$perl_install" "$ruby_gem_home" "$go_artifact" \
   "$erlang_artifact"
-cp "$cpp_source" "$work/bin/glyphastore-interop-cpp"
+"$root/scripts/build-installed-cpp-interop.sh" \
+  "$cpp_build" "$work/bin/glyphastore-interop-cpp"
 
 "$python" -m venv "$venv"
 "$venv/bin/python" -m pip install --disable-pip-version-check -q --no-deps "$wheel"

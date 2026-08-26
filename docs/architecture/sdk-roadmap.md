@@ -56,10 +56,10 @@ open.
 
 The package slice installs the built Python wheel, Perl tarball and Ruby gem, and extracts the Go and
 Erlang tracked-source archives into clean isolated prefixes before rerunning the secure-profile
-matrix with source injection disabled. C++ remains a staged peer driver; it is evidence about those
-five package forms, not installed-package evidence for C++. The existing `sdk-clients` job is
-configured to run this after packaging and daemon build. C++, registry-shaped Erlang Hex
-publication and retained cross-version artifact records remain open.
+matrix with source injection disabled. The C++ peer is rebuilt as an external consumer linked only
+through the installed CMake package. The existing `sdk-clients` job is configured to run this after
+packaging and daemon build. Registry-shaped Erlang Hex publication and retained cross-version
+artifact records remain open.
 
 ### 3. Released-artifact compatibility
 
