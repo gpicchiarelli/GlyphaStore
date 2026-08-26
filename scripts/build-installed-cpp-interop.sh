@@ -34,7 +34,7 @@ consumer="$work/consumer"
 mkdir -p "$prefix" "$consumer"
 
 if [[ -f "$artifact_root/CMakeCache.txt" ]]; then
-  "$cmake_bin" --build "$artifact_root" --target glyphastore_client
+  "$cmake_bin" --build "$artifact_root" --target glyphastore_client glyphastore_abi
   "$cmake_bin" --install "$artifact_root" --prefix "$prefix" --component AbiRuntime
   "$cmake_bin" --install "$artifact_root" --prefix "$prefix" --component Development
 elif [[ -d "$artifact_root" ]]; then
