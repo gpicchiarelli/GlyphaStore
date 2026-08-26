@@ -79,7 +79,10 @@ large lever. The shared Worker loop no longer performs a second readiness wait i
 `IO::Select` dispatched a readable socket; partial reads still re-enter the absolute-deadline wait.
 Two local macOS-arm64 four-Worker passes at 200,000 PUT/GET pairs measured depth 8 at about +2.4%
 and +4.4%; depth 128 alternated between +1.3% and −0.9% and is therefore treated as flat. These are
-development measurements, not retained release evidence. See the
+development measurements, not retained release evidence. A later profile showed the public decoder's
+six-field hash was immediately discarded by every client path. Retaining the public named hash while
+using a compact internal tuple removed that transient allocation; two alternating local passes
+measured +1.3%/+2.3% at depth 8 and +2.9%/+2.4% at depth 128. See the
 [Perl README](../../sdk/perl/README.md).
 
 For Go, pipeline ownership validation now hashes the first key once rather than twice. A local

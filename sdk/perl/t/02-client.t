@@ -271,7 +271,8 @@ sub start_server {
             $connection, GlyphaStore::Client::_now() + 1, undef, 1
         );
     }
-    is($response->{value}, 'partial-ready', 'readiness fast path preserves a fragmented response');
+    is($response->[GlyphaStore::Client::RESPONSE_VALUE()], 'partial-ready',
+        'readiness fast path preserves a fragmented response');
     is($waits, 1, 'readiness skips only the first wait and partial input waits with its deadline');
     close($reader);
     waitpid($fragment_pid, 0);

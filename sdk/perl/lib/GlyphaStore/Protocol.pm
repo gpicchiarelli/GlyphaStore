@@ -249,7 +249,9 @@ sub encode_response {
         . $value;
 }
 
-sub decode_response {
+# Client-only compact result shape. This is intentionally not exported: public codec callers keep
+# the named hash returned by decode_response, while the hot client path avoids a transient hash.
+sub decode_response_fields_internal {
     my ($frame, $maximum) = @_;
     $maximum //= MAX_FRAME_BYTES;
     die "response is shorter than its header\n" if length($frame) < RESPONSE_HEADER_BYTES;
@@ -264,13 +266,22 @@ sub decode_response {
     die "unknown protocol-v2 status\n" if $status < STATUS_OK || $status > STATUS_PERMISSION_DENIED;
     die "response value extent is invalid\n"
         if RESPONSE_HEADER_BYTES + $value_size != $frame_size;
+    return [
+        $status, $request_id, $owner_worker, $worker_count, $routing_epoch,
+        substr($frame, RESPONSE_HEADER_BYTES, $value_size),
+    ];
+}
+
+sub decode_response {
+    my ($frame, $maximum) = @_;
+    my $fields = decode_response_fields_internal($frame, $maximum);
     return {
-        status        => $status,
-        request_id    => $request_id,
-        owner_worker  => $owner_worker,
-        worker_count  => $worker_count,
-        routing_epoch => $routing_epoch,
-        value         => substr($frame, RESPONSE_HEADER_BYTES, $value_size),
+        status        => $fields->[0],
+        request_id    => $fields->[1],
+        owner_worker  => $fields->[2],
+        worker_count  => $fields->[3],
+        routing_epoch => $fields->[4],
+        value         => $fields->[5],
     };
 }
 
