@@ -7,6 +7,7 @@ from pathlib import Path
 from scripts.benchmark_report import (
     ENVIRONMENT_IDENTITY_FIELDS,
     add_comparisons,
+    build_tcp_scaling_analysis,
     compare_with_baseline,
     comparison_environment_status,
     environment_identity,
@@ -73,6 +74,47 @@ def strict_runs() -> list[dict[str, object]]:
             "min_seconds": 0.9,
             "max_seconds": 1.1,
         }
+    )
+    return fixture
+
+
+def tcp_runs() -> list[dict[str, object]]:
+    rates = {
+        1: {1: 100.0, 8: 200.0, 32: 180.0, 128: 150.0},
+        2: {1: 180.0, 8: 360.0, 32: 350.0, 128: 300.0},
+        4: {1: 320.0, 8: 640.0, 32: 600.0, 128: 500.0},
+    }
+    return [
+        {
+            "source": f"server-tcp-w{workers}-p{pipeline}.txt",
+            "metadata": {"pipeline": pipeline},
+            "results": [
+                {
+                    "workers": workers,
+                    "median_ops_per_second": rate,
+                    "min_ops_per_second": rate * 0.9,
+                    "max_ops_per_second": rate * 1.1,
+                }
+            ],
+        }
+        for workers, pipelines in rates.items()
+        for pipeline, rate in pipelines.items()
+    ]
+
+
+def strict_tcp_run() -> list[dict[str, object]]:
+    fixture = strict_runs()
+    fixture[0]["source"] = "server-tcp-w2-p32.txt"
+    fixture[0]["metadata"].update(
+        {
+            "pipeline": 32,
+            "client_mode": "raw-wire",
+            "storage_mode": "volatile",
+            "latency_measurement": "disabled",
+        }
+    )
+    fixture[0]["results"][0].update(
+        {"workers": 2, "threads": 2, "distribution": "owner-bound"}
     )
     return fixture
 
@@ -184,6 +226,13 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "samples do not match"):
             validate_runs(fixture)
 
+    def test_strict_tcp_coordinates_match_source_name(self) -> None:
+        validate_runs(strict_tcp_run())
+        fixture = strict_tcp_run()
+        fixture[0]["metadata"]["pipeline"] = 8
+        with self.assertRaisesRegex(ValueError, "metadata.pipeline is 8, expected 32"):
+            validate_runs(fixture)
+
     def test_source_contract_accepts_exact_suite(self) -> None:
         contract = {
             "schema_version": 2,
@@ -246,6 +295,35 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         }
         with self.assertRaisesRegex(ValueError, "benchmark_repeats is 3, expected 7"):
             validate_source_contract(strict_runs(), contract)
+
+    def test_tcp_scaling_analysis_reports_best_pipeline_and_efficiency(self) -> None:
+        analysis = build_tcp_scaling_analysis(tcp_runs())
+        self.assertIsNotNone(analysis)
+        assert analysis is not None
+        self.assertEqual(analysis["status"], "complete")
+        best = {
+            cell["workers"]: cell
+            for cell in analysis["highest_observed_median_by_workers"]
+        }
+        self.assertEqual(best[4]["pipeline"], 8)
+        self.assertAlmostEqual(best[4]["speedup_vs_one_worker"], 3.2)
+        self.assertAlmostEqual(best[4]["scaling_efficiency_percent"], 80.0)
+        self.assertAlmostEqual(best[4]["gain_vs_pipeline_one_percent"], 100.0)
+
+        markdown = render_markdown(
+            tcp_runs(), "now", None, {"status": "no-baseline"}, analysis
+        )
+        self.assertIn("## TCP scaling summary", markdown)
+        self.assertIn(
+            "| 4 | 8 | 640 | 576–704 | +100.00% | 3.20× | 80.00% |", markdown
+        )
+
+    def test_tcp_scaling_analysis_marks_missing_cells_partial(self) -> None:
+        analysis = build_tcp_scaling_analysis(tcp_runs()[:1])
+        self.assertIsNotNone(analysis)
+        assert analysis is not None
+        self.assertEqual(analysis["status"], "partial")
+        self.assertEqual(len(analysis["missing_cells"]), 11)
 
 
 if __name__ == "__main__":

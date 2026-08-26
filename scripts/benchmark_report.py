@@ -26,6 +26,7 @@ ENVIRONMENT_IDENTITY_FIELDS = (
     "compiler_identity",
     "build_preset",
 )
+TCP_SOURCE_PATTERN = re.compile(r"server-tcp-w(?P<workers>\d+)-p(?P<pipeline>\d+)\.txt")
 
 
 def identity_value_present(environment: dict[str, Any], field: str) -> bool:
@@ -173,6 +174,30 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
                 ):
                     raise ValueError(
                         f"{source}/{name}: invalid {suffix} min/median/max ordering"
+                    )
+        tcp_match = TCP_SOURCE_PATTERN.fullmatch(source)
+        if tcp_match is not None:
+            expected_workers = int(tcp_match.group("workers"))
+            expected_pipeline = int(tcp_match.group("pipeline"))
+            if len(results) != 1:
+                raise ValueError(f"{source}: TCP matrix source must contain exactly one result")
+            result = results[0]
+            expected_fields = {
+                "metadata.pipeline": (metadata.get("pipeline"), expected_pipeline),
+                "metadata.client_mode": (metadata.get("client_mode"), "raw-wire"),
+                "metadata.storage_mode": (metadata.get("storage_mode"), "volatile"),
+                "metadata.latency_measurement": (
+                    metadata.get("latency_measurement"),
+                    "disabled",
+                ),
+                "result.workers": (result.get("workers"), expected_workers),
+                "result.threads": (result.get("threads"), expected_workers),
+                "result.distribution": (result.get("distribution"), "owner-bound"),
+            }
+            for field, (actual, expected) in expected_fields.items():
+                if actual != expected:
+                    raise ValueError(
+                        f"{source}: {field} is {actual!r}, expected {expected!r}"
                     )
 
 
@@ -442,11 +467,68 @@ def regressions_over_threshold(runs: list[dict[str, Any]], threshold: float) -> 
     return regressions
 
 
+def build_tcp_scaling_analysis(runs: list[dict[str, Any]]) -> dict[str, Any] | None:
+    cells: list[dict[str, Any]] = []
+    for run in runs:
+        match = TCP_SOURCE_PATTERN.fullmatch(str(run.get("source", "")))
+        results = run.get("results", [])
+        if match is None or not isinstance(results, list) or len(results) != 1:
+            continue
+        result = results[0]
+        rate = number(result.get("median_ops_per_second", 0))
+        if rate <= 0:
+            continue
+        cells.append(
+            {
+                "source": run["source"],
+                "workers": int(match.group("workers")),
+                "pipeline": int(match.group("pipeline")),
+                "median_ops_per_second": rate,
+                "min_ops_per_second": number(result.get("min_ops_per_second", 0)),
+                "max_ops_per_second": number(result.get("max_ops_per_second", 0)),
+            }
+        )
+    if not cells:
+        return None
+    cells.sort(key=lambda cell: (cell["workers"], cell["pipeline"]))
+    by_coordinate = {(cell["workers"], cell["pipeline"]): cell for cell in cells}
+    expected_coordinates = {
+        (workers, pipeline)
+        for workers in (1, 2, 4)
+        for pipeline in (1, 8, 32, 128)
+    }
+    missing = sorted(expected_coordinates - set(by_coordinate))
+    for cell in cells:
+        one_worker = by_coordinate.get((1, cell["pipeline"]))
+        worker_depth_one = by_coordinate.get((cell["workers"], 1))
+        if one_worker is not None:
+            speedup = cell["median_ops_per_second"] / one_worker["median_ops_per_second"]
+            cell["speedup_vs_one_worker"] = speedup
+            cell["scaling_efficiency_percent"] = speedup / cell["workers"] * 100
+        if worker_depth_one is not None:
+            cell["gain_vs_pipeline_one_percent"] = (
+                cell["median_ops_per_second"] / worker_depth_one["median_ops_per_second"] - 1
+            ) * 100
+    best_by_workers = []
+    for workers in sorted({cell["workers"] for cell in cells}):
+        candidates = [cell for cell in cells if cell["workers"] == workers]
+        best_by_workers.append(max(candidates, key=lambda cell: cell["median_ops_per_second"]))
+    return {
+        "status": "complete" if not missing else "partial",
+        "missing_cells": [
+            {"workers": workers, "pipeline": pipeline} for workers, pipeline in missing
+        ],
+        "cells": cells,
+        "highest_observed_median_by_workers": best_by_workers,
+    }
+
+
 def render_markdown(
     runs: list[dict[str, Any]],
     generated_at: str,
     baseline_generated_at: str | None,
     comparison_environment: dict[str, Any],
+    tcp_scaling: dict[str, Any] | None = None,
 ) -> str:
     result_count = sum(len(run["results"]) for run in runs)
     lines = [
@@ -565,6 +647,42 @@ def render_markdown(
         )
     lines.append("")
 
+    if tcp_scaling is not None:
+        lines.extend(
+            [
+                "## TCP scaling summary",
+                "",
+                f"Matrix status: **{tcp_scaling['status']}**. Highest observed median per Worker "
+                "count is descriptive; overlapping ranges remain inconclusive.",
+                "",
+                "| Workers | Pipeline | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+            ]
+        )
+        for cell in tcp_scaling["highest_observed_median_by_workers"]:
+            gain = cell.get("gain_vs_pipeline_one_percent")
+            speedup = cell.get("speedup_vs_one_worker")
+            efficiency = cell.get("scaling_efficiency_percent")
+            gain_text = f"{gain:+.2f}%" if isinstance(gain, (int, float)) else "—"
+            speedup_text = f"{speedup:.2f}×" if isinstance(speedup, (int, float)) else "—"
+            efficiency_text = (
+                f"{efficiency:.2f}%" if isinstance(efficiency, (int, float)) else "—"
+            )
+            lines.append(
+                f"| {cell['workers']} | {cell['pipeline']} | "
+                f"{cell['median_ops_per_second']:,.0f} | "
+                f"{cell['min_ops_per_second']:,.0f}–{cell['max_ops_per_second']:,.0f} | "
+                f"{gain_text} | {speedup_text} | {efficiency_text} |"
+            )
+        lines.extend(
+            [
+                "",
+                "Efficiency is the observed throughput speedup divided by Worker count; it is not "
+                "CPU utilization or a production-capacity claim.",
+                "",
+            ]
+        )
+
     durable_results = [
         (Path(run["source"]).stem, result)
         for run in runs
@@ -666,16 +784,18 @@ def main() -> int:
         baseline = json.loads(args.baseline.read_text(encoding="utf-8"))
     environment = parse_environment(args.environment)
     comparison_environment, matched_results = compare_with_baseline(runs, baseline, environment)
+    tcp_scaling = build_tcp_scaling_analysis(runs)
     generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
     baseline_generated_at = baseline.get("generated_at") if baseline else None
     report = {
-        "schema_version": 3,
+        "schema_version": 4,
         "generated_at": generated_at,
         "baseline_generated_at": baseline_generated_at,
         "environment": environment,
         "environment_identity": environment_identity(environment),
         "baseline_comparison": comparison_environment,
         "matched_baseline_results": matched_results,
+        "analyses": {"tcp_scaling": tcp_scaling},
         "runs": runs,
     }
 
@@ -683,7 +803,9 @@ def main() -> int:
     args.markdown_path.parent.mkdir(parents=True, exist_ok=True)
     args.json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     args.markdown_path.write_text(
-        render_markdown(runs, generated_at, baseline_generated_at, comparison_environment),
+        render_markdown(
+            runs, generated_at, baseline_generated_at, comparison_environment, tcp_scaling
+        ),
         encoding="utf-8",
     )
 

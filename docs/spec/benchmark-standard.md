@@ -68,7 +68,20 @@ Do not compare an internal owner-bound function with the public Store path as th
 
 Single-thread reports should cover key sizes 8, 16, 32, 64, and 256 bytes and value sizes 0, 64, and 256 bytes where meaningful. Scaling reports should include 1, 2, and 4 Workers/clients, then additional physical-core counts supported by the machine. Both affine and uniform distributions are required.
 
+For a fixed TCP pipeline depth, report Worker scaling as:
+
+```text
+speedup(W, p)    = median_ops_per_second(W, p) / median_ops_per_second(1, p)
+efficiency(W, p) = speedup(W, p) / W
+```
+
+The highest observed median per Worker count is a descriptive matrix summary, not an automatic
+optimum: min/max overlap, latency, bandwidth, and resource use still govern interpretation.
+
 TCP reports must state connection count, pipeline depth, request mix, payload sizes, executor affinity, and whether server/client share a process and CPUs. A same-process loopback result must be labeled as such because load generation competes for CPU and caches.
+Canonical TCP matrix filenames, metadata, and result coordinates must agree on Worker/client count
+and pipeline depth; transport mode, routing distribution, storage mode, and latency instrumentation
+are part of the validated workload identity.
 
 Cross-SDK reports must validate the exact expected language/runtime/execution/Worker/pipeline grid.
 A run that omits an SDK is exploratory and must name every omission; it is not a complete SDK

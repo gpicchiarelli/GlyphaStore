@@ -25,8 +25,12 @@ CPU, runner image, kernel, compiler, architecture, logical CPU count, and build-
 suppress deltas and are listed in the report rather than being mislabeled as code regressions.
 For compatible environments, the report classifies overlapping min/max throughput ranges as
 inconclusive. Only disjoint ranges become improvement or regression candidates.
+The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4
+Worker row, its gain over pipeline depth 1, speedup against the one-Worker cell at the same depth,
+and scaling efficiency. These are descriptive scheduling signals, not capacity claims.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
-metadata, count mismatches, invalid numbers, and inconsistent statistical ordering fail the report.
+metadata, count mismatches, invalid numbers, inconsistent statistical ordering, or disagreement
+between a TCP filename and its runtime coordinates fail the report.
 The machine-readable `engineering/performance/hosted-benchmark-contract.json` enumerates all 21
 expected core, parallel, durable, TCP-scaling, and TCP-latency source files. Missing or unexpected
 files invalidate the report before baseline comparison. The same contract fixes one warmup and the
