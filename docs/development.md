@@ -30,6 +30,10 @@ inconclusive. Only disjoint ranges become improvement or regression candidates.
 The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4
 Worker row, its gain over pipeline depth 1, speedup against the one-Worker cell at the same depth,
 and scaling efficiency. These are descriptive scheduling signals, not capacity claims.
+The report also selects the smallest measured pipeline whose median throughput is at least 95% of
+the best median in the same Worker row. This “economical pipeline” is a reproducible near-peak
+choice that limits in-flight work; it is advisory and does not override an application's latency or
+memory requirements.
 For every TCP cell the server benchmark also records the median and worst observed Reactor input
 buffer compactions and bytes moved. The scaling summary normalizes median bytes moved by the timed
 operation count; this distinguishes useful pipeline scaling from throughput that hides growing

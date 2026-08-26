@@ -1,6 +1,7 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "suite": "hosted-release-benchmarks",
+  "tcp_near_peak_fraction": 0.95,
   "required_tcp_result_fields": [
     "median_reactor_input_buffer_compactions",
     "maximum_reactor_input_buffer_compactions",

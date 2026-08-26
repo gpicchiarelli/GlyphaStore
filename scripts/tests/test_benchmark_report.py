@@ -278,8 +278,9 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_accepts_exact_suite(self) -> None:
         contract = {
-            "schema_version": 3,
+            "schema_version": 4,
             "suite": "fixture",
+            "tcp_near_peak_fraction": 0.95,
             "required_tcp_result_fields": [
                 "median_reactor_input_buffer_compactions",
                 "maximum_reactor_input_buffer_compactions",
@@ -294,8 +295,9 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_rejects_missing_and_extra_suites(self) -> None:
         contract = {
-            "schema_version": 3,
+            "schema_version": 4,
             "suite": "fixture",
+            "tcp_near_peak_fraction": 0.95,
             "required_tcp_result_fields": [
                 "median_reactor_input_buffer_compactions",
                 "maximum_reactor_input_buffer_compactions",
@@ -324,7 +326,8 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             / "hosted-benchmark-contract.json"
         )
         contract = load_source_contract(path)
-        self.assertEqual(contract["schema_version"], 3)
+        self.assertEqual(contract["schema_version"], 4)
+        self.assertEqual(contract["tcp_near_peak_fraction"], 0.95)
         self.assertEqual(len(contract["expected_sources"]), 21)
         validate_source_contract(
             [
@@ -342,8 +345,9 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_source_contract_rejects_weakened_sampling(self) -> None:
         contract = {
-            "schema_version": 3,
+            "schema_version": 4,
             "suite": "fixture",
+            "tcp_near_peak_fraction": 0.95,
             "required_tcp_result_fields": [
                 "median_reactor_input_buffer_compactions",
                 "maximum_reactor_input_buffer_compactions",
@@ -371,15 +375,36 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(best[4]["scaling_efficiency_percent"], 80.0)
         self.assertAlmostEqual(best[4]["gain_vs_pipeline_one_percent"], 100.0)
         self.assertAlmostEqual(best[4]["median_input_buffer_bytes_moved_per_operation"], 3.2)
+        economical = {
+            cell["workers"]: cell for cell in analysis["smallest_near_peak_by_workers"]
+        }
+        self.assertEqual(economical[4]["pipeline"], 8)
+        self.assertEqual(economical[4]["retained_peak_percent"], 100.0)
 
         markdown = render_markdown(
             tcp_runs(), "now", None, {"status": "no-baseline"}, analysis
         )
         self.assertIn("## TCP scaling summary", markdown)
         self.assertIn(
-            "| 4 | 8 | 640 | 576–704 | +100.00% | 3.20× | 80.00% | 8 | 3.20 B |",
+            "| 4 | 8 | 8 | 100.00% | 640 | 576–704 | +100.00% | 3.20× | 80.00% | 8 | 3.20 B |",
             markdown,
         )
+
+    def test_tcp_scaling_selects_smallest_near_peak_pipeline(self) -> None:
+        fixture = tcp_runs()
+        for run in fixture:
+            if run["source"] == "server-tcp-w4-p32.txt":
+                run["results"][0]["median_ops_per_second"] = 650.0
+                run["results"][0]["min_ops_per_second"] = 630.0
+                run["results"][0]["max_ops_per_second"] = 670.0
+        analysis = build_tcp_scaling_analysis(fixture)
+        assert analysis is not None
+        economical = {
+            cell["workers"]: cell for cell in analysis["smallest_near_peak_by_workers"]
+        }
+        self.assertEqual(economical[4]["peak_pipeline"], 32)
+        self.assertEqual(economical[4]["pipeline"], 8)
+        self.assertAlmostEqual(economical[4]["retained_peak_percent"], 640 / 650 * 100)
 
     def test_tcp_scaling_analysis_marks_missing_cells_partial(self) -> None:
         analysis = build_tcp_scaling_analysis(tcp_runs()[:1])

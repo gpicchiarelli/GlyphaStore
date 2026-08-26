@@ -28,6 +28,7 @@ ENVIRONMENT_IDENTITY_FIELDS = (
     "benchmark_contract_sha256",
 )
 TCP_SOURCE_PATTERN = re.compile(r"server-tcp-w(?P<workers>\d+)-p(?P<pipeline>\d+)\.txt")
+TCP_NEAR_PEAK_FRACTION = 0.95
 REACTOR_INPUT_PROFILE_FIELDS = (
     "median_reactor_input_buffer_compactions",
     "maximum_reactor_input_buffer_compactions",
@@ -243,13 +244,17 @@ def load_source_contract(path: Path) -> dict[str, Any]:
 
 
 def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any]) -> None:
-    if contract.get("schema_version") != 3:
-        raise ValueError("source contract schema_version must be 3")
+    if contract.get("schema_version") != 4:
+        raise ValueError("source contract schema_version must be 4")
     if not isinstance(contract.get("suite"), str) or not contract["suite"]:
         raise ValueError("source contract suite must be a non-empty string")
     if contract.get("required_tcp_result_fields") != list(REACTOR_INPUT_PROFILE_FIELDS):
         raise ValueError(
             "source contract required_tcp_result_fields must match the Reactor input profile"
+        )
+    if contract.get("tcp_near_peak_fraction") != TCP_NEAR_PEAK_FRACTION:
+        raise ValueError(
+            f"source contract tcp_near_peak_fraction must be {TCP_NEAR_PEAK_FRACTION}"
         )
     expected = contract.get("expected_sources")
     if not isinstance(expected, list) or not expected:
@@ -566,16 +571,35 @@ def build_tcp_scaling_analysis(runs: list[dict[str, Any]]) -> dict[str, Any] | N
                 cell["median_ops_per_second"] / worker_depth_one["median_ops_per_second"] - 1
             ) * 100
     best_by_workers = []
+    smallest_near_peak_by_workers = []
     for workers in sorted({cell["workers"] for cell in cells}):
         candidates = [cell for cell in cells if cell["workers"] == workers]
-        best_by_workers.append(max(candidates, key=lambda cell: cell["median_ops_per_second"]))
+        best = max(candidates, key=lambda cell: cell["median_ops_per_second"])
+        best_by_workers.append(best)
+        threshold = best["median_ops_per_second"] * TCP_NEAR_PEAK_FRACTION
+        selected = min(
+            (cell for cell in candidates if cell["median_ops_per_second"] >= threshold),
+            key=lambda cell: cell["pipeline"],
+        )
+        smallest_near_peak_by_workers.append(
+            {
+                **selected,
+                "peak_pipeline": best["pipeline"],
+                "peak_median_ops_per_second": best["median_ops_per_second"],
+                "retained_peak_percent": selected["median_ops_per_second"]
+                / best["median_ops_per_second"]
+                * 100,
+            }
+        )
     return {
         "status": "complete" if not missing else "partial",
         "missing_cells": [
             {"workers": workers, "pipeline": pipeline} for workers, pipeline in missing
         ],
         "cells": cells,
+        "near_peak_fraction": TCP_NEAR_PEAK_FRACTION,
         "highest_observed_median_by_workers": best_by_workers,
+        "smallest_near_peak_by_workers": smallest_near_peak_by_workers,
     }
 
 
@@ -721,11 +745,18 @@ def render_markdown(
                 f"Matrix status: **{tcp_scaling['status']}**. Highest observed median per Worker "
                 "count is descriptive; overlapping ranges remain inconclusive.",
                 "",
-                "| Workers | Pipeline | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency | Input compactions | Input bytes copied/op |",
-                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+                "The economical pipeline is the smallest measured depth whose median retains at "
+                f"least {tcp_scaling['near_peak_fraction'] * 100:.0f}% of that Worker's observed peak.",
+                "",
+                "| Workers | Peak pipeline | Economical pipeline | Retained peak | Median ops/s | Observed min–max | Gain vs p1 | Speedup vs W1 | Efficiency | Economical input compactions | Economical input bytes copied/op |",
+                "| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
             ]
         )
+        economical_by_workers = {
+            cell["workers"]: cell for cell in tcp_scaling["smallest_near_peak_by_workers"]
+        }
         for cell in tcp_scaling["highest_observed_median_by_workers"]:
+            economical = economical_by_workers[cell["workers"]]
             gain = cell.get("gain_vs_pipeline_one_percent")
             speedup = cell.get("speedup_vs_one_worker")
             efficiency = cell.get("scaling_efficiency_percent")
@@ -734,8 +765,8 @@ def render_markdown(
             efficiency_text = (
                 f"{efficiency:.2f}%" if isinstance(efficiency, (int, float)) else "—"
             )
-            compactions = cell.get("median_input_buffer_compactions")
-            copied_per_operation = cell.get("median_input_buffer_bytes_moved_per_operation")
+            compactions = economical.get("median_input_buffer_compactions")
+            copied_per_operation = economical.get("median_input_buffer_bytes_moved_per_operation")
             compactions_text = (
                 f"{compactions:,.0f}" if isinstance(compactions, (int, float)) else "—"
             )
@@ -745,7 +776,8 @@ def render_markdown(
                 else "—"
             )
             lines.append(
-                f"| {cell['workers']} | {cell['pipeline']} | "
+                f"| {cell['workers']} | {cell['pipeline']} | {economical['pipeline']} | "
+                f"{economical['retained_peak_percent']:.2f}% | "
                 f"{cell['median_ops_per_second']:,.0f} | "
                 f"{cell['min_ops_per_second']:,.0f}–{cell['max_ops_per_second']:,.0f} | "
                 f"{gain_text} | {speedup_text} | {efficiency_text} | "
@@ -866,7 +898,7 @@ def main() -> int:
     generated_at = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
     baseline_generated_at = baseline.get("generated_at") if baseline else None
     report = {
-        "schema_version": 4,
+        "schema_version": 5,
         "generated_at": generated_at,
         "baseline_generated_at": baseline_generated_at,
         "environment": environment,

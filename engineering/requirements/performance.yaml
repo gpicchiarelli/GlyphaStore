@@ -13,6 +13,8 @@ requirements:
     validate filename/runtime coordinates and derive per-depth Worker speedup, scaling efficiency,
     and the highest observed median pipeline. The hosted contract also requires ordered Reactor
     input-buffer compaction and copied-byte profiles, normalized per timed operation in the report.
+    It derives the smallest measured pipeline retaining at least 95% of the best same-Worker median,
+    exposing that economical depth as advice rather than silently changing client behavior.
     Durable profile summaries require explicit durable storage metadata and cannot be inferred from
     shared completion counters alone.
   autorita:

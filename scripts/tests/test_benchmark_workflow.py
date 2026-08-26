@@ -48,7 +48,8 @@ class BenchmarkWorkflowTests(unittest.TestCase):
 
     def test_hosted_matrix_contract_has_all_twenty_one_sources(self) -> None:
         contract = json.loads(CONTRACT.read_text(encoding="utf-8"))
-        self.assertEqual(contract["schema_version"], 3)
+        self.assertEqual(contract["schema_version"], 4)
+        self.assertEqual(contract["tcp_near_peak_fraction"], 0.95)
         self.assertEqual(
             contract["required_tcp_result_fields"],
             [
