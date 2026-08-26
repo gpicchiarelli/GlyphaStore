@@ -1,8 +1,8 @@
 #include "glyphastore/server/mutation_window.hpp"
 #include "test.hpp"
 
-using glyphastore::server::MutationVisibilityBarrier;
 using glyphastore::server::kMaximumMutationWindow;
+using glyphastore::server::MutationVisibilityBarrier;
 
 GLYPHA_TEST("mutation window visibility barrier enforces RAW epoch") {
     MutationVisibilityBarrier barrier{};

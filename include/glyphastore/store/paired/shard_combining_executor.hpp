@@ -22,11 +22,10 @@ enum class ShardExecutionToken : std::uint32_t {
 }
 
 // IDLE → EXECUTING. Returns true when this caller holds the token.
-[[nodiscard]] inline auto try_acquire_execution_token(std::atomic<std::uint32_t>& token) noexcept
-    -> bool {
+[[nodiscard]] inline auto try_acquire_execution_token(std::atomic<std::uint32_t>& token) noexcept -> bool {
     auto expected = execution_token_idle();
-    return token.compare_exchange_strong(expected, execution_token_executing(),
-                                         std::memory_order_acq_rel, std::memory_order_acquire);
+    return token.compare_exchange_strong(expected, execution_token_executing(), std::memory_order_acq_rel,
+                                         std::memory_order_acquire);
 }
 
 inline void release_execution_token(std::atomic<std::uint32_t>& token) noexcept {
@@ -35,8 +34,8 @@ inline void release_execution_token(std::atomic<std::uint32_t>& token) noexcept 
 
 // After EXECUTING → IDLE, re-acquire if `pending_work` is true (lost-wakeup-safe).
 // Returns true when this caller holds the token again.
-[[nodiscard]] inline auto try_reacquire_execution_token_if_pending(
-    std::atomic<std::uint32_t>& token, const bool pending_work) noexcept -> bool {
+[[nodiscard]] inline auto try_reacquire_execution_token_if_pending(std::atomic<std::uint32_t>& token,
+                                                                   const bool pending_work) noexcept -> bool {
     if (!pending_work) {
         return false;
     }

@@ -85,8 +85,8 @@ GLYPHA_TEST("embedded volatile combining omits dedicated Writer threads") {
     GLYPHA_REQUIRE((**opened).put("k", bytes("v")).has_value());
     const auto got = (**opened).get("k");
     GLYPHA_REQUIRE(got.has_value());
-    GLYPHA_REQUIRE(
-        std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) == "v");
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "v");
 }
 
 GLYPHA_TEST("embedded volatile combining preserves same-key FIFO under contention") {
@@ -115,8 +115,7 @@ GLYPHA_TEST("embedded volatile combining preserves same-key FIFO under contentio
     GLYPHA_REQUIRE(!failed.load());
     const auto got = store.get("shared");
     GLYPHA_REQUIRE(got.has_value());
-    const auto text =
-        std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size());
+    const auto text = std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size());
     GLYPHA_REQUIRE(!text.empty());
 }
 
@@ -141,8 +140,7 @@ GLYPHA_TEST("embedded durable_sync combining omits dedicated Writer and keeps RA
     const auto first = (**opened).get("alpha");
     GLYPHA_REQUIRE(first.has_value());
     GLYPHA_REQUIRE(
-        std::string_view(reinterpret_cast<const char*>(first->bytes.data()), first->bytes.size()) ==
-        "one");
+        std::string_view(reinterpret_cast<const char*>(first->bytes.data()), first->bytes.size()) == "one");
     GLYPHA_REQUIRE((**opened).close().has_value());
     std::error_code ec;
     std::filesystem::remove_all(store_path, ec);

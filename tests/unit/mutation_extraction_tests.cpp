@@ -1,9 +1,8 @@
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/fail_closed_state.hpp"
 #include "glyphastore/store/paired/mutation_batch.hpp"
 #include "glyphastore/store/paired/mutation_execution.hpp"
 #include "test.hpp"
-
-#include "glyphastore/core/key_hash.hpp"
 
 #include <array>
 #include <atomic>
@@ -26,13 +25,11 @@ GLYPHA_TEST("mutation_batch durable_subbatch_end stops before duplicate keys") {
         HashedKey{.key = "a", .hash = 1},
         HashedKey{.key = "c", .hash = 3},
     };
-    const auto end = durable_subbatch_end(0, keys.size(), [&](const std::size_t i) -> const HashedKey& {
-        return keys[i];
-    });
+    const auto end = durable_subbatch_end(0, keys.size(),
+                                          [&](const std::size_t i) -> const HashedKey& { return keys[i]; });
     GLYPHA_REQUIRE(end == 2);
-    const auto next = durable_subbatch_end(2, keys.size(), [&](const std::size_t i) -> const HashedKey& {
-        return keys[i];
-    });
+    const auto next = durable_subbatch_end(2, keys.size(),
+                                           [&](const std::size_t i) -> const HashedKey& { return keys[i]; });
     GLYPHA_REQUIRE(next == 4);
     GLYPHA_REQUIRE(sync_publication_chunk_cap(100) == kMaximumPublicationBatch);
     GLYPHA_REQUIRE(sync_publication_chunk_cap(7) == 7);
