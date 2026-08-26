@@ -22,6 +22,11 @@ class CiWorkflowTests(unittest.TestCase):
         for pattern in ("*.whl", "*.gem", "*.tar.gz", "*package-info.txt"):
             self.assertIn(f"dist/sdk-artifacts/{pattern}", upload)
 
+    def test_sanitizers_cancel_only_obsolete_runs_for_the_same_branch(self) -> None:
+        workflow = (ROOT / ".github/workflows/sanitizers.yml").read_text(encoding="utf-8")
+        self.assertIn("group: sanitizers-${{ github.head_ref || github.ref_name }}", workflow)
+        self.assertIn("cancel-in-progress: true", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
