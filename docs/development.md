@@ -28,6 +28,8 @@ inconclusive. Only disjoint ranges become improvement or regression candidates.
 The JSON and Markdown reports also derive the highest observed median pipeline for each 1/2/4
 Worker row, its gain over pipeline depth 1, speedup against the one-Worker cell at the same depth,
 and scaling efficiency. These are descriptive scheduling signals, not capacity claims.
+The durable-pipeline subsection requires both an explicit `durable-*` storage mode and completed
+durable mutations; volatile server counters are never relabeled as durability measurements.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
 metadata, count mismatches, invalid numbers, inconsistent statistical ordering, or disagreement
 between a TCP filename and its runtime coordinates fail the report.

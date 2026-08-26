@@ -121,6 +121,9 @@ aggregate wire B/s   = wire ingress + wire egress
 Report bytes and operations together. Empty-value workloads can show high operations/s but negligible payload bandwidth; large values can show lower operations/s and higher served bandwidth. TCP/IP/Ethernet framing overhead is outside protocol-wire metrics unless separately measured by the network stack.
 
 Durable benchmarks should additionally report logical Record bytes written, filesystem bytes written when observable, and write amplification as a ratio with a precisely named numerator/denominator.
+Shared mutation-completion counters do not by themselves identify a durable workload. A report may
+label queue/service/commit data as a durable pipeline profile only when the recorded storage mode is
+explicitly durable and the durable completion counter is non-zero.
 
 ## 8. Isolation and affinity
 

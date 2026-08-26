@@ -523,6 +523,16 @@ def build_tcp_scaling_analysis(runs: list[dict[str, Any]]) -> dict[str, Any] | N
     }
 
 
+def has_durable_pipeline_profile(run: dict[str, Any], result: dict[str, Any]) -> bool:
+    metadata = run.get("metadata", {})
+    storage_mode = metadata.get("storage_mode") if isinstance(metadata, dict) else None
+    return (
+        isinstance(storage_mode, str)
+        and storage_mode.startswith("durable-")
+        and number(result.get("durable_completed", 0)) > 0
+    )
+
+
 def render_markdown(
     runs: list[dict[str, Any]],
     generated_at: str,
@@ -687,7 +697,7 @@ def render_markdown(
         (Path(run["source"]).stem, result)
         for run in runs
         for result in run["results"]
-        if number(result.get("durable_completed", 0)) > 0
+        if has_durable_pipeline_profile(run, result)
     ]
     if durable_results:
         lines.extend(

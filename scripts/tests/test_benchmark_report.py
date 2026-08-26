@@ -11,6 +11,7 @@ from scripts.benchmark_report import (
     compare_with_baseline,
     comparison_environment_status,
     environment_identity,
+    has_durable_pipeline_profile,
     load_source_contract,
     parse_environment,
     regressions_over_threshold,
@@ -324,6 +325,24 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         assert analysis is not None
         self.assertEqual(analysis["status"], "partial")
         self.assertEqual(len(analysis["missing_cells"]), 11)
+
+    def test_durable_profile_excludes_volatile_completion_counters(self) -> None:
+        result = {"durable_completed": 100}
+        volatile = {"metadata": {"storage_mode": "volatile"}}
+        durable = {"metadata": {"storage_mode": "durable-periodic"}}
+        self.assertFalse(has_durable_pipeline_profile(volatile, result))
+        self.assertTrue(has_durable_pipeline_profile(durable, result))
+
+        report_runs = [
+            {"source": "volatile.txt", **volatile, "results": [dict(result)]},
+            {"source": "durable.txt", **durable, "results": [dict(result)]},
+        ]
+        markdown = render_markdown(
+            report_runs, "now", None, {"status": "no-baseline"}
+        )
+        durable_section = markdown.split("## Durable pipeline profile", 1)[1]
+        self.assertIn("| durable |", durable_section)
+        self.assertNotIn("| volatile |", durable_section)
 
 
 if __name__ == "__main__":
