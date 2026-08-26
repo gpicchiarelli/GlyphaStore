@@ -18,4 +18,43 @@ endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/GlyphaStoreTargets.cmake")
 
+set(GLYPHASTORE_BUILT_WITH_LTO "@GLYPHASTORE_LTO_ENABLED@")
+if(GLYPHASTORE_BUILT_WITH_LTO)
+    set(_glyphastore_lto_compiler_id "@CMAKE_CXX_COMPILER_ID@")
+    set(_glyphastore_lto_compiler_version "@CMAKE_CXX_COMPILER_VERSION@")
+    if(NOT "${CMAKE_CXX_COMPILER_ID}" STREQUAL "${_glyphastore_lto_compiler_id}" OR
+       NOT "${CMAKE_CXX_COMPILER_VERSION}" VERSION_EQUAL "${_glyphastore_lto_compiler_version}")
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE
+            "GlyphaStore was built with LTO using "
+            "${_glyphastore_lto_compiler_id} ${_glyphastore_lto_compiler_version}; "
+            "the consumer uses ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}.")
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
+        return()
+    endif()
+
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT _glyphastore_consumer_ipo_supported
+                        OUTPUT _glyphastore_consumer_ipo_error
+                        LANGUAGES CXX)
+    if(NOT _glyphastore_consumer_ipo_supported)
+        set(${CMAKE_FIND_PACKAGE_NAME}_NOT_FOUND_MESSAGE
+            "GlyphaStore contains LTO archives but the consumer toolchain cannot link IPO: "
+            "${_glyphastore_consumer_ipo_error}")
+        set(${CMAKE_FIND_PACKAGE_NAME}_FOUND FALSE)
+        return()
+    endif()
+
+    set(_glyphastore_lto_link_options "@GLYPHASTORE_LTO_LINK_OPTIONS@")
+    foreach(_glyphastore_target IN ITEMS core wire tls_layer client)
+        set_property(TARGET GlyphaStore::${_glyphastore_target} APPEND PROPERTY
+            INTERFACE_LINK_OPTIONS ${_glyphastore_lto_link_options})
+    endforeach()
+    unset(_glyphastore_target)
+    unset(_glyphastore_lto_link_options)
+    unset(_glyphastore_consumer_ipo_supported)
+    unset(_glyphastore_consumer_ipo_error)
+    unset(_glyphastore_lto_compiler_id)
+    unset(_glyphastore_lto_compiler_version)
+endif()
+
 check_required_components(GlyphaStore)
