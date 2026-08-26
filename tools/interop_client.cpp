@@ -71,6 +71,7 @@ void usage(const char* program) {
         << " ... get --key-hex HEX\n  " << program << " ... erase --key-hex HEX\n  " << program
         << " ... pipeline-put-get --key-hex HEX --value-hex HEX\n  " << program
         << " ... expect-not-found --key-hex HEX\n  " << program
+        << " ... expect-permission-denied --key-hex HEX --value-hex HEX\n  " << program
         << " ... expect-frame-limit\n";
 }
 
@@ -128,7 +129,8 @@ int main(int argc, char** argv) try {
         } else if (arg == "--insecure-skip-verify") {
             tls.insecure_skip_verify = true;
         } else if (arg == "put" || arg == "get" || arg == "erase" || arg == "pipeline-put-get" ||
-                   arg == "expect-not-found" || arg == "expect-frame-limit") {
+                   arg == "expect-not-found" || arg == "expect-permission-denied" ||
+                   arg == "expect-frame-limit") {
             command = std::string{arg};
         } else {
             std::cerr << "unknown argument: " << arg << '\n';
@@ -208,6 +210,18 @@ int main(int argc, char** argv) try {
         if (missing || missing.error().code != glyphastore::ErrorCode::not_found ||
             missing.error().category != "not_found" || missing.error().retryability != "new_attempt") {
             std::cerr << "GET did not produce the expected structured not_found error\n";
+            return 1;
+        }
+        return 0;
+    }
+    if (command == "expect-permission-denied") {
+        const auto value = parse_hex(value_hex);
+        const auto denied = client->put(
+            key, value, glyphastore::client::PutOptions{.expire_at_ns = expire_at_ns});
+        if (denied.outcome != glyphastore::client::MutationOutcome::rejected ||
+            !denied.error.has_value() || denied.error->category != "permission_denied" ||
+            denied.error->retryability != "never") {
+            std::cerr << "PUT did not produce the expected permission_denied rejection\n";
             return 1;
         }
         return 0;

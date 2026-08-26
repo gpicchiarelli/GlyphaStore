@@ -17,7 +17,7 @@ options = {
   insecure_skip_verify: false
 }
 parser = OptionParser.new do |opts|
-  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]"
+  opts.banner = "Usage: glyphastore-interop --port N <put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|expect-frame-limit> [tls flags...]"
   opts.on("--host HOST", String) { |v| options[:host] = v }
   opts.on("--port PORT", Integer) { |v| options[:port] = v }
   opts.on("--key-hex HEX", String) { |v| options[:key_hex] = v }
@@ -88,6 +88,13 @@ begin
       end
     else
       abort("GET unexpectedly found the key")
+    end
+  when "expect-permission-denied"
+    result = client.put(key, value, expire_at_ns: options[:expire_at_ns])
+    unless result.rejected? &&
+           result.error&.category == GlyphaStore::Category::PERMISSION_DENIED &&
+           result.error.retryability == GlyphaStore::Retryability::NEVER
+      abort("PUT did not produce structured permission_denied")
     end
   when "expect-frame-limit"
     result = client.put("limit".b, "\xA5".b * config.maximum_frame_bytes)

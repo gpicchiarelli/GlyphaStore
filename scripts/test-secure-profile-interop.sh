@@ -415,6 +415,19 @@ expect_get() {
   fi
 }
 
+expect_permission_denied() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    python) "$python" "$py_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    go) "$go_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" expect-permission-denied ;;
+    *) return 1 ;;
+  esac
+}
+
 echo "== mint mTLS material + authz map =="
 make_mtls_material "$work"
 cat >"$work/authz.map" <<EOF
@@ -524,12 +537,13 @@ bad_val="$(printf 'out' | to_hex)"
 echo "  cpp PUT tenant-a/… → python GET"
 put_sdk cpp "$port" "$ok_key" "$ok_val"
 expect_get python "$port" "$ok_key" "$ok_val"
-echo "  python PUT outside prefix → PERMISSION_DENIED"
-if ! "$python" "$py_helper" --port "$port" "${tls_args[@]}" \
-  --key-hex "$bad_key" --value-hex "$bad_val" expect-permission-denied; then
-  echo "prefix mismatch PUT was not denied" >&2
-  exit 1
-fi
+for sdk in "${sdks[@]}"; do
+  echo "  $sdk PUT outside prefix → PERMISSION_DENIED"
+  if ! expect_permission_denied "$sdk" "$port" "$bad_key" "$bad_val"; then
+    echo "prefix mismatch PUT did not produce PERMISSION_DENIED for sdk=$sdk" >&2
+    exit 1
+  fi
+done
 
 echo "== CRL revoke restart =="
 make_revoked_client_and_crl "$work"

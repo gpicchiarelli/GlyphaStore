@@ -28,7 +28,7 @@ func main() {
 	insecure := flag.Bool("insecure-skip-verify", false, "lab escape: skip cert/hostname verify")
 	flag.Parse()
 	if *port == 0 || flag.NArg() != 1 {
-		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|backup|pipeline-put-get|expect-not-found|expect-frame-limit> [tls flags...]")
+		fmt.Fprintln(os.Stderr, "usage: glyphastore-interop --port N <put|get|erase|backup|pipeline-put-get|expect-not-found|expect-permission-denied|expect-frame-limit> [tls flags...]")
 		os.Exit(2)
 	}
 	command := flag.Arg(0)
@@ -106,6 +106,14 @@ func main() {
 		if !ok || structured.Category != client.CategoryNotFound ||
 			structured.Retryability != client.RetryNewAttempt {
 			fail(fmt.Errorf("GET did not produce structured not_found: %v", err))
+		}
+	case "expect-permission-denied":
+		result := c.Put(key, value, *expireAtNs)
+		structured, ok := result.Err.(*client.Error)
+		if result.Outcome != client.MutationRejected || !ok ||
+			structured.Category != client.CategoryPermissionDenied ||
+			structured.Retryability != client.RetryNever {
+			fail(fmt.Errorf("PUT did not produce structured permission_denied: %v", result.Err))
 		}
 	case "expect-frame-limit":
 		value := bytes.Repeat([]byte{0xA5}, protocol.MaxFrameBytes)

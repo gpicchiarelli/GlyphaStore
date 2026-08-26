@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Make the interop CLI assert the structured `permission_denied` mutation outcome used by the
+  all-SDK secure-profile prefix matrix.
 - Route the first pipeline key once instead of hashing it once for initialization and again during
   ownership validation; subsequent keys retain the same single-Worker check.
 - Add a mixed-owner `ExecuteBatch` benchmark mode and generate keys with the routing identity

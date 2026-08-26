@@ -42,7 +42,7 @@ GetOptions(
 my $command = shift @ARGV // '';
 die "--port and command are required\n"
   if !$options{port}
-  || $command !~ /\A(?:put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit)\z/;
+  || $command !~ /\A(?:put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|expect-frame-limit)\z/;
 
 my $key   = parse_hex($options{key_hex});
 my $value = parse_hex($options{value_hex});
@@ -81,6 +81,14 @@ elsif ($command eq 'expect-not-found') {
       if ref($error) ne 'GlyphaStore::Error'
       || $error->category ne 'not_found'
       || $error->retryability ne 'new_attempt';
+}
+elsif ($command eq 'expect-permission-denied') {
+    my $result = $client->put($key, $value, expire_at_ns => $options{expire_at_ns});
+    die "PUT did not produce structured permission_denied\n"
+      if $result->{outcome} ne 'rejected'
+      || ref($result->{error}) ne 'GlyphaStore::Error'
+      || $result->{error}->category ne 'permission_denied'
+      || $result->{error}->retryability ne 'never';
 }
 elsif ($command eq 'expect-frame-limit') {
     my $result = $client->put('limit', "\xA5" x $client->{maximum_frame_bytes});

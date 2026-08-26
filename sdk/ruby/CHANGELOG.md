@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Make the interop CLI assert the structured `permission_denied` mutation outcome used by the
+  all-SDK secure-profile prefix matrix.
+
 ## 0.1.0
 
 - Initial sync client: protocol v2 codec, structured errors, pipelines, batch, monotonic

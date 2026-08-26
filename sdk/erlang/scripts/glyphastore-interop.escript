@@ -135,6 +135,14 @@ dispatch(Client, "expect-not-found", Key, _Value, _Expire, _Config) ->
             io:format(standard_error, "GET unexpectedly found the key~n", []),
             halt(1)
     end;
+dispatch(Client, "expect-permission-denied", Key, Value, Expire, _Config) ->
+    case glyphastore_client:put(Client, Key, Value, #{expire_at_ns => Expire}) of
+        #{outcome := rejected,
+          error := #{category := permission_denied, retryability := never}} ->
+            halt(0);
+        Other ->
+            fail(Other)
+    end;
 dispatch(Client, "expect-frame-limit", _Key, _Value, _Expire, Config) ->
     Oversize = binary:copy(<<165>>, maps:get(maximum_frame_bytes, Config)),
     case glyphastore_client:put(Client, <<"limit">>, Oversize) of
@@ -174,5 +182,5 @@ fail(Term) ->
 usage() ->
     io:format(standard_error,
               "Usage: glyphastore-interop --port N [--tls --tls-ca PATH --server-name NAME] "
-              "<put|get|erase|pipeline-put-get|expect-not-found|expect-frame-limit>~n",
+              "<put|get|erase|pipeline-put-get|expect-not-found|expect-permission-denied|expect-frame-limit>~n",
               []).
