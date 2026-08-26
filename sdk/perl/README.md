@@ -84,7 +84,9 @@ object-heavy synchronous calls:
   from each `sysread`;
 - pipeline result slots are materialized once, at their decided success or failure outcome, rather
   than allocating placeholder failure hashes that the success path immediately replaces;
-- `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop;
+- `execute_worker_pipelines` drives all active Worker sockets through one `IO::Select` loop and
+  consumes the readiness already returned by that loop before waiting again; a fragmented response
+  returns to the same absolute-deadline wait path;
 - `execute_batch` hashes each key exactly once while grouping, reuses that validated ownership while
   encoding, overlaps the Worker pipelines, then restores caller order.
 - Worker routing reuses the immutable identity validated during `INIT`; arbitrary routing hashes

@@ -288,7 +288,7 @@ sub _send {
 }
 
 sub _receive_response {
-    my ($self, $connection, $deadline, $selector) = @_;
+    my ($self, $connection, $deadline, $selector, $socket_ready) = @_;
     my $socket = $connection->{socket};
     $selector //= _selector($connection);
     $deadline //=  _now() + $self->{request_timeout};
@@ -320,8 +320,13 @@ sub _receive_response {
             substr($connection->{input}, 0, $offset, '');
             $connection->{input_offset} = 0;
         }
-        _throw('transport', 'response receive deadline expired')
-            if !_wait_io($selector, 'read', $deadline);
+        if ($socket_ready) {
+            $socket_ready = 0;
+        }
+        else {
+            _throw('transport', 'response receive deadline expired')
+                if !_wait_io($selector, 'read', $deadline);
+        }
         my $received
             = sysread($socket,$connection->{input},256 * 1024,length($connection->{input}),);
         if (defined($received) && $received > 0) {
@@ -1183,7 +1188,10 @@ sub _drive_worker_pipeline_read {
     my $connection = $state->{connection};
     my $index = $state->{next_index};
     return if $index >= @{$state->{normalized}};
-    my $received = $self->_receive_response($connection, $deadline);
+    # The shared select loop dispatched this state from its readable set. Consume that readiness
+    # once instead of issuing a duplicate select before the first sysread; partial reads still
+    # return through the normal deadline-aware wait path.
+    my $received = $self->_receive_response($connection, $deadline, undef, 1);
     $self->_validate_response($received, $state->{metadata}[$index][0], $state->{worker});
     $self->_record_worker_pipeline_response($state, $index, $received);
     $state->{next_index} = $index + 1;

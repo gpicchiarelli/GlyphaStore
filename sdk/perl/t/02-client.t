@@ -6,6 +6,7 @@ use File::Temp;
 use IO::Select;
 use IO::Socket::INET;
 use POSIX qw(_exit);
+use Socket qw(AF_UNIX PF_UNSPEC SOCK_STREAM);
 use Test::More;
 
 use lib "$FindBin::Bin/../lib";
@@ -223,6 +224,58 @@ sub start_server {
     }
     close($listener);
     return ($port, $pid);
+}
+
+{
+    socketpair(my $reader, my $writer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+        or die "socketpair failed: $!";
+    my $frame = encode_response(
+        status => STATUS_OK, request_id => 41, value => 'partial-ready', owner_worker => 0,
+        worker_count => 1, routing_epoch => 9,
+    );
+    is(syswrite($writer, $frame, 4), 4, 'readiness test writes response prefix');
+    my $fragment_pid = fork();
+    die "fork failed: $!" if !defined($fragment_pid);
+    if (!$fragment_pid) {
+        select undef, undef, undef, 0.05;
+        my $offset = 4;
+        while ($offset < length($frame)) {
+            my $written = syswrite($writer, $frame, length($frame) - $offset, $offset);
+            _exit(1) if !$written;
+            $offset += $written;
+        }
+        close($reader);
+        close($writer);
+        _exit(0);
+    }
+    close($writer);
+
+    my $probe = bless {
+        request_timeout     => 1,
+        maximum_frame_bytes => GlyphaStore::Protocol::MAX_FRAME_BYTES(),
+        connections         => [],
+    }, 'GlyphaStore::Client';
+    my $connection = {
+        socket => $reader, selector => undef, input => '', input_offset => 0,
+    };
+    my $wait_io = \&GlyphaStore::Client::_wait_io;
+    my $waits = 0;
+    my $response;
+    {
+        no warnings 'redefine';
+        local *GlyphaStore::Client::_wait_io = sub {
+            ++$waits;
+            return $wait_io->(@_);
+        };
+        $response = $probe->_receive_response(
+            $connection, GlyphaStore::Client::_now() + 1, undef, 1
+        );
+    }
+    is($response->{value}, 'partial-ready', 'readiness fast path preserves a fragmented response');
+    is($waits, 1, 'readiness skips only the first wait and partial input waits with its deadline');
+    close($reader);
+    waitpid($fragment_pid, 0);
+    is($?, 0, 'fragmented response writer exits cleanly');
 }
 
 my ($port, $pid) = start_server();

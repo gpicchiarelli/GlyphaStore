@@ -75,7 +75,12 @@ measure scalar/hash allocation, frame copies, buffer compaction, parser cost, `I
 and cross-Worker overlap before choosing an implementation technique. Reduce pure-Perl
 allocation/copy costs first; evaluate a narrow XS
 codec/routing kernel only if profiles show that boundary dominates. XS is not assumed to be the only
-large lever. See the [Perl README](../../sdk/perl/README.md).
+large lever. The shared Worker loop no longer performs a second readiness wait immediately after
+`IO::Select` dispatched a readable socket; partial reads still re-enter the absolute-deadline wait.
+Two local macOS-arm64 four-Worker passes at 200,000 PUT/GET pairs measured depth 8 at about +2.4%
+and +4.4%; depth 128 alternated between +1.3% and −0.9% and is therefore treated as flat. These are
+development measurements, not retained release evidence. See the
+[Perl README](../../sdk/perl/README.md).
 
 For Go, pipeline ownership validation now hashes the first key once rather than twice. A local
 macOS-arm64 loopback A/B at four Workers, pipeline depth 8 and 200,000 operations measured about
