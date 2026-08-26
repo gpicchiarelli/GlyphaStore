@@ -40,6 +40,8 @@ from .protocol import (
     decode_response,
     encode_request,
     worker_for,
+    _encode_validated_request_header,
+    _validated_request_size,
 )
 
 
@@ -230,7 +232,7 @@ class AsyncClient:
         )
 
         normalized: list[tuple[PipelineOpcode, bytes, bytes, int]] = []
-        frames: list[bytes] = []
+        parts: list[bytes] = []
         metadata: list[tuple[int, int]] = []
         output_size = 0
         worker = routed_worker
@@ -250,7 +252,7 @@ class AsyncClient:
                 raise InvalidArgument("GET and ERASE pipeline requests cannot carry PUT fields")
             request_id = await self._next_request_id()
             try:
-                frame = encode_request(
+                frame_size, key, value = _validated_request_size(
                     request.opcode.value,
                     request_id,
                     key=key,
@@ -259,17 +261,30 @@ class AsyncClient:
                 )
             except ValueError as error:
                 raise InvalidArgument(str(error)) from error
-            if len(frame) > self._config.maximum_frame_bytes:
+            if frame_size > self._config.maximum_frame_bytes:
                 raise InvalidArgument("pipeline request exceeds the configured frame limit")
-            if len(frame) > self._config.maximum_pipeline_bytes - output_size:
+            if frame_size > self._config.maximum_pipeline_bytes - output_size:
                 raise InvalidArgument("pipeline exceeds the configured aggregate byte limit")
             normalized.append((request.opcode, key, value, request.expire_at_ns))
             metadata.append((request_id, output_size))
-            frames.append(frame)
-            output_size += len(frame)
+            parts.extend(
+                (
+                    _encode_validated_request_header(
+                        frame_size,
+                        request.opcode.value,
+                        request_id,
+                        key_size=len(key),
+                        value_size=len(value),
+                        expire_at_ns=request.expire_at_ns,
+                    ),
+                    key,
+                    value,
+                )
+            )
+            output_size += frame_size
 
         assert worker is not None
-        output = b"".join(frames)
+        output = b"".join(parts)
         responses = [PipelineResponse(PipelineOutcome.FAILED) for _ in requests]
         connection = self._connections[worker]
         async with connection.lock:

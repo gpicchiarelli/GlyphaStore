@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Assemble each sync and asyncio pipeline from validated headers and payload views with one native
+  final join, avoiding one complete frame allocation and payload copy per request.
 - Add an installed-wheel secure-profile matrix that fails if Python resolves the SDK from the
   repository instead of the isolated virtual environment.
 - Reuse each batch request's validated Worker assignment while encoding its per-Worker pipeline,

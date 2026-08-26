@@ -126,6 +126,60 @@ def encode_request(
     target_worker: int = NO_WORKER,
 ) -> bytes:
     """Encode one canonical protocol-v2 request frame."""
+    frame_size, key, value = _validated_request_size(
+        opcode,
+        request_id,
+        key=key,
+        value=value,
+        expire_at_ns=expire_at_ns,
+        target_worker=target_worker,
+    )
+    return _encode_validated_request_header(
+        frame_size,
+        opcode,
+        request_id,
+        key_size=len(key),
+        value_size=len(value),
+        expire_at_ns=expire_at_ns,
+        target_worker=target_worker,
+    ) + key + value
+
+
+def _encode_validated_request_header(
+    frame_size: int,
+    opcode: Opcode,
+    request_id: int,
+    *,
+    key_size: int,
+    value_size: int,
+    expire_at_ns: int = 0,
+    target_worker: int = NO_WORKER,
+) -> bytes:
+    """Encode the header of a request whose fields and frame size were validated."""
+    return _REQUEST_HEADER.pack(
+        frame_size,
+        VERSION,
+        opcode,
+        0,
+        request_id,
+        key_size,
+        value_size,
+        expire_at_ns,
+        target_worker,
+        0,
+    )
+
+
+def _validated_request_size(
+    opcode: Opcode,
+    request_id: int,
+    *,
+    key: bytes | bytearray | memoryview = b"",
+    value: bytes | bytearray | memoryview = b"",
+    expire_at_ns: int = 0,
+    target_worker: int = NO_WORKER,
+) -> tuple[int, bytes, bytes]:
+    """Validate one request and return its size plus immutable payload views."""
     if not isinstance(opcode, Opcode):
         raise ValueError("opcode is not defined by wire protocol v2")
     if not isinstance(key, (bytes, bytearray, memoryview)) or not isinstance(
@@ -141,18 +195,7 @@ def encode_request(
     frame_size = REQUEST_HEADER_BYTES + len(key) + len(value)
     if frame_size > MAX_FRAME_BYTES:
         raise ValueError("request exceeds the protocol frame limit")
-    return _REQUEST_HEADER.pack(
-        frame_size,
-        VERSION,
-        opcode,
-        0,
-        request_id,
-        len(key),
-        len(value),
-        expire_at_ns,
-        target_worker,
-        0,
-    ) + key + value
+    return frame_size, key, value
 
 
 def decode_request(
