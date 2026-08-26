@@ -7,6 +7,9 @@ export GLYPHASTORE_ROOT="$root"
 # shellcheck disable=SC1091
 source "$root/scripts/export-reproducible-build-env.sh"
 sdk="$root/sdk/erlang"
+work="$(mktemp -d "${TMPDIR:-/tmp}/glyphastore-erlang-pack.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
 
 if ! command -v rebar3 >/dev/null 2>&1; then
   echo "rebar3 is required (macOS: sudo port install rebar3)" >&2
@@ -44,6 +47,7 @@ chmod +x "$sdk/scripts/glyphastore-interop.escript" "$sdk/scripts/glyphastore-ve
 escript "$sdk/scripts/glyphastore-version.escript" >/dev/null
 
 mkdir -p "$sdk/dist"
+rm -f "$sdk/dist"/glyphastore-erlang-*.tar.gz
 {
   echo "package=glyphastore"
   echo "version=$got"
@@ -64,5 +68,38 @@ if ! grep -q 'LICENSE' "$sdk/rebar.config" || ! grep -q 'NOTICE' "$sdk/rebar.con
   exit 1
 fi
 
-echo "Erlang packaging verification OK ($sdk/dist/package-info.txt)"
+# Build a reproducible, tracked-source archive without claiming that it is a published Hex package.
+archive_name="glyphastore-erlang-$got.tar.gz"
+archive_root="$work/glyphastore-erlang-$got"
+mkdir -p "$archive_root"
+while IFS= read -r -d '' path; do
+  relative="${path#sdk/erlang/}"
+  mkdir -p "$archive_root/$(dirname "$relative")"
+  cp "$root/$path" "$archive_root/$relative"
+done < <(git -C "$root" ls-files -z -- sdk/erlang)
+tar -czf "$sdk/dist/$archive_name" -C "$work" "$(basename "$archive_root")"
+"$root/scripts/normalize-tar-gz.sh" "$sdk/dist/$archive_name"
+
+# Extract and compile from outside the checkout so repository _build state cannot satisfy the proof.
+verify_root="$work/verify"
+mkdir -p "$verify_root"
+tar -xzf "$sdk/dist/$archive_name" -C "$verify_root"
+(
+  cd "$verify_root/$(basename "$archive_root")"
+  rebar3 compile >/dev/null
+)
+artifact_ebin="$verify_root/$(basename "$archive_root")/_build/default/lib/glyphastore/ebin"
+artifact_version="$(erl -noshell -pa "$artifact_ebin" \
+  -eval 'io:format("~s", [glyphastore_version:version()]), halt().')"
+if [[ "$artifact_version" != "$got" ]]; then
+  echo "Erlang source archive version '$artifact_version' does not match '$got'" >&2
+  exit 1
+fi
+
+{
+  echo "source_archive=$archive_name"
+  echo "external_archive_compile=passed"
+} >>"$sdk/dist/package-info.txt"
+
+echo "Erlang packaging verification OK ($sdk/dist/$archive_name)"
 echo "Publish path: Hex package glyphastore@$got (see sdk/erlang/PACKAGING.md)"

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Package a normalized tracked-source archive, then extract and compile it outside the checkout;
+  Hex publication remains a separate release action.
 - Make the interop escript assert structured `permission_denied` and `overloaded` mutation outcomes
   in the all-SDK secure-profile prefix/quota matrix, with a bounded burst for quota exhaustion.
 - In installed-artifact interop mode, use the configured Erlang code path and fail if the client

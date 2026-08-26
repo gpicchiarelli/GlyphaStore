@@ -66,7 +66,8 @@ Source-tree interoperability is implemented. Still required:
 
 - install every built package artifact and rerun conformance from the installed copy (Python wheel
   and sdist, Perl tarball, Ruby gem and the C++ installed consumer are covered; Go's tracked tag
-  snapshot has an external consumer proof; the Erlang Hex artifact remains open);
+  snapshot has an external consumer proof; Erlang now has an externally compiled tracked-source
+  archive, while the registry-shaped Hex artifact remains open);
 - test supported old-client/new-server combinations under the 0.x compatibility policy;
 - publish checksums, provenance and SBOMs with tagged artifacts;
 - record registry publication state rather than saying “install from registry” unconditionally.
