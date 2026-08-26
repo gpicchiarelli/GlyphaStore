@@ -210,4 +210,4 @@ GLYPHASTORE_RUBY_INTEROP="$ruby_helper" \
 GLYPHASTORE_ERLANG_INTEROP="$erlang_root/scripts/glyphastore-interop.escript" \
 "$root/scripts/test-secure-profile-interop.sh"
 
-echo "Installed Python/Perl/Ruby/Go/Erlang secure-profile interop PASSED"
+echo "Installed C++/Python/Perl/Ruby/Go/Erlang secure-profile interop PASSED"

@@ -401,6 +401,8 @@ gates:
   prove:
   - docs/security/secure-profile.md
   - scripts/test-secure-profile-interop.sh
+  - scripts/test-secure-profile-installed-artifacts.sh
+  - engineering/evidence/sdk-installed-secure-profile.md
   piattaforme:
   - linux-x86_64
   - macos-arm64

@@ -51,15 +51,16 @@ Documentation must not call the SDK security train complete before that matrix p
 The harness now has a fail-closed `GLYPHASTORE_INTEROP_USE_INSTALLED=1` mode: C++ and Go binaries
 inside the checkout are refused, source load paths are not injected, and Python/Perl/Ruby/Erlang
 helpers verify that their loaded module is outside the repository. This is the isolation mechanism,
-not yet retained installed-artifact evidence; package orchestration and CI artifact retention remain
-open.
+while package orchestration supplies the artifact proof described below.
 
 The package slice installs the built Python wheel, Perl tarball and Ruby gem, and extracts the Go and
 Erlang tracked-source archives into clean isolated prefixes before rerunning the secure-profile
 matrix with source injection disabled. The C++ peer is rebuilt as an external consumer linked only
 through the installed CMake package. The existing `sdk-clients` job is configured to run this after
 packaging and daemon build. Registry-shaped Erlang Hex publication and retained cross-version
-artifact records remain open.
+artifact records remain open. On pushes to `main`, that same job retains a 30-day bundle containing
+the complete run log, commit/platform metadata, toolchain identities and package checksums. This is
+run evidence, not a permanent release claim.
 
 ### 3. Released-artifact compatibility
 
