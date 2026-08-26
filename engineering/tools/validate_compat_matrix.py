@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +22,92 @@ ALLOWED_STATUS = {
     "unsupported",
     "not_promised",
 }
+SHA256_LINE = re.compile(r"^([0-9a-f]{64})  ([^/]+)$")
+
+
+def validate_released_label(
+    label_dir: Path, persistence_format: int, wire_protocol: int
+) -> list[str]:
+    errors: list[str] = []
+    if (
+        len(label_dir.name) > 128
+        or not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z._+-]*", label_dir.name)
+        or ".." in label_dir.name
+    ):
+        errors.append(f"{label_dir}: unsafe released fixture label")
+    metadata_path = label_dir / "METADATA.txt"
+    sums_path = label_dir / "SHA256SUMS"
+    if not metadata_path.is_file():
+        errors.append(f"{label_dir}: missing METADATA.txt")
+    if not sums_path.is_file():
+        errors.append(f"{label_dir}: missing SHA256SUMS")
+    if errors:
+        return errors
+
+    metadata: dict[str, str] = {}
+    for line in metadata_path.read_text(encoding="utf-8").splitlines():
+        if not line or "=" not in line:
+            errors.append(f"{metadata_path}: malformed metadata line {line!r}")
+            continue
+        key, value = line.split("=", 1)
+        if key in metadata:
+            errors.append(f"{metadata_path}: duplicate metadata key {key}")
+        metadata[key] = value
+
+    required = {
+        "schema_version": "2",
+        "label": label_dir.name,
+        "persistence_format": str(persistence_format),
+        "wire_protocol": str(wire_protocol),
+    }
+    for key, expected in required.items():
+        if metadata.get(key) != expected:
+            errors.append(
+                f"{metadata_path}: {key} must be {expected!r}, got {metadata.get(key)!r}"
+            )
+
+    for key in ("glyphastore_version", "packaged_at", "git_commit", "fixture_count"):
+        if not metadata.get(key):
+            errors.append(f"{metadata_path}: missing non-empty {key}")
+    if metadata.get("git_commit") and not re.fullmatch(r"[0-9a-f]{40}", metadata["git_commit"]):
+        errors.append(f"{metadata_path}: git_commit must be a 40-character lowercase SHA")
+    if metadata.get("packaged_at") and not re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", metadata["packaged_at"]
+    ):
+        errors.append(f"{metadata_path}: packaged_at must be UTC ISO-8601 seconds")
+
+    fixtures = sorted(path for path in label_dir.glob("*.hex") if path.is_file())
+    try:
+        recorded_count = int(metadata.get("fixture_count", ""))
+    except ValueError:
+        recorded_count = -1
+    if recorded_count != len(fixtures):
+        errors.append(
+            f"{metadata_path}: fixture_count={recorded_count} but found {len(fixtures)} hex files"
+        )
+
+    recorded_sums: dict[str, str] = {}
+    for line in sums_path.read_text(encoding="utf-8").splitlines():
+        match = SHA256_LINE.fullmatch(line)
+        if not match:
+            errors.append(f"{sums_path}: malformed checksum line {line!r}")
+            continue
+        digest, name = match.groups()
+        if name in recorded_sums:
+            errors.append(f"{sums_path}: duplicate checksum for {name}")
+        recorded_sums[name] = digest
+
+    fixture_names = {path.name for path in fixtures}
+    if set(recorded_sums) != fixture_names:
+        errors.append(
+            f"{sums_path}: checksum names {sorted(recorded_sums)} do not match fixtures "
+            f"{sorted(fixture_names)}"
+        )
+    for fixture in fixtures:
+        actual = hashlib.sha256(fixture.read_bytes()).hexdigest()
+        if recorded_sums.get(fixture.name) != actual:
+            errors.append(f"{sums_path}: digest mismatch for {fixture.name}")
+    return errors
 
 
 def main() -> int:
@@ -58,6 +146,8 @@ def main() -> int:
                         errors.append(f"{rid}: missing workflow {ev['workflow']}")
 
     policy = doc.get("released_fixture_policy", {})
+    if policy.get("artifact_schema") != 2:
+        errors.append("released_fixture_policy.artifact_schema must be 2")
     for label in policy.get("in_tree_labels", []):
         label_dir = root / "tests" / "fixtures" / "released" / label
         if not label_dir.is_dir():
@@ -65,6 +155,17 @@ def main() -> int:
     script = policy.get("packaging_script")
     if script and not (root / script).is_file():
         errors.append(f"missing packaging script {script}")
+
+    released_root = root / "tests" / "fixtures" / "released"
+    if released_root.is_dir():
+        for label_dir in sorted(path for path in released_root.iterdir() if path.is_dir()):
+            errors.extend(
+                validate_released_label(
+                    label_dir,
+                    int(doc.get("persistence_format", -1)),
+                    int(doc.get("wire_protocol", -1)),
+                )
+            )
 
     if errors:
         for err in errors:

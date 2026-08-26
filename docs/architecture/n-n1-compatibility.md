@@ -39,4 +39,6 @@ advance the release claim ceiling beyond *architectural prototype*.
 In-tree `tests/fixtures/released/self-v1/` plus CI packaging via
 [`release-compat.yml`](../../.github/workflows/release-compat.yml) prove the harness. Committing a
 prior tagged N−1 tree into `tests/fixtures/released/<label>/` remains a **release-process** step
-when tags exist; until then the YAML matrix is the policy record.
+when tags exist; until then the YAML matrix is the policy record. Schema-2 drops use a flat,
+validated label and bind their exact persistence/wire versions, fixture count and SHA-256 manifest;
+existing labels are never overwritten by the packaging script.

@@ -90,6 +90,7 @@ abi:
     notes: No ABI stability before 1.0; SemVer SameMinorVersion for 0.x CMake package version file.
 
 released_fixture_policy:
+  artifact_schema: 2
   in_tree_labels:
     - self-v1
   permanent_drop: tests/fixtures/released/<label>/
