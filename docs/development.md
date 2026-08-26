@@ -27,6 +27,9 @@ For compatible environments, the report classifies overlapping min/max throughpu
 inconclusive. Only disjoint ranges become improvement or regression candidates.
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
 metadata, count mismatches, invalid numbers, and inconsistent statistical ordering fail the report.
+The machine-readable `engineering/performance/hosted-benchmark-contract.json` enumerates all 21
+expected core, parallel, durable, TCP-scaling, and TCP-latency source files. Missing or unexpected
+files invalidate the report before baseline comparison.
 
 To avoid spending hosted-runner time on unrelated changes, the push trigger is limited to engine,
 server, public headers, benchmark sources, CMake configuration, the canonical version, and the
@@ -47,6 +50,8 @@ python3 scripts/benchmark_report.py benchmark-results/*.txt \
 ```
 
 Add `--strict` when the local outputs are intended to exercise the CI evidence contract.
+Pass `--source-contract engineering/performance/hosted-benchmark-contract.json` with the complete
+hosted matrix to enforce its exact source set.
 
 The durable TCP audit matrix runs v1 sync, strict group, and periodic policies at pipeline depths
 1, 8, and 32. It includes both 1/2/4 client-to-Worker scaling and four clients per Worker at each

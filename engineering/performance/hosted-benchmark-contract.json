@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "suite": "hosted-release-benchmarks",
+  "expected_sources": [
+    "core.txt",
+    "parallel-uniform.txt",
+    "parallel-worker-affine.txt",
+    "parallel-single-worker.txt",
+    "parallel-zipf.txt",
+    "durable-sync.txt",
+    "durable-periodic.txt",
+    "durable-group.txt",
+    "server-tcp-w1-p1.txt",
+    "server-tcp-w1-p8.txt",
+    "server-tcp-w1-p32.txt",
+    "server-tcp-w1-p128.txt",
+    "server-tcp-w2-p1.txt",
+    "server-tcp-w2-p8.txt",
+    "server-tcp-w2-p32.txt",
+    "server-tcp-w2-p128.txt",
+    "server-tcp-w4-p1.txt",
+    "server-tcp-w4-p8.txt",
+    "server-tcp-w4-p32.txt",
+    "server-tcp-w4-p128.txt",
+    "server-latency-w2-p32.txt"
+  ]
+}

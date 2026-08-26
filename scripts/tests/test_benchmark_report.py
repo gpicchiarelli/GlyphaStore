@@ -10,10 +10,12 @@ from scripts.benchmark_report import (
     compare_with_baseline,
     comparison_environment_status,
     environment_identity,
+    load_source_contract,
     parse_environment,
     regressions_over_threshold,
     render_markdown,
     validate_runs,
+    validate_source_contract,
 )
 
 
@@ -181,6 +183,41 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         fixture[0]["results"][0]["samples"] = 2
         with self.assertRaisesRegex(ValueError, "samples do not match"):
             validate_runs(fixture)
+
+    def test_source_contract_accepts_exact_suite(self) -> None:
+        contract = {
+            "schema_version": 1,
+            "suite": "fixture",
+            "expected_sources": ["core.txt"],
+        }
+        validate_source_contract(strict_runs(), contract)
+
+    def test_source_contract_rejects_missing_and_extra_suites(self) -> None:
+        contract = {
+            "schema_version": 1,
+            "suite": "fixture",
+            "expected_sources": ["core.txt", "server.txt"],
+        }
+        with self.assertRaisesRegex(ValueError, "missing sources: server.txt"):
+            validate_source_contract(strict_runs(), contract)
+
+        contract["expected_sources"] = ["server.txt"]
+        with self.assertRaisesRegex(ValueError, "unexpected sources: core.txt"):
+            validate_source_contract(strict_runs(), contract)
+
+    def test_tracked_source_contract_is_valid_json_contract(self) -> None:
+        path = (
+            Path(__file__).resolve().parents[2]
+            / "engineering"
+            / "performance"
+            / "hosted-benchmark-contract.json"
+        )
+        contract = load_source_contract(path)
+        self.assertEqual(contract["schema_version"], 1)
+        self.assertEqual(len(contract["expected_sources"]), 21)
+        validate_source_contract(
+            [{"source": source} for source in contract["expected_sources"]], contract
+        )
 
 
 if __name__ == "__main__":

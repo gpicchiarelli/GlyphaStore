@@ -8,6 +8,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+import re
 import shlex
 import sys
 from pathlib import Path
@@ -169,6 +170,42 @@ def validate_runs(runs: list[dict[str, Any]]) -> None:
                     raise ValueError(
                         f"{source}/{name}: invalid {suffix} min/median/max ordering"
                     )
+
+
+def load_source_contract(path: Path) -> dict[str, Any]:
+    try:
+        contract = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read source contract {path}: {error}") from error
+    if not isinstance(contract, dict):
+        raise ValueError("source contract must be a JSON object")
+    return contract
+
+
+def validate_source_contract(runs: list[dict[str, Any]], contract: dict[str, Any]) -> None:
+    if contract.get("schema_version") != 1:
+        raise ValueError("source contract schema_version must be 1")
+    if not isinstance(contract.get("suite"), str) or not contract["suite"]:
+        raise ValueError("source contract suite must be a non-empty string")
+    expected = contract.get("expected_sources")
+    if not isinstance(expected, list) or not expected:
+        raise ValueError("source contract expected_sources must be a non-empty list")
+    for source in expected:
+        if not isinstance(source, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]*\.txt", source):
+            raise ValueError(f"source contract contains unsafe source name: {source!r}")
+    if len(expected) != len(set(expected)):
+        raise ValueError("source contract expected_sources contains duplicates")
+    actual = {str(run.get("source", "")) for run in runs}
+    wanted = set(expected)
+    missing = sorted(wanted - actual)
+    unexpected = sorted(actual - wanted)
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing sources: {', '.join(missing)}")
+        if unexpected:
+            details.append(f"unexpected sources: {', '.join(unexpected)}")
+        raise ValueError("source contract mismatch; " + "; ".join(details))
 
 
 def environment_identity(environment: dict[str, Any]) -> dict[str, Any]:
@@ -566,6 +603,11 @@ def main() -> int:
         help="Fail on missing metadata, empty suites, duplicates, or invalid result statistics.",
     )
     parser.add_argument(
+        "--source-contract",
+        type=Path,
+        help="JSON contract naming the exact source files required by a retained suite.",
+    )
+    parser.add_argument(
         "--environment",
         type=Path,
         help="Machine-readable key=value environment record used to authorize baseline deltas.",
@@ -581,12 +623,16 @@ def main() -> int:
     args = parser.parse_args()
     if args.fail_regression_threshold is not None and args.fail_regression_threshold < 0:
         parser.error("fail-regression-threshold must be non-negative")
+    if args.source_contract is not None and not args.strict:
+        parser.error("source-contract requires strict mode")
 
     inputs = sorted(path for path in args.inputs if path.name != "environment.txt")
     runs = [parse_output(path) for path in inputs if path.is_file()]
     if args.strict:
         try:
             validate_runs(runs)
+            if args.source_contract is not None:
+                validate_source_contract(runs, load_source_contract(args.source_contract))
         except ValueError as error:
             parser.error(str(error))
     baseline = None

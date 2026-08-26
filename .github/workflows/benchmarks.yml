@@ -12,6 +12,7 @@ on:
       - "include/**"
       - "src/**"
       - "benchmarks/**"
+      - "engineering/performance/hosted-benchmark-contract.json"
       - "scripts/benchmark_report.py"
   workflow_dispatch:
   schedule:
@@ -173,6 +174,7 @@ jobs:
           fi
           python scripts/benchmark_report.py "$RESULTS_DIR"/*.txt \
             --strict \
+            --source-contract engineering/performance/hosted-benchmark-contract.json \
             --json "$RESULTS_DIR/results.json" \
             --markdown "$RESULTS_DIR/summary.md" \
             --environment "$RESULTS_DIR/environment.txt" \
