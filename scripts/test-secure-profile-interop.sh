@@ -383,6 +383,13 @@ tls_args=(
   --tls-key "$work/client.key"
   --server-name localhost
 )
+revoked_tls_args=(
+  --tls
+  --tls-ca "$work/ca.crt"
+  --tls-cert "$work/revoked.crt"
+  --tls-key "$work/revoked.key"
+  --server-name localhost
+)
 
 put_sdk() {
   local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
@@ -437,6 +444,19 @@ expect_overloaded() {
     perl) "$perl" "$pl_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
     ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
     erlang) escript "$erlang_helper" --port "$port" "${tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" --burst 32 burst-expect-overloaded ;;
+    *) return 1 ;;
+  esac
+}
+
+run_revoked_put() {
+  local sdk="$1" port="$2" key_hex="$3" value_hex="$4"
+  case "$sdk" in
+    cpp) "$cpp_client" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    python) "$python" "$py_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    go) "$go_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    perl) "$perl" "$pl_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    ruby) "$ruby_bin" "$ruby_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
+    erlang) escript "$erlang_helper" --port "$port" "${revoked_tls_args[@]}" --key-hex "$key_hex" --value-hex "$value_hex" put ;;
     *) return 1 ;;
   esac
 }
@@ -569,27 +589,23 @@ stop_server
 start_server --tls-crl "$work/clients.crl"
 port="$(cat "$port_file")"
 
-crl_key="$(printf 'crl-alive' | to_hex)"
 crl_val="$(printf 'still' | to_hex)"
-echo "  allowed client still works under --tls-crl"
-put_sdk python "$port" "$crl_key" "$crl_val"
-expect_get go "$port" "$crl_key" "$crl_val"
+for sdk in "${sdks[@]}"; do
+  crl_key="$(printf 'crl-alive-%s' "$sdk" | to_hex)"
+  revoked_key="$(printf 'crl-revoked-%s' "$sdk" | to_hex)"
+  crl_log="$work/crl-${sdk}.err"
 
-echo "  revoked.client must fail handshake / connect"
-set +e
-"$python" "$py_helper" --port "$port" \
-  --tls --tls-ca "$work/ca.crt" \
-  --tls-cert "$work/revoked.crt" --tls-key "$work/revoked.key" \
-  --server-name localhost \
-  --key-hex "$crl_key" --value-hex "$crl_val" put >/tmp/glyphastore-crl-put.err 2>&1
-crl_rc=$?
-set -e
-if [[ "$crl_rc" -eq 0 ]]; then
-  echo "revoked client PUT unexpectedly succeeded" >&2
-  cat /tmp/glyphastore-crl-put.err >&2 || true
-  exit 1
-fi
-echo "  revoked client rejected (exit=$crl_rc) OK"
+  echo "  $sdk allowed client works under --tls-crl"
+  put_sdk "$sdk" "$port" "$crl_key" "$crl_val"
+
+  echo "  $sdk revoked.client must fail handshake / connect"
+  if run_revoked_put "$sdk" "$port" "$revoked_key" "$crl_val" >"$crl_log" 2>&1; then
+    echo "revoked client PUT unexpectedly succeeded for sdk=$sdk" >&2
+    cat "$crl_log" >&2 || true
+    exit 1
+  fi
+  echo "  $sdk revoked client rejected OK"
+done
 
 echo "== principal quota → OVERLOADED =="
 cat >"$work/authz.map" <<EOF

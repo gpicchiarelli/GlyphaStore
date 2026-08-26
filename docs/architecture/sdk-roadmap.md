@@ -1,7 +1,7 @@
 Status: roadmap
 Applies to: native SDKs (C++, Python, Perl, Go, Erlang, Ruby) and shared wire contract
 Owner: client maintainers
-Last reviewed: 2026-07-28
+Last reviewed: 2026-08-26
 
 # SDK and client roadmap
 
@@ -42,9 +42,10 @@ The source-tree smoke `scripts/test-secure-profile-interop.sh` exercises mTLS, `
 `--worker-hash-seed` and prefix denial for every available SDK. CI `sdk-clients` requires all six
 SDKs and verifies that out-of-scope and quota-refused mutations are respectively classified as
 `permission_denied` and `overloaded`, both with `rejected` / `never` semantics rather than accepting
-any generic failure. Each quota assertion gets a fresh server-side budget. The CRL scenario is
-currently driven through Python. Remaining: client-by-client negative coverage for revoked
-credentials, plus installed-artifact secure-profile evidence.
+any generic failure. Each quota assertion gets a fresh server-side budget. Under the CRL scenario,
+every SDK must first connect with an allowed certificate and then fail with the revoked certificate,
+so a broken client TLS configuration cannot satisfy the negative assertion. Remaining:
+installed-artifact secure-profile evidence.
 Documentation must not call the SDK security train complete before that matrix passes.
 
 ### 3. Released-artifact compatibility
