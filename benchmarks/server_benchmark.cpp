@@ -800,6 +800,10 @@ class BufferedResponseReader final {
         return true;
     }
     constexpr std::size_t seed_pipeline = 64;
+    // Seed traffic is outside the timed region, but it still crosses the real bounded Reactor.
+    // Bound both record count and bytes so large-value GET workloads do not manufacture a
+    // multi-megabyte input burst unrelated to the measured pipeline.
+    constexpr std::size_t maximum_seed_batch_bytes = 2U * 1024U * 1024U;
     for (std::size_t client = 0; client < descriptors.size(); ++client) {
         BufferedResponseReader responses{seed_pipeline * glyphastore::server::kResponseHeaderBytes};
         std::vector<std::byte> batch;
@@ -826,6 +830,14 @@ class BufferedResponseReader final {
                                                             .value = material.values[operation]});
             if (!put) {
                 return false;
+            }
+            const bool seed_batch_full = batch.size() >= maximum_seed_batch_bytes;
+            const bool seed_batch_would_overflow =
+                !seed_batch_full && put->size() > maximum_seed_batch_bytes - batch.size();
+            if (!batch.empty() && (seed_batch_full || seed_batch_would_overflow)) {
+                if (!flush()) {
+                    return false;
+                }
             }
             batch.insert(batch.end(), put->begin(), put->end());
             if (++pending == seed_pipeline && !flush()) {

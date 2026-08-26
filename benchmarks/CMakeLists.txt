@@ -215,6 +215,18 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                 --repeats 1
         )
         add_test(
+            NAME glyphastore_benchmark_server_tcp_large_get
+            COMMAND glyphastore_server_benchmarks
+                --ops 8
+                --workers 1
+                --clients 1
+                --pipeline 8
+                --value-size 262144
+                --workload get-only
+                --warmup 0
+                --repeats 1
+        )
+        add_test(
             NAME glyphastore_benchmark_server_tcp_durable_group
             COMMAND glyphastore_server_benchmarks
                 --ops 32
