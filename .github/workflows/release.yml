@@ -585,6 +585,79 @@ jobs:
           compression-level: 0
           retention-days: 14
 
+  openbsd-package-evidence:
+    name: Certify native OpenBSD package lifecycle
+    needs: candidate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: ${{ needs.candidate.outputs.artifact-name }}
+          path: dist/release-candidate
+      - name: Admit native-package prerequisites and exact candidate
+        run: |
+          set -euo pipefail
+          echo "${{ needs.candidate.outputs.candidate-seal-sha256 }}  dist/release-candidate/candidate-seal.json" | sha256sum -c -
+          python engineering/tools/release_bundle.py verify-seal \
+            --directory dist/release-candidate --seal candidate-seal.json
+          python engineering/tools/validate_bsd_packaging.py --release
+      - name: Build, install, exercise, restart, and remove package on OpenBSD
+        uses: vmactions/openbsd-vm@c941015845c0f0c429676840963dc63b226d4f69 # v1
+        env:
+          CANDIDATE_SEAL_SHA256: ${{ needs.candidate.outputs.candidate-seal-sha256 }}
+        with:
+          release: "7.9"
+          arch: x86_64
+          usesh: true
+          copyback: true
+          sync: rsync
+          mem: 8192
+          prepare: |
+            pkg_add -I bash cmake git ninja pkgconf python3
+            test -d /usr/ports/.git || \
+              git clone --depth 1 https://github.com/openbsd/ports.git /usr/ports
+          run: |
+            set -e
+            chmod +x scripts/test-openbsd-package-lifecycle.sh
+            bash scripts/test-openbsd-package-lifecycle.sh \
+              dist/release-candidate build/release-input-openbsd
+            rm -rf build/unix-release
+      - name: Bind SPDX SBOM to native package
+        run: |
+          set -euo pipefail
+          sudo ./scripts/install-syft.sh
+          mapfile -t packages < <(find build/release-input-openbsd -maxdepth 1 \
+            -type f -name 'glyphastore-*-openbsd*.tgz' -print)
+          test "${#packages[@]}" -eq 1
+          input=build/openbsd-package.spdx.json
+          syft "${packages[0]}" -o "spdx-json=$input"
+          python engineering/tools/release_bundle.py bind-sbom \
+            --artifact "${packages[0]}" --input "$input" \
+            --metadata dist/release-candidate/build-metadata.json \
+            --output "${packages[0]}.spdx.json"
+          python engineering/tools/release_bundle.py validate-sbom \
+            "${packages[0]}.spdx.json"
+          python engineering/tools/release_evidence.py --require-ci \
+            build/release-input-openbsd/openbsd-package-evidence.json
+      - name: Upload native OpenBSD package and evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-input-${{ github.sha }}-openbsd-package
+          path: build/release-input-openbsd/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
   security-sanitizers:
     name: Security sanitizer / ${{ matrix.name }}
     runs-on: ubuntu-latest
@@ -1105,7 +1178,7 @@ jobs:
 
   verify:
     name: Verify exact candidate bytes
-    needs: [candidate, sdk-installed-evidence, persistent-compatibility-evidence, abi-compatibility-evidence, wire-compatibility-evidence, freebsd-package-evidence, security-matrix-evidence, reproducibility-evidence]
+    needs: [candidate, sdk-installed-evidence, persistent-compatibility-evidence, abi-compatibility-evidence, wire-compatibility-evidence, freebsd-package-evidence, openbsd-package-evidence, security-matrix-evidence, reproducibility-evidence]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:

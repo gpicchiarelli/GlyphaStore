@@ -29,6 +29,13 @@ Require these workflows/jobs to pass before merge (adjust names to match the Act
 | `FreeBSD` / `OpenBSD LibreSSL` | Supported Unix portability |
 | `Released artifact compatibility` | Fixture / self-artifact harness |
 
+### Correctness vs performance required checks
+
+Require the correctness / portability / distribution jobs above on `main`. Do **not** require
+absolute performance budgets, hard-pinned scaling, or physical E3/E4 jobs as merge blockers.
+Performance evidence stays labeled `hardware` and is independent of Wave 5 sealing residuals
+([evidence-taxonomy.md](evidence-taxonomy.md), [wave5-l7-residuals.md](../distribution/wave5-l7-residuals.md)).
+
 Optional (path-filtered or scheduled — require only if always run on the PR):
 
 - `Docs links`, `License check`, `Formal ShardPair (TLC)`
@@ -62,3 +69,6 @@ floating tag must be rewritten to a SHA before merge.
 - A queued, skipped, cancelled, or unavailable hosted run is not green evidence; local green ≠ CI green.
 - Physical E3/E4, absolute hardware perf, and tagged N−1 fixture drops remain outside
   this checklist.
+- Sealing residual: producers and validators may be green in structure while retained tagged
+  evidence (ABI N−1, BSD packages, Cosign/SBOM pointers) is still absent — see
+  [wave5-l7-residuals.md](../distribution/wave5-l7-residuals.md).

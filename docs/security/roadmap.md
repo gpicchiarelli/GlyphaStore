@@ -230,8 +230,8 @@ revocation configuration on hostile binds.
 
 | ID | Deliverable | Acceptance |
 | --- | --- | --- |
-| 7.1 | Dependency + secret scanning in CI | **partial** — gitleaks + Trivy fs; PR dependency-review; OpenSSF Scorecard; actionlint + SHA-pin validator; CodeQL C/C++/Python/Go/Actions (SARIF upload opt-in via `GLYPHASTORE_UPLOAD_SARIF`) |
-| 7.2 | SBOM + checksums/signatures for release artifacts | **partial** — checksums + SPDX; checksum-pinned Syft install; tag Cosign keyless bundles; GitHub SLSA attestations; C++ install-prefix SBOM on tags; GitHub Release attach (`.github/workflows/release.yml`); project GPG optional |
+| 7.1 | Dependency + secret scanning in CI | **partial** — gitleaks + Trivy fs; PR dependency-review; OpenSSF Scorecard; actionlint + SHA-pin validator (incl. Dependabot `github-actions` SHA/floating-tag discipline check); CodeQL C/C++/Python/Go/Actions (SARIF upload opt-in via `GLYPHASTORE_UPLOAD_SARIF`) |
+| 7.2 | SBOM + checksums/signatures for release artifacts | **partial** — checksums + SPDX; checksum-pinned Syft install; tag Cosign keyless bundles; GitHub SLSA attestations; C++ install-prefix SBOM on tags; GitHub Release attach (`.github/workflows/release.yml`); project GPG optional. **Retained-evidence gap:** no tagged Cosign/SBOM/attestation pointers under `engineering/evidence/release/` yet |
 | 7.2a | Copyright / third-party notices | **done** — `NOTICE`, `THIRD_PARTY_NOTICES.md`, `docs/legal/licensing.md`, `REUSE.toml`, install + CI license/notice checks |
 | 7.3 | Fuzz regression intake for parsers (wire + persistence) | Documented owners |
 | 7.4 | Supported security maintenance window | Published policy |

@@ -146,7 +146,8 @@ abi_artifact_policy:
   selection: newest-annotated-release-strictly-older-with-same-abi-major-then-require-complete-attested-assets
   residual: >
     The producer and future compiled-consumer asset are implemented, but no prior complete official
-    release exists. Same-build ABI tests do not satisfy either cross-release binary direction.
+    release exists. Same-build ABI tests (including the ci.yml install-consumer same-SHA scaffold)
+    do not satisfy either cross-release binary direction.
 
 wire_artifact_policy:
   fixture_schema: 1

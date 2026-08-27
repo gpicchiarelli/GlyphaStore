@@ -32,7 +32,7 @@ requirements + proofs + evidence. Evidence labels: [evidence-taxonomy.md](eviden
 | **2** | L5 (+L1 liaison) | Hot-path residual: padding, GET/PUT alloc, combining RAW, wakeup/SPSC | No ACK early; no dual ports |
 | **3** | L4 | Compaction crash matrix, ENOSPC/EINTR, backup E2E, debt bounds | Manifest/commit-slot polarity |
 | **4** | L5+L6 | Handoff/TLS/authz/telemetry/drain/soaks; Phase 8 honesty | QSBR under short-write; OVERLOADED polarity |
-| **5** | L7 | C ABI cross-release, BSD packages, Cosign/SLSA/SBOM, sealed `release.yml` | Artifact sealing / N−1 fixtures |
+| **5** | L7 | C ABI cross-release scaffolding, FreeBSD+OpenBSD package producers, Cosign/SLSA/SBOM paths, sealed `release.yml` | Artifact sealing / N−1 fixtures; honest residuals in [wave5-l7-residuals.md](../distribution/wave5-l7-residuals.md) |
 | **6** | L3+L4 (blocked) | Hard-pinned 1–8 scaling + absolute budgets + ACCETTATA when runners exist | macOS `local` ≠ scaling |
 
 ## Anti-duplication rules

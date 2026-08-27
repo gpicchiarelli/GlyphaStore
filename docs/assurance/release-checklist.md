@@ -25,9 +25,11 @@ ceiling above *architectural prototype*. Authority for gates:
 ## Tag packaging
 
 - [ ] Create annotated tag `vX.Y.Z`; `VERSION == X.Y.Z` and clean exact-tag checkout are mandatory
-- [ ] FreeBSD/OpenBSD `distinfo`, account registration and native package evidence exist
+- [ ] FreeBSD/OpenBSD `PORTS_ACCOUNT_REGISTERED` markers exist only after upstream ports allocation;
+      native `distinfo` and package evidence exist from tagged producers (never hand-written digests)
 - [ ] All eight artifact-bound release evidence JSON files and referenced logs pass
-      `engineering/tools/release_evidence.py --require-ci`
+      `engineering/tools/release_evidence.py --require-ci` (see
+      [`engineering/evidence/release/`](../../engineering/evidence/release/README.md))
 - [ ] Candidate contains the deterministic compiled ABI consumer archive and its bound SPDX SBOM
 - [ ] Candidate contains the deterministic compiled wire-v2 client archive and its bound SPDX SBOM
 - [ ] `scripts/package-release-compatibility-artifacts.sh X.Y.Z`
@@ -49,13 +51,18 @@ ceiling above *architectural prototype*. Authority for gates:
       supply-chain checks, then validated candidate SBOMs and the exact distributed Linux ELF
 - [ ] FreeBSD evidence generated `distinfo` from the sealed source, built and installed the native
       package, exercised rc.subr and durable recovery, then proved config/data preservation
+- [ ] OpenBSD evidence generated `distinfo` from the sealed source, built and installed the native
+      package, exercised `rcctl` and durable recovery under `/var/glyphastore`, then proved
+      config/data preservation
 - [ ] Reproducibility evidence rebuilt the closed four-archive set on a distinct runner, matched
       every size and SHA-256, and kept rebuilt bytes outside candidate import and promotion
 - [ ] Verify consumes those exact bytes, tests the installed archive, emits manifest/checksums and
       attests `verified-seal.json`
 - [ ] Protected `release` Environment approves promotion only after technical gates pass
 - [ ] Publish re-verifies the offline Sigstore bundle and uploads without rebuild or clobber
+      (existing release tag refused; never `--clobber`)
 - [ ] Upload / retain CI artifacts under `engineering/evidence/` pointers in the claim YAML
+      (release checklist scaffolding: `engineering/evidence/release/`)
 
 ## Honesty gates (do not skip)
 

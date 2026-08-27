@@ -82,6 +82,26 @@ class BsdPackagingTests(unittest.TestCase):
             with self.assertRaisesRegex(PackagingError, "FreeBSD BSD-3-Clause"):
                 validate(copied)
 
+    def test_openbsd_lifecycle_script_and_release_wiring_exist(self) -> None:
+        script_path = ROOT / "scripts/test-openbsd-package-lifecycle.sh"
+        self.assertTrue(script_path.is_file())
+        self.assertTrue(script_path.stat().st_mode & 0o111)
+        script = script_path.read_text(encoding="utf-8")
+        release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        self.assertIn('[[ "$(uname -s)" == "OpenBSD" ]]', script)
+        self.assertIn("packaging/openbsd/PORTS_ACCOUNT_REGISTERED", script)
+        self.assertIn("openbsd_package", script)
+        self.assertIn("openbsd-package-evidence.json", script)
+        self.assertIn("  openbsd-package-evidence:", release)
+        self.assertIn("test-openbsd-package-lifecycle.sh", release)
+        self.assertIn("vmactions/openbsd-vm@", release)
+        self.assertIn("openbsd-package-evidence", release)
+        freebsd = release.index("  freebsd-package-evidence:")
+        openbsd = release.index("  openbsd-package-evidence:")
+        sanitizers = release.index("  security-sanitizers:")
+        self.assertLess(freebsd, openbsd)
+        self.assertLess(openbsd, sanitizers)
+
 
 if __name__ == "__main__":
     unittest.main()
