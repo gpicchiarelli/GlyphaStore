@@ -12,12 +12,14 @@
 - `PairReadGeneration` direct constructors + merge-compatible direct publish
 - Opt-in `PairedConcurrencyConfig::generation_slot_pool` (default **false**)
 - Embedded combiner / dedicated Writer sync paths reserve-before-mutate
+- Dedicated Writer async batch path reserves before Store and publishes via the pool
 - Unit: V1 reincarnation (≥10k), V6 fail-closed, V9 exhaustion, token width
 - Paired Store: V5 shutdown + V10 put_batch FIFO under the flag
 
 ## Still open
 
-- Async / durable-group Writer publish sites under the flag (not fully dual-pathed)
+- Durable-group Writer publish sites under the flag (partial; sync/async incremental dual-pathed)
+- V7/V8 production-flag integration soaks (merge pin + durable refresh APIs exist; long campaigns open)
 - V11 / V12 worker-affine performance
 - Multi-OS CI matrix / soak under the flag
 - ADR acceptance

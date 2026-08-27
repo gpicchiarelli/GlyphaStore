@@ -2467,10 +2467,18 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         };
         reclaim_quiescent();
         process_merge(batch.size());
-        const auto generation_admission = decide_generation_admission(
+        auto generation_admission = decide_generation_admission(
             lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
             PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
                                                         lane.merge.read_merge.get(), batch.size()));
+        std::optional<GenerationSlotPool::Reservation> async_slot_reservation;
+        if (generation_admission == GenerationAdmissionDecision::admitted &&
+            lane.generation.uses_slot_pool()) {
+            async_slot_reservation = lane.generation.slot_pool->try_reserve();
+            if (!async_slot_reservation) {
+                generation_admission = GenerationAdmissionDecision::reader_quiescence_required;
+            }
+        }
         const bool generation_pressure = generation_admission != GenerationAdmissionDecision::admitted;
         const bool force_expire = expire_remaining_.load(std::memory_order_acquire);
         GS_PHASE_PUT_NAMED(store_apply_phase, store_apply);
@@ -2864,9 +2872,25 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 }
                 publish_fail_closed();
             } else if (post_commit_publication_failure && !read_mutations.empty()) {
-                auto next = PairReadGeneration::publish_incremental(
-                    lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
-                if (!next) {
+                bool published_ok = false;
+                if (async_slot_reservation) {
+                    async_slot_reservation->mark_store_linearized();
+                    published_ok = publish_slot_incremental(*async_slot_reservation, read_mutations);
+                } else if (!lane.generation.uses_slot_pool()) {
+                    auto next = PairReadGeneration::publish_incremental(
+                        lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
+                    if (next) {
+                        install_writer_generation(
+                            lane.generation.writer_generation, lane.generation.retired_generations,
+                            lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                            ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
+                        update_delta_stats();
+                        publish_read_generation(lane.generation.published_generation,
+                                                lane.generation.writer_generation.get());
+                        published_ok = true;
+                    }
+                }
+                if (!published_ok) {
                     for (const auto index : read_mutation_indices) {
                         if (!completions[index].error) {
                             completions[index].error.emplace(
@@ -2875,23 +2899,35 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         }
                     }
                 } else {
-                    install_writer_generation(
-                        lane.generation.writer_generation, lane.generation.retired_generations,
-                        lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                        ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
-                    update_delta_stats();
-                    publish_read_generation(lane.generation.published_generation,
-                                            lane.generation.writer_generation.get());
                     generation_published = true;
                     finish_published_generation();
                 }
                 publish_fail_closed();
             } else if (post_commit_publication_failure) {
+                if (async_slot_reservation) {
+                    async_slot_reservation->reset();
+                }
                 publish_fail_closed();
             } else if (!read_mutations.empty()) {
-                auto next = PairReadGeneration::publish_incremental(
-                    lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
-                if (!next) {
+                bool published_ok = false;
+                if (async_slot_reservation) {
+                    async_slot_reservation->mark_store_linearized();
+                    published_ok = publish_slot_incremental(*async_slot_reservation, read_mutations);
+                } else if (!lane.generation.uses_slot_pool()) {
+                    auto next = PairReadGeneration::publish_incremental(
+                        lane.generation.writer_generation, read_mutations, lane.merge.read_merge.get());
+                    if (next) {
+                        install_writer_generation(
+                            lane.generation.writer_generation, lane.generation.retired_generations,
+                            lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                            ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
+                        update_delta_stats();
+                        publish_read_generation(lane.generation.published_generation,
+                                                lane.generation.writer_generation.get());
+                        published_ok = true;
+                    }
+                }
+                if (!published_ok) {
                     // Durable happy-path incremental fail: drain Index before sticky close
                     // (mirror sync single-op). Volatile has nothing to drain.
                     if (detail::StoreAccess::is_durable(store_) && durable_commit_observed &&
@@ -2911,16 +2947,11 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     }
                     publish_fail_closed();
                 } else {
-                    install_writer_generation(
-                        lane.generation.writer_generation, lane.generation.retired_generations,
-                        lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                        ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
-                    update_delta_stats();
-                    publish_read_generation(lane.generation.published_generation,
-                                            lane.generation.writer_generation.get());
                     generation_published = true;
                     finish_published_generation();
                 }
+            } else if (async_slot_reservation) {
+                async_slot_reservation->reset();
             }
         } catch (const std::bad_alloc&) {
             if (generation_published) {

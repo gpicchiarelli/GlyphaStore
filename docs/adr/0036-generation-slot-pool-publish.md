@@ -283,7 +283,9 @@ lacks socket/protocol work and affinity, so it strengthens direction without clo
 - Reserve-before-Store-mutate; abandoned linearized reservations trip fail-closed (V6).
 - Capacity 65 (`GenerationSlotCapacity<64>`); exhaustion is pre-Store backpressure (V9).
 
-Default Alternative A remains bit-identical. V11/V12 stay **open**. Async/durable-group Writer
+Default Alternative A remains bit-identical. V11/V12 stay **open**. Durable-group
+Writer sites under the flag remain partially dual-pathed; sync/async incremental
+plus refresh/merge finish are covered. No production-ready / E3/E4 claim.
 sites under the flag are not yet fully dual-pathed. Evidence:
 `engineering/evidence/adr0036-production-slot-local-2026-08-27.md` (`local`).
 
