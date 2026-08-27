@@ -10,6 +10,7 @@
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -864,4 +865,145 @@ GLYPHA_TEST("restored Store refuses mismatched Worker count (HAZ-022)") {
     });
     GLYPHA_REQUIRE(matching.has_value());
     GLYPHA_REQUIRE(value_string(*(*matching)->get("keep")) == "alive");
+}
+
+GLYPHA_TEST("online backup storage_exhausted matrix leaves incomplete dest and healthy source") {
+    // GS-PERSIST-FAULT-001 / HAZ-016: ENOSPC-class faults at backup copy/sync seams must
+    // fail closed without poisoning the live source catalog.
+    struct OneShotBackupFailure final {
+        glyphastore::FilesystemOperation target{};
+        bool fired{};
+
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& state = *static_cast<OneShotBackupFailure*>(opaque);
+            if (!state.fired && operation == state.target) {
+                state.fired = true;
+                return glyphastore::fail(glyphastore::ErrorCode::storage_exhausted,
+                                        "injected online backup storage_exhausted");
+            }
+            return {};
+        }
+    };
+
+    const std::array seams{
+        glyphastore::FilesystemOperation::copy_backup_segment,
+        glyphastore::FilesystemOperation::copy_backup_manifest,
+        glyphastore::FilesystemOperation::sync_backup_destination,
+    };
+
+    for (const auto seam : seams) {
+        BackupTemporaryDirectory root;
+        const auto source = root.path() / "source";
+        const auto dest = root.path() / "dest";
+
+        OneShotBackupFailure failure{.target = seam};
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .filesystem_hooks = {.context = &failure, .before = &OneShotBackupFailure::before},
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("keep", bytes("alive")).has_value());
+
+        const auto backed = store.backup_to(dest);
+        GLYPHA_REQUIRE(failure.fired);
+        GLYPHA_REQUIRE(!backed.has_value());
+        GLYPHA_REQUIRE(backed.error().code == glyphastore::ErrorCode::storage_exhausted);
+
+        GLYPHA_REQUIRE(store.put("after", bytes("ok")).has_value());
+        GLYPHA_REQUIRE(value_string(*store.get("keep")) == "alive");
+        GLYPHA_REQUIRE(value_string(*store.get("after")) == "ok");
+
+        // Failed backup must not be treated as a verified destination (incomplete or
+        // unsynced). Segment/manifest faults leave an incomplete catalog; sync fault
+        // still failed the promotion API even if bytes were copied.
+        if (seam != glyphastore::FilesystemOperation::sync_backup_destination) {
+            GLYPHA_REQUIRE(!glyphastore::verify_durable_store_path(dest).has_value());
+        } else {
+            GLYPHA_REQUIRE(std::filesystem::exists(dest));
+        }
+        GLYPHA_REQUIRE(store.close().has_value());
+    }
+}
+
+GLYPHA_TEST("fenced backup concurrent with mutation and compaction keeps source healthy") {
+    // Wave 3: while online backup holds the admission fence, put and compact must fail;
+    // after release the backup verifies and restore recovers committed keys.
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto backup = root.path() / "backup";
+    const auto restored = root.path() / "restored";
+
+    struct StallBackup final {
+        std::atomic_bool entered{false};
+        std::atomic_bool release{false};
+
+        static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& probe = *static_cast<StallBackup*>(opaque);
+            if (operation == glyphastore::FilesystemOperation::copy_backup_segment) {
+                probe.entered.store(true, std::memory_order_release);
+                while (!probe.release.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds{1});
+                }
+            }
+            return {};
+        }
+    } stall;
+
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = source,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.context = &stall, .before = &StallBackup::before},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("seed", bytes("v")).has_value());
+
+    std::error_code ec;
+    std::filesystem::create_directories(backup, ec);
+    GLYPHA_REQUIRE(!ec);
+
+    std::optional<glyphastore::Error> backup_error;
+    std::thread backup_thread{[&] {
+        auto backed = store.backup_to(backup / "fenced");
+        if (!backed) {
+            backup_error = backed.error();
+        }
+    }};
+    while (!stall.entered.load(std::memory_order_acquire)) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{1});
+    }
+
+    const auto fenced_put = store.put("during-fence", bytes("no"));
+    GLYPHA_REQUIRE(!fenced_put.has_value());
+    const auto fenced_compact = store.compact();
+    GLYPHA_REQUIRE(!fenced_compact.has_value());
+
+    stall.release.store(true, std::memory_order_release);
+    backup_thread.join();
+    GLYPHA_REQUIRE(!backup_error.has_value());
+
+    GLYPHA_REQUIRE(store.put("after-fence", bytes("yes")).has_value());
+    GLYPHA_REQUIRE(value_string(*store.get("seed")) == "v");
+    GLYPHA_REQUIRE(value_string(*store.get("after-fence")) == "yes");
+    GLYPHA_REQUIRE(!store.get("during-fence").has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+
+    GLYPHA_REQUIRE(glyphastore::verify_durable_store_path(backup / "fenced").has_value());
+    GLYPHA_REQUIRE(glyphastore::restore_durable_store(backup / "fenced", restored).has_value());
+    auto reopened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = restored,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+    });
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(value_string(*(*reopened)->get("seed")) == "v");
 }
