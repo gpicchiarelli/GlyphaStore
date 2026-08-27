@@ -1,5 +1,13 @@
 ## [Unreleased]
 
+- Wave 2 (L5 + L1 liaison) hot-path residual: Writer-local vs Reader-hot padding in
+  `lane_state.hpp` (`queued_bytes`, telemetry barrier, `LaneMetrics`); skip redundant
+  `reader_safe_epoch` acq_rel RMW when unchanged; Writer/caller pause→yield→park wakeup
+  ladder; paired volatile GET ≤64 B zero-heap proof (`allocation_fault_tests`); durable_sync
+  × token FIFO + put_batch RAW litmus; SPSC hot-producer / slow-consumer fairness. No dual
+  TCP ports / io_uring / get-into. ADR 0036 remains proposed; `generation_slot_pool` default
+  stays false. Claim ceiling unchanged (architectural prototype). Evidence class `local`.
+
 - Wave 5 (L7): OpenBSD package evidence producer + seal wiring; install-consumer same-SHA ABI
   scaffold; Dependabot SHA discipline in `validate_actions_pins.py`; honest residuals in
   `docs/distribution/wave5-l7-residuals.md` (no fake packages/signatures/tags).

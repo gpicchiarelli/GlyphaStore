@@ -54,6 +54,8 @@ Wave 6 docs/scripts may prepare matrices and `specified_waiting_for_runner` plac
 | Wave | Status | Notes |
 | --- | --- | --- |
 | **0** | Landed | Assurance hygiene; evidence taxonomy; this map |
+| **1** | Landed (partial) | Opt-in `generation_slot_pool` on official runtime; ADR 0036 still **proposed**; default remains Alternative A |
+| **2** | Landed (branch) | Hot-path padding / GET≤64 zero-heap proof / combining RAW litmus / wakeup+SPSC fairness; no dual ports |
 | **3** | In progress (L4) | Compaction `storage_exhausted` + paced pre-intent faults; write-amp budget before intent (`GS-PERSIST-AMP-001`); backup ENOSPC/concurrent fence proofs; `GS-OPS-DEBT-001`; platform-durability evidence path placeholders. **E3/E4 remain open** (rehearsal ≠ certification). |
 
 Wave 4 progress (branch `debt/l5l6-wave4-daemon-sec`): handoff exactly-once + concurrent

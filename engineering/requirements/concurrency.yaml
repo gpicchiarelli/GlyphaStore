@@ -105,9 +105,13 @@ requirements:
   - path: benchmarks/results/local-macos-2026-08-26-shard-combining/README.md
   - path: benchmarks/results/local-macos-2026-08-27-writer-deadline-fairness/README.md
   - path: benchmarks/results/local-macos-2026-08-27-merge-debt-scheduler/README.md
+  - path: engineering/evidence/wave2-hotpath-local-2026-08-27.md
   rischio_residuo:
   - durable_group/periodic flusher token sharing deferred; daemon windows still one TCP port;
-    adversarial multi-hour and cross-platform fairness evidence is open
+    adversarial multi-hour and cross-platform combiner fairness evidence open; durable_sync
+    still publishes one generation per committed mutation under the combiner (multi-op publish
+    coalesce deferred; RAW / no wait-to-fill polarity unchanged — Wave 2 litmus covers FIFO ×
+    token and put_batch RAW)
   hazards:
   - HAZ-003
   - HAZ-027
