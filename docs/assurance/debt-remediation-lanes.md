@@ -49,6 +49,13 @@ Wave 6 docs/scripts may prepare matrices and `specified_waiting_for_runner` plac
 3. Absolute p99 GET/PUT thresholds stay **TBD** until hardware samples exist.
 4. No `ACCETTATA_PER_RILASCIO` from scaffolding alone.
 
+## Wave progress (living)
+
+| Wave | Status | Notes |
+| --- | --- | --- |
+| **0** | Landed | Assurance hygiene; evidence taxonomy; this map |
+| **3** | In progress (L4) | Compaction `storage_exhausted` + paced pre-intent faults; write-amp budget before intent (`GS-PERSIST-AMP-001`); backup ENOSPC/concurrent fence proofs; `GS-OPS-DEBT-001`; platform-durability evidence path placeholders. **E3/E4 remain open** (rehearsal ≠ certification). |
+
 ## Anti-duplication rules
 
 1. **L1 merge lock** on publication/reclaim APIs; other lanes rebase or wait.

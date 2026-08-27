@@ -471,7 +471,12 @@ campaign_cases() {
   smoke_cases
   printf '%s\n' \
     "bootstrap sync_commit_slot" \
-    "rotate sync_commit_slot#2"
+    "rotate sync_commit_slot#2" \
+    "compact write_compaction_intent" \
+    "compact rename_segment" \
+    "compact sync_directory#3"
+  # Wave 3 rehearsal scaffolding only — compact checkpoints expand campaign coverage
+  # for pre-intent / promotion seams. Harness PASS is not E3 certification.
 }
 
 case_list="$( [[ "$profile" == "campaign" ]] && campaign_cases || smoke_cases )"

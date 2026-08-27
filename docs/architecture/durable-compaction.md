@@ -210,6 +210,10 @@ manifest authority. This keeps persistence v1 unchanged.
 `transient_metadata_lower_bound_bytes`, which includes source/placement vector capacity, replacement
 Index table and arena bytes, and reusable Record scratch. This is not an RSS claim: copied
 `std::string` heap storage and allocator bookkeeping require a platform allocation census.
+Write-amplification and temporary-space budgets (`DurableResourceLimits`) are enforced at plan time
+before any durable intent (`GS-PERSIST-AMP-001`). Maintenance latency/reclaim debt and pacing
+telemetry (`GS-OPS-DEBT-001`) are diagnostic observability; they do **not** retire ADR 0036
+generation-slot-pool publication obligations.
 
 The public `Store::compact()` scheduler is cooperative and creates no background thread by itself.
 It examines eligible Workers in round-robin order, skips exact layouts that would reclaim no physical

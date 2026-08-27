@@ -11,6 +11,9 @@
   local fixed-shell, direct-object and two-thread publication candidate campaigns. It is neither CI
   nor release evidence.
 
+- [`platform-durability/`](platform-durability/) reserves per-row evidence path placeholders
+  (APFS/ext4/XFS/UFS/ZFS/FFS). Rows are **not** E3/E4 certified; see each subdirectory README.
+
 Tagged release promotion uses the machine-readable contract in
 [`docs/distribution/release-evidence.md`](../../docs/distribution/release-evidence.md). Evidence JSON
 and every referenced log are carried as sealed release candidate files; this directory stores only

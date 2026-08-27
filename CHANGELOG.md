@@ -4,6 +4,14 @@
   scaffold; Dependabot SHA discipline in `validate_actions_pins.py`; honest residuals in
   `docs/distribution/wave5-l7-residuals.md` (no fake packages/signatures/tags).
 
+- Wave 3 (L4) durability & maintenance: compaction write-amplification / temporary-space budgets
+  reject before intent (`GS-PERSIST-AMP-001`); paced pre-intent staging faults and maintenance
+  latency/pacing observability (`GS-OPS-DEBT-001`); online compaction and backup
+  `storage_exhausted` matrices; fenced backup concurrent with mutation/compaction; platform
+  durability evidence path placeholders under `engineering/evidence/platform-durability/`.
+  E3/E4 platform rows remain open (rehearsal ≠ certification). Claim ceiling unchanged
+  (architectural prototype).
+
 - Wave 0 (L0) assurance hygiene: close stale `GATE-CONCURRENCY-SPEC` residual for ADR 0037
   Phase C (daemon mutation windows + GET barrier already landed; prove paths include
   `mutation_window_tests`). Add living `docs/assurance/evidence-taxonomy.md` (`local` /

@@ -1308,3 +1308,39 @@ GLYPHA_TEST("background reclaim_threshold skip advances past live-only Worker to
     GLYPHA_REQUIRE((*store)->verify_index().has_value());
     GLYPHA_REQUIRE((*store)->close().has_value());
 }
+
+// GS-PERSIST-AMP-001: write-amplification / temporary-space budgets reject before
+// durable intent; Mold remains sole authority and no compaction intent residue remains.
+GLYPHA_TEST("compaction write-amplification budget rejects before intent without residue") {
+    CompactionBuildDirectory temporary;
+    const auto old = build_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    glyphastore::DurableResourceLimits limits{};
+    limits.max_write_amplification = 1;
+    // Two sealed sources that reclaim one Segment pass amp=1; force rejection via temporary budget.
+    limits.max_temporary_compaction_bytes = 1;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 100, glyphastore::DurableRuntimeOptions{.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto rejected = (*runtime)->compact_worker(0, 100);
+    GLYPHA_REQUIRE(!rejected.compacted());
+    GLYPHA_REQUIRE(rejected.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+    GLYPHA_REQUIRE(rejected.error.has_value());
+    GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::storage_exhausted);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->manifest() == old);
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == old);
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+}

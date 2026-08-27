@@ -1421,3 +1421,147 @@ GLYPHA_TEST("online compaction filesystem fault matrix reopens one clean authori
         GLYPHA_REQUIRE(owned_text(*second) == "second-value");
     }
 }
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: capacity errno class at compaction publication
+// boundaries (storage_exhausted), distinct from the generic io_error matrix above.
+// E0–E2 fault-injection only; not E3/E4 physical certification.
+GLYPHA_TEST("online compaction storage_exhausted fault matrix reopens one clean authority") {
+    struct FaultCase {
+        glyphastore::FilesystemOperation operation;
+        std::size_t occurrence{1};
+    };
+    const std::vector<FaultCase> faults{
+        {glyphastore::FilesystemOperation::preallocate_segment},
+        {glyphastore::FilesystemOperation::write_segment_header},
+        {glyphastore::FilesystemOperation::write_record, 1},
+        {glyphastore::FilesystemOperation::sync_record},
+        {glyphastore::FilesystemOperation::write_commit_slot, 1},
+        {glyphastore::FilesystemOperation::sync_commit_slot, 1},
+        {glyphastore::FilesystemOperation::write_compaction_intent},
+        {glyphastore::FilesystemOperation::sync_compaction_intent},
+        {glyphastore::FilesystemOperation::rename_compaction_intent},
+        {glyphastore::FilesystemOperation::sync_directory, 1},
+        {glyphastore::FilesystemOperation::rename_segment},
+        {glyphastore::FilesystemOperation::write_manifest},
+        {glyphastore::FilesystemOperation::sync_manifest},
+        {glyphastore::FilesystemOperation::rename_manifest},
+        {glyphastore::FilesystemOperation::remove_compaction_segment, 1},
+        {glyphastore::FilesystemOperation::remove_compaction_intent},
+    };
+    for (const auto& fault : faults) {
+        RecoveryTemporaryDirectory temporary;
+        const auto store_id = recovery_store_id();
+        const std::vector entries{
+            glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                              .generation = glyphastore::GenerationId{1},
+                                              .owner_worker = glyphastore::WorkerId{0},
+                                              .role = glyphastore::ManifestSegmentRole::sealed},
+            glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                              .generation = glyphastore::GenerationId{1},
+                                              .owner_worker = glyphastore::WorkerId{0},
+                                              .role = glyphastore::ManifestSegmentRole::sealed},
+            glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{3},
+                                              .generation = glyphastore::GenerationId{1},
+                                              .owner_worker = glyphastore::WorkerId{0},
+                                              .role = glyphastore::ManifestSegmentRole::active},
+        };
+        {
+            auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+            GLYPHA_REQUIRE(directory.has_value());
+            auto first = create_segment(*directory, store_id, entries[0]);
+            append_record(first, 1, "enospc-first", "first-value");
+            GLYPHA_REQUIRE(first.seal().committed());
+            auto second = create_segment(*directory, store_id, entries[1]);
+            append_record(second, 2, "enospc-second", "second-value");
+            GLYPHA_REQUIRE(second.seal().committed());
+            static_cast<void>(create_segment(*directory, store_id, entries[2]));
+            GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
+        }
+
+        OneShotFilesystemFailure failure{.target = fault.operation,
+                                         .code = glyphastore::ErrorCode::storage_exhausted,
+                                         .target_occurrence = fault.occurrence};
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(),
+            glyphastore::FilesystemHooks{.context = &failure, .before = &OneShotFilesystemFailure::before});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+        GLYPHA_REQUIRE(runtime.has_value());
+        const auto result = (*runtime)->compact_worker(0, 0);
+        GLYPHA_REQUIRE(failure.fired);
+        GLYPHA_REQUIRE(!result.compacted());
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(result.error->code == glyphastore::ErrorCode::storage_exhausted);
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::not_compacted ||
+                       result.outcome == glyphastore::DurableCompactionOutcome::recovery_required);
+        GLYPHA_REQUIRE((*runtime)->healthy() ==
+                       (result.outcome == glyphastore::DurableCompactionOutcome::not_compacted));
+        runtime->reset();
+
+        auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+        const auto first = (*reopened)->get("enospc-first");
+        const auto second = (*reopened)->get("enospc-second");
+        GLYPHA_REQUIRE(first.has_value());
+        GLYPHA_REQUIRE(second.has_value());
+        GLYPHA_REQUIRE(owned_text(*first) == "first-value");
+        GLYPHA_REQUIRE(owned_text(*second) == "second-value");
+    }
+}
+
+// ADR 0040: fault during paced private staging leaves Mold sole authority (no intent).
+GLYPHA_TEST("paced compaction write_record fault leaves Mold without intent") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{3},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto first = create_segment(*directory, store_id, entries[0]);
+        append_record(first, 1, "paced-a", "alpha");
+        GLYPHA_REQUIRE(first.seal().committed());
+        auto second = create_segment(*directory, store_id, entries[1]);
+        append_record(second, 2, "paced-b", "beta");
+        GLYPHA_REQUIRE(second.seal().committed());
+        static_cast<void>(create_segment(*directory, store_id, entries[2]));
+        GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
+    }
+
+    OneShotFilesystemFailure failure{.target = glyphastore::FilesystemOperation::write_record,
+                                     .code = glyphastore::ErrorCode::io_error};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.context = &failure, .before = &OneShotFilesystemFailure::before});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+    // Tiny rate forces paced private staging before intent (ADR 0040).
+    const auto result = (*runtime)->compact_worker(0, 0, 0, 1'000);
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(!result.compacted());
+    GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE((*runtime)->manifest() == recovery_manifest(store_id, 1, entries));
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("paced-a")) == "alpha");
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("paced-b")) == "beta");
+}

@@ -157,19 +157,23 @@ gates:
   livello_rilascio: beta
   requisiti:
   - GS-PERSIST-ORDER-001
+  - GS-PERSIST-AMP-001
   prove:
   - tests/crash/crash_persistence.cpp
   - tests/integration/persistence_recovery_tests.cpp
+  - tests/integration/persistence_recovery_compaction_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: durability-evidence.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Filesystem/power-loss certification matrices open
+  rischio_residuo: Filesystem/power-loss certification matrices open; E3/E4 not certified
   riapertura:
   - Sync ordering change without ADR
-  narrative: Platform-aware publication implemented with fault and process-kill tests.
+  narrative: Platform-aware publication with fault and process-kill tests; write-amp and
+    temporary-space budgets reject before compaction intent (GS-PERSIST-AMP-001).
 - id: GATE-RECOVERY-DETERMINISTIC
   titolo: Deterministic recovery after process termination
   sezione: durability_recovery
@@ -219,6 +223,10 @@ gates:
   - scripts/exercise_ops_runbooks.sh
   - src/persistence/store_migrate.cpp
   - tests/unit/store_migrate_tests.cpp
+  - tests/unit/store_backup_tests.cpp
+  - tests/crash/crash_backup.cpp
+  - tests/crash/crash_backup_daemon.cpp
+  - tests/crash/crash_backup_wire.cpp
   - docs/spec/backup-restore-v1.md
   - docs/operations/backup-restore.md
   piattaforme:
@@ -226,11 +234,13 @@ gates:
   - macos-arm64
   evidenze:
   - workflow: ops-runbooks.yml
-  stato: IMPLEMENTATA
-  rischio_residuo: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
+  - workflow: ci.yml
+  stato: PROVATA_IN_CI
+  rischio_residuo: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; E3/E4 open; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
   riapertura:
   - Backup format change without fixtures
-  narrative: Offline tools and online fenced backup implemented; normative snapshot boundary published.
+  narrative: Offline tools and online fenced backup with ENOSPC and concurrent fence proofs in CI;
+    normative snapshot boundary published. Not E3/E4 certified.
 - id: GATE-TEST-SUITES
   titolo: Distinct unit integration property concurrency crash recovery suites
   sezione: verification
@@ -261,23 +271,30 @@ gates:
   requisiti:
   - GS-RECOVERY-FAILCLOSED-001
   - GS-PERSIST-FAULT-001
+  - GS-PERSIST-AMP-001
   prove:
   - tests/integration/persistence_recovery_tests.cpp
+  - tests/integration/persistence_recovery_compaction_tests.cpp
   - tests/unit/persistence_filesystem_tests.cpp
+  - tests/unit/store_backup_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
   - engineering/tools/validate_durability_claims.py
+  - engineering/evidence/platform-durability/
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: ci.yml
   - workflow: assurance.yml
-  stato: IMPLEMENTATA
+  - path: engineering/evidence/platform-durability/
+  stato: PROVATA_IN_CI
   rischio_residuo: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
   riapertura:
   - Removing deterministic seams without replacement
   - e3_certified=yes without pinned campaign
-  narrative: Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix; E3 honesty
-    enforced in CI.
+  narrative: Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix across
+    mutation, compaction, and backup; platform-durability evidence paths are placeholders only;
+    E3 honesty enforced in CI.
 - id: GATE-FUZZ-CI
   titolo: Fuzz targets run in CI with retained corpora
   sezione: verification
@@ -304,6 +321,7 @@ gates:
   requisiti:
   - GS-OPS-CONFIG-001
   - GS-OPS-SOAK-001
+  - GS-OPS-DEBT-001
   prove:
   - scripts/soak_daemon.sh
   - docs/operations/soak.md
@@ -396,6 +414,7 @@ gates:
   - GS-OPS-BACKUP-001
   - GS-OPS-CONFIG-001
   - GS-OPS-SOAK-001
+  - GS-OPS-DEBT-001
   prove:
   - docs/operations/README.md
   - docs/operations/graceful-drain-and-overload.md

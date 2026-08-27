@@ -3,7 +3,7 @@
 Status: roadmap
 Applies to: persistence v1 and every storage mode that claims restart durability
 Owner: release and storage maintainers
-Last reviewed: 2026-07-25
+Last reviewed: 2026-08-27
 
 This document records what each kind of test can establish and what GlyphaStore has established on
 each platform/filesystem row. A hosted runner whose filesystem, mount options, cache path, and
@@ -36,16 +36,16 @@ crash harnesses, an attributable E2 collector, and an in-repo E3 *block-reset ha
 pinned rehearsal rows (Linux ext4 loopback; macOS APFS disk image). Harness PASS is rehearsal
 evidence only. Retained release-grade E3/E4 campaign artifacts do not exist yet.
 
-| Platform/filesystem row | Automated evidence available | Highest defensible current claim | Missing before certification |
-|---|---|---|---|
-| macOS / APFS | Native build/test workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform macos-apfs` (hdiutil sparsebundle + `detach -force`); scheduled CI harness smoke | E2 when a collector artifact records an actual passing native run; E3-harness rehearsal when the APFS diskimage campaign artifact is retained — **not E3 certified** | Pinned Apple hardware/storage (not only a disk image on a hosted runner), APFS and mount metadata, reviewed abrupt-loss campaign with repetitions, then E4 |
-| Linux / ext4 | Hosted Linux workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform linux-ext4` (sparse image + losetup + optional dm-flakey); PR/schedule CI harness smoke | E2 only for a separately recorded run on a declared ext4 mount; E3-harness rehearsal on loopback/mapper — **not E3 certified** for production NVMe/SATA ext4 | Dedicated ext4 block device or VM disk (beyond loopback-on-hosted-FS), mount/cache/barrier metadata, reviewed reset campaign, then E4 |
-| Linux / XFS | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native XFS job, E2 run, reset campaign and artifacts |
-| Linux / btrfs | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | Native btrfs job, E2 run, reset campaign and artifacts |
-| FreeBSD / UFS | Native FreeBSD VM workflow builds and runs the general suite (`.github/workflows/freebsd.yml`); guest storage row is not pinned | Portability/regression signal, not UFS certification | Pin UFS mount metadata, E2 collector artifact, then E3/E4 campaign |
-| FreeBSD / ZFS | No maintained native storage row; FreeBSD CI does not select or report ZFS | Architectural target, not a supported durability claim | Explicit ZFS contract, native ZFS job, E2, then pinned E3/E4 campaign |
-| OpenBSD / FFS | OpenBSD/LibreSSL VM workflow runs the general suite, but does not pin or report the guest storage row as durability evidence | Portability/regression signal, not FFS certification | Native or controlled FFS row, filesystem metadata, E2 and E3/E4 artifacts |
-| NFS, SMB, FUSE, overlay, remote or user-space storage | Deliberately outside the local-filesystem contract | Unsupported | Not eligible for certification under persistence v1 |
+| Platform/filesystem row | Automated evidence available | Highest defensible current claim | Evidence path placeholder | Missing before certification |
+|---|---|---|---|---|
+| macOS / APFS | Native build/test workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform macos-apfs` (hdiutil sparsebundle + `detach -force`); scheduled CI harness smoke | E2 when a collector artifact records an actual passing native run; E3-harness rehearsal when the APFS diskimage campaign artifact is retained — **not E3 certified** | [`engineering/evidence/platform-durability/macos-apfs/`](../../engineering/evidence/platform-durability/macos-apfs/) | Pinned Apple hardware/storage (not only a disk image on a hosted runner), APFS and mount metadata, reviewed abrupt-loss campaign with repetitions, then E4 |
+| Linux / ext4 | Hosted Linux workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform linux-ext4` (sparse image + losetup + optional dm-flakey); PR/schedule CI harness smoke | E2 only for a separately recorded run on a declared ext4 mount; E3-harness rehearsal on loopback/mapper — **not E3 certified** for production NVMe/SATA ext4 | [`engineering/evidence/platform-durability/linux-ext4/`](../../engineering/evidence/platform-durability/linux-ext4/) | Dedicated ext4 block device or VM disk (beyond loopback-on-hosted-FS), mount/cache/barrier metadata, reviewed reset campaign, then E4 |
+| Linux / XFS | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | [`engineering/evidence/platform-durability/linux-xfs/`](../../engineering/evidence/platform-durability/linux-xfs/) | Native XFS job, E2 run, reset campaign and artifacts |
+| Linux / btrfs | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | *(not scaffolded; row remains open)* | Native btrfs job, E2 run, reset campaign and artifacts |
+| FreeBSD / UFS | Native FreeBSD VM workflow builds and runs the general suite (`.github/workflows/freebsd.yml`); guest storage row is not pinned | Portability/regression signal, not UFS certification | [`engineering/evidence/platform-durability/freebsd-ufs/`](../../engineering/evidence/platform-durability/freebsd-ufs/) | Pin UFS mount metadata, E2 collector artifact, then E3/E4 campaign |
+| FreeBSD / ZFS | No maintained native storage row; FreeBSD CI does not select or report ZFS | Architectural target, not a supported durability claim | [`engineering/evidence/platform-durability/freebsd-zfs/`](../../engineering/evidence/platform-durability/freebsd-zfs/) | Explicit ZFS contract, native ZFS job, E2, then pinned E3/E4 campaign |
+| OpenBSD / FFS | OpenBSD/LibreSSL VM workflow runs the general suite, but does not pin or report the guest storage row as durability evidence | Portability/regression signal, not FFS certification | [`engineering/evidence/platform-durability/openbsd-ffs/`](../../engineering/evidence/platform-durability/openbsd-ffs/) | Native or controlled FFS row, filesystem metadata, E2 and E3/E4 artifacts |
+| NFS, SMB, FUSE, overlay, remote or user-space storage | Deliberately outside the local-filesystem contract | Unsupported | n/a | Not eligible for certification under persistence v1 |
 
 “Hosted workflow” never means that its provider’s current backing filesystem has been inferred or
 certified. A row advances only from an artifact that names the tested stack. Loopback and disk-image

@@ -123,6 +123,10 @@ diagnostic source-level C++ API additions and do not alter the stable C ABI.
   the compaction lease.
 - Online I/O-fault and process-kill matrices cover pre-intent staging, intent, partial promotion,
   Manifest authority, retirement and final cleanup.
+- Wave 3: `storage_exhausted` fault matrices and write-amplification / temporary-space budget
+  rejection before intent (`GS-PERSIST-AMP-001`); paced staging faults remain pre-intent. Platform
+  evidence path placeholders live under `engineering/evidence/platform-durability/` — **not** E3/E4
+  certification.
 - Compaction benchmarks retain the measured pre-intent and publication-lease durations plus the
   transient-metadata lower bound.
 - ASan, TSan, the complete test matrix and assurance referential validation remain required before

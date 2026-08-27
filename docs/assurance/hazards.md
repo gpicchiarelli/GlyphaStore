@@ -22,7 +22,7 @@ accepted residual risks do not imply production readiness.
 | `HAZ-013` | Rotazione incompleta | alta | media | alta | mitigato | `GS-RECOVERY-DET-001` |
 | `HAZ-014` | Corruzione del manifesto | catastrofica | media | alta | accettato | `GS-PERSIST-ORDER-001`, `GS-RECOVERY-FAILCLOSED-001` |
 | `HAZ-015` | Corruzione delle caselle di conferma | catastrofica | media | alta | aperto | `GS-PERSIST-ORDER-001` |
-| `HAZ-016` | Esaurimento dello spazio | alta | media | alta | mitigato | `GS-RECOVERY-FAILCLOSED-001`, `GS-OPS-CONFIG-001` |
+| `HAZ-016` | Esaurimento dello spazio | alta | media | alta | mitigato | `GS-RECOVERY-FAILCLOSED-001`, `GS-OPS-CONFIG-001`, `GS-PERSIST-FAULT-001` |
 | `HAZ-017` | Quota esaurita | alta | bassa | alta | mitigato | `GS-RECOVERY-FAILCLOSED-001` |
 | `HAZ-018` | Errori di scrittura differita | alta | media | bassa | accettato | `GS-PERSIST-ACK-001` |
 | `HAZ-019` | Errori di sincronizzazione | alta | media | media | mitigato | `GS-PERSIST-ORDER-001` |
@@ -39,4 +39,4 @@ accepted residual risks do not imply production readiness.
 | `HAZ-030` | Pubblicazione di byte diversi da quelli verificati o con identita non provata | catastrofica | media | alta | mitigato | `GS-RELEASE-ARTIFACT-001` |
 | `HAZ-031` | Amplificazione memoria o alta marea RSS non attribuita nel runtime paired | alta | alta | media | aperto | `GS-CONCUR-PAIR-001` |
 | `HAZ-032` | Debito di merge paired concentrato in una pausa terminale o overload spurio | alta | media | alta | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001` |
-| `HAZ-033` | Compaction I/O causa jitter foreground o il rate gate affama candidati grandi | alta | alta | alta | mitigato | `GS-OPS-CONFIG-001` |
+| `HAZ-033` | Compaction I/O causa jitter foreground o il rate gate affama candidati grandi | alta | alta | alta | mitigato | `GS-OPS-CONFIG-001`, `GS-OPS-DEBT-001`, `GS-PERSIST-AMP-001` |
