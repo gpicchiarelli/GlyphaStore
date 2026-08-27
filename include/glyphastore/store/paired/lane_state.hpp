@@ -4,6 +4,7 @@
 // Normative: docs/spec/mutation-lifecycle.md Phase 4
 
 #include "glyphastore/core/latency_histogram.hpp"
+#include "glyphastore/store/paired/generation_slot_pool.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 
 #include <array>
@@ -70,9 +71,11 @@ struct SyncLaneState final {
 };
 
 struct GenerationState final {
+    std::unique_ptr<GenerationSlotPool> slot_pool;
     std::shared_ptr<const PairReadGeneration> writer_generation;
     std::vector<std::shared_ptr<const PairReadGeneration>> retired_generations;
     alignas(128) std::atomic<const PairReadGeneration*> published_generation{};
+    alignas(128) std::atomic<std::uint64_t> published_token{};
     alignas(128) std::atomic<std::uint64_t> writer_epoch{};
     alignas(128) std::atomic<std::uint64_t> reader_safe_epoch{};
     alignas(128) std::atomic<std::uint64_t> published_catalog_revision{};
@@ -105,6 +108,14 @@ struct GenerationState final {
     std::atomic<std::size_t> memory_delta_allocated_lower_bound_bytes{};
     std::atomic<std::size_t> memory_generation_shell_bytes{};
     std::atomic<std::size_t> memory_current_allocated_lower_bound_bytes{};
+
+    [[nodiscard]] auto uses_slot_pool() const noexcept -> bool {
+        return slot_pool != nullptr;
+    }
+    [[nodiscard]] auto retired_debt() const noexcept -> std::size_t {
+        return uses_slot_pool() ? slot_pool->retired_count()
+                                : retired_generations.size();
+    }
 };
 
 struct MergeState final {
