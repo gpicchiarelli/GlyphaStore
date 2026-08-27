@@ -31,6 +31,7 @@ classes:
     runner_label: glyphastore-linux-perf
     status: specified_waiting_for_runner
     metric: pass_candidate_manifest
+    evidence_class: hardware
     rule:
       type: manifest_status_equals
       value: pass-candidate
@@ -40,9 +41,73 @@ classes:
     authority:
       - docs/benchmarks/paired-shards-linux-p1.md
       - docs/benchmarks/paired-shards-plan.md
+      - docs/assurance/performance-budgets.md
+      - docs/assurance/evidence-taxonomy.md
     notes: >
-      Absolute A/B and scale claims require hard CPU pins, NUMA binding, and working-set
-      evidence. Hosted Ubuntu and macOS advisory affinity must not close this budget.
+      Absolute A/B and scale claims require hard CPU pins, NUMA binding, disjoint client/server
+      CPUs, migration checks, and working-set evidence. Hosted Ubuntu and macOS advisory affinity
+      must not close this budget. Wave 6 scaffolding only — no invented pass-candidate.
+
+  - id: HARDWARE-SCALE-EFFICIENCY-1-8
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-BUDGET-001
+    enforcement: hardware_self_hosted
+    runner_label: glyphastore-linux-perf
+    status: specified_waiting_for_runner
+    metric: scaling_efficiency_percent
+    evidence_class: hardware
+    rule:
+      type: gte_percent_placeholder
+      value: 80
+    workflows:
+      - paired-linux-performance.yml
+    harness: scripts/benchmark_paired_linux_ab.sh
+    authority:
+      - docs/assurance/performance-budgets.md
+      - docs/benchmarks/paired-shards-linux-p1.md
+    notes: >
+      Placeholder absolute scale budget (1/2/4/8 pairs). Threshold 80% is draft only; not enforced
+      until a hardware pass-candidate fills efficiency-scaffold.csv with real medians.
+
+  - id: HARDWARE-ABSOLUTE-P99-GET
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-BUDGET-001
+    enforcement: hardware_self_hosted
+    runner_label: glyphastore-linux-perf
+    status: specified_waiting_for_runner
+    metric: p99_get_latency_ns
+    evidence_class: hardware
+    rule:
+      type: absolute_threshold_placeholder
+      value: null
+    workflows:
+      - paired-linux-performance.yml
+    harness: scripts/benchmark_paired_linux_ab.sh
+    authority:
+      - docs/assurance/performance-budgets.md
+    notes: >
+      Absolute p99 GET placeholder. Numeric threshold intentionally null until
+      glyphastore-linux-perf publishes retained samples. Do not invent values.
+
+  - id: HARDWARE-ABSOLUTE-P99-PUT
+    gate: GATE-PERFORMANCE
+    requirement: GS-PERF-BUDGET-001
+    enforcement: hardware_self_hosted
+    runner_label: glyphastore-linux-perf
+    status: specified_waiting_for_runner
+    metric: p99_put_latency_ns
+    evidence_class: hardware
+    rule:
+      type: absolute_threshold_placeholder
+      value: null
+    workflows:
+      - paired-linux-performance.yml
+    harness: scripts/benchmark_paired_linux_ab.sh
+    authority:
+      - docs/assurance/performance-budgets.md
+    notes: >
+      Absolute p99 PUT placeholder. Numeric threshold intentionally null until
+      glyphastore-linux-perf publishes retained samples. Do not invent values.
 
   - id: ADVISORY-EMBEDDED-DURABLE-GET-P99
     gate: GATE-PERFORMANCE
