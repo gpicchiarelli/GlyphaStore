@@ -473,7 +473,8 @@ int main(int argc, char** argv) {
                   << stats.generation_high_watermark << ",generation_retired,"
                   << stats.generation_retire_count << ",generation_retire_delay_ns,"
                   << stats.generation_retire_delay_ns << ",publication_backpressure,"
-                  << stats.publication_backpressure << '\n';
+                  << stats.publication_backpressure << ",generation_slot_reuses,"
+                  << stats.generation_slot_reuses << '\n';
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "paired benchmark error: " << error.what() << '\n';

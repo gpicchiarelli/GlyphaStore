@@ -1,7 +1,7 @@
 Status: descriptive operator reference for implemented surfaces
 Applies to: `glyphastored` wire v2 probes, STATS needles, JSON lifecycle/audit logs, `--dump-config`
 Owner: platform / ops maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-27
 
 # Observability reference
 
@@ -72,6 +72,7 @@ Abuse (Phase 5): `abuse_accepts_rejected`, `abuse_idle_closed`, `abuse_request_t
 `maintenance_last_skip_reason`, `maintenance_last_activation_reason`,
 `maintenance_last_no_gain_source_records_verified`, `maintenance_last_no_gain_source_bytes_verified`,
 `maintenance_last_no_gain_expired_records_dropped`, `maintenance_total_no_gain_*` (same three),
+`maintenance_no_gain_scans_suppressed`, `maintenance_no_gain_retry_after_ns`,
 `maintenance_sequence_conflicts`, `maintenance_candidate_worker`,
 `maintenance_candidate_sealed_record_bytes`, `maintenance_candidate_live_record_bytes`,
 `maintenance_candidate_dead_record_bytes`, `maintenance_candidate_dead_byte_ratio_bp`,
@@ -79,6 +80,8 @@ Abuse (Phase 5): `abuse_accepts_rejected`, `abuse_idle_closed`, `abuse_request_t
 `maintenance_candidate_unread_expired_sealed_record_count`,
 `maintenance_candidate_unread_expired_sealed_record_bytes`,
 `maintenance_rate_window_bytes_copied`, `maintenance_rate_window_cpu_ns`,
+`maintenance_last_compaction_pacing_delay_ns`, `maintenance_total_compaction_pacing_delay_ns`,
+`maintenance_last_compaction_pacing_sleep_count`, `maintenance_last_compaction_pacing_burst_bytes`,
 `maintenance_foreground_latency_samples`, `maintenance_last_foreground_p99_ns`,
 `maintenance_latency_suspends`, `maintenance_latency_guard_active`,
 `maintenance_latency_deferral_age_ns`, `maintenance_latency_debt_overrides`
@@ -100,10 +103,57 @@ short soaks may leave them at zero.
 ### 3.4 Paired Writer lanes (`lane[N].*`)
 
 Epochs / queues: `reader_safe_epoch`, `writer_epoch`, `queue_depth`, `queued_bytes`,
-`maximum_queue_depth`, `maximum_queued_bytes`, payload slot/arena admission fields.
+`maximum_queue_depth`, `maximum_queued_bytes`, payload slot/arena admission fields. Shutdown
+lifetime fields are `reader_shutdown_finalized` and `shutdown_generations_reclaimed`; the former is
+terminal and the latter counts all generation owners released by the daemon post-drain edge.
+`generation_admission_backpressure_total` counts mutations rejected before Store because the
+retire bound or incremental publication capacity was exhausted; it is distinct from queue-full and
+queue-wait expiry.
 
 Flow: `admitted`, `rejected`, `expired_before_store`, `completed`, `conflict_retries`,
-`conflict_retry_commits`, plus read-refresh / generation / delta / merge counters.
+`conflict_retry_commits`, `writer_batches`, `writer_batch_records`,
+`maximum_writer_batch_records`, `total_writer_batch_wait_ns`, `maximum_writer_batch_wait_ns`,
+`writer_batch_durability_deadline_closes`, `writer_batch_queue_deadline_closes`,
+`sync_drain_turns`, `sync_turn_splits`, `sync_async_fairness_turns`, `publications`,
+`publication_records` and
+`completion_notifications`, plus read-refresh / generation / delta / merge counters. The two
+deadline-close counters distinguish durability-policy batching from an earlier admission SLO;
+`sync_turn_splits` counts caller work continued after the 32-record quantum, while
+`sync_async_fairness_turns` counts sync turns deliberately followed by queued async work. Compare
+`completion_notifications` with `completed` and `writer_batches` to quantify completion wakeup
+coalescing. A normal single-Reader pair emits one notification per non-empty Writer batch after all
+of that batch's completions have been published to the bounded SPSC queue; the counter measures
+actual wakeup calls, not completed mutations.
+
+Merge debt gauges are `read_merge_remaining_slots` and
+`read_merge_post_capacity_remaining`; `maximum_read_merge_quantum_slots` is the high-water mark of
+actual slots processed by one maintenance turn. Compare them with `read_merge_post_entries`,
+`read_merge_slots_processed`, `read_merge_backpressure`, and foreground service p99. A falling debt
+with positive post capacity is normal. Debt near zero capacity, a quantum high-water materially
+above the configured minimum, or increasing merge backpressure indicates that base size/batch
+shape is forcing the proportional safety budget and requires workload-specific tuning.
+
+Current immutable-view footprint fields are:
+`read_generation_base_entries`, `read_generation_base_capacity`,
+`read_generation_base_record_storage_bytes`, `read_generation_base_record_mapped_storage_bytes`,
+`read_generation_base_lookup_storage_bytes`,
+`read_generation_base_key_bytes`, `read_generation_base_key_storage_bytes`,
+`read_generation_base_pin_storage_bytes`, `read_generation_base_allocated_lower_bound_bytes`,
+`read_generation_delta_capacity`, `read_generation_delta_lookup_storage_bytes`,
+`read_generation_delta_allocated_lower_bound_bytes`, `read_generation_shell_bytes`, and
+`read_generation_current_allocated_lower_bound_bytes`. They are emitted from one coherent
+Writer-published census. The Writer maintains exact reachable delta page/block/chunk counts and
+base key-block bytes while it builds those structures; exporting the census is O(1) and never scans
+the immutable index from the mutation path. `*_allocated_lower_bound_bytes` includes explicitly
+sized allocation payload, not allocator metadata/control blocks, retired generations, or an
+in-progress merge builder. It must not be interpreted as RSS or total per-key memory; use the
+dedicated native memory census benchmark for process RSS/peak RSS, final allocator in-use/reserved
+bytes where the platform exposes them (macOS and glibc Linux), and the unattributed residual.
+
+`read_generation_spare_mapping_bytes` is process-wide rather than per lane. It reports the payload
+capacity of at most one retired immutable-base size-class mapping retained by each base lineage;
+guard pages are excluded. The value can fall when a lineage crosses a size class or is destroyed
+and must not be added again to a lane's current-generation total.
 
 **Latency histograms** (approx; not SLOs):
 
@@ -163,6 +213,7 @@ rate/p99 guards, durable mutation queue caps, `shutdown-drain-ms`, TLS/authz fla
 | Maintenance gate | `mutations_rejected`, `maintenance_pressure`, log `maintenance_emergency` |
 | Tail latency (diagnostic) | `lane[N].queue_wait_ns.p99`, `lane[N].service_ns.p99`, `maintenance_last_foreground_p99_ns` |
 | Durability progress | `durable_rotations_committed`, `useful_compactions` (may be 0 on short soaks) |
+| Current read-view footprint | `lane[N].read_generation_current_allocated_lower_bound_bytes` plus base/delta components; compare separately with process RSS |
 
 Do not publish absolute ops/s or p99 product claims from hosted CI; see
 [performance-budgets](../assurance/performance-budgets.md).

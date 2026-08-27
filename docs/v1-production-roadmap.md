@@ -46,7 +46,9 @@ Open release gates (summary):
   controlled native baselines and power-loss certification remain open (software policy closed).
 - Embedded durable resource policy is implemented; per-candidate normal copy limits and
   per-second/CPU maintenance rate budgets are daemon-configurable (zero disables; pressure/emergency
-  bypass). The daemon p99 guard has minimum-sample admission, 80% resume hysteresis, and a bounded
+  bypass). Unchanged exact no-gain candidates are memoized with physical invalidation and bounded
+  retry instead of being rescanned monolithically. The daemon p99 guard has minimum-sample admission,
+  80% resume hysteresis, and a bounded
   reclaim-debt override. Phase 5 connection/handshake/principal rate limits and idle/request deadlines are
   implemented (`--secure-profile` applies defaults).
 - Process-kill coverage is E2 evidence, not sudden power loss or filesystem certification (E3/E4 open).
@@ -99,7 +101,8 @@ Worker count to match executor count, and closes the Store from `join()`. The da
 data-directory and open-policy controls. Durable `PUT`/`ERASE` leave the Reactor through bounded
 per-Worker FIFO lanes with count and byte admission, generation-safe completion, overload responses,
 queue-wait expiry before Store entry, per-lane metrics (including `queue_wait_ns` / `service_ns`
-histograms), and drain-before-Store-close shutdown
+histograms, Writer collection wait / close reason, and sync-to-async fairness turns), and
+drain-before-Store-close shutdown
 (`--shutdown-drain-ms`, default 30s). Strict-group mode retains bounded concurrent producers. Wire
 `HEALTH`/`READY`/`STATS` expose liveness, readiness (including maintenance emergency), and a bounded
 ASCII admin report with maintenance rate-window needles. Daemon CLI exposes durable batch, resource,
@@ -270,7 +273,12 @@ bytes before normal automatic compaction. Rotation waits on the compaction publi
 of fail-fast rejecting unrelated Workers. A deterministic v1 planner treats one Worker's complete
 sealed history as the atomic unit. Descriptor-relative intent publication, restart resolution
 against exactly old or next authority, and online single- and multi-output crash/I/O fault matrices
-are implemented. Public `Store::compact()` uses a non-queuing Store-wide maintenance gate. Durable
+are implemented. ADR 0039 moves complete output copy/seal/verification before the intent and
+publication lease, so unrelated rotations are no longer blocked by Segment-sized copy I/O;
+recognized pre-intent temporaries are cleaned after authoritative recovery. Compact placement
+metadata no longer duplicates owning `IndexEntry` objects, and public diagnostics separate
+pre-intent time, lease time, and a conservative transient-metadata lower bound. Public
+`Store::compact()` uses a non-queuing Store-wide maintenance gate. Durable
 mutation lanes reject before enqueue when the maintenance emergency gate is armed. Official clients
 map wire `OVERLOADED` to `retryability=never`. Controlled native benchmark baselines and native
 power-loss certification remain open.
@@ -329,7 +337,8 @@ profiles (`standard`, `copy-matrix`, `random-matrix`).
   shapes, overwrite-driven dead-byte selection, and foreground tail cost under publication conflict.
   Normal unread-TTL scheduling is opt-in and fail-closed by default
   (`unread_ttl_normal_scheduling`); pressure/emergency probe and telemetry are closed. Remaining
-  open work is controlled native baselines and native power-loss evidence under P0-08.
+  open work is controlled native baselines, useful-compaction copy pacing, and native
+  power-loss evidence under P0-08.
 
 ### Offline verification, backup, restore, and repair
 
@@ -435,9 +444,26 @@ Primary references:
   remain required. Continue benchmarking load factor, control groups, probe lengths, tombstone
   cleanup, and transparent lookup. Add scalar/SSE2/AVX2/NEON implementations only with runtime or
   compile-time dispatch and identical property/fuzz results.
+- The immutable Reader base now uses a 64-byte record with the full hash and a 5-byte-per-bucket
+  control/index lookup layout instead of 17 bytes per bucket. A coherent STATS census and
+  `glyphastore_memory_census_benchmark` attribute current base/delta payload separately from RSS.
+  The local 200k-key cell saved exactly 3 MiB of lookup payload. Allocation tracing then found
+  133.5 MiB of empty native regions matching successive base-record merge sizes; guarded geometric
+  mappings with one spare per base lineage reduced one-shard RSS by 56.3% while an isolated local
+  PUT/GET A/B stayed within ±0.6%. Total-memory closure remains open: uniquely account shared retired
+  nodes, merge builders, the remaining native regions and Segment/thread residency; prove steady
+  state on every platform; and define enforceable per-shard budgets before changing the prototype
+  claim ceiling.
 - Make group commit deadline-driven and fairness-aware. Record batch occupancy, queue delay, sync
   duration, leader work, and per-Worker starvation. Adaptation may change batch size within explicit
   min/max and latency SLOs, never acknowledgement semantics.
+  The 2026-08-27 audit corrected a strict paired threshold that had been published as deferred and
+  invalidated the affected local benchmark cells; threshold and residual groups now both cross the
+  final commit-slot sync. The same audit capped group coalescing at the oldest configured admission
+  deadline and bounded sync-lane monopolization to 32 records before an already-admitted async turn;
+  larger caller batches resume from a Writer-local FIFO continuation. Deterministic litmus coverage,
+  turn-split and close-reason telemetry are present. Adaptive service-cost slack, multi-hour
+  adversarial fairness, and native multi-device/platform evidence remain open.
 - Evaluate bounded read-ahead and mapping by access pattern. Never map unvalidated offsets and never
   let an unbounded mapping/descriptor cache become the memory policy.
 - Partition compaction by live ratio and write cost; use a priority queue or tiered policy with

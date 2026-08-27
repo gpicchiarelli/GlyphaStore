@@ -56,6 +56,58 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_paired_benchmark RELEASE ARGUMENTS
         --ops 500000 --keys 4096 --value-bytes 64 --warmup 1 --repeats 7
     )
+    add_executable(glyphastore_generation_shell_benchmark
+        generation_shell_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_generation_shell_benchmark
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    target_include_directories(glyphastore_generation_shell_benchmark
+        PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_generation_shell_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_generation_shell_benchmark)
+    glyphastore_enable_hardening(glyphastore_generation_shell_benchmark)
+    glyphastore_enable_ipo(glyphastore_generation_shell_benchmark)
+    set_target_properties(glyphastore_generation_shell_benchmark PROPERTIES FOLDER "Benchmarks")
+    add_executable(glyphastore_memory_census_benchmark
+        memory_census_benchmark.cpp
+        harness.cpp
+    )
+    target_link_libraries(
+        glyphastore_memory_census_benchmark
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    target_include_directories(glyphastore_memory_census_benchmark
+        PRIVATE "${CMAKE_SOURCE_DIR}/benchmarks" "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_memory_census_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_memory_census_benchmark)
+    glyphastore_enable_hardening(glyphastore_memory_census_benchmark)
+    glyphastore_enable_ipo(glyphastore_memory_census_benchmark)
+    set_target_properties(glyphastore_memory_census_benchmark PROPERTIES FOLDER "Benchmarks")
+    add_executable(glyphastore_generation_publication_benchmark
+        generation_publication_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_generation_publication_benchmark
+        PRIVATE GlyphaStore::server glyphastore_project_options
+    )
+    target_include_directories(glyphastore_generation_publication_benchmark
+        PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_generation_publication_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_generation_publication_benchmark)
+    glyphastore_enable_hardening(glyphastore_generation_publication_benchmark)
+    glyphastore_enable_ipo(glyphastore_generation_publication_benchmark)
+    set_target_properties(glyphastore_generation_publication_benchmark PROPERTIES FOLDER "Benchmarks")
     add_executable(glyphastore_paired_reactor_benchmark
         paired_reactor_benchmark.cpp
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_reactor.cpp
@@ -152,6 +204,22 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
             )
         endforeach()
         add_test(
+            NAME glyphastore_benchmark_parallel_put_latency_smoke
+            COMMAND glyphastore_benchmarks
+                --filter store-parallel-put
+                --ops 256
+                --workers 1
+                --threads 1
+                --distribution single-worker
+                --value-size 64
+                --latency
+                --warmup 0
+                --repeats 1
+        )
+        set_tests_properties(glyphastore_benchmark_parallel_put_latency_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION "latency_samples=256"
+        )
+        add_test(
             NAME glyphastore_benchmark_durable_smoke
             COMMAND glyphastore_benchmarks
                 --filter store-durable-all
@@ -159,6 +227,18 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
                 --workers 1
                 --warmup 0
                 --repeats 1
+        )
+        add_test(
+            NAME glyphastore_benchmark_memory_census_smoke
+            COMMAND glyphastore_memory_census_benchmark
+                --entries 60000
+                --key-bytes 16
+                --value-bytes 64
+                --workers 1
+        )
+        set_tests_properties(glyphastore_benchmark_memory_census_smoke PROPERTIES
+            PASS_REGULAR_EXPRESSION
+                "read_generation_base_record_mapped_storage_bytes=(0|3670016).*read_generation_spare_mapping_bytes=(0|4194304).*compact_lookup_saved_bytes=.*allocator_stats_available="
         )
         add_test(
             NAME glyphastore_benchmark_durable_parallel_smoke

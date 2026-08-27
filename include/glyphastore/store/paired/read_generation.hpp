@@ -14,6 +14,13 @@
 #include <optional>
 #include <span>
 
+namespace glyphastore::experimental {
+struct PairReadGenerationShellAccess;
+class PairReadGenerationShellStorage;
+class PairReadGenerationInlineShellStorage;
+class PairReadGenerationDirectStorage;
+} // namespace glyphastore::experimental
+
 namespace glyphastore::store::paired {
 
 // A Writer-owned mutation which has already been linearized in the Store.
@@ -25,6 +32,40 @@ struct ReadMutation final {
     std::optional<DurableRuntimeCatalog::PublishedReadRecord> durable{};
     Opcode opcode{Opcode::put};
 };
+
+// Allocation-payload census for the currently published immutable view. The
+// byte fields are lower bounds: they include every explicitly sized index,
+// arena and vector payload, but intentionally exclude allocator/control-block
+// overhead that is implementation-specific. They therefore remain stable and
+// comparable across supported platforms while process RSS is reported
+// separately by the benchmark harness.
+struct ReadGenerationMemoryStats final {
+    std::size_t base_entries{};
+    std::size_t base_capacity{};
+    std::size_t base_record_storage_bytes{};
+    // Portion of base_record_storage_bytes backed by a dedicated anonymous
+    // mapping rather than the process general-purpose allocator.
+    std::size_t base_record_mapped_storage_bytes{};
+    std::size_t base_lookup_storage_bytes{};
+    std::size_t base_key_bytes{};
+    std::size_t base_key_storage_bytes{};
+    std::size_t base_pin_storage_bytes{};
+    std::size_t base_allocated_lower_bound_bytes{};
+    std::size_t delta_entries{};
+    std::size_t delta_capacity{};
+    std::size_t delta_record_versions{};
+    std::size_t delta_arena_record_bytes{};
+    std::size_t delta_arena_key_bytes{};
+    std::size_t delta_arena_key_storage_bytes{};
+    std::size_t delta_lookup_storage_bytes{};
+    std::size_t delta_allocated_lower_bound_bytes{};
+    std::size_t generation_shell_bytes{};
+    std::size_t current_allocated_lower_bound_bytes{};
+};
+
+// Process-wide payload capacity of the bounded per-lineage spare mappings
+// retained by immutable-base builders. Guard pages are excluded.
+[[nodiscard]] auto immutable_base_spare_mapping_bytes() noexcept -> std::size_t;
 
 class ImmutableReadIndex;
 class DeltaState;
@@ -74,6 +115,16 @@ class PairReadGeneration {
         -> Result<std::shared_ptr<const PairReadGeneration>>;
     [[nodiscard]] static auto merge_ready(const PairReadMerge& merge) noexcept -> bool;
     [[nodiscard]] static auto merge_post_entries(const PairReadMerge& merge) noexcept -> std::size_t;
+    // Exact outstanding scan/initialization work and worst-case publication
+    // capacity of the post-cut delta. The Writer uses both to amortize merge
+    // debt before consuming bounded post-cut capacity instead of deferring it
+    // to a terminal burst.
+    [[nodiscard]] static auto merge_remaining_slots(const PairReadMerge& merge) noexcept -> std::size_t;
+    [[nodiscard]] static auto merge_post_capacity_remaining(const PairReadMerge& merge) noexcept
+        -> std::size_t;
+    [[nodiscard]] static auto merge_advance_budget(const PairReadMerge& merge,
+                                                   std::size_t maximum_new_records,
+                                                   std::size_t minimum_slots) noexcept -> std::size_t;
     [[nodiscard]] static auto can_publish_incremental(const PairReadGeneration& current,
                                                       const PairReadMerge* merge,
                                                       std::size_t maximum_new_entries) noexcept -> bool;
@@ -94,6 +145,7 @@ class PairReadGeneration {
     [[nodiscard]] auto delta_arena_key_bytes() const noexcept -> std::size_t;
     [[nodiscard]] auto delta_arena_key_storage_bytes() const noexcept -> std::size_t;
     [[nodiscard]] auto base_entries() const noexcept -> std::size_t;
+    [[nodiscard]] auto memory_stats() const noexcept -> ReadGenerationMemoryStats;
 
   private:
     [[nodiscard]] static auto
@@ -101,6 +153,30 @@ class PairReadGeneration {
                            std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
                            std::uint64_t epoch, std::uint64_t visible_floor)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto
+    publish_incremental_in_shell(std::shared_ptr<const PairReadGeneration> previous,
+                                 std::span<const ReadMutation> mutations, PairReadMerge* merge,
+                                 std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto
+    publish_incremental_in_borrowed_shell(std::shared_ptr<const PairReadGeneration> previous,
+                                          std::span<const ReadMutation> mutations,
+                                          experimental::PairReadGenerationInlineShellStorage& storage)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto publish_incremental_construct(
+        const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
+        std::span<const ReadMutation> mutations, PairReadMerge* merge,
+        std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
+        experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
+        experimental::PairReadGenerationDirectStorage* direct_storage,
+        const PairReadGeneration** direct_result) -> Result<std::shared_ptr<const PairReadGeneration>>;
+    [[nodiscard]] static auto
+    publish_incremental_direct(const PairReadGeneration& previous, std::span<const ReadMutation> mutations,
+                               experimental::PairReadGenerationDirectStorage& storage)
+        -> Result<const PairReadGeneration*>;
+    [[nodiscard]] static auto empty_direct(WorkerRoutingState routing,
+                                           experimental::PairReadGenerationDirectStorage& storage)
+        -> Result<const PairReadGeneration*>;
     // Generation + embedded DeltaState are co-allocated in the .cpp via a private
     // derived helper. delta_ points into that storage for the object's lifetime.
     PairReadGeneration(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
@@ -117,6 +193,7 @@ class PairReadGeneration {
 
     // Allow the .cpp co-allocation helper to construct and bind embedded delta storage.
     friend struct PairReadGenerationEnableShared;
+    friend struct experimental::PairReadGenerationShellAccess;
 };
 
 // Opaque Writer-owned state. It is never published to or touched by Reader.

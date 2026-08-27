@@ -402,6 +402,76 @@ GLYPHA_TEST("server shutdown drain deadline abandons durable_group coalescing ho
     GLYPHA_REQUIRE((*recovered)->close().has_value());
 }
 
+GLYPHA_TEST("durable_group coalescing obeys the oldest mutation queue deadline") {
+    // The durable_group fill window is intentionally much longer than the
+    // admission SLO. The Writer must close on the oldest queued mutation's
+    // deadline instead of sleeping until group-max-wait and only then rejecting.
+    ServerTemporaryDirectory temporary;
+    const auto path = temporary.store_path();
+    auto opened = glyphastore::server::Server::create(
+        {.port = 0,
+         .maximum_connections = 1,
+         .durable_mutation_queue_capacity = 4,
+         .durable_mutation_queue_wait_ms = 20},
+        {.storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = path,
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'500, .min_records = 2}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto socket = connect_to(server.port());
+    GLYPHA_REQUIRE(socket >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(socket, 0, 1));
+    const auto put = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::put,
+        .request_id = 211,
+        .key = bytes("queue-deadline-before-group-deadline"),
+        .value = bytes("never-enter-store"),
+    });
+    GLYPHA_REQUIRE(put.has_value());
+    const auto started = std::chrono::steady_clock::now();
+    GLYPHA_REQUIRE(send_all(socket, *put));
+    const auto frame = receive_response(socket);
+    const auto elapsed = std::chrono::steady_clock::now() - started;
+    GLYPHA_REQUIRE(!frame.empty());
+    const auto response = glyphastore::server::decode_response(frame);
+    GLYPHA_REQUIRE(response.has_value());
+    GLYPHA_REQUIRE(response->frame.request_id == 211);
+    GLYPHA_REQUIRE(response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    // Old behavior waited roughly 1.5 s here. Keep a wide CI margin while
+    // proving that the configured queue deadline, not the group deadline, won.
+    GLYPHA_REQUIRE(elapsed < std::chrono::milliseconds{750});
+
+    const auto stats = server.pair_writer_stats();
+    GLYPHA_REQUIRE(stats.size() == 1);
+    GLYPHA_REQUIRE(stats[0].writer_batches == 1);
+    GLYPHA_REQUIRE(stats[0].expired_before_store == 1);
+    GLYPHA_REQUIRE(stats[0].writer_batch_queue_deadline_closes == 1);
+    GLYPHA_REQUIRE(stats[0].writer_batch_durability_deadline_closes == 0);
+    GLYPHA_REQUIRE(stats[0].maximum_queue_wait_ns >= 20'000'000U);
+    GLYPHA_REQUIRE(stats[0].maximum_writer_batch_wait_ns > 0U);
+    GLYPHA_REQUIRE(stats[0].maximum_writer_batch_wait_ns < 750'000'000U);
+
+    static_cast<void>(::close(socket));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+
+    auto recovered = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_group,
+        .data_directory = path,
+        .durable_open_mode = glyphastore::DurableOpenMode::open_existing,
+        .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 1'500, .min_records = 2},
+    });
+    GLYPHA_REQUIRE(recovered.has_value());
+    const auto missing = (*recovered)->get("queue-deadline-before-group-deadline");
+    GLYPHA_REQUIRE(!missing.has_value());
+    GLYPHA_REQUIRE(missing.error().code == glyphastore::ErrorCode::not_found);
+    GLYPHA_REQUIRE((*recovered)->close().has_value());
+}
+
 GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     auto opened = glyphastore::server::Server::create({.port = 0, .maximum_connections = 2});
     GLYPHA_REQUIRE(opened.has_value());
@@ -431,6 +501,14 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(stats_text.find("connections_active=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_state=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("useful_compactions=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_last_compaction_pacing_delay_ns=0\n") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_total_compaction_pacing_delay_ns=0\n") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_last_compaction_pacing_sleep_count=0\n") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_last_compaction_pacing_burst_bytes=0\n") !=
+                   std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_skips=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_consecutive_no_gain=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_last_skip_reason=") != std::string_view::npos);
@@ -439,6 +517,8 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
                    std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_total_no_gain_source_bytes_verified=") !=
                    std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_no_gain_scans_suppressed=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("maintenance_no_gain_retry_after_ns=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_attempts=0\n") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("durable_rotation_last_publication_wait_ns=0\n") !=
                    std::string_view::npos);
@@ -456,6 +536,25 @@ GLYPHA_TEST("server HEALTH and READY succeed while operational") {
     GLYPHA_REQUIRE(stats_text.find("maintenance_latency_guard_active=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_latency_deferral_age_ns=") != std::string_view::npos);
     GLYPHA_REQUIRE(stats_text.find("maintenance_latency_debt_overrides=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].total_writer_batch_wait_ns=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].maximum_writer_batch_wait_ns=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].writer_batch_durability_deadline_closes=") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].writer_batch_queue_deadline_closes=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].sync_drain_turns=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].sync_turn_splits=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].sync_async_fairness_turns=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].read_generation_base_record_storage_bytes=") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("read_generation_spare_mapping_bytes=") != std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].read_generation_base_record_mapped_storage_bytes=") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].read_generation_base_lookup_storage_bytes=") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].read_generation_delta_lookup_storage_bytes=") !=
+                   std::string_view::npos);
+    GLYPHA_REQUIRE(stats_text.find("lane[0].read_generation_current_allocated_lower_bound_bytes=") !=
+                   std::string_view::npos);
     static_cast<void>(::close(socket));
 
     server.request_stop();
@@ -863,6 +962,9 @@ GLYPHA_TEST("paired Writer closes strict durable groups without concurrent shard
     GLYPHA_REQUIRE(second_response->frame.status == glyphastore::server::ResponseStatus::ok);
     GLYPHA_REQUIRE(observer.maximum_writes_before_sync() == 2);
     GLYPHA_REQUIRE(observer.sync_count() == 1);
+    // Regression: a strict paired Writer batch that reaches max_records must
+    // still cross the final commit-slot sync before either success response.
+    GLYPHA_REQUIRE(observer.commit_slot_sync_count() == 1);
     const auto batch_stats = server.durable_batch_stats();
     GLYPHA_REQUIRE(batch_stats.size() == 1);
     GLYPHA_REQUIRE(batch_stats[0].enabled);
@@ -879,6 +981,12 @@ GLYPHA_TEST("paired Writer closes strict durable groups without concurrent shard
     GLYPHA_REQUIRE(batch_stats[0].total_commit_duration_ns > 0);
     GLYPHA_REQUIRE(batch_stats[0].maximum_commit_duration_ns == batch_stats[0].total_commit_duration_ns);
     GLYPHA_REQUIRE(batch_stats[0].deadline_closes == 0);
+    const auto writer_stats = server.pair_writer_stats();
+    GLYPHA_REQUIRE(writer_stats.size() == 1);
+    GLYPHA_REQUIRE(writer_stats[0].completed == 2);
+    GLYPHA_REQUIRE(writer_stats[0].writer_batches == 1);
+    GLYPHA_REQUIRE(writer_stats[0].writer_batch_records == 2);
+    GLYPHA_REQUIRE(writer_stats[0].completion_notifications == 1);
 
     static_cast<void>(::close(first_socket));
     static_cast<void>(::close(second_socket));

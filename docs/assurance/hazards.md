@@ -37,3 +37,6 @@ accepted residual risks do not imply production readiness.
 | `HAZ-028` | Errore nella pubblicazione delle generazioni | alta | media | media | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001` |
 | `HAZ-029` | Deriva o contaminazione della C ABI pubblica | alta | media | alta | mitigato | `GS-COMPAT-CABI-001` |
 | `HAZ-030` | Pubblicazione di byte diversi da quelli verificati o con identita non provata | catastrofica | media | alta | mitigato | `GS-RELEASE-ARTIFACT-001` |
+| `HAZ-031` | Amplificazione memoria o alta marea RSS non attribuita nel runtime paired | alta | alta | media | aperto | `GS-CONCUR-PAIR-001` |
+| `HAZ-032` | Debito di merge paired concentrato in una pausa terminale o overload spurio | alta | media | alta | mitigato | `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001` |
+| `HAZ-033` | Compaction I/O causa jitter foreground o il rate gate affama candidati grandi | alta | alta | alta | mitigato | `GS-OPS-CONFIG-001` |

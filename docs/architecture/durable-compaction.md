@@ -3,8 +3,9 @@
 This document defines the v1 compaction invariants. The current tree implements the deterministic
 planner, its resource gates, a checksummed intent codec embedding both exact manifest authorities,
 descriptor-relative intent publication/removal primitives, and restart recovery of an interrupted
-transaction. The durable builder now prepares the replacement Index, installs the intent, copies
-and revalidates exact visible Records, and supports zero-output retirement. The internal durable
+transaction. The durable builder now prepares the replacement Index, copies, seals and revalidates
+private staged outputs, then installs the intent and promotes those outputs; it also supports
+zero-output retirement. The internal durable
 runtime now installs the prepared manifest, commit catalog, and Worker Index atomically, retires the
 old sources, and fails closed whenever restart must complete recovery. Explicit Store-level
 scheduling is available through `Store::compact()`. An optional Store-owned
@@ -63,12 +64,14 @@ The implementation must use this order:
 briefly lock target Worker + catalog
   -> copy owning Index entries and pin exact sealed generations
   -> release both locks
-  -> reserve the exact old/next authority pair under the publication serializer
-  -> release the serializer; rotations now fail fast while the logical lease exists
   -> collect and verify visible source Records
   -> prepare replacement Index publication without post-commit allocation
+  -> create private replacement temporaries
+  -> fill, synchronize, seal, and validate every replacement temporary
+  -> acquire the old/next publication lease and revalidate the old Manifest
   -> publish and directory-sync an exact compaction intent
-  -> create, fill, seal, and re-open validate every replacement
+  -> rename every replacement temporary to its canonical identity
+  -> directory sync once for the complete promoted name batch
   -> try-lock target Worker and lock catalog
   -> reject if sequence, batch, manifest, source identity, or pin changed
   -> prepare the complete non-allocating in-memory publication
@@ -80,23 +83,38 @@ briefly lock target Worker + catalog
   -> directory sync
   -> remove compaction intent
   -> directory sync
+  -> final namespace audit
+  -> release the old/next publication lease
 ```
 
 The intent is protocol metadata, not a second data format. It must bind the Store ID, Worker,
 previous and next manifest generations, and exact source/replacement identities with a checksum.
-It is durable before any unlisted replacement name can appear.
+It is durable before any unlisted canonical replacement name can appear. Private
+`.segment-<id>-<generation>.glypha.tmp` files may exist before the intent, but are never referenced
+by the authoritative Manifest and are recognized only as disposable engine temporaries.
 
-Before publishing that intent, the builder verifies the manifest is still authoritative, validates
+Before acquiring the lease and publishing that intent, the builder verifies the manifest snapshot,
+validates
 every snapshot Index reference against its catalog identity and routed source Record, drops expired
 sealed source puts at the supplied Store time (counted in `expired_records_dropped`), and constructs
-the complete replacement Index. Active-Segment Index entries are preserved by identity without a TTL
+the complete replacement Index. It then creates, copies, seals and checksum-validates every output
+under its private temporary name. Active-Segment Index entries are preserved by identity without a TTL
 visit; those expired keys remain until lazy GET reclaim or the next recovery rebuild. Source
 entries are ordered by their preserved sequence; one reusable Record buffer avoids per-read
-allocation. After publication, encoded v1 Record bytes are copied exactly, batched into the planned
-Segment boundaries, sealed, reopened, checksum-compared to their sources, and checked against exact
-record-count, extent, and sequence metadata. Thus success requires no Index allocation after the
-future manifest commit. A post-intent failure is explicitly `recovery_required` and restart rolls
-the partial outputs back under the old authority.
+allocation. Encoded v1 Record bytes are copied exactly into the planned Segment boundaries and
+checked against exact record-count, extent, sequence, source CRC and output CRC metadata. The
+placement vector holds a compact source-vector index instead of duplicating owning keys and
+`RecordRef`s. Thus success requires no Index allocation after the future manifest commit. A
+pre-intent failure removes private temporaries and remains `not_started`; a post-intent failure is
+explicitly `recovery_required` and restart rolls exact temporary and canonical outputs back under
+the old authority.
+
+When automatic normal-pressure maintenance configures `max_copy_bytes_per_sec`, each private
+replacement Record is emitted through allocation-free byte grants. Grants target 10 ms spacing and
+bound every physical write to at most 1 MiB; Records larger than a grant are split only at the file-I/O
+layer and remain one unchanged v1 Record. All waits occur before the publication lease and durable
+intent. Pressure/emergency bypass pacing, and manual `Store::compact()` remains unpaced. The result
+reports actual pacing wall delay, sleep count and burst bytes separately from total pre-intent time.
 
 TTL reclaim has three cooperating paths: recovery omits expired latest puts from the rebuilt Index;
 validated GET lazily removes Index/hot entries without a durable tombstone; sealed compaction drops
@@ -174,15 +192,24 @@ that other Workers may have advanced, performs the allocation-free in-memory swi
 the gate. Source retirement and final audit also run unlocked.
 
 Persistence v1 admits exactly the old and next manifest authorities. A Store-wide logical
-publication lease preserves that invariant without holding the publication mutex through intent
-installation, replacement creation, manifest I/O, or retirement. Rotation and a second compaction
-take the physical serializer only long enough to observe the lease. A second compaction returns a
+publication lease preserves that invariant without holding the publication mutex itself through
+intent installation, promotion, manifest I/O, or retirement. Crucially, ADR 0039 keeps source scan,
+replacement creation, Record copy, output synchronization, seal and validation outside even the
+logical lease. Rotation and a second compaction take the physical serializer only long enough to
+observe the lease. A second compaction returns a
 finite `sequence_conflict`; rotation snapshots its Worker sequence, releases the Worker mutex while
 waiting on the condition variable, then revalidates both sequence and authority. If another mutation
 advanced that Worker, the suspended attempt returns `not_committed + sequence_conflict`; the daemon
 may retry the same owned mutation once, while the embedded API reports the conflict. This prevents
 the lease wait from becoming equivalent Worker head-of-line blocking and still forbids a third
 manifest authority. This keeps persistence v1 unchanged.
+
+`CompactionResult` separates `pre_intent_duration_ns` from
+`publication_lease_duration_ns`. It also reports
+`pacing_delay_ns`, `pacing_sleep_count`, `pacing_burst_bytes`, and
+`transient_metadata_lower_bound_bytes`, which includes source/placement vector capacity, replacement
+Index table and arena bytes, and reusable Record scratch. This is not an RSS claim: copied
+`std::string` heap storage and allocator bookkeeping require a platform allocation census.
 
 The public `Store::compact()` scheduler is cooperative and creates no background thread by itself.
 It examines eligible Workers in round-robin order, skips exact layouts that would reclaim no physical
@@ -206,7 +233,7 @@ The process-kill matrix now addresses intent publication, each of two replacemen
 Record sync, both commit-slot publications (data boundary and seal), replacement rename, manifest
 publication, both source unlinks, intent removal, and all five directory-sync occurrences. Every case
 reopens through the ordinary recovery entry point, preserves both values, and verifies the rebuilt
-Index. A complementary pre-operation I/O-fault matrix covers the same 25 boundaries and checks both
+Index. A complementary pre-operation I/O-fault matrix covers the same 24 boundaries and checks both
 runtime outcome/health and clean reopen. Allocator interposition enumerates every allocation observed
 by the online transaction and reopens after each failure. Existing tests also cover tombstone
 non-resurrection, TTL reclamation, zero-output compaction, generation/resource limits, and repeated
@@ -226,12 +253,12 @@ identity. Rollback removes both the canonical and partially created temporary na
 replacement identity, including a crash during creation of the second output. The single-output
 online SIGKILL scenario now seeds a fixed 30-operation
 PUT/ERASE/expiring-PUT history across two sealed sources and the active Segment; the same eight-key
-model must survive every one of its 25 persistence checkpoints. A complementary 15-checkpoint
+model must survive every one of its 24 persistence checkpoints. A complementary 14-checkpoint
 online 3-to-2 scenario covers the transitions not present in that single-output transaction:
-second-replacement preallocation/header/sync/rename, its directory sync, the final of 64 maximum-size
+second-replacement preallocation/header/promotion, its batched directory sync, the final of 64 maximum-size
 Record writes, its distinct data and seal commits, the shifted Manifest/retirement/intent directory
 syncs, and the third source unlink. The separate `copy-matrix` kills after each of the other 63
-Record writes, so the two profiles cover every one of the 64 copies and 154 distinct checkpoints in
+Record writes, so the two profiles cover every one of the 64 copies and 152 distinct checkpoints in
 total. The source seed batches pending Records and makes them durable at seal so exhaustive evidence
 does not add a sync per seed Record. The `random-matrix` adds four reproducible 96-operation
 histories, each combining PUT, overwrite, ERASE, expired PUT, and restoration while retaining

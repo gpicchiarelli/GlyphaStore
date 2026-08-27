@@ -96,6 +96,8 @@ algorithms. Their stable rules are summarized by the specifications above. In pa
 - `durable-compaction.md` describes whole-Worker durable compaction;
 - `build-hardening.md` defines compiler, linker, and artifact verification;
 - `server-model.md` explains ShardPair Reader/Writer ownership, SPSC lanes, and connection ownership;
+- `paired-write-pressure-coordinator.md` records measured write-path costs, rejected wait/notification
+  policies, and the pressure-aware coordinator boundary that still requires evidence before wiring;
 - `paired-shard-volatile-prototype.md` records the lab-only volatile TCP prototype under
   `src/experimental/`; it is not the `glyphastored` runtime;
 - `where-performance-matters.md` frames when engine speed helps real apps (and when it does not);

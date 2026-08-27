@@ -3,7 +3,7 @@
 Status: normative for the current implementation
 Applies to: repository version `0.1.x`
 Owner: project maintainers
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 ## 1. Scope
 
@@ -23,7 +23,11 @@ thread**: callers that win the per-shard execution token become the combiner for
 same token. Durable mode may add one flush-coordinator thread. The TCP daemon additionally has an
 acceptor and one Reader/Reactor thread per shard pair; it is thin I/O over the same Store paired
 runtime and must not publish a second generation authority for the same shard. The Reactor never
-executes Store mutate.
+executes Store mutate. A dedicated Writer drains at most 32 synchronous records before an
+already-admitted async turn; any older remainder stays in a Writer-local FIFO continuation ahead of
+new sync admissions. This bounds a single large caller batch without changing its internal FIFO
+order. Durable-group collection must also stop at the oldest non-zero pre-Store queue deadline, even
+when its durability batching deadline is later.
 
 Store callers may invoke public operations concurrently unless a method explicitly says otherwise.
 Thread safety does not create multi-key atomicity. Concurrency mode is fixed at open, so the public
@@ -41,12 +45,12 @@ detected internal ownership violation fails the Store closed.
 | Durable hot cache (paired) | disabled / not ordinary-read authority | generation-only policy; compaction/verify/backup still use catalog locks |
 | Volatile global segment namespace | `GlobalSegmentManager` mutex | snapshots are copied while locked |
 | Durable segment catalog | catalog shared mutex | readers take shared; namespace mutation takes exclusive |
-| Manifest publication | manifest-publication mutex + condition variable | serializes generations; rotation waits for an active compaction lease |
+| Manifest publication | manifest-publication mutex + condition variable | serializes generations; rotation waits only for the post-staging compaction lease |
 | Public compaction | Store compaction mutex | only one compaction attempt runs at once |
 | Store lifecycle admission | sharded atomic counters | one shard per Worker plus one control shard |
 | Flush scheduling state | coordinator mutex and condition variables | callback executes after releasing this mutex |
 | TCP connection | exactly one Reader/executor | ownership may transfer once after bind |
-| Paired sync combining queue | LIFO admit / FIFO combine under token | embedded sync; ≤32 publication chunks; no wait-to-fill |
+| Paired sync combining queue | LIFO admit / FIFO combine under token | ≤32 records per dedicated turn; older Writer-local continuation precedes new sync admissions; no wait-to-fill |
 | Paired async mutation / completion lanes | bounded SPSC | one Reader (or embedded submitter) producer, one dedicated executor consumer |
 | Executor handoff queue (connection bind) | bounded MPSC protocol | many producers, one owning consumer |
 | Directory health | atomic state plus protected error payload | acquire/release publishes terminal health |
@@ -86,6 +90,14 @@ sequence before constructing a transition from the newly authoritative Manifest.
 returns the exact `not_committed + sequence_conflict` outcome; the daemon may retry that owned task
 once. The rotation must not publish a third authority while the dual-Manifest compaction intent is
 active.
+
+Compaction source generation pins and an owning Index snapshot are captured while the Worker/catalog
+state is synchronized. All source reads and replacement writes thereafter use those immutable pins
+or compactor-private staged file handles. The logical Manifest lease is acquired only after every
+staged output is sealed and verified, immediately before durable intent publication. No `RecordRef`,
+file handle or Segment reference is dereferenced after dropping its synchronization unless such a
+pin/private owner remains live. This shortens the catalog exclusion window without substituting an
+equivalent global lock around copy I/O.
 
 Rotation telemetry adds no lock to this order. The runtime records the time to acquire publication
 authority and wait for the compaction lease separately from Segment seal, replacement creation,
@@ -145,6 +157,10 @@ Memory orders are chosen for a specific publication relation:
 - admission count arithmetic may be relaxed, while close/drain uses acquire/release operations to order teardown after admitted work;
 - terminal health and lifecycle publication use release stores and acquire loads so observers see the associated state;
 - paired `ReadGeneration` pointer publication uses release store by the Writer and acquire load by Readers;
+- the per-lane current-generation memory census is telemetry, not object publication: the sole Writer
+  brackets relaxed component stores with an odd/even sequence, and observers retry around acquire
+  sequence loads until they see the same even value. No census field may be used to authorize
+  reclamation, visibility, admission, or dereference;
 - queue cell sequence numbers use release publication and acquire consumption; enqueue/dequeue positions may use relaxed arithmetic because cell sequence is the handoff barrier;
 - counters used only as statistics, high-water marks, or scheduling hints may be relaxed and must never be used to publish object contents.
 
@@ -175,13 +191,58 @@ For every mutable field, at least one must be true:
 
 Tests under ThreadSanitizer are evidence, not a substitute for these invariants. A passing race detector does not prove absence of deadlocks or incorrect relaxed ordering.
 
-## 12. Failure and cancellation
+## 12. Memory-footprint invariants and accounting
+
+The immutable base separates lookup metadata from records. Every allocated bucket owns one control
+byte and one `uint32_t` record index; every live base row owns one 64-byte compact record containing
+its full hash. A control/fingerprint match is never authoritative by itself: lookup confirms the
+full hash and key bytes before returning a `RecordRef`. This preserves exact lookup semantics while
+removing the former 64-bit hash and pointer pair from every bucket.
+
+Base-record arrays of at least 1 MiB use private anonymous mappings in geometric size classes, with
+an inaccessible guard page at each end, on the supported POSIX targets. Each immutable-base lineage
+owns a synchronized pool with at most one retired spare mapping. A same-class rebuild reuses that
+spare; a class change replaces it; destruction of the lineage unmaps it. The pool mutex is never
+read or acquired by GET and is touched only by base-array allocation or retirement. This prevents a
+general-purpose allocator from retaining every successively larger merge result without restoring
+zero-fill/page-fault cost on every merge. The policy is per lineage rather than per calling thread,
+so embedded flat-combining callers cannot multiply retained mappings. Ownership, publication,
+lookup semantics, and the persistent format are unchanged. Smaller arrays remain ordinary vector
+allocations. `base_record_mapped_storage_bytes` separates the current mapped payload from
+allocator-owned payload; process-wide `read_generation_spare_mapping_bytes` accounts the bounded
+spare payload.
+
+ASan builds deliberately fall back to the instrumented general allocator so intra-array redzones
+and use-after-free detection remain available; production hardening retains the mapping guard pages.
+
+`ReadGenerationMemoryStats` describes only the currently published generation. Byte fields are
+allocation-payload lower bounds: they include explicitly sized base/delta arrays, arenas, key
+blocks, pins, and the generation shell, but exclude allocator/control-block overhead. The census
+does not sum retired generations or an in-progress merge builder because their persistent
+structures can share allocations with the current generation and a naïve sum would double-count.
+Process RSS and peak RSS are therefore separate measurements, and the residual between attributed
+payload and RSS must remain visible rather than being presented as per-key memory.
+
+Neither the census nor the compact layout changes the hard bounds on delta size, retired generation
+count, merge post-cut capacity, mutation lanes, or connection buffers.
+
+An incremental base merge is scheduled against those bounds rather than by an unqualified fixed
+retry count. Let `R` be the exact remaining initialization/base/delta slots, `P` the smaller of
+remaining distinct-entry and record-version capacity in the post-cut delta, and `N` the maximum
+records in the next publication. Before that publication the sole Writer advances at least
+`ceil(R*N/P)` slots (or all `R` when `N >= P`), subject to a configured minimum work quantum. A
+coalesced publication may amortize one additional minimum quantum, but client batch size cannot
+linearly widen the maintenance turn. Phase transitions consume no slot budget. This invariant
+keeps post-cut memory bounded and prevents delayed merge debt from becoming a terminal retry burst
+or spurious pre-Store overload. It does not change publication, ACK, or Reader adoption ordering.
+
+## 13. Failure and cancellation
 
 Exceptions must not cross background-thread boundaries. Allocation failure becomes `resource_exhausted`; unexpected failure becomes `internal_error`. Network disconnect cancels only that connection's future requests; it does not roll back already linearized Store operations.
 
 The current API has no general operation cancellation token. Shutdown waits for admitted operations and filesystem work; it does not forcibly invalidate objects still in use by those operations.
 
-## 13. Review checklist
+## 14. Review checklist
 
 Any concurrency change must answer:
 

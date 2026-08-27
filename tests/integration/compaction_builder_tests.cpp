@@ -267,6 +267,9 @@ GLYPHA_TEST("durable compaction builder copies exact visible Records and preserv
         GLYPHA_REQUIRE(built.prepared->stats.source_index_records_verified == 3);
         GLYPHA_REQUIRE(built.prepared->stats.records_copied == 2);
         GLYPHA_REQUIRE(built.prepared->stats.expired_records_dropped == 1);
+        GLYPHA_REQUIRE(built.prepared->stats.pacing_delay_ns == 0);
+        GLYPHA_REQUIRE(built.prepared->stats.pacing_sleep_count == 0);
+        GLYPHA_REQUIRE(built.prepared->stats.pacing_burst_bytes == 0);
         GLYPHA_REQUIRE(!built.prepared->index.find("expired").has_value());
         GLYPHA_REQUIRE(built.prepared->index.find("active") == fixture.active);
         GLYPHA_REQUIRE(built.prepared->active_live_record_bytes == fixture.active.size.value);
@@ -366,7 +369,7 @@ GLYPHA_TEST("durable compaction rejected intent gate leaves the namespace untouc
         temporary.path() / glyphastore::segment_filename(identity(fixture.manifest, replacement))));
 }
 
-GLYPHA_TEST("durable compaction builder failure after intent is rolled back on reopen") {
+GLYPHA_TEST("durable compaction staged copy failure remains pre-intent and cleans its temporary") {
     CompactionBuildDirectory temporary;
     const auto manifest = build_manifest();
     const glyphastore::ManifestSegmentEntry replacement{
@@ -385,12 +388,16 @@ GLYPHA_TEST("durable compaction builder failure after intent is rolled back on r
         auto built = glyphastore::build_durable_worker_compaction(
             *directory, fixture.manifest, glyphastore::WorkerId{0}, fixture.index, 100);
         GLYPHA_REQUIRE(!built.succeeded());
-        GLYPHA_REQUIRE(built.outcome == glyphastore::DurableCompactionBuildOutcome::recovery_required);
+        GLYPHA_REQUIRE(built.outcome == glyphastore::DurableCompactionBuildOutcome::not_started);
         GLYPHA_REQUIRE(built.error.has_value());
         GLYPHA_REQUIRE(failure.fired);
-        GLYPHA_REQUIRE(directory->read_compaction_intent().has_value());
-        GLYPHA_REQUIRE(std::filesystem::exists(
+        GLYPHA_REQUIRE(!directory->read_compaction_intent().has_value());
+        GLYPHA_REQUIRE(!std::filesystem::exists(
             temporary.path() / glyphastore::segment_filename(identity(manifest, replacement))));
+        GLYPHA_REQUIRE(!std::filesystem::exists(
+            temporary.path() /
+            ('.' + glyphastore::segment_filename(identity(manifest, replacement)) + ".tmp")));
+        GLYPHA_REQUIRE(directory->healthy());
     }
 
     auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
@@ -401,6 +408,41 @@ GLYPHA_TEST("durable compaction builder failure after intent is rolled back on r
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() /
                                             glyphastore::segment_filename(identity(manifest, replacement))));
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+}
+
+GLYPHA_TEST("durable compaction promotion failure after intent is rolled back on reopen") {
+    CompactionBuildDirectory temporary;
+    const auto manifest = build_manifest();
+    const glyphastore::ManifestSegmentEntry replacement{
+        .segment_id = glyphastore::SegmentId{1},
+        .generation = glyphastore::GenerationId{2},
+        .owner_worker = glyphastore::WorkerId{0},
+        .role = glyphastore::ManifestSegmentRole::sealed,
+    };
+    GeneratedCompactionFailure failure{.target = glyphastore::FilesystemOperation::rename_segment};
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), {.context = &failure, .before = &GeneratedCompactionFailure::before});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto fixture = create_build_fixture(*directory);
+        failure.enabled = true;
+        auto built = glyphastore::build_durable_worker_compaction(
+            *directory, fixture.manifest, glyphastore::WorkerId{0}, fixture.index, 100);
+        GLYPHA_REQUIRE(!built.succeeded());
+        GLYPHA_REQUIRE(built.outcome == glyphastore::DurableCompactionBuildOutcome::recovery_required);
+        GLYPHA_REQUIRE(built.error.has_value());
+        GLYPHA_REQUIRE(failure.fired);
+        GLYPHA_REQUIRE(directory->read_compaction_intent().has_value());
+        GLYPHA_REQUIRE(!std::filesystem::exists(
+            temporary.path() / glyphastore::segment_filename(identity(manifest, replacement))));
+    }
+
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(runtime.has_value());
+    GLYPHA_REQUIRE((*runtime)->manifest() == manifest);
+    GLYPHA_REQUIRE((*runtime)->get("live-a", 100).has_value());
+    GLYPHA_REQUIRE((*runtime)->get("replacement", 100).has_value());
+    GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
 }
 
 GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomically") {
@@ -419,11 +461,17 @@ GLYPHA_TEST("durable runtime installs and retires one Worker compaction atomical
     GLYPHA_REQUIRE(
         (*runtime)->put(std::as_bytes(std::span{hot_key}), std::as_bytes(std::span{hot_value})).committed());
     GLYPHA_REQUIRE((*runtime)->hot_cache_stats()[0].resident_entries == 1);
-    const auto result = (*runtime)->compact_worker(0, 100);
+    const auto result = (*runtime)->compact_worker(0, 100, 0, 1'000);
     GLYPHA_REQUIRE(result.compacted());
     GLYPHA_REQUIRE(result.stats.source_index_records_verified == 2);
     GLYPHA_REQUIRE(result.stats.records_copied == 2);
     GLYPHA_REQUIRE(result.stats.expired_records_dropped == 0);
+    GLYPHA_REQUIRE(result.stats.pre_intent_duration_ns > 0);
+    GLYPHA_REQUIRE(result.stats.publication_lease_duration_ns > 0);
+    GLYPHA_REQUIRE(result.stats.pacing_delay_ns > 0);
+    GLYPHA_REQUIRE(result.stats.pacing_sleep_count > 0);
+    GLYPHA_REQUIRE(result.stats.pacing_burst_bytes == 10);
+    GLYPHA_REQUIRE(result.stats.transient_metadata_lower_bound_bytes > 0);
     const auto next = (*runtime)->manifest();
     GLYPHA_REQUIRE(next.manifest_generation == old.manifest_generation + 1U);
     GLYPHA_REQUIRE(next.segments.size() == 2);
@@ -810,7 +858,10 @@ GLYPHA_TEST("multi-seed durable compaction histories match their models before a
 GLYPHA_TEST("durable runtime fails closed when online compaction requires recovery") {
     CompactionBuildDirectory temporary;
     const auto old = build_manifest();
-    CopyWriteFailure failure;
+    GeneratedCompactionFailure failure{
+        .target = glyphastore::FilesystemOperation::rename_segment,
+        .fail_on_matching_call = 1,
+    };
     {
         auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
         GLYPHA_REQUIRE(directory.has_value());
@@ -818,7 +869,7 @@ GLYPHA_TEST("durable runtime fails closed when online compaction requires recove
     }
     {
         auto runtime = glyphastore::DurableRuntimeCatalog::open_existing(
-            temporary.path(), 100, {.context = &failure, .before = &CopyWriteFailure::before});
+            temporary.path(), 100, {.context = &failure, .before = &GeneratedCompactionFailure::before});
         GLYPHA_REQUIRE(runtime.has_value());
         failure.enabled = true;
         const auto result = (*runtime)->compact_worker(0, 100);
@@ -836,6 +887,37 @@ GLYPHA_TEST("durable runtime fails closed when online compaction requires recove
     GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
     GLYPHA_REQUIRE((*reopened)->get("live-a", 100).has_value());
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+}
+
+GLYPHA_TEST("ordinary recovery cleans a pre-intent staged compaction temporary") {
+    CompactionBuildDirectory temporary;
+    auto manifest = build_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        static_cast<void>(create_build_fixture(*directory));
+    }
+
+    auto replacement = manifest.segments.front();
+    ++replacement.generation.value;
+    const auto replacement_identity = identity(manifest, replacement);
+    const auto staged_path =
+        temporary.path() / ('.' + glyphastore::segment_filename(replacement_identity) + ".tmp");
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        auto staged = glyphastore::DurableSegmentFile::create_staged(*directory, replacement_identity);
+        GLYPHA_REQUIRE(staged.has_value());
+        GLYPHA_REQUIRE(std::filesystem::exists(staged_path));
+    }
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == manifest);
+    GLYPHA_REQUIRE((*reopened)->verify_index().has_value());
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+    GLYPHA_REQUIRE(!std::filesystem::exists(staged_path));
+    GLYPHA_REQUIRE((*reopened)->get("live-a", 100).has_value());
 }
 
 GLYPHA_TEST("online compaction preserves another Worker's cached Segment after catalog compaction") {

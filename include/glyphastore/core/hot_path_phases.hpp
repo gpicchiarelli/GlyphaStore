@@ -33,6 +33,24 @@ enum class PutPhase : std::uint8_t {
     worker_apply,
     publish,
     ack,
+    batch_collect,
+    store_apply,
+    generation_build,
+    generation_publish,
+    delta_flat_spine_copy,
+    delta_directory_spine_copy,
+    delta_page_clone,
+    delta_chunk_clone,
+    delta_block_clone,
+    delta_record_store,
+    generation_shell_allocate,
+    completion_delivery,
+    completion_notify,
+    completion_adopt,
+    completion_accounting,
+    completion_response,
+    completion_pipeline_resume,
+    completion_socket_flush,
     count,
 };
 
@@ -42,6 +60,10 @@ enum class TcpPhase : std::uint8_t {
     store_op,
     encode,
     socket_write,
+    socket_write_progress,
+    socket_write_would_block,
+    socket_write_partial,
+    socket_write_interrupted,
     poller_update,
     count,
 };
@@ -84,6 +106,42 @@ enum class TcpPhase : std::uint8_t {
         return "publish";
     case PutPhase::ack:
         return "ack";
+    case PutPhase::batch_collect:
+        return "batch_collect";
+    case PutPhase::store_apply:
+        return "store_apply";
+    case PutPhase::generation_build:
+        return "generation_build";
+    case PutPhase::generation_publish:
+        return "generation_publish";
+    case PutPhase::delta_flat_spine_copy:
+        return "delta_flat_spine_copy";
+    case PutPhase::delta_directory_spine_copy:
+        return "delta_directory_spine_copy";
+    case PutPhase::delta_page_clone:
+        return "delta_page_clone";
+    case PutPhase::delta_chunk_clone:
+        return "delta_chunk_clone";
+    case PutPhase::delta_block_clone:
+        return "delta_block_clone";
+    case PutPhase::delta_record_store:
+        return "delta_record_store";
+    case PutPhase::generation_shell_allocate:
+        return "generation_shell_allocate";
+    case PutPhase::completion_delivery:
+        return "completion_delivery";
+    case PutPhase::completion_notify:
+        return "completion_notify";
+    case PutPhase::completion_adopt:
+        return "completion_adopt";
+    case PutPhase::completion_accounting:
+        return "completion_accounting";
+    case PutPhase::completion_response:
+        return "completion_response";
+    case PutPhase::completion_pipeline_resume:
+        return "completion_pipeline_resume";
+    case PutPhase::completion_socket_flush:
+        return "completion_socket_flush";
     case PutPhase::count:
         break;
     }
@@ -102,6 +160,14 @@ enum class TcpPhase : std::uint8_t {
         return "encode";
     case TcpPhase::socket_write:
         return "socket_write";
+    case TcpPhase::socket_write_progress:
+        return "write_progress";
+    case TcpPhase::socket_write_would_block:
+        return "write_would_block";
+    case TcpPhase::socket_write_partial:
+        return "write_partial";
+    case TcpPhase::socket_write_interrupted:
+        return "write_interrupted";
     case TcpPhase::poller_update:
         return "poller_update";
     case TcpPhase::count:
@@ -201,6 +267,11 @@ inline auto format_report() -> std::string {
         &::glyphastore::hot_path::observe_put_u8,                                                            \
             static_cast<std::uint8_t>(::glyphastore::hot_path::PutPhase::phase)                              \
     }
+#define GS_PHASE_PUT_NAMED(name, phase)                                                                      \
+    ::glyphastore::hot_path::PhaseScope name {                                                               \
+        &::glyphastore::hot_path::observe_put_u8,                                                            \
+            static_cast<std::uint8_t>(::glyphastore::hot_path::PutPhase::phase)                              \
+    }
 #define GS_PHASE_TCP(phase)                                                                                  \
     const ::glyphastore::hot_path::PhaseScope GS_PHASE_CONCAT(gs_phase_tcp_, __COUNTER__) {                  \
         &::glyphastore::hot_path::observe_tcp_u8,                                                            \
@@ -211,11 +282,14 @@ inline auto format_report() -> std::string {
         &::glyphastore::hot_path::observe_tcp_u8,                                                            \
             static_cast<std::uint8_t>(::glyphastore::hot_path::TcpPhase::phase)                              \
     }
+#define GS_EVENT_TCP(phase) ::glyphastore::hot_path::observe_tcp(::glyphastore::hot_path::TcpPhase::phase, 0U)
 #define GS_PHASE_FINISH(name) name.finish()
 #else
 #define GS_PHASE_GET(phase) static_cast<void>(0)
 #define GS_PHASE_PUT(phase) static_cast<void>(0)
+#define GS_PHASE_PUT_NAMED(name, phase) static_cast<void>(0)
 #define GS_PHASE_TCP(phase) static_cast<void>(0)
 #define GS_PHASE_TCP_NAMED(name, phase) static_cast<void>(0)
+#define GS_EVENT_TCP(phase) static_cast<void>(0)
 #define GS_PHASE_FINISH(name) static_cast<void>(0)
 #endif

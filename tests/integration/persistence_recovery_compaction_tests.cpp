@@ -131,7 +131,7 @@ GLYPHA_TEST("blocked durable compaction build permits same-Worker reads and muta
     GLYPHA_REQUIRE((*runtime)->namespace_audit().clean());
 }
 
-GLYPHA_TEST("blocked read-only compaction scan lets an unrelated rotation commit") {
+GLYPHA_TEST("blocked pre-intent compaction copy lets an unrelated rotation commit") {
     RecoveryTemporaryDirectory temporary;
     const auto store_id = recovery_store_id();
     const std::vector entries{
@@ -169,22 +169,18 @@ GLYPHA_TEST("blocked read-only compaction scan lets an unrelated rotation commit
         GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 2, entries)).durable());
     }
 
-    BlockingRecordRead blocked_build;
+    BlockingFilesystemOperation blocked_copy{glyphastore::FilesystemOperation::write_record};
     auto directory = glyphastore::DataDirectory::open_and_lock(
-        temporary.path(),
-        glyphastore::FilesystemHooks{
-            .context = &blocked_build,
-            .before = &BlockingRecordRead::before,
-            .file_io = {.context = &blocked_build, .read_some_at = &BlockingRecordRead::read_some_at}});
+        temporary.path(), glyphastore::FilesystemHooks{.context = &blocked_copy,
+                                                       .before = &BlockingFilesystemOperation::before});
     GLYPHA_REQUIRE(directory.has_value());
     auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
     GLYPHA_REQUIRE(runtime.has_value());
-    blocked_build.force_next_record_write_full();
-    blocked_build.arm();
 
     glyphastore::DurableCompactionResult compaction;
     std::thread compactor{[&] { compaction = (*runtime)->compact_worker(0, 0); }};
-    GLYPHA_REQUIRE(blocked_build.wait_until_blocked());
+    GLYPHA_REQUIRE(blocked_copy.wait_until_blocked());
+    blocked_copy.force_next_record_write_full();
 
     glyphastore::DurableMutationResult rotation;
     std::mutex completion_mutex;
@@ -199,10 +195,10 @@ GLYPHA_TEST("blocked read-only compaction scan lets an unrelated rotation commit
         }
         completion.notify_one();
     }};
-    bool rotation_completed_during_scan{};
+    bool rotation_completed_during_copy{};
     {
         std::unique_lock lock{completion_mutex};
-        rotation_completed_during_scan =
+        rotation_completed_during_copy =
             completion.wait_for(lock, std::chrono::seconds{2}, [&] { return rotation_finished; });
     }
 
@@ -218,11 +214,11 @@ GLYPHA_TEST("blocked read-only compaction scan lets an unrelated rotation commit
     GLYPHA_REQUIRE(in_flight_rotation_stats.final_record_commit_attempts == 1);
     GLYPHA_REQUIRE(in_flight_rotation_stats.last_total_duration_ns > 0);
 
-    blocked_build.release();
+    blocked_copy.release();
     writer.join();
     compactor.join();
 
-    GLYPHA_REQUIRE(rotation_completed_during_scan);
+    GLYPHA_REQUIRE(rotation_completed_during_copy);
     GLYPHA_REQUIRE(rotation.committed());
     GLYPHA_REQUIRE(compaction.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
     GLYPHA_REQUIRE(compaction.error.has_value());
@@ -1347,7 +1343,6 @@ GLYPHA_TEST("online compaction filesystem fault matrix reopens one clean authori
         {glyphastore::FilesystemOperation::sync_directory, 1},
         {glyphastore::FilesystemOperation::preallocate_segment},
         {glyphastore::FilesystemOperation::write_segment_header},
-        {glyphastore::FilesystemOperation::sync_segment_file},
         {glyphastore::FilesystemOperation::rename_segment},
         {glyphastore::FilesystemOperation::sync_directory, 2},
         {glyphastore::FilesystemOperation::write_record, 1},

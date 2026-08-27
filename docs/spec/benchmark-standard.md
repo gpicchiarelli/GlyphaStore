@@ -100,9 +100,11 @@ For engine memory analysis also report, when instrumented:
 - live and allocated Segment bytes;
 - connection input/output capacity and queued handoffs.
 
-`--latency` is available for durable parallel PUT and GET workloads. It adds one steady-clock sample
-around each operation and is therefore a tail-latency diagnostic, not a throughput baseline; report
-its instrumentation mode and do not compare its throughput with an uninstrumented run.
+`--latency` is available for volatile parallel PUT and durable parallel PUT/GET workloads. It adds
+one steady-clock sample around each operation and is therefore a tail-latency diagnostic, not a
+throughput baseline; report its instrumentation mode and do not compare its throughput with an
+uninstrumented run. Volatile `store-parallel-put` with one thread is the retained engine-level
+diagnostic for publication/merge tail, separate from TCP latency.
 
 RSS is not allocator-exact ownership. It must not be divided by operation count and called record size without component evidence.
 
@@ -154,6 +156,7 @@ parsing, response).
 ./scripts/dev.sh benchmark-durable --ops 20000 --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-compaction --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-maintenance --warmup 1 --repeats 7
+./scripts/dev.sh benchmark-maintenance --warmup 1 --repeats 7 --maintenance-copy-bytes-per-sec 134217728
 ./scripts/dev.sh benchmark-maintenance --scenario forced-rotation --warmup 1 --repeats 7
 ./scripts/dev.sh benchmark-maintenance --scenario idle --warmup 0 --repeats 7
 ./scripts/dev.sh benchmark-maintenance --scenario churn --warmup 0 --repeats 7

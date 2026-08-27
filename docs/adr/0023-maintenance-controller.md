@@ -57,6 +57,14 @@ explicit modes and budgets without changing ownership, formats, or acknowledgeme
     Pressure/emergency bypass the limit because reclaim is then capacity-preserving work. The
     durable transaction rechecks the limit at its locked snapshot boundary; concurrent growth
     fails with `sequence_conflict` before scanning or copying.
+11. An exact no-gain result is memoized only for the same physical candidate (Worker identity,
+    sealed count, sealed/live/dead bytes, scheduling ratio, and unread-expiry counters). After
+    `max_no_gain_attempts` exact results (one by default), normal maintenance suppresses another
+    whole-candidate scan until the candidate changes or `max_eval_interval_ms` elapses. Pressure
+    and emergency bypass this suppression. The time bound preserves eventual re-evaluation for TTL
+    progression even when no physical counter changes. `max_segments_per_cycle` remains only a
+    source-compatibility guard and must equal one: persistence v1 still admits exactly one complete
+    Worker sealed-set transaction per call.
 
 ## Consequences
 
@@ -71,6 +79,10 @@ enforced under normal policy (one-second window; pressure/emergency bypass). Bac
 one Store thread when enabled. Durable compaction crash/I/O matrices and native power-loss
 certification remain under ADR 0015.
 
+Repeated no-gain work is now bounded: the controller does not repeatedly pay the full source scan
+for an unchanged deterministic layout. This does not make a useful v1 compaction preemptible; its
+copy/publish transaction remains monolithic and is still a measured residual risk.
+
 ## Compatibility and migration
 
 - New optional `StoreConfig::maintenance` fields; defaults preserve cooperative embedded behavior.
@@ -84,7 +96,8 @@ certification remain under ADR 0015.
   Worker; the normal copy limit rejects one byte over, accepts equality, and is bypassed under
   pressure; close with background mode is clean; pressure continues under no-gain budget; emergency
   rejects put/erase with `storage_exhausted` and recovers when watermarks clear; emergency gate
-  survives compact fault; close/flush under emergency remain correct.
+  survives compact fault; unchanged no-gain candidates suppress repeated scans; candidate change,
+  bounded expiry, and pressure re-admit the attempt; close/flush under emergency remain correct.
 - Integration: durable catalog-driven emergency; Store close during blocked background compact drains
   then joins; recovery, rotation, overwrite, and reopen preserve candidate byte counters; manual
   `compact()` still works; concurrent compact still returns `sequence_conflict`.

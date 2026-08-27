@@ -45,10 +45,34 @@ struct SegmentCommitResult {
     }
 };
 
+// Optional single-owner pacing seam for private maintenance output. The
+// callback may wait and returns the maximum number of bytes allowed for the
+// next physical write. It must return a value in [1, requested_bytes]. The
+// normal mutation path leaves this empty and therefore retains one contiguous
+// Record write.
+struct SegmentRecordWritePacing final {
+    void* context{};
+    auto (*acquire)(void* context, std::size_t requested_bytes) -> Result<std::size_t>{};
+};
+
 class DurableSegmentFile final {
   public:
     [[nodiscard]] static auto create(DataDirectory& directory, const SegmentHeaderIdentity& identity)
         -> SegmentFileCreationResult;
+    // Compaction-only pre-intent staging. The private temporary name is not
+    // authoritative and is deliberately not synchronized into the directory.
+    // seal() makes the file contents durable; promote_staged() later promotes
+    // the planned names and synchronizes the directory once, after the
+    // compaction intent is durable.
+    [[nodiscard]] static auto create_staged(DataDirectory& directory, const SegmentHeaderIdentity& identity)
+        -> Result<DurableSegmentFile>;
+    [[nodiscard]] static auto open_staged(DataDirectory& directory,
+                                          const SegmentHeaderIdentity& expected_identity)
+        -> Result<DurableSegmentFile>;
+    [[nodiscard]] static auto promote_staged(DataDirectory& directory,
+                                             std::span<const SegmentHeaderIdentity> identities) -> Status;
+    static void discard_staged(DataDirectory& directory,
+                               std::span<const SegmentHeaderIdentity> identities) noexcept;
     [[nodiscard]] static auto open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
                                    SegmentFileOpenMode mode = SegmentFileOpenMode::read_write)
         -> Result<DurableSegmentFile>;
@@ -63,7 +87,8 @@ class DurableSegmentFile final {
 
     [[nodiscard]] auto append(std::span<const std::byte> encoded_record,
                               SegmentCommitSync sync = SegmentCommitSync::immediate) -> SegmentCommitResult;
-    [[nodiscard]] auto append_record(std::span<const std::byte> encoded_record) -> SegmentCommitResult;
+    [[nodiscard]] auto append_record(std::span<const std::byte> encoded_record,
+                                     SegmentRecordWritePacing pacing = {}) -> SegmentCommitResult;
     [[nodiscard]] auto flush_pending_commit(SegmentCommitSync sync) -> SegmentCommitResult;
     [[nodiscard]] auto has_pending_commit() const noexcept -> bool;
     [[nodiscard]] auto pending_record_count() const noexcept -> std::uint64_t;

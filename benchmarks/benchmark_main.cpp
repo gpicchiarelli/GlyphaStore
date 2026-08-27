@@ -157,7 +157,8 @@ void apply_overrides(glyphastore::bench::Config& config, const Options& options)
 }
 
 [[nodiscard]] auto supports_latency(const glyphastore::bench::BenchmarkKind kind) noexcept -> bool {
-    return kind == glyphastore::bench::BenchmarkKind::store_durable_group_parallel_put ||
+    return kind == glyphastore::bench::BenchmarkKind::store_parallel_put ||
+           kind == glyphastore::bench::BenchmarkKind::store_durable_group_parallel_put ||
            kind == glyphastore::bench::BenchmarkKind::store_durable_parallel_put ||
            kind == glyphastore::bench::BenchmarkKind::store_durable_parallel_get;
 }
@@ -172,7 +173,8 @@ int main(int argc, char** argv) {
         return 2;
     }
     if (options.settings.latency && !supports_latency(options.kind)) {
-        std::cerr << "benchmark error: --latency requires store-durable-group-parallel-put, "
+        std::cerr << "benchmark error: --latency requires store-parallel-put, "
+                     "store-durable-group-parallel-put, "
                      "store-durable-parallel-put, or store-durable-parallel-get\n";
         return 2;
     }

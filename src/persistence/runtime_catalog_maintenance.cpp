@@ -463,7 +463,9 @@ auto DurableRuntimeCatalog::maintenance_observation(const std::size_t start_work
 }
 
 auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const std::uint64_t now_ns,
-                                           const std::uint64_t max_copy_bytes) -> DurableCompactionResult {
+                                           const std::uint64_t max_copy_bytes,
+                                           const std::uint64_t max_copy_bytes_per_second)
+    -> DurableCompactionResult {
     bool recovery_required{};
     DurableCompactionCopyStats stats{};
     const auto notify_fail_closed = [&] {
@@ -564,27 +566,41 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             return failure(Error{ErrorCode::not_found, "durable Worker has no sealed Segments to compact"});
         }
 
-        // Phase B1 performs the read-only scan, CRC verification, layout, and
-        // replacement Index construction without a global publication lease.
-        // The builder invokes this gate immediately before the durable intent;
-        // from that boundary through manifest publication, recovery v1 requires
-        // the exact old/next authority pair to remain exclusive.
+        // Phase B performs the exact scan, replacement Index construction and
+        // the complete staged output copy/seal/verification without a global
+        // publication lease. The builder invokes this gate immediately before
+        // the durable intent; from that boundary through transaction cleanup,
+        // recovery v1 requires the exact old/next authority pair to remain
+        // exclusive.
         bool publication_lease_active{};
-        ScopeExit publication_lease{[&]() noexcept {
+        std::optional<std::chrono::steady_clock::time_point> publication_lease_started;
+        const auto release_publication_lease = [&]() noexcept {
             if (!publication_lease_active) {
                 return;
             }
             {
                 const std::lock_guard lock{manifest_publication_mutex_};
                 compaction_publication_active_ = false;
+                publication_lease_active = false;
+            }
+            if (publication_lease_started) {
+                const auto elapsed = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - *publication_lease_started)
+                                         .count();
+                stats.publication_lease_duration_ns = elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
             }
             manifest_publication_changed_.notify_all();
-        }};
+        };
+        ScopeExit publication_lease{release_publication_lease};
         struct IntentGateContext final {
             DurableRuntimeCatalog& runtime;
             const Manifest& snapshot;
             bool& active;
-        } intent_gate_context{.runtime = *this, .snapshot = snapshot, .active = publication_lease_active};
+            std::optional<std::chrono::steady_clock::time_point>& started;
+        } intent_gate_context{.runtime = *this,
+                              .snapshot = snapshot,
+                              .active = publication_lease_active,
+                              .started = publication_lease_started};
         const DurableCompactionIntentGate intent_gate{
             .context = &intent_gate_context,
             .acquire = [](void* opaque) -> Status {
@@ -602,13 +618,15 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
                 }
                 gate.runtime.compaction_publication_active_ = true;
                 gate.active = true;
+                gate.started = std::chrono::steady_clock::now();
                 return {};
             },
         };
-        auto built = build_durable_worker_compaction(directory_, snapshot, worker.worker_id,
-                                                     std::move(snapshot_entries), now_ns, options_.limits,
-                                                     intent_gate);
+        auto built = build_durable_worker_compaction(
+            directory_, snapshot, worker.worker_id, std::move(snapshot_entries), now_ns, options_.limits,
+            intent_gate, {.bytes_per_second = max_copy_bytes_per_second});
         if (!built.succeeded()) {
+            stats = built.stats;
             if (built.outcome == DurableCompactionBuildOutcome::not_beneficial) {
                 return {.outcome = DurableCompactionOutcome::not_beneficial,
                         .stats = built.stats,
@@ -894,6 +912,7 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             namespace_audit_ = std::move(*audit);
         }
         recovery_required = false;
+        release_publication_lease();
         return {.outcome = DurableCompactionOutcome::compacted, .stats = stats, .error = std::nullopt};
     } catch (const std::bad_alloc&) {
         return failure(Error{ErrorCode::resource_exhausted, {}});

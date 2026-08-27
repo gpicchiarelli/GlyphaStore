@@ -3,7 +3,7 @@
 Status: descriptive
 Applies to: `glyphastored` wire protocol v2
 Owner: platform maintainers
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-27
 
 ## Purpose
 
@@ -72,6 +72,10 @@ into a Writer coalescing wait (`min_records` / burst) or still pending as a late
 sub-batch. In-flight Store work is **never** cancelled. A timed-out drain makes process exit
 **fail closed** (`join` returns an error; non-zero exit).
 
+The same known-not-committed classification applies when a non-zero mutation queue-wait budget is
+the first deadline reached during durable-group coalescing. The Writer closes that wait at the oldest
+FIFO deadline rather than extending it to `group-max-wait-ms`.
+
 ### 3. Tune drain deadline when needed
 
 ```bash
@@ -107,7 +111,7 @@ Overload is **bounded** and **fail closed**. The server does not grow unbounded 
 | Condition | Client-visible result | Committed? |
 |---|---|---|
 | Connection/handoff/input/output buffer limit | connection closed or `OVERLOADED` | not committed if rejected before Store entry |
-| Durable lane count or owned-byte limit | `OVERLOADED` | known not committed |
+| Durable lane, completion-credit or outstanding-byte limit | `OVERLOADED` | known not committed |
 | Queue wait expires before Store entry | `OVERLOADED` | known not committed |
 | Maintenance emergency / `storage_exhausted` | `OVERLOADED` (wire cannot distinguish from admission pressure) | known not committed |
 | Task already inside Store | completes or fails normally | never cancelled mid-commit |

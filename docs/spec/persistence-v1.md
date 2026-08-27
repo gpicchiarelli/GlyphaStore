@@ -125,6 +125,15 @@ normative in the [recovery state-transition matrix v1](recovery-state-matrix-v1.
 
 Stable files are never incrementally rewritten as a namespace transaction. Publication uses a temporary file in the same directory, complete write, required file synchronization, atomic rename, and required directory synchronization.
 
+Whole-Worker compaction (ADR 0039) may build complete replacement Segment contents under recognized
+private `.segment-<id>-<generation>.glypha.tmp` names while the old Manifest remains the sole
+authority. Each staged file is synchronized, sealed and verified before the publication lease and
+before the v1 compaction intent. After the exact intent is durable, all planned temporaries are
+renamed to their canonical names and one directory synchronization orders that promotion before
+the next Manifest. A crash before intent leaves only disposable temporaries; ordinary recovery
+removes them only after a complete scan of the authoritative Manifest. A crash after intent is
+resolved exclusively by the old/next authority rules in the recovery matrix.
+
 Record bytes are ordered before the commit slot that authorizes them. Outside initial bootstrap,
 Segment creation is durable before a Manifest can reference it. Bootstrap may publish its initial
 Manifest first only while the identical durable bootstrap intent authorizes creation of every

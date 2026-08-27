@@ -138,24 +138,134 @@ Prototype evidence closes lab gates only; production still uses Alternative A.
 
 | # | Gate | Evidence required | Status |
 | --- | --- | --- | --- |
-| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | **prototype-evidence** — `ADR 0036 V1 prototype…` |
+| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | **prototype-evidence** — coherent-adoption + forced slot-reincarnation tests; local Release/ASan+UBSan/TSan record in `engineering/evidence/adr0036-slot-token-local-2026-08-27.md` |
 | V2 | Litmus: reclaim never frees epoch ≥ any active lease / pin / safe epoch | TSAN stress + fault injection | **prototype-evidence** — `ADR 0036 V2…` + V13 stress under `macos-tsan`; production TSAN soak still open |
 | V3 | Two-boundary (or lease-equivalent) race: Reader mid-GET during publish+retire | Dedicated race test + TSAN | **prototype-evidence** — `ADR 0036 V3…` + V13 under `macos-tsan`; **production-baseline** — overwrite-storm under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
 | V4 | Cold I/O / `reader_safe_epoch` (or pin) holds reclaim across async completion | Integration | **prototype-evidence** (pin) — `paired slow-output pin…`; **production-baseline** — `paired Reader refreshes compacted durable pins…` + `durable cold read pin survives…` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
-| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | **prototype-evidence** + production close/linearize tests |
-| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | **prototype-evidence** — `ADR 0036 V6…`; **production-baseline** — allocation-fault + paired durable litmus. Sync/async drain-snapshot + ACK-after-visibility/drain (no inverted RAW on catch, capture-fail, Index-visible `committed+error`, unprocessed batch items after drain, Index publish throw fail-close, catch-after-publish put+erase incl. volatile sync erase, or resolved-error catch overwrite); `writer_durable_through` mutex-synchronized; immutable published GET RAW after close. Slot-pool candidate still open |
+| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | **candidate-evidence** — slot candidate rejects late reservations, drains admitted `building` guards, retains slow borrows and fail-closes abandoned linearized authority. **production-baseline (Alternative A)** — after daemon joins Reactor/Writer/cold-I/O, authoritative `Store::close` drains maintenance, terminally revokes publication and releases every generation; active counted lease rejects without partial finalization; local Release/ASan+UBSan/TSan record. Slot-pool integration remains open |
+| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | **candidate-evidence** — slot reservation precedes Store entry; abandoned post-linearization guard invokes fail-closed; real durable committed PUT is snapshot-drained and visible in the recovered generation. Production integration remains open. Existing production baseline remains allocation-fault + paired durable litmus |
 | V7 | Incremental merge + post-cut publish under slot pressure | Pair read generation + Writer merge tests | **prototype-evidence** — `ADR 0036 V7 prototype…` (merge under pin pressure); production merge+slot open |
-| V8 | Durable catalog refresh / rotation does not invalidate in-flight GET | Paired durable refresh tests | **production-baseline** — `paired Reader refreshes…` + `durable read catalog refresh…` (`…/local-macos-2026-08-02-adr0036-v6-v8-v14/`); slot-pool candidate still open |
-| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | **prototype-evidence** — backpressure + bounded spin then `resource_exhausted`; recovery put |
+| V8 | Durable catalog refresh / rotation does not invalidate in-flight GET | Paired durable refresh tests | **candidate-evidence** — real `PairReadGeneration` slot candidate preserves a cold Segment borrow across compaction refresh and publishes a Writer-owned rotation atomically; Release/ASan+UBSan/TSan local record. Production integration remains open |
+| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | **candidate-evidence** — capacity formula is tied to the official 64-generation retire bound: `1 current + 64 retired = 65`; exact saturation rejects before Store entry, preserves the current publication, then recovers after Reader frontier advancement. **production-baseline (Alternative A)** — one shared admission decision now covers embedded/dedicated sync, async and durable-batch Writer paths; refresh and merge completion cannot bypass the retire bound; all 14 installation sites repeat the bound through one fail-fast helper. Local evidence: `engineering/evidence/paired-generation-admission-local-2026-08-27.md`; diagnostic guard A/B: `benchmarks/results/generation-retire-install-guard-2026-08-27/`. Slot-pool integration remains open |
 | V10 | Same-key FIFO within `put_batch`; RAW after ACK | Existing paired Store batch tests | **production-baseline** (status-quo path) |
-| V11 | Lab A/B vs status quo on Apple Silicon `macos-release` | Recorded under `benchmarks/results/` | open (requires production candidate) |
-| V12 | **Hard reject** if worker-affine PUT 2t regresses >5% median vs interleaved baseline | Same as V11 | open |
+| V11 | Lab A/B vs status quo on Apple Silicon `macos-release` | Recorded under `benchmarks/results/` | open — two-thread direct slot diagnostic is +7.14% over the equivalent shared-slot protocol, but affinity was unavailable and this is not the official paired runtime |
+| V12 | **Hard reject** if worker-affine PUT 2t regresses >5% median vs interleaved baseline | Same as V11 | open — adopt-only throughput is positive but sampled p99 regressed 5.86%; the L1-hot GET mode improves publication p99 9.54% with unchanged GET p99, yet real paired GET/PUT, pinned Linux and correctly labelled macOS rows remain required |
 | V13 | ASan/UBSan/TSAN clean on paired + publish stress | CI jobs | **prototype-partial** — `ADR 0036 V13…` + full `paired Store` green under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-tsan/`) and `macos-asan` ASan+UBSan (`…/local-macos-2026-08-02-adr0036-asan/`); full multi-OS CI matrix still open |
 | V14 | Crash / fault matrix unchanged for durability boundaries (no ACK-before-publish) | Crash harness subset | **production-baseline** — full sync `crash_persistence --mode matrix` (91 checkpoints) under `macos-release` (`…/local-macos-2026-08-02-adr0036-v14-sync-matrix/`); also crash-daemon pre-commit/post-ack + group-matrix. Slot-pool candidate still open |
 
 Prototype reference (non-production): `src/experimental/paired_shard.cpp` (`publish`,
 `reclaim_generations`, `acquire_generation_slot`, `adopt_publication`, `pin_read_generation`,
 `stop_and_drain`).
+
+### Prototype protocol hardening — 2026-08-27
+
+The lab prototype no longer release-publishes a pointer whose address can repeat after slot reuse.
+It publishes one 64-bit token `{epoch:48, slot+1:16}`. The Writer fully initializes the selected
+slot and its descriptor before the release store; the Reader acquire-loads the token, decodes the
+slot, and rejects an epoch mismatch before changing its local publication. `visible_through` and
+the generation graph remain immutable slot fields made visible by that same release/acquire edge.
+The 48-bit epoch limit is checked before mutation publication and fails the batch explicitly on
+overflow. A dedicated V1 test forces actual slot reincarnation and checks epoch, visibility,
+sequence, and value coherence; the focused ADR suite passes in Release, ASan+UBSan, and TSan.
+
+This strengthens **prototype evidence only**. It does not close V8 in production, V11, V12 or V14,
+does not replace the production `shared_ptr`/`ReadLease` path, and does not change this ADR's
+proposed status.
+The local diagnostic A/B is retained in
+`benchmarks/results/adr0036-slot-token-2026-08-27/`; raw paired medians were within -1.8% of the
+preceding pointer run and control-normalized ratios were within -1.2%, but the campaign is not a
+production-congruent or worker-affine V11/V12 proof.
+
+### V8 production-congruent lifetime candidate — 2026-08-27
+
+`src/experimental/generation_slot_pool.hpp` isolates the slot lifetime protocol while reusing the
+real production `PairReadGeneration` graph. It uses the existing production frontier equation
+`min(adopted_epoch, minimum_borrowed_epoch)` and reclaims only retired epochs strictly below that
+frontier. Regressions of an already published safe frontier fail closed: a late borrow cannot
+resurrect an epoch that may already have been reclaimed. Dedicated integration tests construct
+snapshots from the durable catalog, retain a cold
+read from the old Segment generation through compaction, publish the refreshed graph, complete the
+I/O, then prove retirement. A second test covers Writer-owned rotation and the resulting two-record
+snapshot. The protocol and proof boundary are documented in
+`docs/architecture/generation-slot-pool-candidate.md`.
+
+This moved V8 from “candidate open” to **candidate evidence**, not production closure. At that
+stage the candidate still accepted an already heap-built
+`shared_ptr<const PairReadGeneration>` per slot and therefore did not demonstrate the
+allocation/performance purpose of production slot construction. The later fixed-shell extension
+below removes that specific lab blocker; runtime integration and performance proof remain open.
+
+### V6 reservation-before-mutation candidate — 2026-08-27
+
+The candidate now exposes a bounded Writer-only reservation guard. Slot exhaustion is decided
+before Store entry. A reservation cancelled before Store linearization is a safe rejection; after
+`mark_store_linearized()`, destruction without a successful release publication invokes the
+configured fail-closed hook. A durable integration test commits a real PUT, forces generation
+commit failure, verifies Store fail-closed, then uses the existing `allow_fail_closed` snapshot
+authority to rebuild and publish a generation containing the committed key.
+
+This is **candidate evidence** for V6 ordering and recovery, not production closure. The official
+runtime has not adopted reservations and its existing fail-closed/drain machinery is unchanged.
+
+### Fixed shell-storage candidate — 2026-08-27
+
+The candidate now composes each reserved slot with a bounded, preallocated shell storage. A
+private construction bridge uses `allocate_shared` to place the real `PairReadGeneration`, its
+embedded `DeltaState`, and the shared control block in that storage. The allocator retains the
+backing object through final weak destruction; an occupied slot rejects instead of falling back to
+the heap. Tests prove address reuse, weak-owner fencing, backing-owner lifetime, and matching
+reservation/storage reincarnation with the real generation graph.
+
+This removes the earlier candidate blocker where every slot merely accepted an already heap-built
+generation. It still does **not** close V11/V12: COW pages, spines, arena blocks and keys can still
+allocate, Writer-side shared ownership remains, and the 512-byte shell ABI budget needs every
+supported toolchain row. The bridge is dormant in the core because the production `DeltaState` is
+private; its access header is non-installed and neither `ShardPairRuntime` nor `glyphastored` can
+select it.
+
+The follow-up inline owner removes the backing-storage `shared_ptr` by nesting the bank and pool in
+one non-movable lifetime domain. Destruction order and a private builder prevent a generation from
+outliving its slot bytes; Writer-only occupancy needs no atomics. It is 7.53% faster than the
+otherwise equivalent shared-backing pool in the local diagnostic and passes a 10,000-publication
+Writer/Reader TSan stress. However, it remains 7.09% behind plain `make_shared` in the same
+construction campaign. Therefore this custom-allocator branch is retained as rejected diagnostic
+evidence, not promoted. A viable production candidate must remove the shared control block itself.
+External merge state is deliberately unsupported because it could retain the generation beyond the
+bank; a future direct-object pool must own merge lifetime in the same destruction domain.
+
+The direct-object follow-up removes `allocate_shared` and the control block entirely. Official and
+direct construction share one validation/delta-build routine; the candidate uses `construct_at`
+and `destroy_at` over two fixed Writer slots. A 256-publication differential test matches epoch,
+visibility, delta state and values, while rejected construction preserves the current generation.
+The local median is 3.267.796 publications/s versus 2.791.071 for `make_shared` (**+17.08%**).
+
+The direct-object slot-pool follow-up composes the same construction with bounded reservation,
+release/acquire token, Reader safe epoch, cold borrow, Writer reclamation and terminal shutdown.
+Epoch zero is direct as well, so the pool has no generation `shared_ptr` or control block. Focused
+Release, ASan+UBSan and TSan tests pass, including 10.000 concurrent publications. Its synchronous
+protocol median is 3.186.299 publications/s: +7,43% over `make_shared`, with an 8,28% cost versus
+the unsafe synchronous ring.
+
+This remains candidate evidence. Reader and Writer are separate threads in the follow-up below,
+but physical affinity, merge ownership, durable refresh, lane/socket shutdown and the official
+runtime remain untouched. V1–V14 production status is unchanged.
+
+The follow-up diagnostic runs persistent Reader and Writer threads over equivalent 65-slot shared
+and direct protocols. Direct construction reaches a 1,275,537 publications/s median versus
+1,190,497 shared (**+7.14%**) and lowers aggregate ns/publication by 6.67%. Sampled publication p50
+is unchanged; sampled p99 is 5.86% worse. Requested affinity was unavailable on the macOS host, so
+the campaign is concurrent but not physically pinned. Raw results and limitations are retained in
+`benchmarks/results/adr0036-direct-publication-2026-08-27/`.
+
+Repeated Reader adoption also stops rewriting `reader_safe_epoch` while the frontier is unchanged.
+This does not weaken reclamation: no older epoch becomes reclaimable until the frontier advances,
+and that advancing store retains release semantics. ASan+UBSan and TSan runs cover the two-thread
+runner after this optimization.
+
+With one real `PairReadGeneration::get` per adoption, direct construction reaches 919,357 versus
+817,965 publications/s (**+12.40%**), improves sampled publication p50/p99 by 9.09%/9.54%, and
+leaves sampled GET p50/p99 unchanged at 83/250 ns. This mode uses a two-byte L1-hot value and still
+lacks socket/protocol work and affinity, so it strengthens direction without closing a gate.
 
 ## Compatibility with landed hot-path work
 

@@ -3,7 +3,7 @@
 Status: sperimentale, lab-only (test e benchmark dedicati; non raggiungibile da `glyphastored`)
 Applies to: prototipo volatile Reader–Writer e Reactor TCP a coppia singola sotto `src/experimental/`
 Owner: storage, networking e performance maintainers
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-27
 
 ADR: [shard a coppie Reader–Writer](../adr/paired-reader-writer-shards.md);
 [ADR 0036](../adr/0036-generation-slot-pool-publish.md) (proposed) governa eventuali
@@ -21,7 +21,9 @@ Il prototipo esegue una sola coppia con:
 - micro-batch Writer fino a 32 mutazioni, con deadline configurabile e default bilanciato di 2 us;
 - `MutableDeltaIndex` Writer-private e publication `base + frozen delta`;
 - merge del delta alla soglia configurata, senza catene oltre due livelli;
-- publication tramite un solo descriptor immutabile release/acquire;
+- publication tramite un solo token atomico release/acquire `{epoch:48, slot+1:16}`; il token
+  identifica anche la reincarnazione dello slot e il descriptor immutabile nello slot contiene
+  `generation`, `epoch` e `visible_through`;
 - `ImmutableReadIndex` read-only Swiss-style con control group da otto slot, load massimo 0,75,
   matching SIMD/scalar già condiviso con l'Index di produzione e nessun tombstone;
 - `StableRecord` allocato una sola volta per mutazione; base, delta e generation condividono soltanto
@@ -62,16 +64,22 @@ v1. Questa separazione impedisce un'attivazione accidentale del runtime incomple
 
 ## Reclamation implementata
 
-Il Reader incrementa un contatore di turn quiescenti prima di adottare con acquire il descriptor
-corrente. Il Writer pubblica con release un solo puntatore e ritira la generation precedente solo
-dopo due ulteriori confini quiescenti. Il margine di due turn copre l'adozione concorrente che può
-ancora avere osservato il descriptor precedente. Lo span restituito da GET resta valido fino alla
-successiva `adopt_publication()` dello stesso Reader.
+Il Reader incrementa un contatore di turn quiescenti prima di adottare con acquire il token
+corrente. Il Writer inizializza completamente generation e descriptor nello slot, quindi pubblica
+con release un solo token packed. Il Reader decodifica lo slot e verifica che l'epoch del descriptor
+coincida con quello del token: il riuso dello stesso indirizzo non può quindi simulare la stessa
+publication (ABA). Il Writer ritira la generation precedente solo dopo due ulteriori confini
+quiescenti. Il margine di due turn copre l'adozione concorrente che può ancora avere osservato il
+descriptor precedente. Lo span restituito da GET resta valido fino alla successiva
+`adopt_publication()` dello stesso Reader.
 
-Il pool contiene `queue_capacity + 2` slot: è sufficiente per tutte le mutazioni già accettabili
-anche se il Reader tarda ad adottare. Pool pieno sospende la publication Writer e quindi applica
-backpressure bounded; non libera mai una generation anticipatamente. Durante shutdown due turn
-forzati liberano il backlog preesistente, mentre la capacità residua copre tutto il drain ammesso.
+Il pool contiene `queue_capacity + 2` slot, cioè un budget esplicito di 258 generation concorrenti.
+Non è una promessa che ogni mutazione ammessa continuerà a pubblicare se il Reader smette
+indefinitamente di avanzare: il completion pop può riaprire admission mentre il debito di
+publication cresce. Quando il budget è esaurito, il Writer esegue un tentativo di reclaim con attesa
+limitata e completa il batch con `resource_exhausted`; non sovrascrive uno slot vivo e non attende
+senza limite. Due turn reali durante shutdown sbloccano il reclaim del debito preesistente; il join
+classifica comunque ogni mutazione già ammessa con un completion esplicito.
 
 ## Limiti intenzionali
 
@@ -106,6 +114,9 @@ architetturale richiede ancora lo stesso protocol path, Segment immutabili, dura
 - publication/ACK/read-after-write;
 - merge ripetuti, tombstone, TTL e shutdown drain.
 - 512 publication consecutive con reclamation QSBR bounded e nessuna backpressure;
+- reincarnazione ripetuta degli slot con token `{epoch, slot}` coerente, verificata in Release,
+  ASan+UBSan e TSan; il contatore `generation_slot_reuses` prova che il test non si limita a slot
+  mai riutilizzati;
 - benchmark A/B interleaved GET 100% e GET/PUT 95/5 nel target dedicato
   `glyphastore_paired_benchmark`.
 - secondo gate P0: delta paged e record stabili portano il 95/5 a 11,30 Mops/s (64 B) e

@@ -54,9 +54,11 @@ listens.
   defaults and file/env/CLI overrides.
 - `dev` keeps volatile storage and disables background maintenance for local iteration.
 - `embedded` selects `durable-periodic` with constrained resource caps suited to sidecar or
-  single-node embedded deployments.
+  single-node embedded deployments and starts normal compaction pacing at 64 MiB/s.
 - `production` selects `durable-periodic` with background maintenance and the standard durable
-  resource defaults; operators still must supply `--data-dir` (or equivalent) before listen.
+  resource defaults, with normal compaction pacing initially at 128 MiB/s; operators still must
+  supply `--data-dir` (or equivalent) before listen. Both rates are overrideable starting points,
+  not device-independent performance claims.
 
 - `--config PATH` or `GLYPHASTORE_CONFIG=PATH` selects a settings file. The file cannot set `config`,
   `help`, or `version`.
@@ -209,9 +211,10 @@ glyphastored ... --maintenance-max-copy-bytes-per-sec 1048576 \
   --maintenance-max-latency-deferral-ms 30000
 ```
 
-Zero disables each byte/CPU/p99 threshold budget. The latency guard resumes below 80% of its
-threshold; its deferral bound admits one reclaim attempt, while pressure/emergency bypass all normal
-fairness controls.
+The copy rate spaces bounded physical writes to private pre-intent output; it is not a whole-job size
+cap, so larger compactions still progress. Zero disables each byte/CPU/p99 threshold budget. The
+latency guard resumes below 80% of its threshold; its deferral bound admits one reclaim attempt,
+while pressure/emergency bypass all normal fairness controls.
 ## Maintenance tools
 
 ```bash

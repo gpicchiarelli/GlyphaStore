@@ -92,7 +92,10 @@ if(BUILD_TESTING)
     set_tests_properties(glyphastore_persistence_fixture_tests PROPERTIES
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
         LABELS "release;persistence;negative"
-        TIMEOUT 15
+        # This test creates and validates several real Git repositories. Under
+        # the parallel CI matrix it can legitimately exceed 15 seconds even
+        # after every unittest has completed successfully.
+        TIMEOUT 30
     )
     add_test(
         NAME glyphastore_install_components
@@ -132,12 +135,14 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/test_main.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/compaction_intent_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/compaction_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/byte_rate_limiter_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/adaptive_batch_sizer_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/index_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/index_hash_seed_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/worker_routing_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/hot_record_table_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/paired_shard_prototype_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/generation_slot_pool_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/pair_read_generation_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/manifest_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_slot_pool_tests.cpp

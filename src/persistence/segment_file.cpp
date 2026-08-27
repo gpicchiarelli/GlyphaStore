@@ -259,6 +259,194 @@ auto DurableSegmentFile::create(DataDirectory& directory, const SegmentHeaderIde
     return {.outcome = SegmentFileCreationOutcome::durable, .file = std::move(file), .error = std::nullopt};
 }
 
+auto DurableSegmentFile::create_staged(DataDirectory& directory, const SegmentHeaderIdentity& identity)
+    -> Result<DurableSegmentFile> {
+    if (!directory.healthy()) {
+        return fail(ErrorCode::io_error, "cannot stage a Segment through a poisoned data directory");
+    }
+
+    const SegmentCommit initial_commit{
+        .commit_generation = 1,
+        .committed_end = static_cast<std::uint32_t>(kSegmentHeaderReservedBytes),
+        .state = PersistedSegmentState::active,
+        .record_count = 0,
+        .first_sequence = SequenceNumber{0},
+        .last_sequence = SequenceNumber{0},
+    };
+    std::array<std::byte, kSegmentHeaderReservedBytes> header_bytes{};
+    const SegmentHeader header{.identity = identity, .commits = {initial_commit, std::nullopt}};
+    if (auto encoded = encode_segment_header(header_bytes, header); !encoded) {
+        return unexpected(encoded.error());
+    }
+
+    const auto final_name = segment_filename(identity);
+    const auto temporary_name = '.' + final_name + ".tmp";
+    struct stat existing{};
+    if (::fstatat(directory.directory_.get(), final_name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+        return fail(ErrorCode::sequence_conflict,
+                    "staged Segment identity already exists in the data directory");
+    }
+    if (errno != ENOENT) {
+        return persistence_system_error("fstatat(staged Segment final name)");
+    }
+
+    FileDescriptor temporary{
+        interrupted_open_at(directory.directory_.get(), temporary_name.c_str(),
+                            O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
+                            S_IRUSR | S_IWUSR),
+        directory.hooks_.file_io};
+    if (!temporary.valid()) {
+        if (errno == EEXIST) {
+            return fail(ErrorCode::sequence_conflict,
+                        "staged Segment temporary identity is already owned by another build");
+        }
+        return persistence_system_error("openat(staged Segment)");
+    }
+    const auto cleanup = [&directory, &temporary_name]() noexcept {
+        static_cast<void>(::unlinkat(directory.directory_.get(), temporary_name.c_str(), 0));
+    };
+    if (auto allowed = directory.before(FilesystemOperation::preallocate_segment); !allowed) {
+        cleanup();
+        return unexpected(allowed.error());
+    }
+    if (auto allocated = preallocate_segment(temporary); !allocated) {
+        cleanup();
+        return unexpected(allocated.error());
+    }
+    directory.after(FilesystemOperation::preallocate_segment);
+    if (auto allowed = directory.before(FilesystemOperation::write_segment_header); !allowed) {
+        cleanup();
+        return unexpected(allowed.error());
+    }
+    if (auto written = temporary.write_all_at(header_bytes, 0); !written) {
+        cleanup();
+        return unexpected(written.error());
+    }
+    directory.after(FilesystemOperation::write_segment_header);
+
+    // This handle intentionally owns private health until promotion. Any
+    // staging I/O failure invalidates only disposable output, not Mold.
+    auto staged_health = std::make_shared<std::atomic_bool>(true);
+    return DurableSegmentFile{std::move(temporary),
+                              identity,
+                              SelectedSegmentCommit{.slot_index = 0, .commit = initial_commit},
+                              directory.hooks_,
+                              std::move(staged_health),
+                              true};
+}
+
+auto DurableSegmentFile::open_staged(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity)
+    -> Result<DurableSegmentFile> {
+    if (!directory.healthy()) {
+        return fail(ErrorCode::io_error, "cannot open a staged Segment through a poisoned data directory");
+    }
+    const auto name = '.' + segment_filename(expected_identity) + ".tmp";
+    FileDescriptor file{interrupted_open_at(directory.directory_.get(), name.c_str(),
+                                            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK),
+                        directory.hooks_.file_io};
+    if (!file.valid()) {
+        if (errno == ENOENT) {
+            return fail(ErrorCode::not_found, "staged Segment does not exist");
+        }
+        return persistence_system_error("openat(staged Segment)");
+    }
+    if (auto valid = validate_private_segment(file.get()); !valid) {
+        return unexpected(valid.error());
+    }
+    const auto size = file.size();
+    if (!size) {
+        return unexpected(size.error());
+    }
+    if (*size != kSegmentSizeBytes) {
+        return fail(ErrorCode::invalid_record, "staged Segment file is not exactly 64 MiB");
+    }
+    std::array<std::byte, kSegmentHeaderReservedBytes> header_bytes{};
+    if (auto read = file.read_exact_at(header_bytes, 0); !read) {
+        return unexpected(read.error());
+    }
+    const auto header = decode_segment_header(header_bytes);
+    if (!header) {
+        return unexpected(header.error());
+    }
+    if (header->identity != expected_identity) {
+        return fail(ErrorCode::corrupted_data,
+                    "staged Segment header identity does not match the planned identity");
+    }
+    const auto selected = select_newest_segment_commit(*header);
+    if (!selected) {
+        return unexpected(selected.error());
+    }
+    auto staged_health = std::make_shared<std::atomic_bool>(true);
+    return DurableSegmentFile{std::move(file),  header->identity,         *selected,
+                              directory.hooks_, std::move(staged_health), false};
+}
+
+auto DurableSegmentFile::promote_staged(DataDirectory& directory,
+                                        const std::span<const SegmentHeaderIdentity> identities) -> Status {
+    if (!directory.healthy()) {
+        return fail(ErrorCode::io_error, "cannot promote staged Segments through a poisoned data directory");
+    }
+    if (identities.empty()) {
+        return {};
+    }
+
+    for (const auto& identity : identities) {
+        auto staged = open_staged(directory, identity);
+        if (!staged) {
+            return unexpected(staged.error());
+        }
+        if (staged->selected_commit().commit.state != PersistedSegmentState::sealed) {
+            return fail(ErrorCode::corrupted_data, "compaction staged Segment is not sealed");
+        }
+        const auto final_name = segment_filename(identity);
+        struct stat existing{};
+        if (::fstatat(directory.directory_.get(), final_name.c_str(), &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+            return fail(ErrorCode::sequence_conflict,
+                        "compaction staged Segment final identity already exists");
+        }
+        if (errno != ENOENT) {
+            return persistence_system_error("fstatat(compaction staged final name)");
+        }
+    }
+
+    bool renamed_any{};
+    for (const auto& identity : identities) {
+        const auto final_name = segment_filename(identity);
+        const auto temporary_name = '.' + final_name + ".tmp";
+        if (auto allowed = directory.before(FilesystemOperation::rename_segment); !allowed) {
+            if (renamed_any) {
+                directory.health_->store(false, std::memory_order_release);
+            }
+            return allowed;
+        }
+        if (::renameat(directory.directory_.get(), temporary_name.c_str(), directory.directory_.get(),
+                       final_name.c_str()) != 0) {
+            directory.health_->store(false, std::memory_order_release);
+            return persistence_system_error("renameat(staged Segment)");
+        }
+        renamed_any = true;
+        directory.after(FilesystemOperation::rename_segment);
+    }
+    if (auto allowed = directory.before(FilesystemOperation::sync_directory); !allowed) {
+        directory.health_->store(false, std::memory_order_release);
+        return allowed;
+    }
+    if (auto synced = directory.sync_directory(); !synced) {
+        directory.health_->store(false, std::memory_order_release);
+        return synced;
+    }
+    directory.after(FilesystemOperation::sync_directory);
+    return {};
+}
+
+void DurableSegmentFile::discard_staged(DataDirectory& directory,
+                                        const std::span<const SegmentHeaderIdentity> identities) noexcept {
+    for (const auto& identity : identities) {
+        const auto name = '.' + segment_filename(identity) + ".tmp";
+        static_cast<void>(::unlinkat(directory.directory_.get(), name.c_str(), 0));
+    }
+}
+
 auto DurableSegmentFile::open(DataDirectory& directory, const SegmentHeaderIdentity& expected_identity,
                               const SegmentFileOpenMode mode) -> Result<DurableSegmentFile> {
     if (glyphastore::fault::consume_fail(glyphastore::fault::Site::segment_open)) {
@@ -462,8 +650,8 @@ auto DurableSegmentFile::pending_bytes() const noexcept -> std::uint64_t {
     return pending_bytes_;
 }
 
-auto DurableSegmentFile::append_record(const std::span<const std::byte> encoded_record)
-    -> SegmentCommitResult {
+auto DurableSegmentFile::append_record(const std::span<const std::byte> encoded_record,
+                                       const SegmentRecordWritePacing pacing) -> SegmentCommitResult {
     if (!healthy()) {
         return commit_failure(SegmentCommitOutcome::indeterminate,
                               Error{ErrorCode::io_error, "Segment file is poisoned"});
@@ -502,9 +690,29 @@ auto DurableSegmentFile::append_record(const std::span<const std::byte> encoded_
     if (auto allowed = before(FilesystemOperation::write_record); !allowed) {
         return commit_failure(SegmentCommitOutcome::not_committed, allowed.error());
     }
-    if (auto written = file_.write_all_at(encoded_record, record_offset); !written) {
-        poison();
-        return commit_failure(SegmentCommitOutcome::not_committed, written.error());
+    std::size_t written_bytes{};
+    while (written_bytes < encoded_record.size()) {
+        const auto remaining_record_bytes = encoded_record.size() - written_bytes;
+        auto write_bytes = remaining_record_bytes;
+        if (pacing.acquire != nullptr) {
+            auto granted = pacing.acquire(pacing.context, remaining_record_bytes);
+            if (!granted) {
+                return commit_failure(SegmentCommitOutcome::not_committed, granted.error());
+            }
+            if (*granted == 0U || *granted > remaining_record_bytes) {
+                return commit_failure(
+                    SegmentCommitOutcome::not_committed,
+                    Error{ErrorCode::internal_error, "Segment Record write pacer returned an invalid grant"});
+            }
+            write_bytes = *granted;
+        }
+        if (auto written = file_.write_all_at(encoded_record.subspan(written_bytes, write_bytes),
+                                              record_offset + written_bytes);
+            !written) {
+            poison();
+            return commit_failure(SegmentCommitOutcome::not_committed, written.error());
+        }
+        written_bytes += write_bytes;
     }
     after(FilesystemOperation::write_record);
 

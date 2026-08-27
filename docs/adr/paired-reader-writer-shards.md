@@ -271,6 +271,25 @@ generation soltanto dopo aver stabilito questa frontiera; non esegue refcount at
 Una connessione chiusa cancella l'I/O ma non rilascia anticipatamente la lease. Retire-list o tracker
 full applicano backpressure e non forzano mai il free.
 
+La decisione di admission della publication è unica per tutti i percorsi Writer. Dopo un tentativo
+di reclaim, Writer dedicato e combiner verificano **prima di entrare nello Store** sia il limite di
+64 generation ritirate sia la capacità del post-cut delta per l'intero batch. Vale per mutazioni
+sync, async e batch durevoli; al limite l'esito è `resource_exhausted` noto-non-committed. Anche
+refresh e completamento merge devono possedere la stessa capacità di retire prima di sostituire la
+generation corrente. Non esiste un percorso housekeeping che possa oltrepassare il bound.
+
+La pubblicazione della frontiera Reader rende il reclaim *ammissibile*, ma non promette una
+transizione idle immediatamente osservabile. Il reclaim è opportunistico sul successivo turno del
+Writer; una nuova mutazione lo esegue prima della propria decisione di admission. La proprietà di
+liveness contrattuale è quindi ripresa bounded al turno Writer successivo, non polling fino a zero
+del contatore retire in assenza di lavoro.
+
+Ogni installazione effettiva della generation ripete inoltre il controllo del limite nello stesso
+helper comune. È una guardia d'invariante, non una seconda admission: una violazione termina il
+processo perché continuare potrebbe rendere la memoria non bounded o produrre ACK per autorità non
+adottabile. Il ramo è `[[unlikely]]`, Writer-local e privo di lock/atomiche; l'A/B diagnostico locale
+è conservato in `benchmarks/results/generation-retire-install-guard-2026-08-27/`.
+
 La risposta scatter corrente possiede un `OwnedValue` e non conserva `Index` slot, `RecordRef` o
 Segment pin: può quindi rilasciare la lease QSBR del task prima del drain socket. Un futuro `get-into`
 che esponesse iovec borrowed dalla generation dovrebbe invece estendere la stessa frontiera fino
@@ -315,14 +334,26 @@ stop listener e nuova admission
 → pubblica l'ultima ReadGeneration necessaria
 → drain completion ring
 → Reader invia ACK già ammessi o chiude con esito esplicito alla deadline
-→ drain output lease e pubblica quiescenza
-→ Writer ritira generation sicure
-→ chiude Segment, connessioni e runtime
+→ drain output lease e cold I/O, poi termina i Reactor
+→ stop e join dei Writer
+→ stop e join del disk-read executor
+→ Store::close ferma admission e maintenance, poi attende le operazioni Store
+→ finalizzazione Reader interna: publication=null e safe frontier terminale
+→ rilascio di tutte le generation, inclusa quella Writer finale
+→ chiusura Segment e runtime durevole
 ```
 
 Mutation slot accettati non vengono persi. Scadenza del drain può rifiutare solo slot non ancora
 trasferiti al Writer; dopo dequeue l'operazione deve completare con `committed`, `not_committed` o
 `indeterminate`.
+
+La finalizzazione Reader è separata da `stop_and_drain` ma appartiene a `Store::close`: riesce
+soltanto dopo la chiusura dell'admission, il join dei Writer, il drain delle operazioni Store e il join
+della maintenance. Nel daemon Reactor e cold I/O sono già terminati prima dell'ingresso in close.
+Prima valida tutte le coppie; una `ReadLease` contata ancora attiva produce `unavailable` senza
+finalizzazioni parziali. La transizione è idempotente, impedisce adozioni successive e libera ogni
+generation mantenendo epoch e contatori scalari per l'osservabilità post-stop. Non sposta alcun
+punto di ACK o boundary di durabilità.
 
 ## Failure matrix
 
@@ -342,7 +373,8 @@ trasferiti al Writer; dopo dequeue l'operazione deve completare con `committed`,
 | Writer termina inatteso | pair unavailable, stop admission | nessun silent loss |
 | Reader termina inatteso | Writer drena/classifica slot accettati | socket outcome indeterminate se già accettato |
 | shutdown durante batch | chiusura anticipata del batch | normale classificazione |
-| retire backlog pieno | sospende nuove publication/mutation | bounded backpressure |
+| retire backlog pieno | decisione condivisa pre-Store sospende ogni publication/mutation sync, async e batch | `resource_exhausted`, noto non committed; bounded backpressure |
+| install generation oltre retire bound | violazione interna impossibile dopo admission valida | terminazione fail-fast; nessun silent overflow/ACK |
 | generation incompleta su recovery | non è autorità persistente | ignorata; recovery fail-closed sui soli byte v1 |
 
 ## Osservabilità
@@ -350,7 +382,8 @@ trasferiti al Writer; dopo dequeue l'operazione deve completare con `committed`,
 Ogni snapshot per coppia include almeno: pair/CPU id, reader/writer operations, GET hit/miss,
 reader/writer epoch, accepted/visible/durable through, base/delta entry, publication count/record/
 byte/latency, profondità/high-water/full delle due ring, batch size/wait, stall Reader/Writer,
-generation retire count/delay e response-lease epoch minimo. Le metriche non pubblicano correttezza e
+generation retire count/delay, `generation_admission_backpressure_total` e response-lease epoch
+minimo. Le metriche non pubblicano correttezza e
 usano relaxed o snapshot owner-local.
 
 Il runtime espone inoltre `read_merge_active`, `read_merge_post_entries`, `read_merge_starts`,
@@ -453,10 +486,13 @@ refcount nel GET. Il durevole non incrementa più il refcount del pin per cold G
 Un tracker Reader-private conserva l'epoch minimo di tutti i task asincroni; key, `RecordRef` e file
 generation sono borrowed esclusivamente entro quella lease. Il percorso pubblico `Store::get`
 mantiene invece un pin owning. Il helper materializza ancora un `OwnedValue`, ma il cleartext diretto
-da almeno 4 KiB lo trasferisce in una output lease Reader-owned e invia header/valore con `sendmsg`,
-senza copiarlo nel buffer della connessione. TLS, payload piccoli e connessioni che hanno dimostrato
-pipelining mantengono il frame contiguo: il candidato scatter indiscriminato è stato respinto dai
-benchmark. `get-into` resta un'ottimizzazione distinta, non una precondizione di lifetime.
+può trasferirlo in una output lease Reader-owned e inviare header/valore con `sendmsg`, senza copiarlo
+nel buffer della connessione. La lease possiede soltanto i byte materializzati: non prolunga il
+lifetime di `RecordRef`, Segment, file handle o generation. TLS e payload piccoli mantengono il frame
+contiguo. Per il cold GET una connessione che ha dimostrato pipelining resta contigua per preservare
+l'overlap con il task I/O successivo; per il GET hot owner-bound, invece, una singola lease può fermare
+il parsing della connessione fino al drain e poi riprendere i frame buffered in ordine. Non esiste una
+coda scatter multi-extent. `get-into` resta un'ottimizzazione distinta, non una precondizione di lifetime.
 
 Il cold I/O usa una SPSC distinta per coppia e un helper persistente consumer-only. Non esiste più il
 catalogo di task process-wide né il relativo mutex/condition variable. Ogni lane conserva inoltre un
@@ -477,9 +513,12 @@ payload bytes e admission bytes hanno limiti e metriche distinti; il wrap resta 
 grazie a una guardia massima di un frame. Non esistono più `string`/`vector` owning per mutation task
 nel normale percorso paired.
 
-L'output lease cleartext è chiusa in forma adattiva. Una futura coda scatter multi-extent o un
-`get-into` diretto non verranno promossi senza dimostrare memoria bounded e vantaggio anche con
-pipeline: la singola lease intenzionalmente non sostituisce il percorso contiguo di quel profilo.
+L'output lease cleartext è chiusa in forma adattiva e platform-aware. Il cold path conserva la soglia
+di 4 KiB e torna contiguo sulle connessioni pipelined. Il hot path pipelined usa 8 KiB sulla riga macOS
+arm64 misurata e 16 KiB conservativi sulle righe Linux/BSD ancora prive di evidenza controllata. La
+soglia da 4 KiB è stata respinta per il hot pipeline perché il p99.9 locale era ambiguo; 8/16 KiB
+miglioravano throughput e code misurate. Una futura coda scatter multi-extent, una riduzione delle
+soglie non misurate o un `get-into` diretto richiedono prova bounded e A/B platform-specifica.
 
 Dopo una mutation completion il Reader può riprendere i frame già buffered prima di scaricare
 l'output contiguo. Rimane ammessa al massimo una nuova operazione asincrona per connessione: il suo

@@ -41,10 +41,14 @@ requirements:
   - docs/reference/cpp-api.md
   implementazione:
   - src/store/store.cpp
+  - src/store/store_impl.hpp
   - src/store/paired
+  - src/server/server_lifecycle.cpp
   prove:
   - tests/integration/store_tests.cpp
   - tests/integration/concurrency_tests.cpp
+  - tests/integration/paired_store_tests.cpp
+  - tests/integration/server_reactor_security_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64

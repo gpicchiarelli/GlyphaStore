@@ -390,6 +390,8 @@ class GroupBatchObserver final {
                 std::max(state.maximum_writes_before_sync_, state.writes_since_sync_);
             state.writes_since_sync_ = 0;
             ++state.sync_count_;
+        } else if (operation == glyphastore::FilesystemOperation::sync_commit_slot) {
+            ++state.commit_slot_sync_count_;
         }
         return {};
     }
@@ -404,11 +406,17 @@ class GroupBatchObserver final {
         return sync_count_;
     }
 
+    [[nodiscard]] auto commit_slot_sync_count() const -> std::size_t {
+        const std::lock_guard lock{mutex_};
+        return commit_slot_sync_count_;
+    }
+
   private:
     mutable std::mutex mutex_;
     std::size_t writes_since_sync_{};
     std::size_t maximum_writes_before_sync_{};
     std::size_t sync_count_{};
+    std::size_t commit_slot_sync_count_{};
 };
 
 } // namespace glyphastore::test::server_reactor_support

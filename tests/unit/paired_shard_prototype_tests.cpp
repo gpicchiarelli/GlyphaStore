@@ -295,6 +295,39 @@ GLYPHA_TEST("ADR 0036 V1 prototype: adopt publishes one immutable generation ato
     GLYPHA_REQUIRE(visible_second > visible_first);
 }
 
+GLYPHA_TEST("ADR 0036 V1 prototype: slot reincarnation token prevents descriptor ABA") {
+    // Force repeated reuse of the same fixed slots. Every acquire must decode a
+    // coherent {epoch, slot}; value sequence and published epoch advance together.
+    auto pair = glyphastore::experimental::VolatileShardPairPrototype::create(
+        128, 32,
+        glyphastore::experimental::PrototypeWriterBatchConfig{.max_records = 1,
+                                                              .max_wait = std::chrono::microseconds{0}});
+    GLYPHA_REQUIRE(pair.has_value());
+
+    constexpr std::uint64_t kPublications = 128;
+    for (std::uint64_t index = 1; index <= kPublications; ++index) {
+        const auto value = std::string{"incarnation-"} + std::to_string(index);
+        GLYPHA_REQUIRE((*pair)->try_submit_put(index, "aba-key", bytes(value)) ==
+                       glyphastore::experimental::PrototypeSubmitStatus::submitted);
+        const auto completion = wait_completion(**pair);
+        GLYPHA_REQUIRE(!completion.error.has_value());
+        (*pair)->adopt_publication();
+        const auto found = (*pair)->get("aba-key");
+        GLYPHA_REQUIRE(found.has_value());
+        GLYPHA_REQUIRE(text(*found) == value);
+        GLYPHA_REQUIRE(found->sequence == completion.visible_through);
+        GLYPHA_REQUIRE((*pair)->stats().reader_epoch == completion.epoch);
+        // Second boundary makes the preceding slot reclaimable.
+        (*pair)->adopt_publication();
+    }
+
+    const auto stats = (*pair)->stats();
+    GLYPHA_REQUIRE(stats.publications == kPublications);
+    GLYPHA_REQUIRE(stats.generation_slot_reuses > 0);
+    GLYPHA_REQUIRE(stats.generation_high_watermark <=
+                   glyphastore::experimental::VolatileShardPairPrototype::kQueueCapacity + 2U);
+}
+
 GLYPHA_TEST("ADR 0036 V3 prototype: pinned generation bytes survive publish and retire races") {
     // Two-boundary retire while a pin holds the pre-storm generation: spans from that
     // generation remain readable; reclaim is blocked (pin_blocks) until reset.

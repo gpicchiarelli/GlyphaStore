@@ -614,20 +614,20 @@ auto Reactor::queue_response(const ConnectionToken token, const ResponseView& re
     }
 }
 
-auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView response, OwnedValue value)
-    -> Status {
+auto Reactor::queue_owned_response(const ConnectionToken token, ResponseView response, OwnedValue value,
+                                   const bool allow_pipelined_scatter) -> Status {
     auto* current = connection(token);
     if (current == nullptr) {
         return fail(ErrorCode::not_found, "owned response targets a stale connection");
     }
     response.value = value.view();
-    // One lease deliberately provides one bounded slow-output pin. If another
-    // request is already buffered, keep the contiguous path so a pipelined
-    // connection can overlap its next cold read instead of being serialized by
-    // the lease. A future bounded multi-extent queue may remove this trade-off.
+    // Hot in-memory reads can choose one bounded lease even with buffered input:
+    // process_frames stops at the lease and resumes after sendmsg releases the
+    // exact value pin. Cold reads retain the contiguous pipeline path so the
+    // disk executor can overlap the following materialization.
     const auto has_buffered_follow_up = current->input_offset < current->input.size();
     if (current->tls || value.bytes.size() < reactor_detail::kMinimumScatterValueBytes ||
-        has_buffered_follow_up || current->pipelined_store_input_observed) {
+        (!allow_pipelined_scatter && (has_buffered_follow_up || current->pipelined_store_input_observed))) {
         return queue_response(token, response);
     }
     if (current->output_lease) {
@@ -939,6 +939,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                     written_size = written->bytes;
                 }
                 if (would_block) {
+                    GS_EVENT_TCP(socket_write_would_block);
                     // want_write / would_block / persistent want_read: keep write armed;
                     // keep read unless half-closed *and* OpenSSL only asked for write.
                     const bool needs_read =
@@ -958,6 +959,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                     current->write_armed = true;
                     return {};
                 }
+                GS_EVENT_TCP(socket_write_progress);
+                if (written_size < requested_size) {
+                    GS_EVENT_TCP(socket_write_partial);
+                }
             } else if (!scatter) {
                 const auto* data = current->output.data() + current->output_offset;
                 requested_size = current->output.size() - current->output_offset;
@@ -971,6 +976,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     would_block = true;
                 } else if (written < 0 && errno == EINTR) {
+                    GS_EVENT_TCP(socket_write_interrupted);
                     continue;
                 } else if (written == 0) {
                     return fail(ErrorCode::io_error, "socket send made no progress");
@@ -1007,6 +1013,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 } else if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
                     would_block = true;
                 } else if (written < 0 && errno == EINTR) {
+                    GS_EVENT_TCP(socket_write_interrupted);
                     continue;
                 } else if (written == 0) {
                     return fail(ErrorCode::io_error, "socket sendmsg made no progress");
@@ -1015,6 +1022,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 }
             }
             if (would_block) {
+                GS_EVENT_TCP(socket_write_would_block);
                 if (scatter) {
                     output_scatter_partial_writes_.fetch_add(1U, std::memory_order_relaxed);
                 }
@@ -1033,6 +1041,10 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                 }
                 current->write_armed = true;
                 return {};
+            }
+            GS_EVENT_TCP(socket_write_progress);
+            if (written_size < requested_size) {
+                GS_EVENT_TCP(socket_write_partial);
             }
             if (scatter && written_size < requested_size) {
                 output_scatter_partial_writes_.fetch_add(1U, std::memory_order_relaxed);

@@ -4,6 +4,7 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/latency_histogram.hpp"
 #include "glyphastore/store/config.hpp"
+#include "glyphastore/store/paired/fail_closed_state.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 
 #include <chrono>
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <vector>
@@ -89,6 +91,19 @@ struct ShardPairStats final {
     std::uint64_t completed{};
     std::uint64_t conflict_retries{};
     std::uint64_t conflict_retry_commits{};
+    std::uint64_t writer_batches{};
+    std::uint64_t writer_batch_records{};
+    std::size_t maximum_writer_batch_records{};
+    std::uint64_t total_writer_batch_wait_ns{};
+    std::uint64_t maximum_writer_batch_wait_ns{};
+    std::uint64_t writer_batch_durability_deadline_closes{};
+    std::uint64_t writer_batch_queue_deadline_closes{};
+    std::uint64_t sync_drain_turns{};
+    std::uint64_t sync_turn_splits{};
+    std::uint64_t sync_async_fairness_turns{};
+    std::uint64_t publications{};
+    std::uint64_t publication_records{};
+    std::uint64_t completion_notifications{};
     std::uint64_t total_queue_wait_ns{};
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
@@ -99,12 +114,16 @@ struct ShardPairStats final {
     std::uint64_t read_refresh_failures{};
     std::uint64_t read_refresh_deferrals{};
     std::uint64_t generations_retired{};
+    std::uint64_t shutdown_generations_reclaimed{};
+    std::uint64_t generation_admission_backpressure_total{};
+    bool reader_shutdown_finalized{};
     std::size_t retired_generation_count{};
     std::size_t delta_entries{};
     std::size_t delta_record_versions{};
     std::size_t delta_arena_record_bytes{};
     std::size_t delta_arena_key_bytes{};
     std::size_t delta_arena_key_storage_bytes{};
+    ReadGenerationMemoryStats read_generation_memory{};
     bool read_merge_active{};
     std::size_t read_merge_post_entries{};
     std::uint64_t read_merge_starts{};
@@ -112,6 +131,9 @@ struct ShardPairStats final {
     std::uint64_t read_merge_failures{};
     std::uint64_t read_merge_backpressure{};
     std::uint64_t read_merge_slots_processed{};
+    std::size_t read_merge_remaining_slots{};
+    std::size_t read_merge_post_capacity_remaining{};
+    std::uint64_t maximum_read_merge_quantum_slots{};
     // Synchronous embedded put/erase handoffs executed by this Writer.
     std::uint64_t sync_admitted{};
     LatencyHistogram queue_wait_histogram{};
@@ -173,6 +195,11 @@ class ShardPairRuntime final {
     // Returns unavailable if the deadline expired before Writers finished.
     [[nodiscard]] auto stop_and_drain(std::optional<std::chrono::milliseconds> deadline = std::nullopt)
         -> Status;
+    // Daemon lifecycle only: call after every Reader/Reactor, Writer and cold-I/O
+    // thread has joined. Clears the adoptable raw pointer and deterministically
+    // releases all generation ownership before Store file handles close.
+    // Fails without partial finalization if a counted embedded ReadLease remains.
+    [[nodiscard]] auto finalize_reader_shutdown() -> Status;
     // Arms expire_remaining_ and completes every still-queued (pre-Store) async
     // mutation as resource_exhausted so Reactors can flush wire OVERLOADED before
     // hard-closing sockets. Safe while a Writer is blocked in Store: queue pops are
@@ -189,9 +216,11 @@ class ShardPairRuntime final {
                               std::span<const std::byte> value, std::uint64_t expire_at_ns) -> Status;
 
     // Synchronous same-shard batch. Items are linearized FIFO on the owning Writer
-    // and published in groups of at most 32 (same bound as async). Each item gets
-    // its own Status; ACK is only after the publication that includes that item.
-    // Key/value spans must remain live for the duration of the call.
+    // and published in groups of at most 32 (same bound as async). A dedicated
+    // Writer may service already-admitted async work between groups; this batch's
+    // own FIFO order is unchanged. Each item gets its own Status; ACK is only after
+    // the publication that includes that item. Key/value spans must remain live
+    // for the duration of the call.
     struct SyncBatchItem final {
         MutationKind kind{};
         const HashedKey* key{};
@@ -270,8 +299,10 @@ class ShardPairRuntime final {
     void process_sync_lane(std::size_t shard) noexcept;
     // Combining-mode mutate path: acquire token, drain, release with lost-wakeup CAS.
     void combine_sync_lane(std::size_t shard) noexcept;
-    // Writerless housekeeping under the execution token (reclaim + merge quantum).
-    void combiner_housekeeping(std::size_t shard) noexcept;
+    // Writerless housekeeping under the execution token. publication_records
+    // lets merge work track the bounded post-cut capacity consumed by the next
+    // publication; zero performs one ordinary maintenance quantum.
+    void combiner_housekeeping(std::size_t shard, std::size_t publication_records = 0U) noexcept;
     void note_writer_exit() noexcept;
     [[nodiscard]] auto begin_submission() noexcept -> bool;
     void finish_submission() noexcept;
@@ -286,12 +317,16 @@ class ShardPairRuntime final {
     const PairedConcurrencyConfig config_;
     const std::chrono::milliseconds maximum_queue_wait_;
     std::vector<std::unique_ptr<Lane>> lanes_;
+    // Immutable after construction. Failure is rare, but building this fan-out
+    // view in every embedded mutation made successful PUTs pay one allocation.
+    std::vector<FailClosedLaneWake> fail_closed_wakes_;
     std::atomic_size_t active_writers_{};
     std::atomic_size_t admission_state_{};
     std::atomic_bool started_{};
     std::atomic_bool stopping_{};
     std::atomic_bool expire_remaining_{};
     std::atomic_bool healthy_{true};
+    std::mutex reader_shutdown_mutex_{};
 };
 
 } // namespace glyphastore::store::paired

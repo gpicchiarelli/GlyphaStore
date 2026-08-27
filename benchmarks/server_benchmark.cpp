@@ -1,4 +1,5 @@
 #include "glyphastore/client/client.hpp"
+#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
@@ -39,7 +40,13 @@ using glyphastore::bench::Result;
 using glyphastore::bench::RunSettings;
 
 enum class StorageProfile : std::uint8_t { volatile_memory, durable_sync, durable_group, durable_periodic };
-enum class Workload : std::uint8_t { read_after_write, get_only, read_99_write_1 };
+enum class Workload : std::uint8_t {
+    read_after_write,
+    get_only,
+    read_99_write_1,
+    read_95_write_5,
+    read_90_write_10,
+};
 
 struct Options {
     Config config{.workers = 1, .threads = 1, .distribution = ParallelDistribution::owner_bound};
@@ -89,6 +96,18 @@ struct DurableProfileSample {
     std::uint64_t byte_limit_closes{};
     std::uint64_t adaptive_target_closes{};
     std::uint64_t deadline_closes{};
+    double average_paired_writer_batch_records{};
+    double average_paired_writer_batch_wait_ns{};
+    double maximum_paired_writer_batch_wait_ns{};
+    std::uint64_t paired_writer_batches{};
+    std::uint64_t paired_writer_batch_records{};
+    std::uint64_t paired_writer_durability_deadline_closes{};
+    std::uint64_t paired_writer_queue_deadline_closes{};
+    std::uint64_t paired_sync_turn_splits{};
+    std::uint64_t paired_sync_async_fairness_turns{};
+    std::uint64_t paired_publications{};
+    std::uint64_t paired_publication_records{};
+    std::uint64_t paired_completion_notifications{};
     std::uint64_t maintenance_evaluations{};
     std::uint64_t maintenance_compact_attempts{};
     std::uint64_t maintenance_useful_compactions{};
@@ -185,8 +204,28 @@ struct ClientResult {
         return "get_only";
     case Workload::read_99_write_1:
         return "read_99_write_1";
+    case Workload::read_95_write_5:
+        return "read_95_write_5";
+    case Workload::read_90_write_10:
+        return "read_90_write_10";
     }
     return "unknown";
+}
+
+[[nodiscard]] constexpr auto mixed_write_period(const Workload workload) noexcept
+    -> std::optional<std::size_t> {
+    switch (workload) {
+    case Workload::read_99_write_1:
+        return 100U;
+    case Workload::read_95_write_5:
+        return 20U;
+    case Workload::read_90_write_10:
+        return 10U;
+    case Workload::read_after_write:
+    case Workload::get_only:
+        return std::nullopt;
+    }
+    return std::nullopt;
 }
 
 class BenchmarkDataDirectory final {
@@ -344,24 +383,65 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             .durable_mutation_queue_wait_ms = 0};
 }
 
-[[nodiscard]] auto durable_profile(const glyphastore::server::Server& server) -> DurableProfileSample {
+[[nodiscard]] auto durable_profile(const glyphastore::server::Server& server,
+                                   const std::vector<glyphastore::server::PairWriterStats>& paired_before,
+                                   const std::vector<glyphastore::DurableBatchWorkerStats>& durable_before)
+    -> DurableProfileSample {
     DurableProfileSample result;
     std::uint64_t queue_wait_ns{};
     std::uint64_t service_ns{};
+    std::uint64_t writer_batches{};
+    std::uint64_t writer_batch_wait_ns{};
+    const auto counter_delta = [](const auto after, const auto before) {
+        return after - std::min(after, before);
+    };
     for (const auto& worker : server.pair_writer_stats()) {
-        result.completed += worker.completed;
-        result.rejected += worker.rejected;
-        result.expired += worker.expired_before_store;
+        const auto baseline = std::ranges::find(paired_before, worker.worker_index,
+                                                &glyphastore::server::PairWriterStats::worker_index);
+        const auto* before = baseline == paired_before.end() ? nullptr : &*baseline;
+        result.completed += counter_delta(worker.completed, before == nullptr ? 0U : before->completed);
+        result.rejected += counter_delta(worker.rejected, before == nullptr ? 0U : before->rejected);
+        result.expired +=
+            counter_delta(worker.expired_before_store, before == nullptr ? 0U : before->expired_before_store);
         result.maximum_queue_depth =
             std::max(result.maximum_queue_depth, static_cast<std::uint64_t>(worker.maximum_queue_depth));
         result.maximum_queued_bytes =
             std::max(result.maximum_queued_bytes, static_cast<std::uint64_t>(worker.maximum_queued_bytes));
-        queue_wait_ns += worker.total_queue_wait_ns;
-        service_ns += worker.total_service_ns;
+        queue_wait_ns +=
+            counter_delta(worker.total_queue_wait_ns, before == nullptr ? 0U : before->total_queue_wait_ns);
+        service_ns +=
+            counter_delta(worker.total_service_ns, before == nullptr ? 0U : before->total_service_ns);
+        const auto batch_delta =
+            counter_delta(worker.writer_batches, before == nullptr ? 0U : before->writer_batches);
+        writer_batches += batch_delta;
+        writer_batch_wait_ns += counter_delta(worker.total_writer_batch_wait_ns,
+                                              before == nullptr ? 0U : before->total_writer_batch_wait_ns);
+        result.paired_writer_batches += batch_delta;
+        result.paired_writer_batch_records +=
+            counter_delta(worker.writer_batch_records, before == nullptr ? 0U : before->writer_batch_records);
+        result.paired_writer_durability_deadline_closes +=
+            counter_delta(worker.writer_batch_durability_deadline_closes,
+                          before == nullptr ? 0U : before->writer_batch_durability_deadline_closes);
+        result.paired_writer_queue_deadline_closes +=
+            counter_delta(worker.writer_batch_queue_deadline_closes,
+                          before == nullptr ? 0U : before->writer_batch_queue_deadline_closes);
+        result.paired_sync_turn_splits +=
+            counter_delta(worker.sync_turn_splits, before == nullptr ? 0U : before->sync_turn_splits);
+        result.paired_sync_async_fairness_turns += counter_delta(
+            worker.sync_async_fairness_turns, before == nullptr ? 0U : before->sync_async_fairness_turns);
+        result.paired_publications +=
+            counter_delta(worker.publications, before == nullptr ? 0U : before->publications);
+        result.paired_publication_records +=
+            counter_delta(worker.publication_records, before == nullptr ? 0U : before->publication_records);
+        result.paired_completion_notifications += counter_delta(
+            worker.completion_notifications, before == nullptr ? 0U : before->completion_notifications);
         result.maximum_queue_wait_ns =
             std::max(result.maximum_queue_wait_ns, static_cast<double>(worker.maximum_queue_wait_ns));
         result.maximum_service_ns =
             std::max(result.maximum_service_ns, static_cast<double>(worker.maximum_service_ns));
+        result.maximum_paired_writer_batch_wait_ns =
+            std::max(result.maximum_paired_writer_batch_wait_ns,
+                     static_cast<double>(worker.maximum_writer_batch_wait_ns));
     }
     result.average_queue_wait_ns =
         result.completed == 0 ? 0.0
@@ -369,20 +449,39 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
     const auto serviced = result.completed - std::min(result.completed, result.expired);
     result.average_service_ns =
         serviced == 0 ? 0.0 : static_cast<double>(service_ns) / static_cast<double>(serviced);
+    result.average_paired_writer_batch_records =
+        writer_batches == 0
+            ? 0.0
+            : static_cast<double>(result.paired_writer_batch_records) / static_cast<double>(writer_batches);
+    result.average_paired_writer_batch_wait_ns =
+        writer_batches == 0 ? 0.0
+                            : static_cast<double>(writer_batch_wait_ns) / static_cast<double>(writer_batches);
 
     std::uint64_t commit_ns{};
     for (const auto& worker : server.durable_batch_stats()) {
-        result.committed_batches += worker.committed_batches;
-        result.committed_records += worker.committed_records;
-        result.committed_bytes += worker.committed_bytes;
-        result.failed_batches += worker.failed_batches;
+        const auto baseline = std::ranges::find(durable_before, worker.worker_id,
+                                                &glyphastore::DurableBatchWorkerStats::worker_id);
+        const auto* before = baseline == durable_before.end() ? nullptr : &*baseline;
+        result.committed_batches +=
+            counter_delta(worker.committed_batches, before == nullptr ? 0U : before->committed_batches);
+        result.committed_records +=
+            counter_delta(worker.committed_records, before == nullptr ? 0U : before->committed_records);
+        result.committed_bytes +=
+            counter_delta(worker.committed_bytes, before == nullptr ? 0U : before->committed_bytes);
+        result.failed_batches +=
+            counter_delta(worker.failed_batches, before == nullptr ? 0U : before->failed_batches);
         result.pending_records += worker.pending_records;
         result.pending_bytes += worker.pending_bytes;
-        result.record_limit_closes += worker.record_limit_closes;
-        result.byte_limit_closes += worker.byte_limit_closes;
-        result.adaptive_target_closes += worker.adaptive_target_closes;
-        result.deadline_closes += worker.deadline_closes;
-        commit_ns += worker.total_commit_duration_ns;
+        result.record_limit_closes +=
+            counter_delta(worker.record_limit_closes, before == nullptr ? 0U : before->record_limit_closes);
+        result.byte_limit_closes +=
+            counter_delta(worker.byte_limit_closes, before == nullptr ? 0U : before->byte_limit_closes);
+        result.adaptive_target_closes += counter_delta(
+            worker.adaptive_target_closes, before == nullptr ? 0U : before->adaptive_target_closes);
+        result.deadline_closes +=
+            counter_delta(worker.deadline_closes, before == nullptr ? 0U : before->deadline_closes);
+        commit_ns += counter_delta(worker.total_commit_duration_ns,
+                                   before == nullptr ? 0U : before->total_commit_duration_ns);
         result.maximum_commit_ns =
             std::max(result.maximum_commit_ns, static_cast<double>(worker.maximum_commit_duration_ns));
         result.maximum_batch_records =
@@ -469,6 +568,10 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
                 result.workload = Workload::get_only;
             } else if (workload == "read-99-write-1") {
                 result.workload = Workload::read_99_write_1;
+            } else if (workload == "read-95-write-5") {
+                result.workload = Workload::read_95_write_5;
+            } else if (workload == "read-90-write-10") {
+                result.workload = Workload::read_90_write_10;
             } else {
                 std::cerr << "invalid value for --workload: " << workload << '\n';
                 std::exit(2);
@@ -541,7 +644,8 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
                          " [--executor-affinity] [--latency] [--client-api] [--client-pipeline N]"
-                         " [--workload read-after-write|get-only|read-99-write-1]"
+                         " [--workload read-after-write|get-only|read-99-write-1|read-95-write-5|"
+                         "read-90-write-10]"
                          " [--storage-mode volatile|durable-sync|durable-group|durable-periodic]"
                          " [--group-max-records N] [--group-max-bytes N] [--group-max-wait-ms N]"
                          " [--periodic-sync-ms N]"
@@ -707,7 +811,8 @@ class BufferedResponseReader final {
                 batch.insert(batch.end(), put->begin(), put->end());
                 ++work[client].response_count;
             }
-            if (workload == Workload::read_99_write_1 && operation % 100U == 0) {
+            const auto write_period = mixed_write_period(workload);
+            if (write_period && operation % *write_period == 0) {
                 const auto put = glyphastore::server::encode_request({
                     .opcode = glyphastore::server::RequestOpcode::put,
                     .request_id = operation * 2U,
@@ -922,6 +1027,9 @@ class BufferedResponseReader final {
         cleanup();
         return {};
     }
+    const auto paired_before = (*server)->pair_writer_stats();
+    const auto durable_before = (*server)->durable_batch_stats();
+    glyphastore::hot_path::reset();
 
     auto resources = glyphastore::bench::process_memory_snapshot();
     std::latch ready{static_cast<std::ptrdiff_t>(options.config.threads)};
@@ -977,7 +1085,7 @@ class BufferedResponseReader final {
     for (const auto descriptor : descriptors) {
         static_cast<void>(::close(descriptor));
     }
-    const auto profile = durable_profile(**server);
+    const auto profile = durable_profile(**server, paired_before, durable_before);
     const auto reactor = reactor_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
@@ -1018,6 +1126,9 @@ class BufferedResponseReader final {
         return {};
     }
     auto client = std::move(*connected);
+    const auto paired_before = (*server)->pair_writer_stats();
+    const auto durable_before = (*server)->durable_batch_stats();
+    glyphastore::hot_path::reset();
     auto resources = glyphastore::bench::process_memory_snapshot();
     std::latch ready{static_cast<std::ptrdiff_t>(options.config.threads)};
     std::latch start{1};
@@ -1160,7 +1271,7 @@ class BufferedResponseReader final {
                           std::make_move_iterator(result.latency_ns.end()));
     }
     client.close();
-    const auto profile = durable_profile(**server);
+    const auto profile = durable_profile(**server, paired_before, durable_before);
     const auto reactor = reactor_profile(**server);
     (*server)->request_stop();
     const auto stopped = (*server)->join();
@@ -1225,8 +1336,10 @@ class BufferedResponseReader final {
     const auto client_name = options.client_pipeline != 0             ? "cpp_client_pipeline_read_after_write"
                              : options.client_api                     ? "cpp_client_read_after_write"
                              : options.workload == Workload::get_only ? "server_tcp_get_only"
-                             : options.workload == Workload::read_99_write_1 ? "server_tcp_read_99_write_1"
-                                                                             : "server_tcp_read_after_write";
+                             : options.workload == Workload::read_99_write_1  ? "server_tcp_read_99_write_1"
+                             : options.workload == Workload::read_95_write_5  ? "server_tcp_read_95_write_5"
+                             : options.workload == Workload::read_90_write_10 ? "server_tcp_read_90_write_10"
+                                                                              : "server_tcp_read_after_write";
     const auto benchmark_name = std::string{client_name} + '_' + std::string{storage_name(options.storage)};
     auto result = glyphastore::bench::finalize_result(
         benchmark_name, options.config, options.settings,
@@ -1290,6 +1403,30 @@ class BufferedResponseReader final {
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::adaptive_target_closes));
     result.durable_deadline_closes =
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::deadline_closes));
+    result.median_paired_writer_batch_records =
+        median_profile(&DurableProfileSample::average_paired_writer_batch_records);
+    result.median_paired_writer_batch_wait_ns =
+        median_profile(&DurableProfileSample::average_paired_writer_batch_wait_ns);
+    result.maximum_paired_writer_batch_wait_ns =
+        maximum_profile(&DurableProfileSample::maximum_paired_writer_batch_wait_ns);
+    result.paired_writer_batches =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_writer_batches));
+    result.paired_writer_batch_records =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_writer_batch_records));
+    result.paired_writer_durability_deadline_closes = static_cast<std::uint64_t>(
+        median_profile(&DurableProfileSample::paired_writer_durability_deadline_closes));
+    result.paired_writer_queue_deadline_closes = static_cast<std::uint64_t>(
+        maximum_profile(&DurableProfileSample::paired_writer_queue_deadline_closes));
+    result.paired_sync_turn_splits =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::paired_sync_turn_splits));
+    result.paired_sync_async_fairness_turns =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::paired_sync_async_fairness_turns));
+    result.paired_publications =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_publications));
+    result.paired_publication_records =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_publication_records));
+    result.paired_completion_notifications =
+        static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_completion_notifications));
     const auto median_reactor_profile = [&](auto member) {
         std::vector<double> values;
         values.reserve(reactor_profiles.size());

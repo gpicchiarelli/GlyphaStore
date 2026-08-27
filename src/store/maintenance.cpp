@@ -116,9 +116,9 @@ auto validate_maintenance_config(const MaintenanceConfig& config) -> Status {
     if (config.min_eval_interval_ms > config.max_eval_interval_ms) {
         return fail(ErrorCode::invalid_argument, "maintenance min_eval_interval_ms exceeds max");
     }
-    if (config.max_segments_per_cycle == 0) {
+    if (config.max_segments_per_cycle != 1) {
         return fail(ErrorCode::invalid_argument,
-                    "maintenance max_segments_per_cycle must be greater than zero");
+                    "persistence v1 requires maintenance max_segments_per_cycle to equal one");
     }
     if (config.segment_count_pressure_pct == 0 || config.segment_count_pressure_pct > 100) {
         return fail(ErrorCode::invalid_argument, "maintenance segment_count_pressure_pct must be in 1..100");
@@ -201,6 +201,7 @@ void MaintenanceController::request_stop() noexcept {
         observe_ = {};
         latency_guard_active_ = false;
         latency_deferral_started_.reset();
+        clear_no_gain_backoff_locked();
         publish_mutations_rejected_locked(false);
     }
     wake_.notify_all();
@@ -285,6 +286,13 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         since_useful = elapsed_ns(*last_useful_at_);
     }
     const auto latency_deferral_age = latency_deferral_started_ ? elapsed_ns(*latency_deferral_started_) : 0;
+    const auto snapshot_now = std::chrono::steady_clock::now();
+    const auto no_gain_retry_after =
+        no_gain_retry_at_ && snapshot_now < *no_gain_retry_at_
+            ? static_cast<std::uint64_t>(
+                  std::chrono::duration_cast<std::chrono::nanoseconds>(*no_gain_retry_at_ - snapshot_now)
+                      .count())
+            : 0;
     return MaintenanceSnapshot{
         .state = state_,
         .thread_running = worker_.joinable(),
@@ -300,6 +308,8 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .skips = skips_,
         .suspend_count = suspend_count_,
         .consecutive_no_gain = consecutive_no_gain_,
+        .no_gain_scans_suppressed = no_gain_scans_suppressed_,
+        .no_gain_retry_after_ns = no_gain_retry_after,
         .bytes_copied_window = bytes_copied_window_,
         .total_bytes_copied = total_bytes_copied_,
         .last_bytes_copied = last_bytes_copied_,
@@ -314,6 +324,10 @@ auto MaintenanceController::snapshot() const -> MaintenanceSnapshot {
         .total_no_gain_expired_records_dropped = total_no_gain_expired_records_dropped_,
         .last_eval_duration_ns = last_eval_duration_ns_,
         .last_compact_duration_ns = last_compact_duration_ns_,
+        .last_compaction_pacing_delay_ns = last_compaction_pacing_delay_ns_,
+        .total_compaction_pacing_delay_ns = total_compaction_pacing_delay_ns_,
+        .last_compaction_pacing_sleep_count = last_compaction_pacing_sleep_count_,
+        .last_compaction_pacing_burst_bytes = last_compaction_pacing_burst_bytes_,
         .ns_since_last_useful_compaction = since_useful,
         .rate_window_bytes_copied = rate_window_bytes_copied_,
         .rate_window_cpu_ns = rate_window_cpu_ns_,
@@ -336,6 +350,11 @@ auto MaintenanceController::thread_running() const noexcept -> bool {
 
 auto MaintenanceController::mutations_rejected() const noexcept -> bool {
     return mutations_rejected_.load(std::memory_order_acquire);
+}
+
+auto MaintenanceController::compaction_copy_rate_limit() const noexcept -> std::uint64_t {
+    const std::lock_guard lock{mutex_};
+    return aggressive_pressure(pressure_) ? 0U : config_.max_copy_bytes_per_sec;
 }
 
 void MaintenanceController::publish_mutations_rejected(const bool rejected) noexcept {
@@ -382,6 +401,27 @@ auto MaintenanceController::cpu_budget_exhausted_locked(const MaintenanceConfig&
     return rate_window_cpu_ns_ >= budget_ns;
 }
 
+auto MaintenanceController::same_no_gain_candidate(const MaintenanceObservation& left,
+                                                   const MaintenanceObservation& right) noexcept -> bool {
+    return left.durable == right.durable && left.sealed_segment_count == right.sealed_segment_count &&
+           left.compaction_candidate_worker == right.compaction_candidate_worker &&
+           left.candidate_sealed_record_bytes == right.candidate_sealed_record_bytes &&
+           left.candidate_live_record_bytes == right.candidate_live_record_bytes &&
+           left.candidate_dead_record_bytes == right.candidate_dead_record_bytes &&
+           left.candidate_dead_byte_ratio_bp == right.candidate_dead_byte_ratio_bp &&
+           left.candidate_scheduling_dead_byte_ratio_bp == right.candidate_scheduling_dead_byte_ratio_bp &&
+           left.candidate_unread_expired_sealed_record_count ==
+               right.candidate_unread_expired_sealed_record_count &&
+           left.candidate_unread_expired_sealed_record_bytes ==
+               right.candidate_unread_expired_sealed_record_bytes;
+}
+
+void MaintenanceController::clear_no_gain_backoff_locked() noexcept {
+    consecutive_no_gain_ = 0;
+    no_gain_candidate_.reset();
+    no_gain_retry_at_.reset();
+}
+
 auto MaintenanceController::eval_interval_locked() const -> std::chrono::milliseconds {
     const bool under_pressure = aggressive_pressure(pressure_);
     const bool backoff = !under_pressure && consecutive_no_gain_ >= config_.max_no_gain_attempts &&
@@ -415,7 +455,6 @@ void MaintenanceController::evaluate_once() {
     CompactCallback compact;
     bool auto_compact = false;
     MaintenanceConfig config{};
-    std::uint64_t consecutive_no_gain = 0;
     {
         const std::lock_guard lock{mutex_};
         if (stop_requested_) {
@@ -425,7 +464,6 @@ void MaintenanceController::evaluate_once() {
         compact = compact_;
         auto_compact = auto_compact_enabled_;
         config = config_;
-        consecutive_no_gain = consecutive_no_gain_;
         bytes_copied_window_ = 0;
     }
 
@@ -539,7 +577,7 @@ void MaintenanceController::evaluate_once() {
         const std::lock_guard lock{mutex_};
         latency_guard_active_ = false;
         latency_deferral_started_.reset();
-        consecutive_no_gain_ = 0;
+        clear_no_gain_backoff_locked();
         last_eval_duration_ns_ = elapsed_ns(eval_started);
         record_skip(MaintenanceSkipReason::no_candidate, MaintenanceState::idle,
                     pressure == MaintenancePressureLevel::emergency
@@ -604,15 +642,27 @@ void MaintenanceController::evaluate_once() {
         }
     }
 
-    // Normal-only backoff. Under pressure/emergency, reclaim attempts continue despite no-gain streak.
-    if (!under_pressure && config.max_no_gain_attempts > 0 &&
-        consecutive_no_gain >= config.max_no_gain_attempts) {
+    // An exact no-gain result is deterministic while the selected Worker's
+    // physical candidate is unchanged. Do not repeatedly rescan it. A changed
+    // candidate invalidates immediately; the maximum evaluation interval
+    // provides a bounded TTL/time-based retry. Capacity pressure always bypasses.
+    {
+        const auto now = std::chrono::steady_clock::now();
         const std::lock_guard lock{mutex_};
-        consecutive_no_gain_ = 0;
-        last_eval_duration_ns_ = elapsed_ns(eval_started);
-        record_skip(MaintenanceSkipReason::budget, MaintenanceState::suspended,
-                    MaintenanceActivationReason::budget_backoff);
-        return;
+        if (no_gain_candidate_ && !same_no_gain_candidate(*no_gain_candidate_, observation)) {
+            clear_no_gain_backoff_locked();
+        }
+        if (no_gain_candidate_ && no_gain_retry_at_ && now >= *no_gain_retry_at_) {
+            clear_no_gain_backoff_locked();
+        }
+        if (!under_pressure && config.max_no_gain_attempts > 0 && no_gain_candidate_ && no_gain_retry_at_ &&
+            now < *no_gain_retry_at_ && consecutive_no_gain_ >= config.max_no_gain_attempts) {
+            ++no_gain_scans_suppressed_;
+            last_eval_duration_ns_ = elapsed_ns(eval_started);
+            record_skip(MaintenanceSkipReason::budget, MaintenanceState::suspended,
+                        MaintenanceActivationReason::budget_backoff);
+            return;
+        }
     }
 
     if (!under_pressure && observation.durable && config.max_copy_bytes_per_cycle > 0 &&
@@ -641,10 +691,15 @@ void MaintenanceController::evaluate_once() {
                             MaintenanceActivationReason::rate_budget);
                 return;
             }
-            if (max_copy_bytes == 0 || *remaining < max_copy_bytes) {
-                max_copy_bytes = *remaining;
-            }
-            if (observation.durable && observation.candidate_live_record_bytes > max_copy_bytes) {
+            // The rate is enforced continuously by bounded pre-intent write
+            // grants. Do not reinterpret the current-window remainder as a
+            // whole-transaction copy cap: that would permanently starve every
+            // candidate larger than one second of configured bandwidth.
+            // A later candidate in an already-consumed window still waits for
+            // refresh, preventing adjacent compactions from each taking a new
+            // initial burst.
+            if (rate_window_bytes_copied_ != 0U && observation.durable &&
+                observation.candidate_live_record_bytes > *remaining) {
                 last_eval_duration_ns_ = elapsed_ns(eval_started);
                 record_skip(MaintenanceSkipReason::rate_budget, MaintenanceState::suspended,
                             MaintenanceActivationReason::rate_budget);
@@ -718,6 +773,14 @@ void MaintenanceController::evaluate_once() {
         last_bytes_copied_ = result->bytes_copied;
         last_records_copied_ = result->records_copied;
         last_expired_records_dropped_ = result->expired_records_dropped;
+        last_compaction_pacing_delay_ns_ = result->pacing_delay_ns;
+        last_compaction_pacing_sleep_count_ = result->pacing_sleep_count;
+        last_compaction_pacing_burst_bytes_ = result->pacing_burst_bytes;
+        total_compaction_pacing_delay_ns_ =
+            result->pacing_delay_ns >
+                    std::numeric_limits<std::uint64_t>::max() - total_compaction_pacing_delay_ns_
+                ? std::numeric_limits<std::uint64_t>::max()
+                : total_compaction_pacing_delay_ns_ + result->pacing_delay_ns;
         if (!under_pressure) {
             rate_window_bytes_copied_ =
                 result->bytes_copied > std::numeric_limits<std::uint64_t>::max() - rate_window_bytes_copied_
@@ -732,12 +795,17 @@ void MaintenanceController::evaluate_once() {
             total_no_gain_source_records_verified_ += result->source_records_verified;
             total_no_gain_source_bytes_verified_ += result->source_bytes_verified;
             total_no_gain_expired_records_dropped_ += result->expired_records_dropped;
+            if (config.max_no_gain_attempts > 0 && consecutive_no_gain_ >= config.max_no_gain_attempts) {
+                no_gain_candidate_ = observation;
+                no_gain_retry_at_ =
+                    std::chrono::steady_clock::now() + std::chrono::milliseconds{config.max_eval_interval_ms};
+            }
             record_skip(MaintenanceSkipReason::no_gain, MaintenanceState::idle, activation);
             return;
         }
         ++compact_completed_;
         ++useful_compactions_;
-        consecutive_no_gain_ = 0;
+        clear_no_gain_backoff_locked();
         bytes_copied_window_ = result->bytes_copied;
         total_bytes_copied_ += result->bytes_copied;
         total_expired_records_dropped_ += result->expired_records_dropped;

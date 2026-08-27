@@ -561,6 +561,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                           .worker_count = static_cast<std::uint32_t>(mesh_.size()),
                           .routing_epoch = kRoutingEpoch};
     OwnedValue owned_response;
+    bool owns_response_value{};
     // process_frames is entered only from read_ready or write_ready. The read
     // path already owns readable interest and flushes queued output; the write
     // path reconciles interest after process_frames returns. Async submissions
@@ -605,6 +606,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             } else {
                 owned_response = std::move(*record);
                 response.value = owned_response.view();
+                owns_response_value = true;
             }
             break;
         }
@@ -620,6 +622,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         } else if (record->value) {
             owned_response = std::move(*record->value);
             response.value = owned_response.view();
+            owns_response_value = true;
         } else {
             if (disk_reads_outstanding_ >= config_.disk_read_queue_capacity) {
                 response.status = ResponseStatus::overloaded;
@@ -765,6 +768,10 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         break;
     }
     GS_PHASE_FINISH(store_phase);
+    if (owns_response_value &&
+        owned_response.bytes.size() >= reactor_detail::kMinimumPipelinedScatterValueBytes) {
+        return queue_owned_response(token, response, std::move(owned_response), true);
+    }
     return queue_response(token, response);
 }
 
@@ -838,10 +845,15 @@ auto Reactor::process_mutation_completions() -> Status {
         // Writer publishes with release before enqueueing the completion. Load
         // with acquire before allowing the same connection to parse a following
         // GET, establishing acknowledged PUT -> visible GET.
-        local_read_generation_ = pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
+        {
+            GS_PHASE_PUT(completion_adopt);
+            local_read_generation_ =
+                pair_writers_.adopt_read_generation(executor_id_, minimum_cold_read_epoch());
+        }
         if (!local_read_generation_) {
             return fail(ErrorCode::unavailable, "paired read generation is unavailable");
         }
+        GS_PHASE_PUT_NAMED(completion_accounting_phase, completion_accounting);
         if (mutations_outstanding_ == 0) {
             return fail(ErrorCode::corrupted_data, "mutation completion accounting underflow");
         }
@@ -879,6 +891,7 @@ auto Reactor::process_mutation_completions() -> Status {
             current->mutation_visibility.raise_to(completion->writer_epoch);
         }
         touch_activity(*current, std::chrono::steady_clock::now());
+        GS_PHASE_FINISH(completion_accounting_phase);
         ResponseView response{.status = ResponseStatus::ok,
                               .request_id = completion->request_id,
                               .owner_worker = static_cast<std::uint32_t>(executor_id_),
@@ -887,15 +900,19 @@ auto Reactor::process_mutation_completions() -> Status {
         if (completion->error) {
             response.status = reactor_detail::response_status(*completion->error);
         }
-        if (auto queued = queue_response(completion->connection, response); !queued) {
-            close_connection(completion->connection);
-            continue;
+        {
+            GS_PHASE_PUT(completion_response);
+            if (auto queued = queue_response(completion->connection, response); !queued) {
+                close_connection(completion->connection);
+                continue;
+            }
         }
         // Resume already-buffered frames after the completed mutation, before
         // flushing its decided response. At most one new asynchronous request
         // can be admitted; its Writer work may overlap this socket drain while
         // response bytes remain ordered in the connection output buffer.
         if (!output_was_pending && current->input_offset < current->input.size()) {
+            GS_PHASE_PUT(completion_pipeline_resume);
             if (auto resumed = process_frames(completion->connection, 1U); !resumed) {
                 current = connection(completion->connection);
                 if (current == nullptr || !has_pending_output(*current)) {
@@ -909,8 +926,11 @@ auto Reactor::process_mutation_completions() -> Status {
                 current->input_offset = 0;
             }
         }
-        if (auto flushed = write_ready(completion->connection); !flushed) {
-            close_connection(completion->connection);
+        {
+            GS_PHASE_PUT(completion_socket_flush);
+            if (auto flushed = write_ready(completion->connection); !flushed) {
+                close_connection(completion->connection);
+            }
         }
     }
     return {};

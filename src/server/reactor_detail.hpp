@@ -18,6 +18,19 @@ namespace glyphastore::server::reactor_detail {
 // for payloads large enough to amortize scatter/gather.
 inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
 
+// A hot owner-bound GET can retain exactly one owning lease while buffered
+// pipeline input waits for the socket drain. That removes a full value copy,
+// but also trades the contiguous buffer's syscall batching for one sendmsg per
+// large response. The macOS arm64 A/B gate found 4 KiB tail results ambiguous
+// and a clear win from 8 KiB. Other platform rows remain unmeasured for this
+// pipelined variant, so use a deliberately conservative portable threshold
+// until their controlled-hardware evidence can lower it independently.
+#if defined(__APPLE__)
+inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = 8U * 1024U;
+#else
+inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = 16U * 1024U;
+#endif
+
 [[nodiscard]] inline auto bytes(const std::string_view value) noexcept -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }

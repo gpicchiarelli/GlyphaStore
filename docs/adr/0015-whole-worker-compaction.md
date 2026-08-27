@@ -1,9 +1,10 @@
 # ADR 0015: Whole-Worker sealed-history compaction
 
-- Status: accepted
+- Status: amended
 - Date: 2026-07-19
 - Owners: persistence maintainers
 - Related: ADR 0003, ADR 0004, ADR 0008
+- Amended by: ADR 0039
 
 ## Context
 
@@ -30,7 +31,9 @@ is durable. `Store::compact()` runs at most one explicit transaction per call.
 
 Tombstones and obsolete values can be dropped safely because every older sealed source for that
 Worker retires together. Other Workers continue. Temporary space and physical write amplification
-must be preflighted. The target Worker is frozen for collection, copy validation, and publication.
+must be preflighted. ADR 0039 moves complete replacement copy, seal and verification before the
+durable intent and global publication lease; the target Worker is briefly quiesced only for snapshot
+and final publication validation, while sequence drift still aborts the prepared transaction.
 
 ## Compatibility and verification
 

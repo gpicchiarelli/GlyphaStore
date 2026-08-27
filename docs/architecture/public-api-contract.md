@@ -60,7 +60,9 @@ caller-supplied key/hash mismatch from violating Worker ownership.
 `put_batch` accepts a borrowed positional list, groups it by owner, preserves FIFO order within each
 owner and restores caller order in its result vector. Owners publish independently and individual
 failures do not roll back successful siblings; it is not a cross-key transaction. Every successful
-item is visible before return.
+item is visible before return. Within one owner, a dedicated paired Writer processes at most 32
+batch items per scheduling turn. Concurrently admitted async mutations may linearize between those
+groups, while the batch's own items retain FIFO order.
 
 ## Read ownership
 
@@ -162,7 +164,9 @@ flushes admitted work, copies a structurally verified catalog under the exclusiv
 writes the destination Manifest last, resumes admissions, and then optionally performs the complete
 destination CRC scan. The destination must be new and empty. This is the online **fenced** contract,
 not a zero-fence hot snapshot; any failed destination remains unfit for service until an independent
-verification succeeds. See [Backup and restore v1](../spec/backup-restore-v1.md).
+verification succeeds. Concurrent backup callers retain independent counted fences, so completion
+of one copy cannot reopen admissions underneath another copy waiting for the catalog boundary. See
+[Backup and restore v1](../spec/backup-restore-v1.md).
 
 ## Explicit maintenance
 

@@ -37,6 +37,12 @@ Add `StorageMode::durable_group` with configurable `DurableGroupConfig`:
 Acknowledgement occurs only after the batch containing the mutation completes the Record-data
 synchronization, commit-slot write, and commit-slot synchronization. Clients may block until the
 batch closes by size, byte threshold, or `max_wait_ms`. There is no durability loss window.
+For an owning paired Writer batch, a record/byte threshold publishes and synchronizes its commit
+slot immediately; the explicit `commit_writer_batch()` boundary does the same for any residual
+extent after the append loop. A single caller batch may contain multiple bounded physical groups,
+and an oversized admitted record remains a singleton group. A strict threshold must never publish
+as deferred: doing so could clear the pending batch and turn the subsequent explicit commit into a
+no-op, violating the acknowledgement contract.
 The batch commit executor publishes every staged mutation to the Worker Index and hot cache before
 waking any waiter. In the v1 one-Worker path this executor is the dedicated durability coordinator;
 the compatibility multi-Worker path still uses the producer that closes each Worker batch. Waiters

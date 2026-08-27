@@ -284,8 +284,8 @@ class Reactor final {
     [[nodiscard]] auto minimum_cold_read_epoch() const noexcept -> std::uint64_t;
     [[nodiscard]] auto update_connection_interest(ConnectionToken token) -> Status;
     [[nodiscard]] auto queue_response(ConnectionToken token, const ResponseView& response) -> Status;
-    [[nodiscard]] auto queue_owned_response(ConnectionToken token, ResponseView response, OwnedValue value)
-        -> Status;
+    [[nodiscard]] auto queue_owned_response(ConnectionToken token, ResponseView response, OwnedValue value,
+                                            bool allow_pipelined_scatter = false) -> Status;
     [[nodiscard]] static auto has_pending_output(const Connection& connection) noexcept -> bool;
     [[nodiscard]] static auto pending_output_bytes(const Connection& connection) noexcept -> std::size_t;
     [[nodiscard]] auto connection(ConnectionToken token) noexcept -> Connection*;

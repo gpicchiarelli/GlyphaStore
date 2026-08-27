@@ -302,10 +302,10 @@ GLYPHA_TEST("Store::backup_to copies while the Store remains open under writer f
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("gamma")) == "three");
 }
 
-GLYPHA_TEST("concurrent Store::backup_to re-fences admissions after compaction wait") {
-    // First backup resumes admissions when done; a second backup waiting on
-    // compaction_mutex must re-close+drain before copying — otherwise OK asserts a
-    // fenced snapshot while writers are already admitted.
+GLYPHA_TEST("concurrent Store::backup_to retains its counted admission fence while waiting") {
+    // First backup releases its fence when done; a second backup waiting on
+    // compaction_mutex must retain its own fence so writers cannot be admitted
+    // while its catalog copy is in progress.
     BackupTemporaryDirectory root;
     const auto source = root.path() / "source";
     const auto backup = root.path() / "backup";
@@ -380,7 +380,8 @@ GLYPHA_TEST("concurrent Store::backup_to re-fences admissions after compaction w
         }
         second_done.store(true, std::memory_order_release);
     }};
-    // Give the second backup time to reach compaction_mutex wait.
+    // Give the second backup time to acquire its fence and reach the
+    // compaction_mutex wait.
     std::this_thread::sleep_for(std::chrono::milliseconds{50});
     probe.release_first.store(true, std::memory_order_release);
 

@@ -128,6 +128,139 @@ GLYPHA_TEST("pressure policy continues compacting despite no-gain budget") {
     GLYPHA_REQUIRE(false);
 }
 
+GLYPHA_TEST("unchanged no-gain candidate suppresses rescan until change or pressure") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 60'000;
+    config.max_eval_interval_ms = 60'000;
+    config.dead_byte_ratio_bp_normal = 0;
+    config.max_no_gain_attempts = 1;
+
+    glyphastore::MaintenanceController controller{config};
+    auto segment_count = std::make_shared<std::atomic<std::size_t>>(10);
+    auto live_bytes = std::make_shared<std::atomic<std::uint64_t>>(1'000);
+    auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe([segment_count, live_bytes](glyphastore::MaintenanceObserveRequest)
+                                -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        const auto live = live_bytes->load(std::memory_order_relaxed);
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = segment_count->load(std::memory_order_relaxed),
+            .sealed_segment_count = 2,
+            .compaction_candidate_worker = 0,
+            .candidate_sealed_record_bytes = 2'000,
+            .candidate_live_record_bytes = live,
+            .candidate_dead_record_bytes = 2'000 - live,
+            .candidate_dead_byte_ratio_bp = static_cast<std::uint32_t>(((2'000 - live) * 10'000U) / 2'000U),
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller.bind_compact(
+        [compact_calls](std::optional<std::size_t>,
+                        std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+            compact_calls->fetch_add(1, std::memory_order_relaxed);
+            return glyphastore::CompactionResult{
+                .compacted = false,
+                .worker_index = 0,
+                .source_records_verified = 8,
+                .source_bytes_verified = 1'000,
+            };
+        });
+    controller.start();
+
+    const auto wait_for_calls = [&](const std::uint64_t expected) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+        while (std::chrono::steady_clock::now() < deadline &&
+               compact_calls->load(std::memory_order_relaxed) < expected) {
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) >= expected);
+    };
+    wait_for_calls(1);
+
+    controller.request_evaluate();
+    const auto suppressed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < suppressed_deadline &&
+           controller.snapshot().no_gain_scans_suppressed == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    auto snapshot = controller.snapshot();
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 1);
+    GLYPHA_REQUIRE(snapshot.no_gain_scans_suppressed >= 1);
+    GLYPHA_REQUIRE(snapshot.no_gain_retry_after_ns > 0);
+    GLYPHA_REQUIRE(snapshot.last_skip_reason == glyphastore::MaintenanceSkipReason::budget);
+
+    live_bytes->store(999, std::memory_order_relaxed);
+    controller.request_evaluate();
+    wait_for_calls(2);
+
+    segment_count->store(90, std::memory_order_relaxed);
+    controller.request_evaluate();
+    wait_for_calls(3);
+    snapshot = controller.snapshot();
+    GLYPHA_REQUIRE(snapshot.pressure == glyphastore::MaintenancePressureLevel::pressure);
+    controller.stop();
+}
+
+GLYPHA_TEST("no-gain memo expires at the bounded maximum evaluation interval") {
+    glyphastore::MaintenanceConfig config{};
+    config.mode = glyphastore::MaintenanceMode::background;
+    config.min_eval_interval_ms = 50;
+    config.max_eval_interval_ms = 250;
+    config.dead_byte_ratio_bp_normal = 0;
+    config.max_no_gain_attempts = 1;
+
+    glyphastore::MaintenanceController controller{config};
+    auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
+    controller.bind_observe([](glyphastore::MaintenanceObserveRequest)
+                                -> glyphastore::Result<glyphastore::MaintenanceObservation> {
+        return glyphastore::MaintenanceObservation{
+            .durable = true,
+            .segment_count = 10,
+            .sealed_segment_count = 2,
+            .compaction_candidate_worker = 0,
+            .candidate_sealed_record_bytes = 2'000,
+            .candidate_live_record_bytes = 1'000,
+            .candidate_dead_record_bytes = 1'000,
+            .candidate_dead_byte_ratio_bp = 5'000,
+            .max_segment_count = 100,
+            .reserved_free_bytes = 1'024,
+            .available_free_bytes = 1'024ULL + glyphastore::kSegmentSizeBytes + 4'096ULL,
+        };
+    });
+    controller.bind_compact(
+        [compact_calls](std::optional<std::size_t>,
+                        std::uint64_t) -> glyphastore::Result<glyphastore::CompactionResult> {
+            compact_calls->fetch_add(1, std::memory_order_relaxed);
+            return glyphastore::CompactionResult{.compacted = false, .worker_index = 0};
+        });
+    controller.start();
+
+    const auto first_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < first_deadline &&
+           compact_calls->load(std::memory_order_relaxed) < 1) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) == 1);
+    controller.request_evaluate();
+    const auto suppressed_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < suppressed_deadline &&
+           controller.snapshot().no_gain_scans_suppressed == 0) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    }
+    GLYPHA_REQUIRE(controller.snapshot().no_gain_scans_suppressed >= 1);
+
+    const auto retry_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (std::chrono::steady_clock::now() < retry_deadline &&
+           compact_calls->load(std::memory_order_relaxed) < 2) {
+        std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    }
+    GLYPHA_REQUIRE(compact_calls->load(std::memory_order_relaxed) >= 2);
+    controller.stop();
+}
+
 GLYPHA_TEST("pressure observes no_candidate when durable sealed set is empty") {
     glyphastore::StoreConfig config{};
     config.worker_config.explicit_count = 1;
@@ -944,7 +1077,7 @@ GLYPHA_TEST("maintenance snapshot records no-gain planning scan counters") {
     while (std::chrono::steady_clock::now() < deadline) {
         const auto snap = (**store).maintenance_snapshot();
         if (snap.last_skip_reason == glyphastore::MaintenanceSkipReason::no_gain &&
-            snap.consecutive_no_gain > initial.consecutive_no_gain) {
+            snap.total_no_gain_source_records_verified > initial.total_no_gain_source_records_verified) {
             GLYPHA_REQUIRE(snap.last_no_gain_source_records_verified == 11);
             GLYPHA_REQUIRE(snap.last_no_gain_source_bytes_verified == 22'016);
             GLYPHA_REQUIRE(snap.last_no_gain_expired_records_dropped == 3);

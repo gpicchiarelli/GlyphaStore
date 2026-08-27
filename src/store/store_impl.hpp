@@ -74,6 +74,12 @@ inline auto public_compaction_result(const std::size_t worker_index, DurableComp
             .records_copied = 0,
             .bytes_copied = 0,
             .expired_records_dropped = result.stats.expired_records_dropped,
+            .pre_intent_duration_ns = result.stats.pre_intent_duration_ns,
+            .publication_lease_duration_ns = result.stats.publication_lease_duration_ns,
+            .pacing_delay_ns = result.stats.pacing_delay_ns,
+            .pacing_sleep_count = result.stats.pacing_sleep_count,
+            .pacing_burst_bytes = result.stats.pacing_burst_bytes,
+            .transient_metadata_lower_bound_bytes = result.stats.transient_metadata_lower_bound_bytes,
         };
     }
     if (!result.compacted()) {
@@ -92,6 +98,12 @@ inline auto public_compaction_result(const std::size_t worker_index, DurableComp
         .records_copied = result.stats.records_copied,
         .bytes_copied = result.stats.bytes_copied,
         .expired_records_dropped = result.stats.expired_records_dropped,
+        .pre_intent_duration_ns = result.stats.pre_intent_duration_ns,
+        .publication_lease_duration_ns = result.stats.publication_lease_duration_ns,
+        .pacing_delay_ns = result.stats.pacing_delay_ns,
+        .pacing_sleep_count = result.stats.pacing_sleep_count,
+        .pacing_burst_bytes = result.stats.pacing_burst_bytes,
+        .transient_metadata_lower_bound_bytes = result.stats.transient_metadata_lower_bound_bytes,
     };
 }
 
@@ -261,20 +273,30 @@ struct Store::Impl {
     }
 
     void close_admission() noexcept {
-        // Each RMW is totally ordered with admission on that shard. Completion of this loop is the
-        // close linearization point: every later attempt observes its shard's closed bit.
-        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
-            active_operations[shard].state.fetch_or(kAdmissionClosed, std::memory_order_relaxed);
+        lock_admission_fence_state();
+        if (admission_fence_count++ == 0) {
+            // Each RMW is totally ordered with admission on that shard. Completion of this loop is the
+            // close linearization point: every later attempt observes its shard's closed bit.
+            for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
+                active_operations[shard].state.fetch_or(kAdmissionClosed, std::memory_order_relaxed);
+            }
         }
+        unlock_admission_fence_state();
     }
 
     void resume_admission_if_open() noexcept {
-        if (lifecycle.load(std::memory_order_acquire) != LifecycleState::open) {
+        lock_admission_fence_state();
+        if (admission_fence_count == 0) {
+            unlock_admission_fence_state();
             return;
         }
-        for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
-            active_operations[shard].state.fetch_and(~kAdmissionClosed, std::memory_order_release);
+        --admission_fence_count;
+        if (admission_fence_count == 0 && lifecycle.load(std::memory_order_acquire) == LifecycleState::open) {
+            for (std::size_t shard = 0; shard <= worker_count_value; ++shard) {
+                active_operations[shard].state.fetch_and(~kAdmissionClosed, std::memory_order_release);
+            }
         }
+        unlock_admission_fence_state();
     }
 
     // nullopt waits unbounded. A set deadline (milliseconds) is a liveness bound:
@@ -423,8 +445,16 @@ struct Store::Impl {
         if (maintenance) {
             maintenance->join();
         }
-        // Keep pair_runtime until Store destruction so thin daemon adapters can
-        // still read stats after stop_and_drain / close.
+        // All Store operations and maintenance are quiescent. The daemon also
+        // joins Reactor and cold-I/O workers before entering Store::close().
+        // Revoke raw generation adoption and release generation/file pins while
+        // retaining the paired runtime's scalar post-stop telemetry.
+        if (pair_runtime) {
+            auto finalized = pair_runtime->finalize_reader_shutdown();
+            if (result && !finalized) {
+                result = std::move(finalized);
+            }
+        }
 
         try {
             if (durable_runtime) {
@@ -486,8 +516,26 @@ struct Store::Impl {
     std::atomic<LifecycleState> lifecycle{LifecycleState::open};
     mutable std::mutex lifecycle_mutex;
     std::optional<Error> close_error;
+    // Rare lifecycle/backup control path only. A counted fence prevents one
+    // concurrent backup from reopening admission while another still owns a
+    // closed interval. The normal operation-admission path touches neither
+    // this flag nor this counter.
+    std::atomic_flag admission_fence_state_lock = ATOMIC_FLAG_INIT;
+    std::size_t admission_fence_count{};
     // Optional close liveness bound (Writer drain + admission drain). nullopt = unbounded.
     std::optional<std::uint32_t> close_drain_deadline_ms{};
+
+  private:
+    void lock_admission_fence_state() noexcept {
+        while (admission_fence_state_lock.test_and_set(std::memory_order_acquire)) {
+            admission_fence_state_lock.wait(true, std::memory_order_relaxed);
+        }
+    }
+
+    void unlock_admission_fence_state() noexcept {
+        admission_fence_state_lock.clear(std::memory_order_release);
+        admission_fence_state_lock.notify_one();
+    }
 };
 
 struct detail::PreparedColdRead::State final {

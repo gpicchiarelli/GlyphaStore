@@ -148,7 +148,8 @@ only authority. Once the intent is durable, recovery admits exactly `Mold` or `M
 
 | Persistent state at restart | Authority | Recovery action | Result |
 |---|---|---|---|
-| planning, source reads, or prepared Index only | `Mold` | ordinary recovery; no persistent transaction exists | no compaction |
+| planning or prepared Index only | `Mold` | ordinary recovery; no persistent transaction exists | no compaction |
+| staged output creation/copy/seal/verification; no durable intent | `Mold` | scan `Mold` completely, then remove recognized private Segment temporaries and sync the directory | no compaction; clean namespace |
 | only `.glyphastore.compaction.tmp` exists | `Mold` | ignore the private temporary during ordinary recovery | no compaction |
 | valid intent exists; no replacement final names | `Mold` | validate `Mold`, then remove intent | rollback complete |
 | valid intent; replacement temporaries or exact final replacements exist | `Mold` | validate `Mold`; remove both exact temporary and final non-authoritative replacement names; sync; remove intent | rollback complete with clean namespace |
@@ -168,9 +169,9 @@ remove non-authoritative names. Every removal validates the expected immutable S
 missing obsolete names are accepted because cleanup is idempotent. No old source may be removed
 before `Mnext` and its directory entry are durable.
 
-The process-kill matrix covers intent write/sync/rename, the post-intent directory sync, replacement
-preallocation/header/sync/rename, the first two occurrence-specific Record writes, Record
-synchronization, data and seal commit slots, Manifest write/sync/rename, both source removals, intent
+The process-kill matrix covers pre-intent replacement preallocation/header/Record copy,
+Record synchronization, data and seal commit slots, intent write/sync/rename, the post-intent
+directory sync, replacement promotion, Manifest write/sync/rename, both source removals, intent
 removal, and all five directory-sync positions. Its online compaction seed is a deterministic
 30-operation history containing PUT,
 overwrite, ERASE, expired PUT, and active-Segment decisions across eight keys; every checkpoint
@@ -179,14 +180,14 @@ Two additional multi-output cleanup scenarios SIGKILL after each of two replacem
 `Mold` and each of three source removals under `Mnext`, including their retirement and intent
 directory synchronizations. Each subsequent ordinary reopen must finish the remaining cleanup
 without changing the selected authority.
-An online 3-to-2 scenario adds 15 differential checkpoints for second-replacement
-preallocation/header/sync/rename, its directory sync, the final of 64 maximum-size Record writes,
+An online 3-to-2 scenario adds differential checkpoints for second-replacement
+preallocation/header/promotion, the batched promotion directory sync, the final of 64 maximum-size Record writes,
 the second output's data and seal commit slots, the shifted Manifest/retirement/intent directory
 syncs, and the third source removal. Before Manifest directory sync, recovery must select `Mold`,
 remove both final and partial-temporary replacement identities, and leave all 64 values visible.
 At and after that sync it must select `Mnext`, retire all three sources, and preserve the same model.
 The opt-in `copy-matrix` adds `write_record#1` through `write_record#63`; the standard matrix owns
-`write_record#64`. Together they SIGKILL after every Record copy and cover 154 distinct persistence
+`write_record#64`. Together they SIGKILL after every Record copy and cover 152 distinct persistence
 checkpoints.
 The opt-in `random-matrix` repeats nine representative old/next-authority checkpoint classes for
 four fixed seeds. Each 96-operation history combines PUT, overwrite, ERASE, expired PUT, and
@@ -217,8 +218,8 @@ repair, and salvage are separate explicit operator workflows.
 
 | Evidence | Covered state |
 |---|---|
-| `glyphastore_crash_sync` | 91 distinct SIGKILL checkpoints across bootstrap, sync mutation, rotation, single-output online compaction, differential online 3-to-2 build/publication, and two-output rollback/retirement cleanup |
-| `glyphastore_crash_persistence --mode copy-matrix` | 63 opt-in multi-output SIGKILL checkpoints which, with the standard matrix, cover every one of 64 Record copies and 154 distinct checkpoints total |
+| `glyphastore_crash_sync` | 89 distinct SIGKILL checkpoints across bootstrap, sync mutation, rotation, single-output online compaction, differential online 3-to-2 build/publication, and two-output rollback/retirement cleanup |
+| `glyphastore_crash_persistence --mode copy-matrix` | 63 opt-in multi-output SIGKILL checkpoints which, with the standard matrix, cover every one of 64 Record copies and 152 distinct checkpoints total |
 | `glyphastore_crash_persistence --mode random-matrix` | 36 opt-in recoveries across four reproducible 96-operation multi-output histories and nine authority/copy/cleanup checkpoint classes |
 | `glyphastore_crash_periodic` | Record write, Record sync, slot write, and slot sync for deferred durability |
 | `glyphastore_crash_group` | the same four boundaries for strict group commit |

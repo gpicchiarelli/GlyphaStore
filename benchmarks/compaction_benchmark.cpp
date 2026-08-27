@@ -329,6 +329,11 @@ void print_sample(const Sample& sample, const std::size_t value_bytes) {
               << mib(sample.compaction.source_bytes_verified) << ',' << sample.compaction.records_copied
               << ',' << mib(sample.compaction.bytes_copied) << ',' << dropped << ','
               << sample.compaction.expired_records_dropped << ','
+              << static_cast<double>(sample.compaction.pre_intent_duration_ns) / 1'000'000.0 << ','
+              << static_cast<double>(sample.compaction.publication_lease_duration_ns) / 1'000'000.0 << ','
+              << static_cast<double>(sample.compaction.pacing_delay_ns) / 1'000'000.0 << ','
+              << sample.compaction.pacing_sleep_count << ',' << sample.compaction.pacing_burst_bytes << ','
+              << mib(sample.compaction.transient_metadata_lower_bound_bytes) << ','
               << safe_rate(sample.compaction.source_bytes_verified, sample.compact_seconds) << ','
               << safe_rate(sample.compaction.bytes_copied, sample.compact_seconds) << '\n';
 }
@@ -362,7 +367,10 @@ int main(int argc, char** argv) {
                      "verify_ms,segments_before,segments_after,logical_mib_before,logical_mib_after,"
                      "logical_mib_reclaimed,allocated_mib_before,allocated_mib_after,"
                      "allocated_mib_reclaimed,source_records_verified,source_mib_verified,records_copied,"
-                     "copied_mib,records_dropped,expired_records_dropped,effective_scan_mib_s,copy_mib_s\n";
+                     "copied_mib,records_dropped,expired_records_dropped,pre_intent_ms,"
+                     "publication_lease_ms,pacing_delay_ms,pacing_sleep_count,pacing_burst_bytes,"
+                     "transient_metadata_lower_bound_mib,effective_scan_mib_s,"
+                     "copy_mib_s\n";
 
         std::vector<Scenario> selected;
         for (const auto scenario : scenarios) {

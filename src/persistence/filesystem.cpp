@@ -1,5 +1,6 @@
 #include "glyphastore/persistence/filesystem.hpp"
 
+#include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
 
@@ -919,6 +920,64 @@ auto DataDirectory::retire_compaction_segments(const StoreId& store_id,
     }
     after(FilesystemOperation::sync_directory);
     return {.outcome = CompactionSegmentRetirementOutcome::durable, .error = std::nullopt};
+}
+
+auto DataDirectory::cleanup_recovery_temporaries(const std::span<const std::string> names) -> Status {
+    if (!healthy()) {
+        return fail(ErrorCode::io_error, "cannot clean recovery temporaries through a poisoned directory");
+    }
+    if (names.empty()) {
+        return {};
+    }
+
+    // Validate the entire batch before the first namespace mutation. The
+    // directory lock excludes another Store; O_NOFOLLOW plus the private-file
+    // check prevents an unsafe entry from being treated as disposable residue.
+    for (const auto& name : names) {
+        const auto parsed = parse_segment_filename(name);
+        const bool recognized = name == kManifestTemporaryFilename || name == kCompactionTemporaryFilename ||
+                                (parsed.has_value() && parsed->temporary);
+        if (!recognized) {
+            return fail(ErrorCode::invalid_argument, "recovery cleanup received a non-temporary engine name");
+        }
+        FileDescriptor file{interrupted_open_at(directory_.get(), name.c_str(),
+                                                O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK),
+                            hooks_.file_io};
+        if (!file.valid()) {
+            return errno == ENOENT
+                       ? fail(ErrorCode::sequence_conflict, "recovery temporary changed before cleanup")
+                       : persistence_system_error("openat(recovery temporary)");
+        }
+        if (auto valid = validate_private_regular_file(file.get(), "recovery temporary"); !valid) {
+            return valid;
+        }
+    }
+
+    bool removed_any{};
+    for (const auto& name : names) {
+        if (auto allowed = before(FilesystemOperation::remove_compaction_segment); !allowed) {
+            if (removed_any) {
+                health_->store(false, std::memory_order_release);
+            }
+            return allowed;
+        }
+        if (::unlinkat(directory_.get(), name.c_str(), 0) != 0) {
+            health_->store(false, std::memory_order_release);
+            return persistence_system_error("unlinkat(recovery temporary)");
+        }
+        removed_any = true;
+        after(FilesystemOperation::remove_compaction_segment);
+    }
+    if (auto allowed = before(FilesystemOperation::sync_directory); !allowed) {
+        health_->store(false, std::memory_order_release);
+        return allowed;
+    }
+    if (auto synced = sync_directory(); !synced) {
+        health_->store(false, std::memory_order_release);
+        return synced;
+    }
+    after(FilesystemOperation::sync_directory);
+    return {};
 }
 
 auto DataDirectory::pristine_for_bootstrap() const -> Result<bool> {

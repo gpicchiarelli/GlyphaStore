@@ -154,8 +154,31 @@ struct ResourceSample {
     std::size_t rss_before_bytes{};
     std::size_t rss_after_bytes{};
     std::size_t peak_rss_bytes{};
+    std::size_t physical_footprint_bytes{};
+    std::size_t peak_physical_footprint_bytes{};
+    std::size_t reusable_bytes{};
+    std::size_t internal_bytes{};
+    std::size_t compressed_bytes{};
     std::size_t ingress_bytes{};
     std::size_t egress_bytes{};
+};
+
+// Native allocator snapshot used only for diagnostic memory censuses. Unsupported
+// allocator/platform combinations report available=false rather than fabricating
+// a portable value from process RSS.
+struct AllocatorMemorySample {
+    bool available{};
+    std::size_t blocks_in_use{};
+    std::size_t bytes_in_use{};
+    std::size_t peak_bytes_in_use{};
+    std::size_t bytes_reserved{};
+};
+
+struct AllocatorPressureReliefSample {
+    bool available{};
+    bool released{};
+    bool exact_released_bytes{};
+    std::size_t released_bytes{};
 };
 
 struct Result {
@@ -218,6 +241,18 @@ struct Result {
     std::uint64_t durable_byte_limit_closes{};
     std::uint64_t durable_adaptive_target_closes{};
     std::uint64_t durable_deadline_closes{};
+    double median_paired_writer_batch_records{};
+    double median_paired_writer_batch_wait_ns{};
+    double maximum_paired_writer_batch_wait_ns{};
+    std::uint64_t paired_writer_batches{};
+    std::uint64_t paired_writer_batch_records{};
+    std::uint64_t paired_writer_durability_deadline_closes{};
+    std::uint64_t paired_writer_queue_deadline_closes{};
+    std::uint64_t paired_sync_turn_splits{};
+    std::uint64_t paired_sync_async_fairness_turns{};
+    std::uint64_t paired_publications{};
+    std::uint64_t paired_publication_records{};
+    std::uint64_t paired_completion_notifications{};
     double median_reactor_input_buffer_compactions{};
     double maximum_reactor_input_buffer_compactions{};
     double median_reactor_input_buffer_bytes_moved{};
@@ -237,6 +272,8 @@ struct KeyMaterial {
 [[nodiscard]] auto cpu_pin_applied() noexcept -> bool;
 [[nodiscard]] auto try_cpu_pin(bool requested) -> bool;
 [[nodiscard]] auto process_memory_snapshot() noexcept -> ResourceSample;
+[[nodiscard]] auto allocator_memory_snapshot() noexcept -> AllocatorMemorySample;
+[[nodiscard]] auto allocator_pressure_relief() noexcept -> AllocatorPressureReliefSample;
 
 [[nodiscard]] inline auto validate_run_settings(const RunSettings& settings, const Config& config) -> bool {
     if (config.operations == 0) {
@@ -571,6 +608,18 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "durable_byte_limit_closes=" << result.durable_byte_limit_closes << ' '
         << "durable_adaptive_target_closes=" << result.durable_adaptive_target_closes << ' '
         << "durable_deadline_closes=" << result.durable_deadline_closes << ' '
+        << "median_paired_writer_batch_records=" << result.median_paired_writer_batch_records << ' '
+        << "median_paired_writer_batch_wait_ns=" << result.median_paired_writer_batch_wait_ns << ' '
+        << "maximum_paired_writer_batch_wait_ns=" << result.maximum_paired_writer_batch_wait_ns << ' '
+        << "paired_writer_batches=" << result.paired_writer_batches << ' '
+        << "paired_writer_batch_records=" << result.paired_writer_batch_records << ' '
+        << "paired_writer_durability_deadline_closes=" << result.paired_writer_durability_deadline_closes
+        << ' ' << "paired_writer_queue_deadline_closes=" << result.paired_writer_queue_deadline_closes << ' '
+        << "paired_sync_turn_splits=" << result.paired_sync_turn_splits << ' '
+        << "paired_sync_async_fairness_turns=" << result.paired_sync_async_fairness_turns << ' '
+        << "paired_publications=" << result.paired_publications << ' '
+        << "paired_publication_records=" << result.paired_publication_records << ' '
+        << "paired_completion_notifications=" << result.paired_completion_notifications << ' '
         << "median_reactor_input_buffer_compactions=" << result.median_reactor_input_buffer_compactions << ' '
         << "maximum_reactor_input_buffer_compactions=" << result.maximum_reactor_input_buffer_compactions
         << ' ' << "median_reactor_input_buffer_bytes_moved=" << result.median_reactor_input_buffer_bytes_moved
