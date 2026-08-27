@@ -218,10 +218,35 @@ rate/p99 guards, durable mutation queue caps, `shutdown-drain-ms`, TLS/authz fla
 Do not publish absolute ops/s or p99 product claims from hosted CI; see
 [performance-budgets](../assurance/performance-budgets.md).
 
-## 7. Related
+## 7. Intentional non-support: OpenMetrics / Prometheus exporters
+
+Wave 4 documents **intentional non-support** for a first-party OpenMetrics or Prometheus
+HTTP scrape endpoint. Operator telemetry remains:
+
+- wire `HEALTH` / `READY` / `STATS` (authenticated / capability-gated as configured);
+- stderr JSON lifecycle + security audit lines;
+- `--dump-config` for effective knobs.
+
+A Prometheus/OpenMetrics exporter would be a new surface (listen port, authn, cardinality
+contracts, scrape SLO) and is **not** on the architectural-prototype claim path. Residual
+on `GATE-TELEMETRY` / `GS-OPS-CONFIG-001`: histogram approximations are diagnostics, not
+SLOs; absence of Prometheus is explicit, not an unfinished stub.
+
+### Security audit mutex (not a hot-path SLO)
+
+`SecurityAudit` serializes JSON-line emission behind a process mutex and increments atomic
+counters. Counters feed `STATS`; emission is off by default unless `--secure-profile` or
+`--log-format json`. Audit/telemetry must **not** be treated as a mutation hot-path SLO:
+deny storms are correctness/coherence tests, not latency budgets. Prefer quiet or disabled
+audit emission under load-sensitive lab runs when only counters matter.
+
+## 8. Related
 
 - [Operations index](README.md)
 - [Wire protocol v2](../spec/wire-protocol-v2.md)
 - [CLI](../cli.md)
 - [Server model](../architecture/server-model.md)
 - Impl: `src/server/server_stats.cpp`, `src/server/daemon_log.cpp`
+- [Soak profiles](soak.md) — software soak honesty + SIGTERM drain
+- [Secure profile](../security/secure-profile.md) — Phase 8 / audit residuals
+

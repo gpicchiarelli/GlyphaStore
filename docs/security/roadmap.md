@@ -243,18 +243,22 @@ revocation configuration on hostile binds.
 
 ## Phase 8 — Later / optional (after secure TCP profile exists)
 
-Do **not** schedule these as blockers for “leave loopback”:
+Do **not** schedule these as blockers for “leave loopback”. Wave 4 honesty: **remainder
+items below stay unsupported or deferred** for architectural-prototype / hostile-public
+claims until a dedicated ADR + proofs + evidence close them.
 
 | Item | Status |
 | --- | --- |
 | Key-prefix capability scope (shared daemon) | **Done (2026-07-25)** — [ADR 0025](../adr/0025-key-prefix-tenant-scope.md); optional `prefix=` in `--authz-map` |
 | Keyed Index mix seed (hash-flood slice) | **Done (2026-07-25)** — [ADR 0026](../adr/0026-keyed-index-hash-seed.md); `--index-hash-seed`; secure-profile randomizes |
 | STATS isolation for prefix principals | **Done (2026-07-25)** — [ADR 0027](../adr/0027-stats-isolation-prefix-principals.md); prefix ⇒ `STATS` needs `admin` |
-| Per-tenant data-dir / Store isolation | **Deferred** — [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) (proposed); use one process per trust domain |
+| Per-tenant data-dir / Store isolation | **Unsupported / deferred** — [ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md) (proposed); use one process per trust domain |
 | Unix-domain socket transport | **Done (2026-07-25)** — [ADR 0029](../adr/0029-uds-peercred.md); `--unix-socket` + optional `--unix-peercred` (`unix:uid=N`); not a TLS replacement |
-| At-rest encryption / MAC for segments | Key management, rotation, compaction, backup — large design |
+| At-rest encryption / MAC for segments | **Unsupported / deferred** — key management, rotation, compaction, backup — large design |
 | Keyed Worker routing (SipHash + wire seed) | **Done (2026-07-31)** — [ADR 0030](../adr/0030-keyed-worker-routing.md); daemon + C++ / Python / Perl / Go / Erlang / Ruby INIT decode + SipHash routing; default Stores stay FNV |
-| Protocol-level compression / multiplexing | Unrelated; separate ADRs |
+| Protocol-level compression / multiplexing | **Unsupported / deferred** — unrelated; separate ADRs |
+| OpenMetrics / Prometheus exporter | **Unsupported (intentional)** — [observability.md](../operations/observability.md) §7; wire STATS + JSON logs only |
+| Hot TLS cert reload | **Unsupported** — restart-only PEM replace ([secure-profile.md](secure-profile.md) §5 / §7) |
 
 ---
 

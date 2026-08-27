@@ -641,6 +641,9 @@ auto TlsSession::write(const std::byte* data, const std::size_t size) -> Result<
     if (glyphastore::fault::consume_fail(glyphastore::fault::Site::tls_write_want_read)) {
         return TlsIoResult{.kind = TlsIoKind::want_read, .bytes = 0};
     }
+    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::tls_write_want_write)) {
+        return TlsIoResult{.kind = TlsIoKind::want_write, .bytes = 0};
+    }
     const auto result = SSL_write(impl_->ssl, data, static_cast<int>(size));
     if (result > 0) {
         return TlsIoResult{.kind = TlsIoKind::ok, .bytes = static_cast<std::size_t>(result)};

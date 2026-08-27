@@ -4,6 +4,15 @@
   scaffold; Dependabot SHA discipline in `validate_actions_pins.py`; honest residuals in
   `docs/distribution/wave5-l7-residuals.md` (no fake packages/signatures/tags).
 
+- Wave 4 (L5+L6) daemon/security/operability: handoff exactly-once + concurrent mesh
+  tests; TLS `WANT_WRITE` response-flush litmus; abuse principal quotas and security-audit
+  counters under concurrency; RST connection-slot release + connection rate-limit window
+  reconnect; adversarial soak profile stubs (`hot-key` / `connection-churn` /
+  `queue-saturation` / `adversarial-reclaim`) with SIGTERM drain; intentional
+  OpenMetrics/Prometheus non-support and Phase 8 remainder unsupported/deferred residuals
+  (ADR 0028, restart-only TLS certs). Claim ceiling unchanged (architectural prototype).
+  No L1 publish/reclaim ownership in this wave.
+
 - Wave 3 (L4) durability & maintenance: compaction write-amplification / temporary-space budgets
   reject before intent (`GS-PERSIST-AMP-001`); paced pre-intent staging faults and maintenance
   latency/pacing observability (`GS-OPS-DEBT-001`); online compaction and backup

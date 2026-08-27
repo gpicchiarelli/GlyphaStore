@@ -1190,6 +1190,8 @@ GLYPHA_TEST("blocked durable cold GET leaves its Reactor responsive and applies 
 }
 
 GLYPHA_TEST("durable cold GET keeps one bounded scatter lease across partial socket writes") {
+    // Slow-client short-write path must keep a single bounded scatter lease for the
+    // response bytes; this is distinct from L1 QSBR ownership of read generations.
 #if defined(__OpenBSD__)
     // Partial-write scatter timing is not stable under OpenBSD qemu (SO_RCVBUF / kqueue
     // scheduling); Linux ASan remains the authority for this lease invariant.
@@ -1625,6 +1627,8 @@ GLYPHA_TEST("BIND_WORKER poller remove failure returns overloaded without dual r
 
 #if defined(GLYPHASTORE_FAULT_INJECTION)
 GLYPHA_TEST("sticky post-commit Writer failure is INTERNAL_ERROR on the wire") {
+    // After sticky post-commit failure, HEALTH may still succeed while READY must fail
+    // under degraded durability (orchestrators gate traffic on READY, not HEALTH alone).
     ServerTemporaryDirectory temporary;
     auto opened = glyphastore::server::Server::create(
         {.port = 0, .maximum_connections = 4, .worker_count = 1, .disk_read_thread_count = 1},

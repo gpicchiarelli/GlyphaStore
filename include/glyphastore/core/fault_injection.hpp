@@ -42,6 +42,8 @@ enum class Site : std::uint8_t {
     put_batch_gate = 22,
     // Dedicated Writer after detaching one synchronous admission snapshot.
     sync_lane_snapshot = 23,
+    // SSL_write path returns WANT_WRITE once (edge-triggered flush litmus).
+    tls_write_want_write = 24,
 };
 
 #if defined(GLYPHASTORE_FAULT_INJECTION)

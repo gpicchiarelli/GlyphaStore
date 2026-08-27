@@ -56,6 +56,13 @@ Wave 6 docs/scripts may prepare matrices and `specified_waiting_for_runner` plac
 | **0** | Landed | Assurance hygiene; evidence taxonomy; this map |
 | **3** | In progress (L4) | Compaction `storage_exhausted` + paced pre-intent faults; write-amp budget before intent (`GS-PERSIST-AMP-001`); backup ENOSPC/concurrent fence proofs; `GS-OPS-DEBT-001`; platform-durability evidence path placeholders. **E3/E4 remain open** (rehearsal ≠ certification). |
 
+Wave 4 progress (branch `debt/l5l6-wave4-daemon-sec`): handoff exactly-once + concurrent
+tests; TLS `WANT_WRITE` flush litmus; abuse/audit concurrency; RST slot release + rate-limit
+window reconnect; adversarial soak profile stubs (`hot-key` / `connection-churn` /
+`queue-saturation` / `adversarial-reclaim`); intentional Prometheus non-support + Phase 8
+remainder unsupported/deferred residuals. Claim ceiling unchanged (architectural prototype).
+No L1 publish/reclaim ownership in this wave.
+
 ## Anti-duplication rules
 
 1. **L1 merge lock** on publication/reclaim APIs; other lanes rebase or wait.
