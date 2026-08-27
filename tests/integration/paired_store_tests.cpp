@@ -119,6 +119,64 @@ GLYPHA_TEST("paired Store concurrent read-after-write keeps adopted generations 
     GLYPHA_REQUIRE(store.close().has_value());
 }
 
+GLYPHA_TEST("paired durable group threshold requires final commit-slot synchronization") {
+    auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-paired-group-sync-XXXXXX").string();
+    std::vector<char> writable(pattern.begin(), pattern.end());
+    writable.push_back('\0');
+    GLYPHA_REQUIRE(::mkdtemp(writable.data()) != nullptr);
+    const std::filesystem::path root{writable.data()};
+
+    struct FailFirstCommitSlotSync final {
+        bool fired{};
+
+        static auto before(void* context, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& self = *static_cast<FailFirstCommitSlotSync*>(context);
+            if (operation == glyphastore::FilesystemOperation::sync_commit_slot && !self.fired) {
+                self.fired = true;
+                return glyphastore::fail(glyphastore::ErrorCode::io_error,
+                                         "injected strict group commit-slot sync failure");
+            }
+            return {};
+        }
+    } failure;
+
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .concurrency = glyphastore::StoreConcurrencyMode::paired,
+         .paired = {.async_lane_capacity = 8,
+                    .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                    .reader_epoch_lease = true},
+         .storage_mode = glyphastore::StorageMode::durable_group,
+         .data_directory = root / "store",
+         .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+         .durable_group = {.max_records = 2, .max_bytes = 65'536, .max_wait_ms = 60'000, .min_records = 2},
+         .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+         .filesystem_hooks = {.context = &failure, .before = &FailFirstCommitSlotSync::before}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+
+    const std::array items{
+        glyphastore::Store::PutItem{.key = "strict-a", .value = bytes("alpha")},
+        glyphastore::Store::PutItem{.key = "strict-b", .value = bytes("beta")},
+    };
+    const auto statuses = store.put_batch(items);
+    GLYPHA_REQUIRE(failure.fired);
+    GLYPHA_REQUIRE(statuses.size() == items.size());
+    GLYPHA_REQUIRE(!statuses[0].has_value());
+    GLYPHA_REQUIRE(!statuses[1].has_value());
+    GLYPHA_REQUIRE(statuses[0].error().code == glyphastore::ErrorCode::unavailable);
+    GLYPHA_REQUIRE(statuses[1].error().code == glyphastore::ErrorCode::unavailable);
+
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    GLYPHA_REQUIRE(!runtime->healthy());
+    static_cast<void>(store.close());
+
+    std::error_code ignored;
+    std::filesystem::remove_all(root, ignored);
+}
+
 GLYPHA_TEST("ADR 0036 V5 production shutdown finalization rejects a live Reader lease") {
     auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
     GLYPHA_REQUIRE(opened.has_value());
@@ -490,6 +548,79 @@ GLYPHA_TEST("paired Store put_batch preserves same-key FIFO within one batch") {
     GLYPHA_REQUIRE(got.has_value());
     GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
                    second);
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired embedded merge pays bounded debt before exhausting a tiny post delta") {
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1},
+         .paired = {.merge_delta_entries = 2, .merge_maximum_post_entries = 2, .merge_quantum_slots = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("merge-cut-a", bytes("a")).has_value());
+    GLYPHA_REQUIRE(store.put("merge-cut-b", bytes("b")).has_value());
+
+    const std::array<glyphastore::Store::PutItem, 2> post_items{
+        glyphastore::Store::PutItem{.key = "merge-post-a", .value = bytes("c")},
+        glyphastore::Store::PutItem{.key = "merge-post-b", .value = bytes("d")},
+    };
+    const auto statuses = store.put_batch(post_items);
+    GLYPHA_REQUIRE(statuses.size() == post_items.size());
+    GLYPHA_REQUIRE(statuses[0].has_value());
+    GLYPHA_REQUIRE(statuses[1].has_value());
+
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    const auto completed_stats = runtime->stats()[0];
+    GLYPHA_REQUIRE(completed_stats.read_merge_starts >= 1U);
+    GLYPHA_REQUIRE(completed_stats.read_merge_completions >= 1U);
+    GLYPHA_REQUIRE(completed_stats.read_merge_remaining_slots == 0U);
+    GLYPHA_REQUIRE(completed_stats.read_merge_post_capacity_remaining == 0U);
+    GLYPHA_REQUIRE(completed_stats.maximum_read_merge_quantum_slots > 1U);
+
+    GLYPHA_REQUIRE(store.put("merge-after-post", bytes("e")).has_value());
+    const auto final_stats = runtime->stats()[0];
+    GLYPHA_REQUIRE(final_stats.read_merge_backpressure == 0U);
+    GLYPHA_REQUIRE(final_stats.generation_admission_backpressure_total == 0U);
+    GLYPHA_REQUIRE(store.get("merge-cut-a").has_value());
+    GLYPHA_REQUIRE(store.get("merge-post-b").has_value());
+    GLYPHA_REQUIRE(store.get("merge-after-post").has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("paired dedicated Writer merge pays bounded debt before exhausting a tiny post delta") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 64U * 1024U,
+                                                       .merge_delta_entries = 2,
+                                                       .merge_maximum_post_entries = 2,
+                                                       .merge_quantum_slots = 1}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("writer-merge-cut-a", bytes("a")).has_value());
+    GLYPHA_REQUIRE(store.put("writer-merge-cut-b", bytes("b")).has_value());
+
+    const std::array<glyphastore::Store::PutItem, 2> post_items{
+        glyphastore::Store::PutItem{.key = "writer-merge-post-a", .value = bytes("c")},
+        glyphastore::Store::PutItem{.key = "writer-merge-post-b", .value = bytes("d")},
+    };
+    const auto statuses = store.put_batch(post_items);
+    GLYPHA_REQUIRE(statuses.size() == post_items.size());
+    GLYPHA_REQUIRE(statuses[0].has_value());
+    GLYPHA_REQUIRE(statuses[1].has_value());
+    GLYPHA_REQUIRE(store.put("writer-merge-after-post", bytes("e")).has_value());
+
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    const auto stats = runtime->stats()[0];
+    GLYPHA_REQUIRE(stats.read_merge_starts >= 1U);
+    GLYPHA_REQUIRE(stats.read_merge_completions >= 1U);
+    GLYPHA_REQUIRE(stats.read_merge_backpressure == 0U);
+    GLYPHA_REQUIRE(!stats.read_merge_active || stats.read_merge_remaining_slots > 0U);
+    GLYPHA_REQUIRE(stats.generation_admission_backpressure_total == 0U);
+    GLYPHA_REQUIRE(store.get("writer-merge-cut-a").has_value());
+    GLYPHA_REQUIRE(store.get("writer-merge-post-b").has_value());
+    GLYPHA_REQUIRE(store.get("writer-merge-after-post").has_value());
     GLYPHA_REQUIRE(store.close().has_value());
 }
 

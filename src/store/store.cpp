@@ -530,7 +530,8 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
 
     const auto fence_started = std::chrono::steady_clock::now();
     // Fence admissions before taking compaction_mutex so a compact that already holds the mutex
-    // (and an OperationGuard) cannot deadlock against wait_for_active_operations.
+    // (and an OperationGuard) cannot deadlock against wait_for_active_operations. The fence is
+    // counted: a concurrent backup cannot reopen admission while this owner still copies.
     impl_->close_admission();
     struct AdmissionResume final {
         Impl* impl;
@@ -558,10 +559,9 @@ auto Store::backup_to(const std::filesystem::path& destination, const bool scan_
     auto copied = [&]() -> Result<DurableStoreBackupReport> {
         std::unique_lock compaction_lock{impl_->compaction_mutex};
 
-        // Another backup may have resumed admissions while we waited for exclusive
-        // compaction ownership. Re-fence and drain before the catalog copy so a
-        // successful BACKUP cannot copy after the advertised admission fence ended.
-        impl_->close_admission();
+        // The counted fence acquired before the wait is still owned here. A
+        // preceding backup may release its own fence, but cannot reopen
+        // admissions until every concurrent owner has released.
         if (!impl_->wait_for_active_operations()) {
             return fail(ErrorCode::unavailable, "backup timed out waiting for active operations");
         }
@@ -647,8 +647,9 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
         }
         impl_->next_compaction_worker.store((*preferred_worker + 1U) % impl_->worker_count_value,
                                             std::memory_order_relaxed);
-        auto result =
-            impl_->durable_runtime->compact_worker(*preferred_worker, impl_->now_ns(), max_copy_bytes);
+        const auto copy_rate = impl_->maintenance ? impl_->maintenance->compaction_copy_rate_limit() : 0U;
+        auto result = impl_->durable_runtime->compact_worker(*preferred_worker, impl_->now_ns(),
+                                                             max_copy_bytes, copy_rate);
         if (result.outcome == DurableCompactionOutcome::not_compacted && result.error.has_value() &&
             result.error->code == ErrorCode::not_found) {
             return CompactionResult{};

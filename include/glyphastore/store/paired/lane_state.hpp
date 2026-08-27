@@ -88,6 +88,23 @@ struct GenerationState final {
     std::atomic<std::size_t> delta_arena_record_bytes{};
     std::atomic<std::size_t> delta_arena_key_bytes{};
     std::atomic<std::size_t> delta_arena_key_storage_bytes{};
+    // Even values delimit one coherent Writer-published memory census; odd
+    // values mean the relaxed payload fields are being replaced.
+    std::atomic<std::uint64_t> memory_stats_sequence{};
+    std::atomic<std::size_t> memory_base_entries{};
+    std::atomic<std::size_t> memory_base_capacity{};
+    std::atomic<std::size_t> memory_base_record_storage_bytes{};
+    std::atomic<std::size_t> memory_base_record_mapped_storage_bytes{};
+    std::atomic<std::size_t> memory_base_lookup_storage_bytes{};
+    std::atomic<std::size_t> memory_base_key_bytes{};
+    std::atomic<std::size_t> memory_base_key_storage_bytes{};
+    std::atomic<std::size_t> memory_base_pin_storage_bytes{};
+    std::atomic<std::size_t> memory_base_allocated_lower_bound_bytes{};
+    std::atomic<std::size_t> memory_delta_capacity{};
+    std::atomic<std::size_t> memory_delta_lookup_storage_bytes{};
+    std::atomic<std::size_t> memory_delta_allocated_lower_bound_bytes{};
+    std::atomic<std::size_t> memory_generation_shell_bytes{};
+    std::atomic<std::size_t> memory_current_allocated_lower_bound_bytes{};
 };
 
 struct MergeState final {
@@ -99,6 +116,9 @@ struct MergeState final {
     std::atomic<std::uint64_t> read_merge_failures{};
     std::atomic<std::uint64_t> read_merge_backpressure{};
     std::atomic<std::uint64_t> read_merge_slots_processed{};
+    std::atomic<std::size_t> read_merge_remaining_slots{};
+    std::atomic<std::size_t> read_merge_post_capacity_remaining{};
+    std::atomic<std::uint64_t> maximum_read_merge_quantum_slots{};
     // Writer-local: resource_exhausted merge start defers retries until a publish clears it.
     bool merge_retry_blocked{};
 };
@@ -128,6 +148,13 @@ struct LaneMetrics final {
     std::atomic<std::uint64_t> writer_batches{};
     std::atomic<std::uint64_t> writer_batch_records{};
     std::atomic<std::size_t> maximum_writer_batch_records{};
+    std::atomic<std::uint64_t> total_writer_batch_wait_ns{};
+    std::atomic<std::uint64_t> maximum_writer_batch_wait_ns{};
+    std::atomic<std::uint64_t> writer_batch_durability_deadline_closes{};
+    std::atomic<std::uint64_t> writer_batch_queue_deadline_closes{};
+    std::atomic<std::uint64_t> sync_drain_turns{};
+    std::atomic<std::uint64_t> sync_turn_splits{};
+    std::atomic<std::uint64_t> sync_async_fairness_turns{};
     std::atomic<std::uint64_t> publications{};
     std::atomic<std::uint64_t> publication_records{};
     std::atomic<std::uint64_t> completion_notifications{};

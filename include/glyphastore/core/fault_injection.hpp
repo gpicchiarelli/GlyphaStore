@@ -40,6 +40,8 @@ enum class Site : std::uint8_t {
     durable_batch_gate = 21,
     // Before each Store::put_batch non-paired sibling put (litmus: mid-batch gate TOCTOU).
     put_batch_gate = 22,
+    // Dedicated Writer after detaching one synchronous admission snapshot.
+    sync_lane_snapshot = 23,
 };
 
 #if defined(GLYPHASTORE_FAULT_INJECTION)

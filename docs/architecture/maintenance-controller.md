@@ -38,12 +38,16 @@ In `background`, the controller:
      and emergency does not already apply. With default margin `0`, free-space pressure is only
      reachable when margin is raised above rotate headroom.
 3. **Normal** policy: skip `no_candidate`; skip a candidate whose dead ratio is below the inclusive
-   `dead_byte_ratio_bp_normal` threshold; backoff after `max_no_gain_attempts`; preflight the
+   `dead_byte_ratio_bp_normal` threshold; memoize an unchanged exact no-gain candidate after
+   `max_no_gain_attempts` (default one); preflight the
    candidate's exact Index-referenced live Record bytes against `max_copy_bytes_per_cycle`; mid eval
    interval. The selected Worker identity is passed to the automatic compact call so policy and
    execution address the same round-robin candidate. The default limit is 128 MiB per evaluation
    (at most one compaction); equality is allowed and zero explicitly disables the limit. A rejected
-   candidate reports `copy_budget`, distinct from no-gain `budget_backoff`. The durable runtime
+   candidate reports `copy_budget`, distinct from memoized no-gain `budget_backoff`. The memo is
+   invalidated immediately by a changed Worker/candidate footprint and expires after
+   `max_eval_interval_ms`; pressure/emergency bypass it. This bounds repeated whole-candidate scans
+   while retaining a time-based retry for TTL progression. The durable runtime
    rechecks the same inclusive limit while holding the Worker snapshot lock; growth between
    observation and snapshot returns a finite `sequence_conflict` before scan or copy. When
    `suspend_on_p99_latency_ms` is nonzero, the daemon also consumes a fixed lock-free histogram of
@@ -77,7 +81,8 @@ In `background`, the controller:
 Telemetry in `MaintenanceSnapshot` includes pressure level, `mutations_rejected`, activation reason,
 eval/compact durations, bytes/records copied, `expired_records_dropped` (last and total), suspend
 count, time since last useful compaction, candidate Worker, candidate sealed/live/dead Record bytes,
-and dead ratio in basis points. Exact no-gain planning scans also expose last/total
+and dead ratio in basis points. `no_gain_scans_suppressed` and `no_gain_retry_after_ns` expose the
+work avoided and the bounded remaining memo lifetime. Exact no-gain planning scans also expose last/total
 `source_records_verified`, `source_bytes_verified`, and `expired_records_dropped` examined before
 the layout rejected a rewrite; cheap policy skips (`reclaim_threshold`, `copy_budget`,
 `no_candidate`) do not update those fields. Durable snapshots also include rotation attempts, commits,
@@ -136,24 +141,32 @@ starve reclaimable peers. Adversarial proofs: unit
 
 - Controlled-hardware baselines and native power-loss certification (owned by ADR 0015 compaction
   transaction, not this scheduler).
-- Mid-transaction pause/resume. The p99 guard prevents a normal compaction from starting under an
-  already-degraded foreground window; it does not make the persistence-v1 intent/replacement
-  transaction preemptible. True copy quanta require a separately specified durable staging and
-  recovery protocol so throttling cannot lengthen an ambiguous publication authority indefinitely.
+- Mid-transaction pause/resume after durable intent publication. ADR 0040 paces bounded physical
+  writes only while replacements are private and the old Manifest remains sole authority; the
+  persistence-v1 intent/Manifest transaction remains deliberately non-preemptible.
 - Shorter compaction publication leases. Measure deep rotation phases first; only then decide
   whether replacement Segment construction should move before publication authority.
 
+`max_segments_per_cycle` is not a partial-transaction control. Persistence v1 requires the complete
+sealed history of one Worker as the transaction unit, so validation accepts only `1`. ADR 0040 may
+split private replacement Record writes into bounded physical extents; it does not split the logical
+compaction authority or weaken tombstone/Manifest semantics.
+
 ## Rate and CPU budgets
 
-Under normal pressure, `max_copy_bytes_per_sec` and `max_cpu_ms_per_window` share a one-second
-`steady_clock` window. Zero disables each limit. When exhausted, evaluation skips with
-`rate_budget` and suspends until the next evaluation after the window refreshes. Pressure and
-emergency bypass both budgets (same as the per-cycle copy limit). Window consumption is exported
-through `MaintenanceSnapshot` and daemon `STATS`
+Under normal pressure, `max_copy_bytes_per_sec` paces private pre-intent replacement writes with one
+bounded initial burst, 10 ms refill spacing and physical writes no larger than 1 MiB. A candidate
+larger than one second of bandwidth is admitted and progresses; the rate is never reinterpreted as a
+whole-transaction cap. Completed bytes and `max_cpu_ms_per_window` share a one-second
+`steady_clock` controller window so an adjacent compaction cannot immediately take another initial
+burst. Zero disables each control. When the window is already consumed, evaluation skips with
+`rate_budget` until refresh. Pressure and emergency bypass both controls (same as the per-cycle copy
+limit). Manual `Store::compact()` is unpaced. Window consumption is exported through
+`MaintenanceSnapshot` and daemon `STATS`
 (`maintenance_rate_window_bytes_copied` / `maintenance_rate_window_cpu_ns`). Daemon flags:
 `--maintenance-max-copy-bytes-per-sec`, `--maintenance-max-cpu-ms-per-window`, and
 `--maintenance-suspend-on-p99-latency-ms`, `--maintenance-suspend-on-p99-min-samples`, and
 `--maintenance-max-latency-deferral-ms`. Latency feedback is consumed before a normal compaction
 starts; pressure and emergency bypass it so reclamation cannot starve when capacity is at risk.
 STATS exports the consumed sample count, bucket-conservative p99, guard state/age, cumulative
-suspension count, and debt overrides.
+suspension count, debt overrides, last/total pacing delay, pacing sleep count and physical burst.

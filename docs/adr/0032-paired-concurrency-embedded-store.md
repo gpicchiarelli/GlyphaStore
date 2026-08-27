@@ -73,6 +73,11 @@ Deferred under ADR 0009. This ADR does not change the owning-read contract.
    are specified under ADR 0037 Phase C.
 6. **Experimental** `src/experimental/paired_*` remains lab/microbench only and is not a selectable
    product runtime.
+7. **Immutable base layout:** the Reader-only base stores one 64-byte compact record per live row,
+   including the full 64-bit hash, and a separate lookup table made of one control byte plus one
+   32-bit record index per bucket. Fingerprint matches are always confirmed with the full hash and
+   full key. This is an implementation-private representation: persistence v1, wire v2, routing,
+   visibility, pin lifetime, and public outcomes do not change.
 
 Worker count, routing algorithm/seed, and Manifest `worker_count` remain the persisted ownership
 identity; “shard pair count” is the runtime view of that same count (ADR 0031 / 0030).
@@ -91,6 +96,13 @@ identity; “shard pair count” is the runtime view of that same count (ADR 003
 - Contended same-shard embedded `put`/`erase` latency includes combiner-queue wait.
 - Legacy mutex path must be kept until 0.2 for callers that explicitly opt in.
 - Maintenance, compaction, verify, backup, and durable catalog refresh retain their existing locks.
+- The current-generation allocation census is a lower bound, not total process memory: retired
+  generations, an in-progress merge builder, allocator metadata/caches, thread stacks, and unrelated
+  runtime allocations require separate RSS/allocation evidence.
+- Immutable-base record arrays at or above 1 MiB bypass the general allocator. One geometric
+  size-class spare is owned by each base lineage and reused only during merge allocation/retirement;
+  the pool lock is absent from GET and ordinary delta publication. This bounds retained merge-array
+  residency without making the cache depend on whichever embedded caller won the execution token.
 
 ### Risks
 
@@ -116,6 +128,8 @@ identity; “shard pair count” is the runtime view of that same count (ADR 003
 - Persistence: migrate/reopen/worker seed byte-identical.
 - Performance: GET p99 under write burst no worse than current daemon paired; embedded
   single-thread median regression ≤ 5%.
+- Layout/accounting: unit tests pin the 64-byte record and 5-byte-per-bucket lookup payload; server
+  integration tests verify a coherent per-lane current-generation census and bounded STATS fields.
 - API docs and examples updated; no E3 certification language.
 
 ## References

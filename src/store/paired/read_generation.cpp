@@ -6,10 +6,12 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <deque>
 #include <iterator>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <new>
 #include <optional>
 #include <stdexcept>
@@ -17,6 +19,11 @@
 #include <type_traits>
 #include <utility>
 #include <vector>
+
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 
 namespace glyphastore::store::paired {
 namespace {
@@ -30,7 +37,225 @@ inline constexpr std::size_t kDeltaDirectoryChunkBlocks = 16;
 inline constexpr std::size_t kFlatDeltaMaximumPages = 32;
 inline constexpr std::size_t kMaximumPublicationBatch = 32;
 inline constexpr std::size_t kDeltaArenaBlockRecords = 64;
+inline constexpr std::size_t kLargeImmutableArrayMappingThreshold = 1U << 20U;
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer)
+inline constexpr bool kLargeImmutableArrayMappingEnabled = false;
+#else
+inline constexpr bool kLargeImmutableArrayMappingEnabled = true;
+#endif
+#elif defined(__SANITIZE_ADDRESS__)
+inline constexpr bool kLargeImmutableArrayMappingEnabled = false;
+#else
+inline constexpr bool kLargeImmutableArrayMappingEnabled = true;
+#endif
+std::atomic_size_t immutable_base_spare_mapping_payload_bytes{};
 static_assert(kDeltaPageSlots % kSwissGroupSize == 0);
+
+#if defined(__unix__) || defined(__APPLE__)
+class LargeImmutableMappingPool final {
+  public:
+    LargeImmutableMappingPool() noexcept = default;
+    LargeImmutableMappingPool(const LargeImmutableMappingPool&) = delete;
+    auto operator=(const LargeImmutableMappingPool&) -> LargeImmutableMappingPool& = delete;
+
+    ~LargeImmutableMappingPool() {
+        std::scoped_lock lock{mutex_};
+        release_locked();
+    }
+
+    [[nodiscard]] auto take(const std::size_t mapped_bytes) noexcept -> void* {
+        std::scoped_lock lock{mutex_};
+        if (base_ == nullptr) {
+            return nullptr;
+        }
+        if (mapped_bytes != mapped_bytes_) {
+            release_locked();
+            return nullptr;
+        }
+        auto* result = base_;
+        immutable_base_spare_mapping_payload_bytes.fetch_sub(payload_bytes_, std::memory_order_relaxed);
+        base_ = nullptr;
+        mapped_bytes_ = 0;
+        payload_bytes_ = 0;
+        return result;
+    }
+
+    void put(void* base, const std::size_t mapped_bytes, const std::size_t payload_bytes) noexcept {
+        std::scoped_lock lock{mutex_};
+        release_locked();
+        base_ = base;
+        mapped_bytes_ = mapped_bytes;
+        payload_bytes_ = payload_bytes;
+        immutable_base_spare_mapping_payload_bytes.fetch_add(payload_bytes, std::memory_order_relaxed);
+    }
+
+  private:
+    void release_locked() noexcept {
+        if (base_ == nullptr) {
+            return;
+        }
+        immutable_base_spare_mapping_payload_bytes.fetch_sub(payload_bytes_, std::memory_order_relaxed);
+        static_cast<void>(::munmap(base_, mapped_bytes_));
+        base_ = nullptr;
+        mapped_bytes_ = 0;
+        payload_bytes_ = 0;
+    }
+
+    std::mutex mutex_;
+    void* base_{};
+    std::size_t mapped_bytes_{};
+    std::size_t payload_bytes_{};
+};
+#endif
+
+// Immutable base rebuilds grow by merge quanta. General-purpose allocators may
+// retain every previously used large size, turning bounded live generations
+// into unbounded resident high-water. Large arrays therefore use their own
+// anonymous mappings in geometric size classes. Each immutable-base lineage
+// keeps at most one retired mapping: successive same-class rebuilds alternate
+// between two bounded buffers instead of paying zero-fill faults every time.
+// A class change or thread exit unmaps the spare. Guard pages preserve coarse
+// over/underflow detection even outside ASan.
+template <typename T> class ReleasingLargeAllocator {
+  public:
+    using value_type = T;
+    using is_always_equal = std::false_type;
+    using propagate_on_container_move_assignment = std::true_type;
+
+#if defined(__unix__) || defined(__APPLE__)
+    ReleasingLargeAllocator() : pool_(std::make_shared<LargeImmutableMappingPool>()) {}
+    explicit ReleasingLargeAllocator(std::shared_ptr<LargeImmutableMappingPool> pool) noexcept
+        : pool_(std::move(pool)) {}
+    template <typename U>
+    ReleasingLargeAllocator(const ReleasingLargeAllocator<U>& other) noexcept : pool_(other.pool_) {}
+
+    [[nodiscard]] auto mapping_pool() const noexcept -> const std::shared_ptr<LargeImmutableMappingPool>& {
+        return pool_;
+    }
+#else
+    ReleasingLargeAllocator() noexcept = default;
+    template <typename U> ReleasingLargeAllocator(const ReleasingLargeAllocator<U>&) noexcept {}
+#endif
+
+    [[nodiscard]] static constexpr auto mapped_storage_bytes(const std::size_t count) noexcept
+        -> std::size_t {
+#if defined(__unix__) || defined(__APPLE__)
+        if (count <= std::numeric_limits<std::size_t>::max() / sizeof(T)) {
+            const auto bytes = count * sizeof(T);
+            return kLargeImmutableArrayMappingEnabled && bytes >= kLargeImmutableArrayMappingThreshold ? bytes
+                                                                                                       : 0U;
+        }
+#else
+        static_cast<void>(count);
+#endif
+        return 0U;
+    }
+
+#if defined(__unix__) || defined(__APPLE__)
+    struct MappingLayout final {
+        std::size_t page_size{};
+        std::size_t payload_bytes{};
+        std::size_t mapped_bytes{};
+    };
+
+    [[nodiscard]] static auto layout_for(const std::size_t bytes) -> MappingLayout {
+        const auto page_size_value = ::sysconf(_SC_PAGESIZE);
+        if (page_size_value <= 0) {
+            throw std::bad_alloc{};
+        }
+        const auto page_size = static_cast<std::size_t>(page_size_value);
+        if (page_size > std::numeric_limits<std::size_t>::max() / 2U) {
+            throw std::bad_array_new_length{};
+        }
+        auto payload_class = kLargeImmutableArrayMappingThreshold;
+        while (payload_class < bytes) {
+            if (payload_class > std::numeric_limits<std::size_t>::max() / 2U) {
+                throw std::bad_array_new_length{};
+            }
+            payload_class *= 2U;
+        }
+        if (payload_class > std::numeric_limits<std::size_t>::max() - (page_size - 1U)) {
+            throw std::bad_array_new_length{};
+        }
+        const auto payload_bytes = ((payload_class + page_size - 1U) / page_size) * page_size;
+        if (payload_bytes > std::numeric_limits<std::size_t>::max() - 2U * page_size) {
+            throw std::bad_array_new_length{};
+        }
+        return {.page_size = page_size,
+                .payload_bytes = payload_bytes,
+                .mapped_bytes = payload_bytes + 2U * page_size};
+    }
+
+#endif
+
+    [[nodiscard]] auto allocate(const std::size_t count) -> T* {
+        if (count > std::numeric_limits<std::size_t>::max() / sizeof(T)) {
+            throw std::bad_array_new_length{};
+        }
+        const auto bytes = count * sizeof(T);
+#if defined(__unix__) || defined(__APPLE__)
+        if (kLargeImmutableArrayMappingEnabled && bytes >= kLargeImmutableArrayMappingThreshold) {
+            const auto layout = layout_for(bytes);
+            auto* mapping = pool_->take(layout.mapped_bytes);
+            if (mapping == nullptr) {
+#if defined(MAP_ANONYMOUS)
+                constexpr auto kAnonymousFlag = MAP_ANONYMOUS;
+#else
+                constexpr auto kAnonymousFlag = MAP_ANON;
+#endif
+                mapping = ::mmap(nullptr, layout.mapped_bytes, PROT_READ | PROT_WRITE,
+                                 MAP_PRIVATE | kAnonymousFlag, -1, 0);
+                if (mapping == MAP_FAILED) {
+                    throw std::bad_alloc{};
+                }
+                auto* trailing_guard =
+                    static_cast<std::byte*>(mapping) + layout.page_size + layout.payload_bytes;
+                if (::mprotect(mapping, layout.page_size, PROT_NONE) != 0 ||
+                    ::mprotect(trailing_guard, layout.page_size, PROT_NONE) != 0) {
+                    static_cast<void>(::munmap(mapping, layout.mapped_bytes));
+                    throw std::bad_alloc{};
+                }
+            }
+            return reinterpret_cast<T*>(static_cast<std::byte*>(mapping) + layout.page_size);
+        }
+#endif
+        return std::allocator<T>{}.allocate(count);
+    }
+
+    void deallocate(T* pointer, const std::size_t count) noexcept {
+        const auto bytes = count * sizeof(T);
+#if defined(__unix__) || defined(__APPLE__)
+        if (kLargeImmutableArrayMappingEnabled && bytes >= kLargeImmutableArrayMappingThreshold) {
+            try {
+                const auto layout = layout_for(bytes);
+                pool_->put(reinterpret_cast<std::byte*>(pointer) - layout.page_size, layout.mapped_bytes,
+                           layout.payload_bytes);
+                return;
+            } catch (...) {
+                std::terminate();
+            }
+        }
+#endif
+        std::allocator<T>{}.deallocate(pointer, count);
+    }
+
+    template <typename U>
+    [[nodiscard]] auto operator==(const ReleasingLargeAllocator<U>& other) const noexcept -> bool {
+#if defined(__unix__) || defined(__APPLE__)
+        return pool_ == other.pool_;
+#else
+        static_cast<void>(other);
+        return true;
+#endif
+    }
+
+  private:
+#if defined(__unix__) || defined(__APPLE__)
+    std::shared_ptr<LargeImmutableMappingPool> pool_;
+    template <typename> friend class ReleasingLargeAllocator;
+#endif
+};
 
 struct ReadRecord final {
     std::uint64_t hash{};
@@ -116,6 +341,19 @@ void apply_record(MutableReadIndex& index, ReadRecordHandle record) {
 [[nodiscard]] auto fingerprint(const std::uint64_t hash) noexcept -> std::uint8_t {
     const auto result = static_cast<std::uint8_t>(hash & 0x7FU);
     return result == 0 ? static_cast<std::uint8_t>(1) : result;
+}
+
+[[nodiscard]] constexpr auto saturating_add(const std::size_t left, const std::size_t right) noexcept
+    -> std::size_t {
+    return right > std::numeric_limits<std::size_t>::max() - left ? std::numeric_limits<std::size_t>::max()
+                                                                  : left + right;
+}
+
+[[nodiscard]] constexpr auto saturating_multiply(const std::size_t left, const std::size_t right) noexcept
+    -> std::size_t {
+    return left != 0 && right > std::numeric_limits<std::size_t>::max() / left
+               ? std::numeric_limits<std::size_t>::max()
+               : left * right;
 }
 
 [[nodiscard]] auto same_segment(const SegmentPtr& segment, const RecordRef& record) noexcept -> bool {
@@ -382,14 +620,33 @@ struct CompactReadRecord final {
         const char* external_key;
     };
     RecordRef record{};
+    std::uint64_t hash{};
     KeyStorage key{};
     std::uint32_t key_size{};
-    std::uint32_t pin_index{};
-    Opcode opcode{Opcode::put};
-    bool durable{};
+    std::uint32_t pin_and_flags{};
+
+    static constexpr std::uint32_t kDurableFlag = 1U << 31U;
+    static constexpr std::uint32_t kEraseFlag = 1U << 30U;
+    static constexpr std::uint32_t kPinMask = kEraseFlag - 1U;
+    static constexpr std::uint32_t kNoPin = kPinMask;
+
+    [[nodiscard]] auto pin_index() const noexcept -> std::uint32_t {
+        return pin_and_flags & kPinMask;
+    }
+    [[nodiscard]] auto durable() const noexcept -> bool {
+        return (pin_and_flags & kDurableFlag) != 0;
+    }
+    [[nodiscard]] auto opcode() const noexcept -> Opcode {
+        return (pin_and_flags & kEraseFlag) != 0 ? Opcode::erase : Opcode::put;
+    }
+    void set_metadata(const std::uint32_t pin_index, const bool is_durable,
+                      const Opcode record_opcode) noexcept {
+        pin_and_flags =
+            pin_index | (is_durable ? kDurableFlag : 0U) | (record_opcode == Opcode::erase ? kEraseFlag : 0U);
+    }
 };
-static_assert(sizeof(CompactReadRecord) <= 64,
-              "the immutable Reader record must remain one cache line or smaller");
+static_assert(sizeof(CompactReadRecord) == 64,
+              "the immutable Reader record and full hash must occupy one cache line");
 
 struct KeyBlock final {
     std::unique_ptr<char[]> bytes;
@@ -398,6 +655,10 @@ struct KeyBlock final {
 };
 
 } // namespace
+
+auto immutable_base_spare_mapping_bytes() noexcept -> std::size_t {
+    return immutable_base_spare_mapping_payload_bytes.load(std::memory_order_relaxed);
+}
 
 class ImmutableReadIndex final {
   public:
@@ -423,6 +684,17 @@ class ImmutableReadIndex final {
         }
     }
 
+#if defined(__unix__) || defined(__APPLE__)
+    explicit ImmutableReadIndex(std::shared_ptr<LargeImmutableMappingPool> mapping_pool)
+        : records_(RecordAllocator{std::move(mapping_pool)}) {
+        initialize(0, true);
+    }
+
+    [[nodiscard]] auto mapping_pool() const -> std::shared_ptr<LargeImmutableMappingPool> {
+        return records_.get_allocator().mapping_pool();
+    }
+#endif
+
     [[nodiscard]] auto find(const HashedKey& key) const noexcept -> const CompactReadRecord* {
         const auto wanted = fingerprint(key.hash);
         auto group_start = probe_start(key.hash);
@@ -439,8 +711,12 @@ class ImmutableReadIndex final {
                     continue;
                 }
                 const auto slot = group_start + offset;
-                const auto* record = table_[slot];
-                if (hashes_[slot] == key.hash && key_at(*record) == key.key) {
+                const auto record_index = record_indices_[slot];
+                if (record_index >= records_.size()) {
+                    return nullptr;
+                }
+                const auto* record = &records_[record_index];
+                if (record->hash == key.hash && key_at(*record) == key.key) {
                     return record;
                 }
             }
@@ -451,15 +727,16 @@ class ImmutableReadIndex final {
 
     [[nodiscard]] auto get(const HashedKey& key, const std::uint64_t now_ns) const -> Result<OwnedValue> {
         const auto* record = find(key);
-        if (record == nullptr || record->opcode == Opcode::erase) {
+        if (record == nullptr || record->opcode() == Opcode::erase) {
             return fail(ErrorCode::not_found, "key not found");
         }
-        if (record->durable || record->pin_index == kNoPin || record->pin_index >= segments_.size()) {
-            return fail(record->durable ? ErrorCode::invalid_argument : ErrorCode::invalid_reference,
-                        record->durable ? "durable read generation requires asynchronous preparation"
-                                        : "read generation has no exact Segment generation pin");
+        const auto pin_index = record->pin_index();
+        if (record->durable() || pin_index == CompactReadRecord::kNoPin || pin_index >= segments_.size()) {
+            return fail(record->durable() ? ErrorCode::invalid_argument : ErrorCode::invalid_reference,
+                        record->durable() ? "durable read generation requires asynchronous preparation"
+                                          : "read generation has no exact Segment generation pin");
         }
-        const auto& segment = segments_[record->pin_index];
+        const auto& segment = segments_[pin_index];
         if (!same_segment(segment, record->record)) {
             return fail(ErrorCode::invalid_reference, "read generation has no exact Segment generation pin");
         }
@@ -473,7 +750,7 @@ class ImmutableReadIndex final {
             return unexpected(std::move(decoded.error()));
         }
         if (decoded->sequence != record->record.sequence ||
-            decoded->encoded_size != record->record.size.value || decoded->opcode != record->opcode ||
+            decoded->encoded_size != record->record.size.value || decoded->opcode != record->opcode() ||
             decoded->key_string() != key.key) {
             return fail(ErrorCode::invalid_reference, "read generation RecordRef identity mismatch");
         }
@@ -486,16 +763,17 @@ class ImmutableReadIndex final {
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
         -> Result<DurableRuntimeCatalog::PublishedReadView> {
         const auto* record = find(key);
-        if (record == nullptr || record->opcode == Opcode::erase) {
+        if (record == nullptr || record->opcode() == Opcode::erase) {
             return fail(ErrorCode::not_found, "key not found");
         }
-        if (!record->durable || record->pin_index == kNoPin || record->pin_index >= durable_pins_.size() ||
-            !durable_pins_[record->pin_index].matches(record->record)) {
+        const auto pin_index = record->pin_index();
+        if (!record->durable() || pin_index == CompactReadRecord::kNoPin ||
+            pin_index >= durable_pins_.size() || !durable_pins_[pin_index].matches(record->record)) {
             return fail(ErrorCode::invalid_reference,
                         "durable read generation has no exact file-generation pin");
         }
         return DurableRuntimeCatalog::PublishedReadView::borrow(key_at(*record), key.hash, record->record,
-                                                                durable_pins_[record->pin_index]);
+                                                                durable_pins_[pin_index]);
     }
 
     [[nodiscard]] auto records() const -> MutableReadIndex {
@@ -503,7 +781,10 @@ class ImmutableReadIndex final {
         result.reserve(size_);
         for (std::size_t slot = 0; slot < capacity_; ++slot) {
             if (control_[slot] != kSwissEmpty) {
-                result.push_back(materialize(view_at(*table_[slot], hashes_[slot])));
+                const auto record_index = record_indices_[slot];
+                if (record_index < records_.size()) {
+                    result.push_back(materialize(view_at(records_[record_index])));
+                }
             }
         }
         std::sort(result.begin(), result.end(), record_less);
@@ -522,12 +803,40 @@ class ImmutableReadIndex final {
         if (slot >= capacity_) {
             return std::nullopt;
         }
-        return control_[slot] != kSwissEmpty
-                   ? std::optional<ReadRecordView>{view_at(*table_[slot], hashes_[slot])}
-                   : std::nullopt;
+        if (control_[slot] == kSwissEmpty || record_indices_[slot] >= records_.size()) {
+            return std::nullopt;
+        }
+        return view_at(records_[record_indices_[slot]]);
+    }
+
+    [[nodiscard]] auto memory_stats() const noexcept -> ReadGenerationMemoryStats {
+        ReadGenerationMemoryStats stats{
+            .base_entries = size_,
+            .base_capacity = capacity_,
+            .base_record_storage_bytes = saturating_multiply(records_.capacity(), sizeof(CompactReadRecord)),
+            .base_record_mapped_storage_bytes =
+                ReleasingLargeAllocator<CompactReadRecord>::mapped_storage_bytes(records_.capacity()),
+            .base_lookup_storage_bytes =
+                saturating_multiply(capacity_, sizeof(std::uint8_t) + sizeof(std::uint32_t)),
+            .base_key_bytes = key_bytes_,
+            .base_pin_storage_bytes =
+                saturating_add(saturating_multiply(segments_.capacity(), sizeof(SegmentPtr)),
+                               saturating_multiply(durable_pins_.capacity(), sizeof(DurableReadPin))),
+        };
+        stats.base_key_storage_bytes = saturating_add(
+            saturating_multiply(key_blocks_.capacity(), sizeof(KeyBlock)), allocated_key_storage_bytes_);
+        auto total = sizeof(ImmutableReadIndex);
+        total = saturating_add(total, stats.base_record_storage_bytes);
+        total = saturating_add(total, stats.base_lookup_storage_bytes);
+        total = saturating_add(total, stats.base_key_storage_bytes);
+        total = saturating_add(total, stats.base_pin_storage_bytes);
+        stats.base_allocated_lower_bound_bytes = total;
+        return stats;
     }
 
   private:
+    using RecordAllocator = ReleasingLargeAllocator<CompactReadRecord>;
+
     [[nodiscard]] static constexpr auto maximum_occupancy(const std::size_t capacity) noexcept
         -> std::size_t {
         return capacity - capacity / 4U;
@@ -554,8 +863,7 @@ class ImmutableReadIndex final {
             capacity_ *= 2U;
         }
         control_ = std::make_unique_for_overwrite<std::uint8_t[]>(capacity_);
-        hashes_ = std::make_unique_for_overwrite<std::uint64_t[]>(capacity_);
-        table_ = std::make_unique_for_overwrite<const CompactReadRecord*[]>(capacity_);
+        record_indices_ = std::make_unique_for_overwrite<std::uint32_t[]>(capacity_);
         if (initialize_control) {
             std::fill_n(control_.get(), capacity_, kSwissEmpty);
         }
@@ -576,16 +884,17 @@ class ImmutableReadIndex final {
         return {record.key.external_key, record.key_size};
     }
 
-    [[nodiscard]] auto view_at(const CompactReadRecord& record, const std::uint64_t hash) const noexcept
-        -> ReadRecordView {
-        return {.hash = hash,
+    [[nodiscard]] auto view_at(const CompactReadRecord& record) const noexcept -> ReadRecordView {
+        const auto pin_index = record.pin_index();
+        return {.hash = record.hash,
                 .key = key_at(record),
                 .record = record.record,
-                .segment =
-                    !record.durable && record.pin_index != kNoPin ? &segments_[record.pin_index] : nullptr,
-                .durable =
-                    record.durable && record.pin_index != kNoPin ? &durable_pins_[record.pin_index] : nullptr,
-                .opcode = record.opcode};
+                .segment = !record.durable() && pin_index != CompactReadRecord::kNoPin ? &segments_[pin_index]
+                                                                                       : nullptr,
+                .durable = record.durable() && pin_index != CompactReadRecord::kNoPin
+                               ? &durable_pins_[pin_index]
+                               : nullptr,
+                .opcode = record.opcode()};
     }
 
     void append(const ReadRecord& source) {
@@ -599,7 +908,7 @@ class ImmutableReadIndex final {
         if (source.key.size() > std::numeric_limits<std::uint32_t>::max()) {
             throw std::bad_alloc{};
         }
-        auto pin_index = kNoPin;
+        auto pin_index = CompactReadRecord::kNoPin;
         bool durable{};
         if (source.opcode == Opcode::put && source.durable != nullptr) {
             durable = true;
@@ -607,7 +916,7 @@ class ImmutableReadIndex final {
                 return pin.same_generation(*source.durable);
             });
             if (found == durable_pins_.end()) {
-                if (durable_pins_.size() == kNoPin) {
+                if (durable_pins_.size() == CompactReadRecord::kNoPin) {
                     throw std::bad_alloc{};
                 }
                 pin_index = static_cast<std::uint32_t>(durable_pins_.size());
@@ -618,7 +927,7 @@ class ImmutableReadIndex final {
         } else if (source.opcode == Opcode::put && source.segment != nullptr) {
             const auto found = std::find(segments_.begin(), segments_.end(), *source.segment);
             if (found == segments_.end()) {
-                if (segments_.size() == kNoPin) {
+                if (segments_.size() == CompactReadRecord::kNoPin) {
                     throw std::bad_alloc{};
                 }
                 pin_index = static_cast<std::uint32_t>(segments_.size());
@@ -628,17 +937,16 @@ class ImmutableReadIndex final {
             }
         }
         CompactReadRecord compact{.record = source.record,
-                                  .key_size = static_cast<std::uint32_t>(source.key.size()),
-                                  .pin_index = pin_index,
-                                  .opcode = source.opcode,
-                                  .durable = durable};
+                                  .hash = source.hash,
+                                  .key_size = static_cast<std::uint32_t>(source.key.size())};
+        compact.set_metadata(pin_index, durable, source.opcode);
         if (source.key.size() <= compact.key.inline_key.size()) {
             std::ranges::copy(source.key, compact.key.inline_key.begin());
         } else {
             compact.key.external_key = append_key(source.key);
         }
         records_.push_back(std::move(compact));
-        place(source.hash, &records_.back());
+        place(source.hash, records_.size() - 1U);
     }
 
     [[nodiscard]] auto append_key(const std::string_view key) -> const char* {
@@ -649,23 +957,27 @@ class ImmutableReadIndex final {
         if (key_blocks_.empty() || key.size() > key_blocks_.back().capacity - key_blocks_.back().used) {
             const auto capacity = std::max(kKeyBlockBytes, key.size());
             key_blocks_.push_back({.bytes = std::make_unique<char[]>(capacity), .capacity = capacity});
+            allocated_key_storage_bytes_ = saturating_add(allocated_key_storage_bytes_, capacity);
         }
         auto& block = key_blocks_.back();
         auto* destination = block.bytes.get() + block.used;
         std::ranges::copy(key, destination);
         block.used += key.size();
+        key_bytes_ += key.size();
         return destination;
     }
 
-    void place(const std::uint64_t hash, const CompactReadRecord* record) {
+    void place(const std::uint64_t hash, const std::size_t record_index) {
+        if (record_index > std::numeric_limits<std::uint32_t>::max()) {
+            throw std::bad_alloc{};
+        }
         auto group_start = probe_start(hash);
         for (;;) {
             for (std::size_t offset = 0; offset < kSwissGroupSize; ++offset) {
                 const auto slot = group_start + offset;
                 if (control_[slot] == kSwissEmpty) {
                     control_[slot] = fingerprint(hash);
-                    hashes_[slot] = hash;
-                    table_[slot] = record;
+                    record_indices_[slot] = static_cast<std::uint32_t>(record_index);
                     ++size_;
                     return;
                 }
@@ -676,22 +988,31 @@ class ImmutableReadIndex final {
 
     std::size_t capacity_{};
     std::size_t size_{};
-    static constexpr auto kNoPin = std::numeric_limits<std::uint32_t>::max();
-    std::vector<CompactReadRecord> records_;
+    std::size_t key_bytes_{};
+    std::size_t allocated_key_storage_bytes_{};
+    std::vector<CompactReadRecord, RecordAllocator> records_;
     std::vector<KeyBlock> key_blocks_;
     std::vector<SegmentPtr> segments_;
     std::vector<DurableReadPin> durable_pins_;
     std::unique_ptr<std::uint8_t[]> control_;
-    std::unique_ptr<std::uint64_t[]> hashes_;
-    std::unique_ptr<const CompactReadRecord*[]> table_;
+    std::unique_ptr<std::uint32_t[]> record_indices_;
 
     friend class IncrementalBaseBuilder;
 };
 
 class IncrementalBaseBuilder final {
   public:
-    explicit IncrementalBaseBuilder(const std::size_t maximum_records)
+    explicit IncrementalBaseBuilder(const std::size_t maximum_records
+#if defined(__unix__) || defined(__APPLE__)
+                                    ,
+                                    std::shared_ptr<LargeImmutableMappingPool> mapping_pool
+#endif
+                                    )
+#if defined(__unix__) || defined(__APPLE__)
+        : index_(std::make_unique<ImmutableReadIndex>(std::move(mapping_pool))) {
+#else
         : index_(std::make_unique<ImmutableReadIndex>()) {
+#endif
         index_->initialize(maximum_records, false);
     }
 
@@ -704,6 +1025,10 @@ class IncrementalBaseBuilder final {
 
     [[nodiscard]] auto initialized() const noexcept -> bool {
         return initialized_slots_ == index_->capacity_;
+    }
+
+    [[nodiscard]] auto remaining_initialization_slots() const noexcept -> std::size_t {
+        return index_->capacity_ - initialized_slots_;
     }
 
     [[nodiscard]] auto contains(const HashedKey& key) const noexcept -> bool {
@@ -730,12 +1055,16 @@ class IncrementalBaseBuilder final {
 class DeltaState final {
   public:
     DeltaState(const std::size_t capacity, const std::size_t maximum_entries, const std::size_t size,
+               const std::size_t allocated_page_count, const std::size_t allocated_block_count,
+               const std::size_t allocated_chunk_count,
                std::vector<std::shared_ptr<const DeltaPage>> flat_pages,
                std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks,
                std::shared_ptr<DeltaArena> primary_arena, std::shared_ptr<DeltaArena> secondary_arena = {})
         : capacity_(capacity), maximum_entries_(maximum_entries), size_(size),
-          flat_pages_(std::move(flat_pages)), directory_chunks_(std::move(directory_chunks)),
-          primary_arena_(std::move(primary_arena)), secondary_arena_(std::move(secondary_arena)) {
+          allocated_page_count_(allocated_page_count), allocated_block_count_(allocated_block_count),
+          allocated_chunk_count_(allocated_chunk_count), flat_pages_(std::move(flat_pages)),
+          directory_chunks_(std::move(directory_chunks)), primary_arena_(std::move(primary_arena)),
+          secondary_arena_(std::move(secondary_arena)) {
         if (!primary_arena_) {
             throw std::invalid_argument{"Delta state has no primary record arena"};
         }
@@ -848,6 +1177,28 @@ class DeltaState final {
                    : std::nullopt;
     }
 
+    void append_memory_stats(ReadGenerationMemoryStats& stats) const noexcept {
+        stats.delta_entries = size_;
+        stats.delta_capacity = capacity_;
+        stats.delta_record_versions = record_versions();
+        stats.delta_arena_record_bytes = arena_record_bytes();
+        stats.delta_arena_key_bytes = arena_key_bytes();
+        stats.delta_arena_key_storage_bytes = arena_key_storage_bytes();
+
+        auto lookup = saturating_add(
+            saturating_multiply(flat_pages_.capacity(), sizeof(std::shared_ptr<const DeltaPage>)),
+            saturating_multiply(directory_chunks_.capacity(),
+                                sizeof(std::shared_ptr<const DeltaDirectoryChunk>)));
+        lookup = saturating_add(lookup, saturating_multiply(allocated_page_count_, sizeof(DeltaPage)));
+        lookup =
+            saturating_add(lookup, saturating_multiply(allocated_block_count_, sizeof(DeltaDirectoryBlock)));
+        lookup =
+            saturating_add(lookup, saturating_multiply(allocated_chunk_count_, sizeof(DeltaDirectoryChunk)));
+        stats.delta_lookup_storage_bytes = lookup;
+        stats.delta_allocated_lower_bound_bytes = saturating_add(
+            lookup, saturating_add(stats.delta_arena_record_bytes, stats.delta_arena_key_storage_bytes));
+    }
+
   private:
     [[nodiscard]] auto allocation_arena() const noexcept -> const std::shared_ptr<DeltaArena>& {
         return secondary_arena_ ? secondary_arena_ : primary_arena_;
@@ -878,6 +1229,11 @@ class DeltaState final {
     std::size_t capacity_{};
     std::size_t maximum_entries_{};
     std::size_t size_{};
+    // Exact topology census maintained by the Writer while cloning the COW
+    // directory. memory_stats() must remain O(1): it runs after every publish.
+    std::size_t allocated_page_count_{};
+    std::size_t allocated_block_count_{};
+    std::size_t allocated_chunk_count_{};
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
     std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks_;
     std::shared_ptr<DeltaArena> primary_arena_;
@@ -904,6 +1260,9 @@ class DeltaState final {
         return DeltaState{capacity,
                           maximum_entries,
                           0,
+                          0,
+                          0,
+                          0,
                           std::vector<std::shared_ptr<const DeltaPage>>(page_count),
                           std::vector<std::shared_ptr<const DeltaDirectoryChunk>>{},
                           std::move(arena)};
@@ -912,6 +1271,9 @@ class DeltaState final {
     const auto chunk_count = (directory_count + kDeltaDirectoryChunkBlocks - 1U) / kDeltaDirectoryChunkBlocks;
     return DeltaState{capacity,
                       maximum_entries,
+                      0,
+                      0,
+                      0,
                       0,
                       std::vector<std::shared_ptr<const DeltaPage>>{},
                       std::vector<std::shared_ptr<const DeltaDirectoryChunk>>(chunk_count),
@@ -925,7 +1287,9 @@ class DeltaBuilder final {
         : previous_(&previous), flat_pages_(copy_flat_delta_spine(previous.flat_pages_)),
           directory_chunks_(copy_directory_delta_spine(previous.directory_chunks_)),
           primary_arena_(previous.primary_arena_), secondary_arena_(previous.secondary_arena_),
-          scratch_(&scratch), size_(previous.size_) {
+          scratch_(&scratch), size_(previous.size_), allocated_page_count_(previous.allocated_page_count_),
+          allocated_block_count_(previous.allocated_block_count_),
+          allocated_chunk_count_(previous.allocated_chunk_count_) {
         if (allocation_arena) {
             if (allocation_arena != primary_arena_ && allocation_arena != secondary_arena_) {
                 if (secondary_arena_) {
@@ -1005,6 +1369,7 @@ class DeltaBuilder final {
 
     [[nodiscard]] auto freeze() && -> DeltaState {
         return DeltaState{previous_->capacity_,       previous_->maximum_entries_,  size_,
+                          allocated_page_count_,      allocated_block_count_,       allocated_chunk_count_,
                           std::move(flat_pages_),     std::move(directory_chunks_), std::move(primary_arena_),
                           std::move(secondary_arena_)};
     }
@@ -1054,6 +1419,9 @@ class DeltaBuilder final {
             GS_PHASE_PUT(delta_page_clone);
             page = existing ? std::make_shared<DeltaPage>(*existing) : std::make_shared<DeltaPage>();
         }
+        if (existing == nullptr) {
+            ++allocated_page_count_;
+        }
         mutable_pages.emplace_back(page_index, page);
         if (directory_chunks_.empty()) {
             flat_pages_[page_index] = page;
@@ -1066,11 +1434,15 @@ class DeltaBuilder final {
                                             [&](const auto& entry) { return entry.first == chunk_index; });
             if (found_chunk == mutable_chunks.end()) {
                 std::shared_ptr<DeltaDirectoryChunk> chunk;
+                const bool chunk_exists = directory_chunks_[chunk_index] != nullptr;
                 {
                     GS_PHASE_PUT(delta_chunk_clone);
-                    chunk = directory_chunks_[chunk_index]
+                    chunk = chunk_exists
                                 ? std::make_shared<DeltaDirectoryChunk>(*directory_chunks_[chunk_index])
                                 : std::make_shared<DeltaDirectoryChunk>();
+                }
+                if (!chunk_exists) {
+                    ++allocated_chunk_count_;
                 }
                 mutable_chunks.emplace_back(chunk_index, chunk);
                 directory_chunks_[chunk_index] = chunk;
@@ -1081,12 +1453,15 @@ class DeltaBuilder final {
                                             [&](const auto& entry) { return entry.first == block_index; });
             if (found_block == mutable_blocks.end()) {
                 std::shared_ptr<DeltaDirectoryBlock> block;
+                const bool block_exists = found_chunk->second->blocks[block_offset] != nullptr;
                 {
                     GS_PHASE_PUT(delta_block_clone);
-                    block = found_chunk->second->blocks[block_offset]
-                                ? std::make_shared<DeltaDirectoryBlock>(
-                                      *found_chunk->second->blocks[block_offset])
-                                : std::make_shared<DeltaDirectoryBlock>();
+                    block = block_exists ? std::make_shared<DeltaDirectoryBlock>(
+                                               *found_chunk->second->blocks[block_offset])
+                                         : std::make_shared<DeltaDirectoryBlock>();
+                }
+                if (!block_exists) {
+                    ++allocated_block_count_;
                 }
                 mutable_blocks.emplace_back(block_index, block);
                 found_chunk->second->blocks[block_offset] = block;
@@ -1112,6 +1487,9 @@ class DeltaBuilder final {
     DeltaPage* last_mutable_page_{};
     std::size_t last_mutable_page_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t size_{};
+    std::size_t allocated_page_count_{};
+    std::size_t allocated_block_count_{};
+    std::size_t allocated_chunk_count_{};
 };
 
 struct PairReadMerge::State final {
@@ -1495,7 +1873,12 @@ auto PairReadGeneration::start_incremental_merge(std::shared_ptr<const PairReadG
     }
     const auto bounded_post_entries =
         std::min(maximum_post_entries, cut->delta_->maximum_entries() - cut->delta_->size());
-    auto builder = std::make_unique<IncrementalBaseBuilder>(cut->base_->size() + cut->delta_->size());
+    auto builder = std::make_unique<IncrementalBaseBuilder>(cut->base_->size() + cut->delta_->size()
+#if defined(__unix__) || defined(__APPLE__)
+                                                                ,
+                                                            cut->base_->mapping_pool()
+#endif
+    );
     auto post_delta = make_empty_delta(cut->delta_->maximum_entries());
     auto state = std::make_unique<PairReadMerge::State>(cut, std::move(builder), std::move(post_delta),
                                                         bounded_post_entries);
@@ -1513,18 +1896,25 @@ auto PairReadGeneration::advance_incremental_merge(PairReadMerge& merge, const s
     }
     auto& state = *merge.state_;
     std::size_t processed{};
-    while (processed < maximum_slots && state.phase != PairReadMerge::State::Phase::ready) {
+    while (state.phase != PairReadMerge::State::Phase::ready) {
         if (state.phase == PairReadMerge::State::Phase::initialize) {
-            processed += state.builder->initialize_next(maximum_slots - processed);
             if (state.builder->initialized()) {
                 state.phase = PairReadMerge::State::Phase::base;
+                continue;
             }
+            if (processed == maximum_slots) {
+                break;
+            }
+            processed += state.builder->initialize_next(maximum_slots - processed);
             continue;
         }
         if (state.phase == PairReadMerge::State::Phase::base) {
             if (state.base_cursor == state.cut->base_->capacity()) {
                 state.phase = PairReadMerge::State::Phase::delta;
                 continue;
+            }
+            if (processed == maximum_slots) {
+                break;
             }
             auto record = state.cut->base_->record_at(state.base_cursor++);
             ++processed;
@@ -1544,6 +1934,9 @@ auto PairReadGeneration::advance_incremental_merge(PairReadMerge& merge, const s
         if (state.delta_cursor == state.cut->delta_->capacity()) {
             state.phase = PairReadMerge::State::Phase::ready;
             continue;
+        }
+        if (processed == maximum_slots) {
+            break;
         }
         auto record = state.cut->delta_->record_at(state.delta_cursor++);
         ++processed;
@@ -1589,6 +1982,64 @@ auto PairReadGeneration::merge_ready(const PairReadMerge& merge) noexcept -> boo
 
 auto PairReadGeneration::merge_post_entries(const PairReadMerge& merge) noexcept -> std::size_t {
     return merge.state_ ? merge.state_->post_delta.size() : 0U;
+}
+
+auto PairReadGeneration::merge_remaining_slots(const PairReadMerge& merge) noexcept -> std::size_t {
+    if (!merge.state_ || !merge.state_->builder) {
+        return 0U;
+    }
+    const auto& state = *merge.state_;
+    auto remaining = state.builder->remaining_initialization_slots();
+    if (state.phase == PairReadMerge::State::Phase::initialize ||
+        state.phase == PairReadMerge::State::Phase::base) {
+        remaining = saturating_add(remaining, state.cut->base_->capacity() - state.base_cursor);
+    }
+    if (state.phase != PairReadMerge::State::Phase::ready) {
+        remaining = saturating_add(remaining, state.cut->delta_->capacity() - state.delta_cursor);
+    }
+    return remaining;
+}
+
+auto PairReadGeneration::merge_post_capacity_remaining(const PairReadMerge& merge) noexcept -> std::size_t {
+    if (!merge.state_) {
+        return 0U;
+    }
+    const auto& state = *merge.state_;
+    if (state.post_delta.size() > state.maximum_post_entries) {
+        return 0U;
+    }
+    return std::min(state.maximum_post_entries - state.post_delta.size(),
+                    state.post_delta.available_record_versions());
+}
+
+auto PairReadGeneration::merge_advance_budget(const PairReadMerge& merge,
+                                              const std::size_t maximum_new_records,
+                                              const std::size_t minimum_slots) noexcept -> std::size_t {
+    const auto remaining_slots = merge_remaining_slots(merge);
+    if (remaining_slots == 0U) {
+        return 0U;
+    }
+    const auto post_capacity = merge_post_capacity_remaining(merge);
+    if (maximum_new_records == 0U) {
+        return std::min(remaining_slots, minimum_slots);
+    }
+    if (maximum_new_records >= post_capacity) {
+        return remaining_slots;
+    }
+
+    // ceil(remaining_slots * maximum_new_records / post_capacity), decomposed
+    // before multiplication. maximum_new_records and the remainder are both
+    // bounded by kMaximumIncrementalDeltaEntries, so the tail product cannot
+    // overflow while the quotient term is at most remaining_slots.
+    const auto quotient = remaining_slots / post_capacity;
+    const auto remainder = remaining_slots % post_capacity;
+    auto proportional = quotient * maximum_new_records;
+    const auto tail_product = remainder * maximum_new_records;
+    proportional += tail_product / post_capacity;
+    if (tail_product % post_capacity != 0U) {
+        ++proportional;
+    }
+    return std::min(remaining_slots, std::max(minimum_slots, proportional));
 }
 
 auto PairReadGeneration::can_publish_incremental(const PairReadGeneration& current,
@@ -1679,6 +2130,16 @@ auto PairReadGeneration::delta_arena_key_storage_bytes() const noexcept -> std::
 
 auto PairReadGeneration::base_entries() const noexcept -> std::size_t {
     return base_->size();
+}
+
+auto PairReadGeneration::memory_stats() const noexcept -> ReadGenerationMemoryStats {
+    auto stats = base_->memory_stats();
+    delta_->append_memory_stats(stats);
+    stats.generation_shell_bytes = sizeof(PairReadGenerationEnableShared);
+    stats.current_allocated_lower_bound_bytes =
+        saturating_add(stats.generation_shell_bytes, saturating_add(stats.base_allocated_lower_bound_bytes,
+                                                                    stats.delta_allocated_lower_bound_bytes));
+    return stats;
 }
 
 } // namespace glyphastore::store::paired

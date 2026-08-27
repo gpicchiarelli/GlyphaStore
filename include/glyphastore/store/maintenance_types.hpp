@@ -141,6 +141,11 @@ struct MaintenanceSnapshot {
     std::uint64_t skips{};
     std::uint64_t suspend_count{};
     std::uint64_t consecutive_no_gain{};
+    // Complete compact scans suppressed because the same physical candidate
+    // already produced an exact no-gain result. Pressure/emergency bypass it.
+    std::uint64_t no_gain_scans_suppressed{};
+    // Remaining steady-clock backoff. Zero means no memoized suppression.
+    std::uint64_t no_gain_retry_after_ns{};
     // Bytes copied by the current/most recently completed evaluation cycle.
     std::uint64_t bytes_copied_window{};
     std::uint64_t total_bytes_copied{};
@@ -159,6 +164,10 @@ struct MaintenanceSnapshot {
     std::uint64_t total_no_gain_expired_records_dropped{};
     std::uint64_t last_eval_duration_ns{};
     std::uint64_t last_compact_duration_ns{};
+    std::uint64_t last_compaction_pacing_delay_ns{};
+    std::uint64_t total_compaction_pacing_delay_ns{};
+    std::uint64_t last_compaction_pacing_sleep_count{};
+    std::uint64_t last_compaction_pacing_burst_bytes{};
     std::uint64_t ns_since_last_useful_compaction{};
     // Current one-second rate-limit window consumption (zero when unlimited).
     std::uint64_t rate_window_bytes_copied{};

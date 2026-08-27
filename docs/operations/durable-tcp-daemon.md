@@ -112,7 +112,9 @@ mutators.
 The Writer drains up to `group-max-records` from its bounded SPSC lane. It waits up to the configured
 deadline to satisfy `min-records`, then uses only a short bounded burst-coalescing window. All staged
 records share the commit boundary and are published before their completions become visible to the
-Reader/Reactor.
+Reader/Reactor. When `--durable-mutation-queue-wait-ms` is non-zero, the oldest admitted mutation's
+inclusive pre-Store deadline is an earlier batch-close boundary: reaching it produces `OVERLOADED`
+without entering Store and never permits the later group deadline to extend queueing.
 
 ### Admission and overload bounds
 
@@ -131,7 +133,7 @@ without application reconciliation ([client semantics v1 §5](../spec/client-sem
 |---|---|---|
 | `--maintenance-mode` | `background` | `cooperative`, `background`, or `disabled` |
 | `--maintenance-max-copy-bytes-per-cycle` | 128 MiB | normal compaction copy limit (`0` = unlimited) |
-| `--maintenance-max-copy-bytes-per-sec` | 0 | normal one-second copy rate (`0` = unlimited) |
+| `--maintenance-max-copy-bytes-per-sec` | 0 generic; 64 MiB/s `embedded`; 128 MiB/s `production` | pace bounded private pre-intent compaction writes (`0` = unlimited; profile values are overrideable starting points) |
 | `--maintenance-max-cpu-ms-per-window` | 0 | normal one-second compact CPU budget (`0` = unlimited) |
 | `--maintenance-suspend-on-p99-latency-ms` | 0 | defer normal compaction when the latest durable mutation p99 reaches this threshold (`0` = disabled; pressure/emergency bypass) |
 | `--maintenance-suspend-on-p99-min-samples` | 32 | minimum completed mutations required for a latency decision |
@@ -141,6 +143,9 @@ without application reconciliation ([client semantics v1 §5](../spec/client-sem
 
 Pressure/emergency maintenance bypass the normal copy and rate limits to recover capacity. Sticky
 maintenance faults fail `READY` until resolved or the Store is replaced from backup.
+The rate limiter never caps a whole transaction: candidates larger than one second of bandwidth
+continue in bounded physical writes. Tune it on the deployment filesystem using foreground p99/p99.9,
+compaction completion time and the pacing STATS fields; there is no universal cross-device optimum.
 
 ## 3. HEALTH / READY / STATS expectations
 

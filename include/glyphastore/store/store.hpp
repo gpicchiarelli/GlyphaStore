@@ -29,6 +29,12 @@ struct CompactionResult {
     std::uint64_t records_copied{};
     std::uint64_t bytes_copied{};
     std::uint64_t expired_records_dropped{};
+    std::uint64_t pre_intent_duration_ns{};
+    std::uint64_t publication_lease_duration_ns{};
+    std::uint64_t pacing_delay_ns{};
+    std::uint64_t pacing_sleep_count{};
+    std::uint64_t pacing_burst_bytes{};
+    std::uint64_t transient_metadata_lower_bound_bytes{};
 };
 
 class Store final {

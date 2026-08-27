@@ -12,6 +12,7 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -245,6 +246,10 @@ class DataDirectory final {
     [[nodiscard]] auto retire_compaction_segments(const StoreId& store_id,
                                                   std::span<const ManifestSegmentEntry> segments)
         -> CompactionSegmentRetirementResult;
+    // Recovery-only cleanup after a complete authoritative scan. Every name
+    // must be a recognized private engine temporary; the batch is removed and
+    // directory-synchronized without ever touching a canonical Segment name.
+    [[nodiscard]] auto cleanup_recovery_temporaries(std::span<const std::string> names) -> Status;
     [[nodiscard]] auto pristine_for_bootstrap() const -> Result<bool>;
     [[nodiscard]] auto available_space_bytes() const -> Result<std::uint64_t>;
     // Returns an independently positioned descriptor for descriptor-relative

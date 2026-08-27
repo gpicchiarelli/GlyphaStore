@@ -191,6 +191,12 @@ occupancy contracts the next target; already-admitted producer pressure grows it
 the absolute deadline or acknowledgement semantics. A multi-Worker Store keeps independent
 Worker-local producer-closed batches and commit domains.
 
+The paired Writer may observe one or more record/byte thresholds while appending a caller batch. In
+strict mode every threshold closes with the ordered Record barrier, commit-slot write, final slot
+synchronization, and Index publication. `commit_writer_batch()` performs the same immediate sequence
+for the residual extent after the append loop. It is invalid to publish a threshold-closing slot as
+deferred and then treat an empty explicit commit as proof of strict durability.
+
 ### Durable-periodic batching
 
 When batching is enabled for `durable-periodic`, step 3 writes Record bytes without publishing a

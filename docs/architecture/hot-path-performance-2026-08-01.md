@@ -235,19 +235,76 @@ Writer threads, generation pins). `store_get_copy` median RSS ~240 MiB with
 64 B values. Segment size and per-shard Writer stacks are structural; see
 `docs/architecture/storage-model.md` and paired ADR 0031/0032.
 
+The 2026-08-27 memory block replaced the immutable base's per-bucket
+`control + uint64 hash + record pointer` payload (17 bytes) with
+`control + uint32 record index` (5 bytes). The full hash moved into the existing
+64-byte compact record and every candidate still receives a full-hash and full-key comparison. At
+200,000 16-byte keys the base capacity was 262,144 buckets: the exact lookup payload fell from the
+4,456,448-byte counterfactual to 1,310,720 bytes, saving 3,145,728 bytes (70.59% of base lookup
+metadata) without a disk/wire/visibility change.
+
+The same block added a coherent current-generation allocation-payload lower bound and a dedicated
+native allocator/RSS census. On the local Apple arm64 run, current live structures accounted for
+roughly 59 MiB. Adding full Segment reservation explained the native allocator's current in-use
+bytes to within 0.33 MiB (about 99 MiB for one shard and 301 MiB for four); fixed 64 MiB Segment
+capacity is therefore the dominant virtual reservation at higher shard counts. Process RSS remained
+about 212 MiB with one shard and 103 MiB with four shards because untouched Segment pages are lazy
+while transient publication/merge pages can remain resident. Only one retired generation per shard
+remained and no merge was active at sampling time. This evidence narrows the open problem but does
+**not** close total memory amplification. Reproducible commands and raw cells are under
+`benchmarks/results/local-macos-2026-08-27-read-generation-memory/`.
+
+Allocation-event inspection then identified the one-shard residual: the macOS zone retained every
+successive 0.5 MiB immutable-record-array merge size, including 133.5 MiB of empty large regions.
+Large record arrays now use guarded anonymous mappings in geometric size classes, with one spare
+owned by the immutable-base lineage. Same-class merges alternate buffers; class changes and lineage
+destruction unmap the old spare. On the same dirty local source, the 200,000-entry one-shard census
+fell from 212.25 MiB RSS to 92.83 MiB (−56.3%); four-shard RSS fell from 103.51 MiB to 93.31 MiB.
+An interleaved same-source diagnostic A/B placed five-repeat `store_put_batch` medians around
+594–610 kops/s for general-allocation baselines and 594–610 kops/s for the bounded mapping pool,
+while immediate unmap measured only 550–564 kops/s. These are local directional results, not a
+release claim, but they justify the bounded reuse design over both unbounded allocator retention and
+unmap-on-every-retirement.
+
+The first coherent census implementation accidentally made every publication walk the complete
+reachable delta directory. A macOS CPU sample attributed 65.3% of all samples to that accounting
+path, reducing a 200,000-item single PUT cell to 122.7 kops/s. The Writer now maintains exact
+reachable page/block/chunk counts while creating COW nodes, and the immutable base tracks allocated
+key-block bytes as they are reserved. Census export is O(1): the matched local cell reached
+522.2 kops/s (+325.6%) at unchanged RSS and the accounting path fell to 0.13% of sampled stacks.
+No publication, ACK, routing or GET ownership rule changed. Raw local evidence and limitations are
+under `benchmarks/results/local-macos-2026-08-27-put-census-o1/`.
+
 ## Follow-ups (residuals)
 
-- PUT ack still ~2.5 µs median for single `Store::put`: publish_incremental +
-  generation ownership churn. Nested Writer `OperationGuard` on the embedded sync
-  path is removed via `PublishedAdmission::caller_holds_guard` (maintenance
-  emergency gate still checked).
+- Current local single `Store::put` is ~1.92–2.03 µs median for 16–64 B values after removing the
+  accidental O(n) census. The remaining cost is real publication COW, proportional merge work and
+  generation retirement. Nested Writer `OperationGuard` on the embedded sync path remains removed
+  via `PublishedAdmission::caller_holds_guard` (maintenance emergency gate still checked).
+- Incremental merge scheduling now accounts exact remaining scan slots against remaining bounded
+  post-cut entry/record-version capacity before every publication. Single PUT pays one configured
+  minimum quantum; a coalesced batch amortizes two, while the proportional term can exceed that
+  floor only when required to avoid exhausting the post delta. Dedicated idle quanta run after
+  completion delivery and release the execution token between turns. This removes duplicated
+  combiner housekeeping and the latent 256-quantum terminal cliff without changing RAW or ACK.
+  Same-shape local checks improved within modest host variance: 506,244 → 519,513 PUT/s single
+  (+2.62%; baseline 5, candidate 9 samples) and 670,405 → 676,662 PUT/s batch 32 (+0.93%; baseline
+  5, candidate 9 samples); the 1.5M growth run was 182,632 → 186,112 PUT/s (+1.91%). A separate temporary
+  three-quantum control (same final code except the two historical duplicate calls restored) over
+  one million timed PUTs measured p99.9 236.7 → 92.8 µs (−60.8%), p99 3.04 → 2.63 µs (−13.7%), and
+  instrumented throughput 482,574 → 522,026 PUT/s (+8.2%). These are same-host advisory figures,
+  not release evidence or a cross-platform tail claim.
 - `Store::put_batch` + Writer sync coalesce (≤32 / publish) amortizes publication
-  when the caller stages multiple same-shard mutations in one call. Lab median
-  ~527 k ops/s (batch 32) vs ~372 k single put on Apple M4 — honest gain without
-  changing single-op semantics.
+  when the caller stages multiple same-shard mutations in one call. Current local medians are
+  ~672 kops/s (batch 32) vs ~493 kops/s single PUT on Apple M4—an honest gain without changing
+  single-op semantics.
 - ADR 0035 (rejected): TLS shell freelist under existing publish protocol — mild
   1t PUT gain, **−16% affine PUT 2t** on A/B; not shipped. Residual remains
   Delta COW spine + Writer apply, not shell malloc alone.
+- Extend the allocation census to uniquely attribute retired/shared generation nodes, in-progress
+  merge builders, thread stacks, Segment resident pages, and the remaining 4/8 MiB native allocator
+  regions. Current and spare immutable-base mapping payloads are now explicit; steady-state and
+  cross-platform high-water evidence remains open.
 - `make_shared` co-allocation for generation shells, then embed `DeltaState` in
   the same allocation: lab `store_put` ~370–378 k (vs ~344 k plain same day).
   Affine stays in prior interleaved noise; still far from 600 k single-op target.

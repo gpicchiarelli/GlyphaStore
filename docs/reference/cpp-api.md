@@ -77,8 +77,9 @@ auto put_batch(std::span<const PutItem> items) -> std::vector<Status>;
 Returns one positional status per input item. Items may span owners: each owner serializes and
 publishes its own FIFO subsequence independently, and the returned vector restores caller order.
 Successful items are visible when the method returns; publication is internally chunked in groups
-of at most 32. A batch is not a transaction and success on one item is not rolled back by failure on
-another. Key/value spans are borrowed only for the call.
+of at most 32. On a dedicated paired Writer, concurrently admitted async work may linearize between
+those groups; batch items themselves remain FIFO. A batch is not a transaction and success on one
+item is not rolled back by failure on another. Key/value spans are borrowed only for the call.
 
 ## 7. Erase
 
@@ -123,6 +124,15 @@ auto compact() -> Result<CompactionResult>;
 
 Runs explicit compaction according to the storage mode's selection policy. Durable mode uses its crash-consistent whole-Worker transaction. Volatile mode copy-builds replacements for selected sparse sealed Segments and publishes them only when the Worker uses fewer physical Segments afterward. Only one public compaction attempt may run at a time; a concurrent attempt returns `sequence_conflict`. Success with no eligible or physically beneficial work returns a result with `compacted == false`. Durable no-gain planning still fills `worker_index` and the verified sealed Record/byte counters from the exact Index scan that rejected the rewrite; it never publishes an intent or rewrites Segments.
 
+For a useful durable transaction, `pre_intent_duration_ns` measures scan plus private staged
+copy/seal/verification before the global Manifest lease;
+`publication_lease_duration_ns` measures the recovery-sensitive v1 transaction window; and
+`pacing_delay_ns`, `pacing_sleep_count`, and `pacing_burst_bytes` describe automatic normal-pressure
+private-output pacing (manual `compact()` leaves them zero); and
+`transient_metadata_lower_bound_bytes` accounts for fixed snapshot/placement storage, replacement
+Index allocation and reusable Record scratch. The memory figure is explicitly a lower bound rather
+than total RSS or allocator traffic.
+
 Compaction preserves logical key/value visibility and may change Record references and physical Segment identities. Volatile source bytes remain alive while an already returned internal snapshot retains shared ownership; durable compaction additionally preserves crash recovery authority.
 
 ```cpp
@@ -134,14 +144,23 @@ Returns a point-in-time copy of controller state and counters. For durable backg
 dead, and dead-ratio Record-byte counters. The normal controller compares that ratio to
 `dead_byte_ratio_bp_normal` and preflights live bytes against the inclusive
 `max_copy_bytes_per_cycle` limit (128 MiB by default; zero means unlimited); pressure and emergency
-bypass both controls. `suspend_on_p99_latency_ms` can additionally defer normal daemon compaction
+bypass it. `max_copy_bytes_per_sec` is independent: it paces private pre-intent physical writes,
+admits candidates larger than one second of bandwidth, and uses the controller window only to
+separate adjacent jobs. Named daemon profiles start at 64 MiB/s (`embedded`) and 128 MiB/s
+(`production`); generic Store configuration uses zero/unlimited. Pressure/emergency bypass pacing.
+`suspend_on_p99_latency_ms` can additionally defer normal daemon compaction
 from a lock-free durable-mutation latency window; zero disables it and embedded Stores receive no
 samples unless their internal host supplies them. `suspend_on_p99_min_samples` rejects undersized
 windows, the armed guard resumes below 80% of the threshold, and `max_latency_deferral_ms` bounds
 continuous normal reclaim postponement (zero leaves pressure as the only bound). Unread expired
 Records remain conservatively live
 until GET, recovery, or compaction validates their expiration. Exact no-gain planning decisions also
-update last/total `*_no_gain_source_*` scan counters; cheap policy skips do not. For durable Stores,
+update last/total `*_no_gain_source_*` scan counters; cheap policy skips do not. Normal background
+maintenance memoizes an unchanged exact no-gain candidate after `max_no_gain_attempts` (one by
+default), invalidates on physical-candidate change, and retries no later than
+`max_eval_interval_ms`. Pressure/emergency bypass the memo. `no_gain_scans_suppressed` counts scans
+avoided and `no_gain_retry_after_ns` reports its remaining bound. Persistence v1 accepts only
+`max_segments_per_cycle == 1`; this field is not an incremental-copy switch. For durable Stores,
 `rotation` reports runtime-local attempt/commit/wait counters, post-rotation final-Record
 attempt/commit counters, and
 last/total/maximum nanoseconds for publication wait, Segment seal, replacement Segment creation,

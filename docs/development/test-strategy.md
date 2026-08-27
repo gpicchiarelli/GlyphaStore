@@ -106,7 +106,7 @@ defaults to 60s per target via `scripts/run-fuzzers.sh`. Override with
 Run focused binaries while iterating, then the repository workflow appropriate to the change before handoff.
 
 Run the long multi-output profile separately; together with `glyphastore_crash_sync`, it covers all
-154 persistence checkpoints and every one of the 64 Record copies:
+152 persistence checkpoints and every one of the 64 Record copies:
 
 ```sh
 build/macos-debug/glyphastore_crash_persistence --mode copy-matrix

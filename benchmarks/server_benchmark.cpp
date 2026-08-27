@@ -97,8 +97,14 @@ struct DurableProfileSample {
     std::uint64_t adaptive_target_closes{};
     std::uint64_t deadline_closes{};
     double average_paired_writer_batch_records{};
+    double average_paired_writer_batch_wait_ns{};
+    double maximum_paired_writer_batch_wait_ns{};
     std::uint64_t paired_writer_batches{};
     std::uint64_t paired_writer_batch_records{};
+    std::uint64_t paired_writer_durability_deadline_closes{};
+    std::uint64_t paired_writer_queue_deadline_closes{};
+    std::uint64_t paired_sync_turn_splits{};
+    std::uint64_t paired_sync_async_fairness_turns{};
     std::uint64_t paired_publications{};
     std::uint64_t paired_publication_records{};
     std::uint64_t paired_completion_notifications{};
@@ -385,6 +391,7 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
     std::uint64_t queue_wait_ns{};
     std::uint64_t service_ns{};
     std::uint64_t writer_batches{};
+    std::uint64_t writer_batch_wait_ns{};
     const auto counter_delta = [](const auto after, const auto before) {
         return after - std::min(after, before);
     };
@@ -407,9 +414,21 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
         const auto batch_delta =
             counter_delta(worker.writer_batches, before == nullptr ? 0U : before->writer_batches);
         writer_batches += batch_delta;
+        writer_batch_wait_ns += counter_delta(worker.total_writer_batch_wait_ns,
+                                              before == nullptr ? 0U : before->total_writer_batch_wait_ns);
         result.paired_writer_batches += batch_delta;
         result.paired_writer_batch_records +=
             counter_delta(worker.writer_batch_records, before == nullptr ? 0U : before->writer_batch_records);
+        result.paired_writer_durability_deadline_closes +=
+            counter_delta(worker.writer_batch_durability_deadline_closes,
+                          before == nullptr ? 0U : before->writer_batch_durability_deadline_closes);
+        result.paired_writer_queue_deadline_closes +=
+            counter_delta(worker.writer_batch_queue_deadline_closes,
+                          before == nullptr ? 0U : before->writer_batch_queue_deadline_closes);
+        result.paired_sync_turn_splits +=
+            counter_delta(worker.sync_turn_splits, before == nullptr ? 0U : before->sync_turn_splits);
+        result.paired_sync_async_fairness_turns += counter_delta(
+            worker.sync_async_fairness_turns, before == nullptr ? 0U : before->sync_async_fairness_turns);
         result.paired_publications +=
             counter_delta(worker.publications, before == nullptr ? 0U : before->publications);
         result.paired_publication_records +=
@@ -420,6 +439,9 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             std::max(result.maximum_queue_wait_ns, static_cast<double>(worker.maximum_queue_wait_ns));
         result.maximum_service_ns =
             std::max(result.maximum_service_ns, static_cast<double>(worker.maximum_service_ns));
+        result.maximum_paired_writer_batch_wait_ns =
+            std::max(result.maximum_paired_writer_batch_wait_ns,
+                     static_cast<double>(worker.maximum_writer_batch_wait_ns));
     }
     result.average_queue_wait_ns =
         result.completed == 0 ? 0.0
@@ -431,6 +453,9 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
         writer_batches == 0
             ? 0.0
             : static_cast<double>(result.paired_writer_batch_records) / static_cast<double>(writer_batches);
+    result.average_paired_writer_batch_wait_ns =
+        writer_batches == 0 ? 0.0
+                            : static_cast<double>(writer_batch_wait_ns) / static_cast<double>(writer_batches);
 
     std::uint64_t commit_ns{};
     for (const auto& worker : server.durable_batch_stats()) {
@@ -1380,10 +1405,22 @@ class BufferedResponseReader final {
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::deadline_closes));
     result.median_paired_writer_batch_records =
         median_profile(&DurableProfileSample::average_paired_writer_batch_records);
+    result.median_paired_writer_batch_wait_ns =
+        median_profile(&DurableProfileSample::average_paired_writer_batch_wait_ns);
+    result.maximum_paired_writer_batch_wait_ns =
+        maximum_profile(&DurableProfileSample::maximum_paired_writer_batch_wait_ns);
     result.paired_writer_batches =
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_writer_batches));
     result.paired_writer_batch_records =
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_writer_batch_records));
+    result.paired_writer_durability_deadline_closes = static_cast<std::uint64_t>(
+        median_profile(&DurableProfileSample::paired_writer_durability_deadline_closes));
+    result.paired_writer_queue_deadline_closes = static_cast<std::uint64_t>(
+        maximum_profile(&DurableProfileSample::paired_writer_queue_deadline_closes));
+    result.paired_sync_turn_splits =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::paired_sync_turn_splits));
+    result.paired_sync_async_fairness_turns =
+        static_cast<std::uint64_t>(maximum_profile(&DurableProfileSample::paired_sync_async_fairness_turns));
     result.paired_publications =
         static_cast<std::uint64_t>(median_profile(&DurableProfileSample::paired_publications));
     result.paired_publication_records =

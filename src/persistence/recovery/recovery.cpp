@@ -72,6 +72,29 @@ auto recover_durable_state(DataDirectory& directory, const std::uint64_t now_ns,
     if (!workers) {
         return unexpected(workers.error());
     }
+    if (compaction_intent == nullptr) {
+        std::vector<std::string> stale_temporaries;
+        for (const auto& issue : catalog->namespace_audit.issues) {
+            if (issue.kind == NamespaceIssueKind::stale_manifest_temporary ||
+                issue.kind == NamespaceIssueKind::stale_segment_temporary ||
+                issue.kind == NamespaceIssueKind::stale_compaction_temporary) {
+                stale_temporaries.push_back(issue.name);
+            }
+        }
+        if (auto cleaned = directory.cleanup_recovery_temporaries(stale_temporaries); !cleaned) {
+            return unexpected(cleaned.error());
+        }
+        if (!stale_temporaries.empty()) {
+            auto clean_audit = audit_data_directory(directory, catalog->manifest);
+            if (!clean_audit) {
+                return unexpected(clean_audit.error());
+            }
+            if (auto safe = validate_namespace_for_recovery(*clean_audit); !safe) {
+                return unexpected(safe.error());
+            }
+            catalog->namespace_audit = std::move(*clean_audit);
+        }
+    }
     return assemble_recovery_state(std::move(*catalog), std::move(*workers));
 }
 

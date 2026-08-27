@@ -2,6 +2,8 @@
 #include "glyphastore/segment/record.hpp"
 #include "test.hpp"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <fcntl.h>
@@ -72,6 +74,45 @@ struct SegmentInjectedFailure {
     bool enabled{};
 };
 
+struct PacedRecordIo final {
+    static constexpr std::size_t kGrantBytes = 32;
+
+    bool inside_record_write{};
+    std::vector<std::size_t> physical_write_sizes{};
+    std::size_t grants{};
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& state = *static_cast<PacedRecordIo*>(opaque);
+        if (operation == glyphastore::FilesystemOperation::write_record) {
+            state.inside_record_write = true;
+        }
+        return {};
+    }
+
+    static void after(void* opaque, const glyphastore::FilesystemOperation operation) {
+        auto& state = *static_cast<PacedRecordIo*>(opaque);
+        if (operation == glyphastore::FilesystemOperation::write_record) {
+            state.inside_record_write = false;
+        }
+    }
+
+    static auto write_some_at(void* opaque, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& state = *static_cast<PacedRecordIo*>(opaque);
+        if (state.inside_record_write) {
+            state.physical_write_sizes.push_back(bytes.size());
+        }
+        return ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset));
+    }
+
+    static auto acquire(void* opaque, const std::size_t requested_bytes) -> glyphastore::Result<std::size_t> {
+        auto& state = *static_cast<PacedRecordIo*>(opaque);
+        ++state.grants;
+        return std::min(requested_bytes, kGrantBytes);
+    }
+};
+
 auto fail_segment_operation(void* context, glyphastore::FilesystemOperation operation)
     -> glyphastore::Status {
     auto& failure = *static_cast<SegmentInjectedFailure*>(context);
@@ -118,6 +159,111 @@ GLYPHA_TEST("durable Segment creation preallocates exact size and reopens verifi
     GLYPHA_REQUIRE(duplicate.outcome == glyphastore::SegmentFileCreationOutcome::not_published);
     GLYPHA_REQUIRE(duplicate.error.has_value());
     GLYPHA_REQUIRE(duplicate.error->code == glyphastore::ErrorCode::sequence_conflict);
+}
+
+GLYPHA_TEST("staged Segment stays private until sealed promotion") {
+    SegmentTemporaryDirectory temporary;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity(0x21, 4);
+    const auto final_path = temporary.path() / glyphastore::segment_filename(identity);
+    const auto staged_path = temporary.path() / ('.' + glyphastore::segment_filename(identity) + ".tmp");
+
+    auto staged = glyphastore::DurableSegmentFile::create_staged(*directory, identity);
+    GLYPHA_REQUIRE(staged.has_value());
+    GLYPHA_REQUIRE(std::filesystem::exists(staged_path));
+    GLYPHA_REQUIRE(!std::filesystem::exists(final_path));
+    GLYPHA_REQUIRE(!glyphastore::DurableSegmentFile::open(*directory, identity).has_value());
+
+    const auto record = encoded_record(3, "staged", "record");
+    GLYPHA_REQUIRE(record.has_value());
+    GLYPHA_REQUIRE(staged->append_record(*record).committed());
+    GLYPHA_REQUIRE(staged->seal().committed());
+    auto verified = glyphastore::DurableSegmentFile::open_staged(*directory, identity);
+    GLYPHA_REQUIRE(verified.has_value());
+    GLYPHA_REQUIRE(verified->selected_commit().commit.state == glyphastore::PersistedSegmentState::sealed);
+
+    const std::array identities{identity};
+    GLYPHA_REQUIRE(glyphastore::DurableSegmentFile::promote_staged(*directory, identities).has_value());
+    GLYPHA_REQUIRE(!std::filesystem::exists(staged_path));
+    GLYPHA_REQUIRE(std::filesystem::exists(final_path));
+    auto reopened = glyphastore::DurableSegmentFile::open(*directory, identity);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE(reopened->selected_commit().commit.record_count == 1);
+    GLYPHA_REQUIRE(directory->healthy());
+}
+
+GLYPHA_TEST("paced Segment append bounds each physical Record write") {
+    SegmentTemporaryDirectory temporary;
+    PacedRecordIo pacing;
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(), glyphastore::FilesystemHooks{
+                              .context = &pacing,
+                              .before = &PacedRecordIo::before,
+                              .after = &PacedRecordIo::after,
+                              .file_io = {.context = &pacing, .write_some_at = &PacedRecordIo::write_some_at},
+                          });
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity(0x24, 7);
+    auto staged = glyphastore::DurableSegmentFile::create_staged(*directory, identity);
+    GLYPHA_REQUIRE(staged.has_value());
+
+    const auto record = encoded_record(5, "paced", std::string(512, 'p'));
+    GLYPHA_REQUIRE(record.has_value());
+    const glyphastore::SegmentRecordWritePacing write_pacing{
+        .context = &pacing,
+        .acquire = &PacedRecordIo::acquire,
+    };
+    GLYPHA_REQUIRE(staged->append_record(*record, write_pacing).committed());
+    GLYPHA_REQUIRE(pacing.grants == pacing.physical_write_sizes.size());
+    GLYPHA_REQUIRE(pacing.grants > 1);
+    GLYPHA_REQUIRE(std::ranges::all_of(pacing.physical_write_sizes, [](const std::size_t size) {
+        return size > 0U && size <= PacedRecordIo::kGrantBytes;
+    }));
+    GLYPHA_REQUIRE(staged->seal().committed());
+    GLYPHA_REQUIRE(staged->selected_commit().commit.record_count == 1);
+}
+
+GLYPHA_TEST("staged Segment discard removes private output without poisoning authority") {
+    SegmentTemporaryDirectory temporary;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity(0x22, 5);
+    const auto staged_path = temporary.path() / ('.' + glyphastore::segment_filename(identity) + ".tmp");
+    {
+        auto staged = glyphastore::DurableSegmentFile::create_staged(*directory, identity);
+        GLYPHA_REQUIRE(staged.has_value());
+        GLYPHA_REQUIRE(std::filesystem::exists(staged_path));
+    }
+    const std::array identities{identity};
+    glyphastore::DurableSegmentFile::discard_staged(*directory, identities);
+    GLYPHA_REQUIRE(!std::filesystem::exists(staged_path));
+    GLYPHA_REQUIRE(directory->healthy());
+}
+
+GLYPHA_TEST("staged Segment creation never replaces an existing private owner") {
+    SegmentTemporaryDirectory temporary;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    const auto identity = segment_identity(0x23, 6);
+    const auto staged_path = temporary.path() / ('.' + glyphastore::segment_filename(identity) + ".tmp");
+
+    auto owner = glyphastore::DurableSegmentFile::create_staged(*directory, identity);
+    GLYPHA_REQUIRE(owner.has_value());
+    const auto collision = glyphastore::DurableSegmentFile::create_staged(*directory, identity);
+    GLYPHA_REQUIRE(!collision.has_value());
+    GLYPHA_REQUIRE(collision.error().code == glyphastore::ErrorCode::sequence_conflict);
+    GLYPHA_REQUIRE(std::filesystem::exists(staged_path));
+
+    const auto record = encoded_record(4, "owner", "preserved");
+    GLYPHA_REQUIRE(record.has_value());
+    GLYPHA_REQUIRE(owner->append_record(*record).committed());
+    GLYPHA_REQUIRE(owner->seal().committed());
+    GLYPHA_REQUIRE(glyphastore::DurableSegmentFile::open_staged(*directory, identity).has_value());
+    const std::array identities{identity};
+    glyphastore::DurableSegmentFile::discard_staged(*directory, identities);
+    GLYPHA_REQUIRE(!std::filesystem::exists(staged_path));
+    GLYPHA_REQUIRE(directory->healthy());
 }
 
 GLYPHA_TEST("Segment append synchronizes data before alternating commit slots and scans Records") {

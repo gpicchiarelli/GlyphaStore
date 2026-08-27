@@ -79,15 +79,45 @@ Rejected: breaks RAW ([hot-path-performance](../architecture/hot-path-performanc
    `IDLE → EXECUTING` again (or the next producer will); no work may sit forever without an
    executor.
 5. **Daemon (`async_lane_capacity > 0`):** retains a dedicated per-shard executor thread (Reactor
-   must not block in Store). The executor holds the same token model. Future mutation windows
-   (PUT coalesce until GET barrier) submit grouped work to that executor; one TCP port remains.
+   must not block in Store). The executor holds the same token model. It combines only mutations
+   already queued, with explicit record and admission-byte bounds (defaults: 32 and 256 KiB), and
+   never waits to manufacture a volatile batch. Local 1 µs and 2 µs wait-window prototypes were
+   rejected because they did not clear the GET-tail gate. A durable-group fill wait is capped by
+   the oldest mutation's configured pre-Store queue deadline; it may expire that mutation at the
+   boundary, but it must not continue sleeping until the later durability deadline. The dedicated
+   Writer drains at most 32 records from the synchronous lane before giving an already-admitted
+   asynchronous batch a turn. A larger caller-owned sync batch remains FIFO in a Writer-local
+   continuation and resumes in later quanta; it is not a transaction, so admitted async work may
+   linearize between those publication groups.
 6. **GET barrier (daemon, phased):** a pipelined GET after mutations must not adopt a generation
    older than the epoch required by prior mutations on that connection; visibility waits on
    publish completion / `visible_epoch`, not on enqueue alone.
 7. **Grouped publication ≠ multi-key transaction.** Linearization remains per mutation FIFO;
    Readers simply observe one generation containing the combined effects.
-8. **Quiesce / exclusive Index:** `ExclusiveIndexQuiesce` / `hot_path_depth` treat the token
+8. **Completion coalescing:** all outcomes in a Writer batch are delivered to the bounded Reader
+   completion queue before its wakeup. The official single-Reader pair receives one notification
+   per batch; a defensive transition to a different target closes the preceding target group.
+   Mutation admission retains its preallocated payload slot until the matching completion is
+   drained. Payload-slot and completion rings have the same bounded lane capacity, so the Writer
+   never depends on timely scheduling of the Reader to publish an already-linearized outcome.
+   Exhausted capacity is rejected as overload before Store entry. This changes neither the
+   publication/ACK edge nor FIFO response order.
+9. **Quiesce / exclusive Index:** `ExclusiveIndexQuiesce` / `hot_path_depth` treat the token
    holder (caller or dedicated executor) as the Writer for the duration of the turn.
+10. **Merge debt follows post-cut consumption.** Before a publication consumes `N` worst-case
+    post-cut record slots, the Writer advances at least
+    `ceil(remaining_merge_slots * N / remaining_post_capacity)` slots. A single-record turn keeps
+    the configured minimum quantum; a coalesced publication amortizes one additional quantum but
+    does not grow maintenance linearly with client-controlled batch size. If bounded post capacity
+    is already insufficient, the whole remaining merge debt is paid before Store entry. State
+    transitions between initialize/base/delta/ready consume no slot budget. This replaces repeated
+    fixed-quantum calls and the terminal 256-retry cliff without widening the delta or changing
+    ACK/visibility ordering.
+11. **Dedicated idle merge turns happen after completion.** When the last foreground batch reaches
+    the merge threshold, the dedicated Writer advances one ordinary quantum only after delivering
+    its completions, then releases the execution token. New work can therefore interleave between
+    maintenance quanta. The embedded combiner has no background thread and advances debt only in a
+    mutation turn.
 
 ## Phased landing
 
@@ -110,6 +140,10 @@ Gates and litmus must stay green each phase; no production-readiness claim.
 ### Negative / residual
 
 - Combiner turns can extend caller latency under heavy same-shard contention (by design).
+- On a very large base with little post-cut capacity left, the proportional safety budget may
+  exceed the configured minimum quantum. This is the bounded cost required to avoid a later
+  capacity cliff; `read_merge_remaining_slots`, `read_merge_post_capacity_remaining`, and
+  `maximum_read_merge_quantum_slots` expose it.
 - Without a dedicated thread, durable catalog refresh deferred until a combiner turn (embedded).
 - Larger critical section on the caller stack for uncontended durable_sync I/O.
 
@@ -131,6 +165,8 @@ Gates and litmus must stay green each phase; no production-readiness claim.
 - Unit: token CAS lost-wakeup, combine FIFO same-key, uncontended path does not require a second
   thread (`tests/unit/shard_combining_executor_tests.cpp`).
 - Integration: existing `paired` litmus + durable ACK / fail-closed polarity.
+- Merge scheduler: exact debt/capacity unit proof plus embedded and dedicated tiny-post-delta
+  integration tests; the latter must complete without generation-admission backpressure.
 - Daemon: half-close, BIND handoff, OVERLOADED polarity; Phase C adds window/GET barrier tests.
 - Benchmarks: interlaced vs `local-macos-2026-08-26-head-94f1307` (≥9 samples); classify
   improvement / neutral / regression. Architectural aim (not a promise): uncontended PUT no

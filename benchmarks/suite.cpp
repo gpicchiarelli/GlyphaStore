@@ -666,15 +666,24 @@ template <typename SetupFn, typename BodyFn>
     return benchmark_collect_parallel(
         settings, config.operations, config, "store_parallel_put", config.operations,
         [&]() { return open_parallel_store(config); },
-        [&](std::unique_ptr<Store>& store, const std::size_t thread) -> std::size_t {
+        [&](std::unique_ptr<Store>& store, const std::size_t thread,
+            std::vector<double>& latency_ns) -> std::size_t {
             if (store == nullptr) {
                 return 0;
             }
             std::size_t writes = 0;
+            const bool measure_latency = settings.latency && latency_ns.capacity() != 0U;
             for (const auto index_in_order : material.thread_order[thread]) {
+                const auto started = measure_latency ? std::chrono::steady_clock::now()
+                                                     : std::chrono::steady_clock::time_point{};
                 if (store->put(material.material.keys[index_in_order],
                                bytes(material.material.values[index_in_order]))) {
                     ++writes;
+                }
+                if (measure_latency) {
+                    latency_ns.push_back(
+                        std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - started)
+                            .count());
                 }
             }
             return writes;

@@ -1471,12 +1471,20 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
                             Error{ErrorCode::unavailable, "durable runtime is fail-closed"});
                     }
                 } else if (should_flush_batch(worker)) {
-                    if (auto flushed = flush_worker_batch(worker, worker_lock, catalog_lock,
-                                                          SegmentCommitSync::deferred);
+                    // A Writer-owned input may contain multiple physical groups, and one
+                    // admitted record may itself exceed max_bytes. Every strict threshold
+                    // therefore closes here with an immediate slot sync; the explicit
+                    // commit_writer_batch() after the append loop closes only the residual.
+                    // Using deferred here could clear the pending group and turn that final
+                    // strict commit into a no-op, permitting an ACK without slot durability.
+                    const auto threshold_sync = options_.strict_ack && writer_batch
+                                                    ? SegmentCommitSync::immediate
+                                                    : SegmentCommitSync::deferred;
+                    if (auto flushed = flush_worker_batch(worker, worker_lock, catalog_lock, threshold_sync);
                         !flushed) {
                         if (worker.durable_through.value >= committed_sequence.value) {
-                            // Writer-batch / deferred flush: Index publish advanced
-                            // durable_through before secondary accounting failed.
+                            // Threshold publication advanced durable_through before secondary
+                            // accounting failed.
                             final_record_committed = true;
                             return {.outcome = DurableMutationOutcome::committed,
                                     .sequence = committed_sequence,

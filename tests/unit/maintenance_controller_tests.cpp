@@ -27,6 +27,12 @@ GLYPHA_TEST("validate maintenance config rejects inverted intervals") {
     const auto samples = glyphastore::validate_maintenance_config(config);
     GLYPHA_REQUIRE(!samples.has_value());
     GLYPHA_REQUIRE(samples.error().code == glyphastore::ErrorCode::invalid_argument);
+
+    config.suspend_on_p99_min_samples = 32;
+    config.max_segments_per_cycle = 2;
+    const auto v1_transaction_count = glyphastore::validate_maintenance_config(config);
+    GLYPHA_REQUIRE(!v1_transaction_count.has_value());
+    GLYPHA_REQUIRE(v1_transaction_count.error().code == glyphastore::ErrorCode::invalid_argument);
 }
 
 GLYPHA_TEST("maintenance integer ratios and pressure thresholds do not overflow") {
@@ -354,8 +360,8 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
             .sealed_segment_count = 2,
             .compaction_candidate_worker = 0,
             .candidate_sealed_record_bytes = 2'000,
-            .candidate_live_record_bytes = 400,
-            .candidate_dead_record_bytes = 1'600,
+            .candidate_live_record_bytes = 600,
+            .candidate_dead_record_bytes = 1'400,
             .candidate_dead_byte_ratio_bp = 8'000,
             .max_segment_count = 100,
             .reserved_free_bytes = 1'024,
@@ -370,7 +376,7 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
         return glyphastore::CompactionResult{
             .compacted = true,
             .records_copied = 1,
-            .bytes_copied = 400,
+            .bytes_copied = 600,
         };
     });
     controller.start();
@@ -381,8 +387,11 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
         std::this_thread::sleep_for(std::chrono::milliseconds{5});
     }
     GLYPHA_REQUIRE(compact_calls->load(std::memory_order_acquire) == 1);
-    GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 500);
-    GLYPHA_REQUIRE(controller.snapshot().rate_window_bytes_copied == 400);
+    // max_copy_bytes_per_sec is pacing, not a whole-transaction cap. The
+    // independent per-cycle limit is disabled, so a candidate larger than one
+    // second of bandwidth must still be admitted.
+    GLYPHA_REQUIRE(observed_copy_limit->load(std::memory_order_relaxed) == 0);
+    GLYPHA_REQUIRE(controller.snapshot().rate_window_bytes_copied == 600);
 
     controller.request_evaluate();
     const auto rate_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
@@ -420,8 +429,8 @@ GLYPHA_TEST("normal rate and cpu budgets suspend and pressure bypasses them") {
             .sealed_segment_count = 2,
             .compaction_candidate_worker = 0,
             .candidate_sealed_record_bytes = 2'000,
-            .candidate_live_record_bytes = 400,
-            .candidate_dead_record_bytes = 1'600,
+            .candidate_live_record_bytes = 600,
+            .candidate_dead_record_bytes = 1'400,
             .candidate_dead_byte_ratio_bp = 8'000,
             .max_segment_count = 100,
             .reserved_free_bytes = 1'024,
@@ -590,6 +599,9 @@ GLYPHA_TEST("foreground latency guard uses hysteresis and bounded reclaim debt")
     config.suspend_on_p99_min_samples = 1;
     // Headroom above CI scheduling jitter so hysteresis checks are not raced by debt override.
     config.max_latency_deferral_ms = 500;
+    // This test isolates latency-state transitions; do not let its synthetic
+    // unchanged no-gain callback engage the independent no-gain memo.
+    config.max_no_gain_attempts = 0;
 
     glyphastore::MaintenanceController controller{config};
     auto compact_calls = std::make_shared<std::atomic<std::uint64_t>>(0);
@@ -823,7 +835,7 @@ GLYPHA_TEST("normal policy respects max_no_gain budget backoff") {
     config.worker_config.explicit_count = 1;
     config.maintenance.mode = glyphastore::MaintenanceMode::background;
     config.maintenance.min_eval_interval_ms = 5;
-    config.maintenance.max_eval_interval_ms = 5;
+    config.maintenance.max_eval_interval_ms = 60'000;
     config.maintenance.max_no_gain_attempts = 2;
 
     auto store = glyphastore::Store::open(config);

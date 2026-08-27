@@ -5,6 +5,12 @@ Campaign run from the dirty pre-commit tree at `31bd35f` on an Apple M4 with the
 performance evidence, not a CI baseline, a cross-platform comparison, or a
 durability certification.
 
+> **Partial invalidation (2026-08-27):** the batch-1 and batch-4 TCP `durable_group` cells with four
+> clients reached a Writer threshold that was incorrectly closed as deferred. Those raw files and
+> their aggregate rows are not valid strict durability performance evidence. Corrected measurements
+> and the exact scope are in `../local-macos-2026-08-27-strict-group-sync-fix/`. Other cells are not
+> retroactively promoted to durability certification.
+
 ## Coverage
 
 - 222 successful commands: the canonical 219-command matrix plus three generation-publication diagnostics;

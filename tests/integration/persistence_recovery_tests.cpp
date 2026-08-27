@@ -92,7 +92,7 @@ GLYPHA_TEST("durable recovery rebuilds partitioned visibility and Worker sequenc
     GLYPHA_REQUIRE(recovered->workers[1].active_segment.value == 3);
 }
 
-GLYPHA_TEST("recovery reports crash temporaries but rejects unlisted Segments without adoption") {
+GLYPHA_TEST("recovery cleans crash temporaries but rejects unlisted Segments without adoption") {
     {
         RecoveryTemporaryDirectory temporary;
         auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
@@ -113,9 +113,11 @@ GLYPHA_TEST("recovery reports crash temporaries but rejects unlisted Segments wi
 
         const auto recovered = glyphastore::recover_durable_state(*directory);
         GLYPHA_REQUIRE(recovered.has_value());
-        GLYPHA_REQUIRE(recovered->namespace_audit.issues.size() == 2);
+        GLYPHA_REQUIRE(recovered->namespace_audit.clean());
         GLYPHA_REQUIRE(recovered->namespace_audit.recovery_safe());
-        GLYPHA_REQUIRE(std::filesystem::exists(temporary.path() / glyphastore::kManifestTemporaryFilename));
+        GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kManifestTemporaryFilename));
+        GLYPHA_REQUIRE(!std::filesystem::exists(
+            temporary.path() / ('.' + glyphastore::segment_filename(segment.identity()) + ".tmp")));
     }
     {
         RecoveryTemporaryDirectory temporary;

@@ -60,6 +60,13 @@ struct PairWriterStats final {
     std::uint64_t writer_batches{};
     std::uint64_t writer_batch_records{};
     std::size_t maximum_writer_batch_records{};
+    std::uint64_t total_writer_batch_wait_ns{};
+    std::uint64_t maximum_writer_batch_wait_ns{};
+    std::uint64_t writer_batch_durability_deadline_closes{};
+    std::uint64_t writer_batch_queue_deadline_closes{};
+    std::uint64_t sync_drain_turns{};
+    std::uint64_t sync_turn_splits{};
+    std::uint64_t sync_async_fairness_turns{};
     std::uint64_t publications{};
     std::uint64_t publication_records{};
     std::uint64_t completion_notifications{};
@@ -82,6 +89,7 @@ struct PairWriterStats final {
     std::size_t delta_arena_record_bytes{};
     std::size_t delta_arena_key_bytes{};
     std::size_t delta_arena_key_storage_bytes{};
+    store::paired::ReadGenerationMemoryStats read_generation_memory{};
     bool read_merge_active{};
     std::size_t read_merge_post_entries{};
     std::uint64_t read_merge_starts{};
@@ -89,6 +97,9 @@ struct PairWriterStats final {
     std::uint64_t read_merge_failures{};
     std::uint64_t read_merge_backpressure{};
     std::uint64_t read_merge_slots_processed{};
+    std::size_t read_merge_remaining_slots{};
+    std::size_t read_merge_post_capacity_remaining{};
+    std::uint64_t maximum_read_merge_quantum_slots{};
     LatencyHistogram queue_wait_histogram{};
     LatencyHistogram service_histogram{};
 };

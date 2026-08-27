@@ -777,8 +777,8 @@ enum class RecoveryExpectation { absent, optional, present };
 }
 
 [[nodiscard]] auto multi_output_next_authority(const std::string_view boundary) -> bool {
-    return boundary == "sync_directory#4" || boundary.starts_with("remove_compaction_segment#") ||
-           boundary == "sync_directory#5" || boundary == "sync_directory#6";
+    return boundary == "sync_directory#3" || boundary.starts_with("remove_compaction_segment#") ||
+           boundary == "sync_directory#4" || boundary == "sync_directory#5";
 }
 
 [[nodiscard]] auto verify_recovery(const Options& options) -> bool {
@@ -939,22 +939,21 @@ enum class RecoveryExpectation { absent, optional, present };
                 "sync_record",         "write_commit_slot#2", "sync_commit_slot#2"};
     }
     if (scenario == "compact") {
-        return {"write_compaction_intent",
-                "sync_compaction_intent",
-                "rename_compaction_intent",
-                "sync_directory#1",
-                "preallocate_segment",
+        return {"preallocate_segment",
                 "write_segment_header",
-                "sync_segment_file",
-                "rename_segment",
-                "sync_directory#2",
                 "write_record#1",
+                "write_record#2",
                 "sync_record#1",
                 "write_commit_slot#1",
                 "sync_commit_slot#1",
-                "write_record#2",
                 "write_commit_slot#2",
                 "sync_commit_slot#2",
+                "write_compaction_intent",
+                "sync_compaction_intent",
+                "rename_compaction_intent",
+                "sync_directory#1",
+                "rename_segment",
+                "sync_directory#2",
                 "write_manifest",
                 "sync_manifest",
                 "rename_manifest",
@@ -966,21 +965,11 @@ enum class RecoveryExpectation { absent, optional, present };
                 "sync_directory#5"};
     }
     if (scenario == "compact-multi-build") {
-        return {"write_record#64",
-                "preallocate_segment#2",
-                "write_segment_header#2",
-                "sync_segment_file#2",
-                "rename_segment#2",
-                "sync_directory#3",
-                "sync_record#2",
-                "write_commit_slot#3",
-                "sync_commit_slot#3",
-                "write_commit_slot#4",
-                "sync_commit_slot#4",
-                "sync_directory#4",
-                "remove_compaction_segment#3",
-                "sync_directory#5",
-                "sync_directory#6"};
+        return {"write_record#64",     "preallocate_segment#2", "write_segment_header#2",
+                "rename_segment#2",    "sync_directory#2",      "sync_record#2",
+                "write_commit_slot#3", "sync_commit_slot#3",    "write_commit_slot#4",
+                "sync_commit_slot#4",  "sync_directory#3",      "remove_compaction_segment#3",
+                "sync_directory#4",    "sync_directory#5"};
     }
     if (scenario == "compact-multi-rollback") {
         return {"remove_compaction_segment#1", "remove_compaction_segment#2", "sync_directory#1",
@@ -1119,8 +1108,8 @@ void cleanup_matrix_case(const Options& options) {
 [[nodiscard]] auto run_random_matrix() -> bool {
     const std::vector<std::string> boundaries{
         "sync_directory#1", "write_record#1",     "write_record#32",  "preallocate_segment#2",
-        "write_record#64",  "sync_commit_slot#4", "sync_directory#4", "remove_compaction_segment#2",
-        "sync_directory#6",
+        "write_record#64",  "sync_commit_slot#4", "sync_directory#3", "remove_compaction_segment#2",
+        "sync_directory#5",
     };
     constexpr std::array<std::uint64_t, 4> kSeeds{
         0xA17E'2026'0000'0001ULL,

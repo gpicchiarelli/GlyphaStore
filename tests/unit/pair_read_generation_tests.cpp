@@ -107,6 +107,7 @@ GLYPHA_TEST("paired Delta arena retains immutable overwrite versions in fixed re
     const std::string key{"arena-key"};
     const glyphastore::HashedKey hashed{key, glyphastore::hash_key_routing(key, routing)};
     std::shared_ptr<const glyphastore::server::PairReadGeneration> first_generation;
+    glyphastore::store::paired::ReadGenerationMemoryStats first_memory{};
 
     for (std::uint64_t sequence = 1; sequence <= 65; ++sequence) {
         const auto value = std::to_string(sequence);
@@ -121,8 +122,17 @@ GLYPHA_TEST("paired Delta arena retains immutable overwrite versions in fixed re
         GLYPHA_REQUIRE(generation.has_value());
         if (sequence == 1) {
             first_generation = *generation;
+            first_memory = first_generation->memory_stats();
         }
     }
+
+    const auto overwrite_memory = (*generation)->memory_stats();
+    // COW replaces the same logical page but does not grow the reachable
+    // directory topology. The cached O(1) census must count reachable nodes,
+    // not every historical clone.
+    GLYPHA_REQUIRE(overwrite_memory.delta_lookup_storage_bytes == first_memory.delta_lookup_storage_bytes);
+    GLYPHA_REQUIRE(overwrite_memory.delta_record_versions == 65);
+    GLYPHA_REQUIRE(overwrite_memory.delta_arena_record_bytes > first_memory.delta_arena_record_bytes);
 
     const std::string external_key(17, 'x');
     const glyphastore::HashedKey external_hashed{external_key,
@@ -142,6 +152,11 @@ GLYPHA_TEST("paired Delta arena retains immutable overwrite versions in fixed re
     GLYPHA_REQUIRE((*generation)->delta_arena_record_bytes() == 128U * 64U);
     GLYPHA_REQUIRE((*generation)->delta_arena_key_bytes() == external_key.size());
     GLYPHA_REQUIRE((*generation)->delta_arena_key_storage_bytes() == 4U * 1024U);
+    const auto external_memory = (*generation)->memory_stats();
+    GLYPHA_REQUIRE(external_memory.delta_lookup_storage_bytes >= overwrite_memory.delta_lookup_storage_bytes);
+    GLYPHA_REQUIRE(external_memory.delta_allocated_lower_bound_bytes ==
+                   external_memory.delta_lookup_storage_bytes + external_memory.delta_arena_record_bytes +
+                       external_memory.delta_arena_key_storage_bytes);
     const auto latest = (*generation)->get(hashed, 0);
     const auto external = (*generation)->get(external_hashed, 0);
     GLYPHA_REQUIRE(latest.has_value());
@@ -178,6 +193,26 @@ GLYPHA_TEST("paired compact base preserves inline boundary and multi-block keys"
     GLYPHA_REQUIRE(generation.has_value());
     GLYPHA_REQUIRE((*generation)->base_entries() == keys.size());
     GLYPHA_REQUIRE((*generation)->delta_entries() == 0);
+    const auto memory = (*generation)->memory_stats();
+    GLYPHA_REQUIRE(memory.base_entries == keys.size());
+    GLYPHA_REQUIRE(memory.base_capacity == 8);
+    GLYPHA_REQUIRE(memory.base_record_storage_bytes == keys.size() * 64U);
+    GLYPHA_REQUIRE(memory.base_record_mapped_storage_bytes == 0);
+    GLYPHA_REQUIRE(memory.base_lookup_storage_bytes == memory.base_capacity * 5U);
+    // Before the compact lookup cell, the immutable base carried one control
+    // byte, one full hash and one pointer for every bucket (17 B/bucket).
+    GLYPHA_REQUIRE(memory.base_lookup_storage_bytes < memory.base_capacity * 17U);
+    GLYPHA_REQUIRE(memory.base_key_bytes == keys[1].size() + keys[2].size());
+    GLYPHA_REQUIRE(memory.base_key_storage_bytes >= memory.base_key_bytes);
+    GLYPHA_REQUIRE(memory.base_pin_storage_bytes >= sizeof(glyphastore::SegmentPtr));
+    GLYPHA_REQUIRE(memory.base_allocated_lower_bound_bytes >=
+                   memory.base_record_storage_bytes + memory.base_lookup_storage_bytes +
+                       memory.base_key_storage_bytes + memory.base_pin_storage_bytes);
+    GLYPHA_REQUIRE(memory.delta_entries == 0);
+    GLYPHA_REQUIRE(memory.delta_lookup_storage_bytes > 0);
+    GLYPHA_REQUIRE(memory.current_allocated_lower_bound_bytes ==
+                   memory.generation_shell_bytes + memory.base_allocated_lower_bound_bytes +
+                       memory.delta_allocated_lower_bound_bytes);
     for (const auto& key : keys) {
         const glyphastore::HashedKey hashed{key, glyphastore::hash_key_routing(key, routing)};
         const auto found = (*generation)->get(hashed, 0);
@@ -319,6 +354,46 @@ GLYPHA_TEST("paired incremental merge applies bounded post-cut backpressure befo
     GLYPHA_REQUIRE(
         !glyphastore::server::PairReadGeneration::can_publish_incremental(**generation, merge->get(), 1));
     GLYPHA_REQUIRE(glyphastore::server::PairReadGeneration::merge_post_entries(**merge) == 2);
+}
+
+GLYPHA_TEST("paired incremental merge budget amortizes debt across remaining post capacity") {
+    const glyphastore::WorkerRoutingState routing{};
+    auto segment = std::make_shared<glyphastore::Segment>(glyphastore::SegmentId{130});
+    auto generation = glyphastore::server::PairReadGeneration::empty(routing);
+    GLYPHA_REQUIRE(generation.has_value());
+    const auto mutation = [&](const std::string_view key, const std::uint64_t sequence) {
+        return glyphastore::server::ReadMutation{
+            .key = {key, glyphastore::hash_key_routing(key, routing)},
+            .record = append(*segment, routing, key, "value", sequence, glyphastore::Opcode::put),
+            .segment = segment,
+            .opcode = glyphastore::Opcode::put,
+        };
+    };
+    auto cut = mutation("budget-cut", 1);
+    generation = glyphastore::server::PairReadGeneration::publish_incremental(std::move(*generation),
+                                                                              std::span{&cut, 1});
+    GLYPHA_REQUIRE(generation.has_value());
+    auto merge = glyphastore::server::PairReadGeneration::start_incremental_merge(*generation, 2);
+    GLYPHA_REQUIRE(merge.has_value());
+
+    const auto initial_work = glyphastore::server::PairReadGeneration::merge_remaining_slots(**merge);
+    GLYPHA_REQUIRE(initial_work > 2U);
+    GLYPHA_REQUIRE(glyphastore::server::PairReadGeneration::merge_post_capacity_remaining(**merge) == 2U);
+    const auto first_budget = glyphastore::server::PairReadGeneration::merge_advance_budget(**merge, 1U, 1U);
+    GLYPHA_REQUIRE(first_budget >= initial_work / 2U);
+    GLYPHA_REQUIRE(first_budget < initial_work);
+    auto advanced = glyphastore::server::PairReadGeneration::advance_incremental_merge(**merge, first_budget);
+    GLYPHA_REQUIRE(advanced.has_value());
+    GLYPHA_REQUIRE(*advanced == first_budget);
+
+    auto post = mutation("budget-post", 2);
+    generation = glyphastore::server::PairReadGeneration::publish_incremental(
+        std::move(*generation), std::span{&post, 1}, merge->get());
+    GLYPHA_REQUIRE(generation.has_value());
+    GLYPHA_REQUIRE(glyphastore::server::PairReadGeneration::merge_post_capacity_remaining(**merge) == 1U);
+    const auto remaining_work = glyphastore::server::PairReadGeneration::merge_remaining_slots(**merge);
+    GLYPHA_REQUIRE(glyphastore::server::PairReadGeneration::merge_advance_budget(**merge, 1U, 1U) ==
+                   remaining_work);
 }
 
 GLYPHA_TEST("paired incremental merge rejects publication from another generation lineage") {

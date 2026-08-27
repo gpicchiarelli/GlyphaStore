@@ -48,7 +48,8 @@ defers implementation past 0.1.x.
    verify outside the fence; catalog Segment copies use bounded parallelism (Manifest last);
    source validation under the fence is **structural only** (destination CRC is the promotion
    gate); reports `admission_fence_ns` / `catalog_copy_ns` / `destination_verify_ns` /
-   `segment_copy_workers`. Still fenced for flush+structural check+copy.
+   `segment_copy_workers`. Concurrent callers retain counted admission-fence ownership across the
+   catalog-copy serialization wait. Still fenced for flush+structural check+copy.
 4. **Multi-version Segment freeze (pinned Manifest generation + copy-on-write new writers).**  
    Leading candidate for an in-process zero-fence design; requires durable generation pins and
    interaction with compaction (ADR 0015) and paired Writers (ADR 0032).

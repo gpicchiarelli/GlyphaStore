@@ -72,6 +72,82 @@ GLYPHA_TEST("durable daemon retries only a proven non-committed first-attempt se
     GLYPHA_REQUIRE(!should_retry(missing_error, 0));
 }
 
+#if defined(GLYPHASTORE_FAULT_INJECTION)
+GLYPHA_TEST("dedicated paired Writer gives admitted async work a turn within one large sync batch") {
+    auto opened = open_paired_store_for_writer(1, 8);
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto executor = glyphastore::server::PairWriterPool::create(store, 1, 8, kTestMutationArenaBytes,
+                                                                std::chrono::milliseconds{0}, {});
+    GLYPHA_REQUIRE(executor.has_value());
+    GLYPHA_REQUIRE((*executor)->start().has_value());
+    glyphastore::server::BoundedSpscQueue<glyphastore::server::MutationCompletion> completions{8};
+    auto wakeup = glyphastore::server::Wakeup::create();
+    GLYPHA_REQUIRE(wakeup.has_value());
+
+    glyphastore::fault::reset();
+    glyphastore::fault::arm_block(glyphastore::fault::Site::sync_lane_snapshot);
+    std::vector<std::string> sync_keys;
+    sync_keys.reserve(64);
+    for (std::size_t index = 0; index < 64U; ++index) {
+        sync_keys.push_back("large-sync-batch-" + std::to_string(index));
+    }
+    std::vector<glyphastore::Store::PutItem> sync_items;
+    sync_items.reserve(sync_keys.size());
+    for (const auto& key : sync_keys) {
+        sync_items.push_back({.key = key, .value = bytes("sync")});
+    }
+    std::atomic_bool sync_batch_ok{};
+    std::thread sync_batch{[&] {
+        const auto statuses = store.put_batch(sync_items);
+        sync_batch_ok.store(
+            std::ranges::all_of(statuses, [](const auto& status) { return status.has_value(); }));
+    }};
+    const auto first_snapshot_blocked =
+        glyphastore::fault::wait_until_blocked(glyphastore::fault::Site::sync_lane_snapshot);
+
+    const auto async_admitted = (*executor)
+                                    ->try_submit({
+                                        .connection = {.slot = 1, .generation = 1},
+                                        .request_id = 700,
+                                        .worker_index = 0,
+                                        .kind = glyphastore::server::MutationKind::put,
+                                        .key = bytes("async-between-sync-snapshots"),
+                                        .key_hash = glyphastore::hash_key("async-between-sync-snapshots"),
+                                        .value = bytes("async"),
+                                        .completions = &completions,
+                                        .wakeup = &*wakeup,
+                                    })
+                                    .has_value();
+
+    glyphastore::fault::release_block(glyphastore::fault::Site::sync_lane_snapshot);
+    std::optional<glyphastore::server::MutationCompletion> async_completion;
+    const auto completion_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (!async_completion && std::chrono::steady_clock::now() < completion_deadline) {
+        async_completion = completions.try_pop();
+        if (!async_completion) {
+            std::this_thread::yield();
+        }
+    }
+    sync_batch.join();
+    glyphastore::fault::reset();
+
+    GLYPHA_REQUIRE(first_snapshot_blocked);
+    GLYPHA_REQUIRE(async_admitted);
+    GLYPHA_REQUIRE(sync_batch_ok.load());
+    GLYPHA_REQUIRE(async_completion.has_value());
+    GLYPHA_REQUIRE(!async_completion->error.has_value());
+    GLYPHA_REQUIRE((*executor)->release_payload(0, async_completion->payload_slot));
+    const auto stats = (*executor)->stats();
+    GLYPHA_REQUIRE(stats.size() == 1);
+    GLYPHA_REQUIRE(stats[0].sync_drain_turns >= 2U);
+    GLYPHA_REQUIRE(stats[0].sync_turn_splits >= 1U);
+    GLYPHA_REQUIRE(stats[0].sync_async_fairness_turns >= 1U);
+    GLYPHA_REQUIRE((*executor)->stop_and_drain().has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+#endif
+
 GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") {
     const glyphastore::server::PairReadMergeConfig merge_config{
         .delta_entries = 4,
@@ -80,7 +156,8 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
     };
     auto opened =
         open_paired_store_for_writer(1, 8, kTestMutationArenaBytes,
-                                     {.merge_delta_entries = merge_config.delta_entries,
+                                     {.async_writer_batch_max_records = 2,
+                                      .merge_delta_entries = merge_config.delta_entries,
                                       .merge_maximum_post_entries = merge_config.maximum_post_entries,
                                       .merge_quantum_slots = merge_config.quantum_slots});
     GLYPHA_REQUIRE(opened.has_value());
@@ -128,9 +205,12 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
     GLYPHA_REQUIRE(completion_stats.writer_batch_records == keys.size());
     GLYPHA_REQUIRE(completion_stats.writer_batches >= 1);
     GLYPHA_REQUIRE(completion_stats.writer_batches <= keys.size());
+    GLYPHA_REQUIRE(completion_stats.maximum_writer_batch_records <= 2);
     GLYPHA_REQUIRE(completion_stats.publications == completion_stats.writer_batches);
     GLYPHA_REQUIRE(completion_stats.publication_records == keys.size());
-    GLYPHA_REQUIRE(completion_stats.completion_notifications == keys.size());
+    // One Reader owns this lane and drains every delivered completion after a wakeup. The
+    // Writer therefore emits one notification per completed Writer batch, not per mutation.
+    GLYPHA_REQUIRE(completion_stats.completion_notifications == completion_stats.writer_batches);
 
     glyphastore::server::PairWriterStats stats;
     const auto merge_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
@@ -147,8 +227,17 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
     GLYPHA_REQUIRE(stats.read_merge_failures == 0);
     GLYPHA_REQUIRE(stats.read_merge_backpressure == 0);
     GLYPHA_REQUIRE(stats.read_merge_slots_processed > 0);
+    GLYPHA_REQUIRE(stats.read_merge_remaining_slots == 0);
+    GLYPHA_REQUIRE(stats.read_merge_post_capacity_remaining == 0);
+    GLYPHA_REQUIRE(stats.maximum_read_merge_quantum_slots <= merge_config.quantum_slots);
     GLYPHA_REQUIRE(!stats.read_merge_active);
     GLYPHA_REQUIRE(stats.read_merge_post_entries == 0);
+    GLYPHA_REQUIRE(stats.read_generation_memory.base_entries == keys.size());
+    GLYPHA_REQUIRE(stats.read_generation_memory.base_record_storage_bytes == keys.size() * 64U);
+    GLYPHA_REQUIRE(stats.read_generation_memory.base_record_mapped_storage_bytes == 0);
+    GLYPHA_REQUIRE(stats.read_generation_memory.base_lookup_storage_bytes ==
+                   stats.read_generation_memory.base_capacity * 5U);
+    GLYPHA_REQUIRE(stats.read_generation_memory.current_allocated_lower_bound_bytes > 0);
 
     const auto* generation = (*executor)->adopt_read_generation(0);
     GLYPHA_REQUIRE(generation != nullptr);
@@ -217,6 +306,13 @@ GLYPHA_TEST("paired Writer completes incremental read merge in bounded quanta") 
 }
 
 GLYPHA_TEST("paired Writer validates merge bounds and aligns payload credits with ring capacity") {
+    GLYPHA_REQUIRE(
+        !open_paired_store_for_writer(1, 8, kTestMutationArenaBytes, {.async_writer_batch_max_records = 0})
+             .has_value());
+    GLYPHA_REQUIRE(
+        !open_paired_store_for_writer(1, 8, kTestMutationArenaBytes, {.async_writer_batch_max_bytes = 0})
+             .has_value());
+
     auto opened = open_paired_store_for_writer(1, 3);
     GLYPHA_REQUIRE(opened.has_value());
     auto& store = **opened;
@@ -1531,6 +1627,8 @@ GLYPHA_TEST("blocked durable mutation leaves its Reactor responsive with bounded
     GLYPHA_REQUIRE(mutation_stats[0].conflict_retries == 0);
     GLYPHA_REQUIRE(mutation_stats[0].conflict_retry_commits == 0);
     GLYPHA_REQUIRE(mutation_stats[0].maximum_service_ns > 0);
+    GLYPHA_REQUIRE(mutation_stats[0].read_generation_memory.current_allocated_lower_bound_bytes > 0);
+    GLYPHA_REQUIRE(mutation_stats[0].read_generation_memory.delta_entries == mutation_stats[0].delta_entries);
 
     static_cast<void>(::close(first_socket));
     static_cast<void>(::close(second_socket));

@@ -171,6 +171,27 @@ GLYPHA_TEST("daemon config embedded profile applies constrained durable defaults
     GLYPHA_REQUIRE(parsed->store.durable_limits.max_store_bytes == 1'073'741'824);
     GLYPHA_REQUIRE(parsed->store.durable_limits.max_segment_count == 32);
     GLYPHA_REQUIRE(parsed->store.maintenance.mode == glyphastore::MaintenanceMode::background);
+    GLYPHA_REQUIRE(parsed->store.maintenance.max_copy_bytes_per_sec == 67'108'864U);
+}
+
+GLYPHA_TEST("daemon config production profile paces maintenance and explicit CLI overrides it") {
+    ConfigTemporaryDirectory temporary;
+    const auto data_arg = (temporary.path() / "store").string();
+    const std::array profile_arguments{
+        "glyphastored", "--profile", "production", "--data-dir", data_arg.c_str(),
+    };
+    const auto profiled = parse(profile_arguments);
+    GLYPHA_REQUIRE(profiled.has_value());
+    GLYPHA_REQUIRE(profiled->store.maintenance.max_copy_bytes_per_sec == 134'217'728U);
+
+    const std::array override_arguments{
+        "glyphastored", "--profile",      "production",
+        "--data-dir",   data_arg.c_str(), "--maintenance-max-copy-bytes-per-sec",
+        "268435456",
+    };
+    const auto overridden = parse(override_arguments);
+    GLYPHA_REQUIRE(overridden.has_value());
+    GLYPHA_REQUIRE(overridden->store.maintenance.max_copy_bytes_per_sec == 268'435'456U);
 }
 
 GLYPHA_TEST("daemon config dev profile disables maintenance and keeps volatile storage") {

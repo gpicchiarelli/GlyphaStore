@@ -45,6 +45,11 @@ any future path are frozen in [ADR 0034](../adr/0034-zero-fence-hot-backup-defer
 the admission fence so destination verify is outside the fence is an allowed incremental to the
 fenced path (still not zero-fence).
 
+Concurrent online backup callers own counted admission fences. A caller waiting for exclusive
+catalog-copy ownership must retain its fence until its own copy completes; releasing another
+caller's fence cannot reopen admission. The counter/transition serialization is confined to backup
+and lifecycle control and is not part of the normal GET/PUT admission path.
+
 ## 3. Offline procedure (normative steps)
 
 1. Ensure no Store/`glyphastored` holds the source directory lock.

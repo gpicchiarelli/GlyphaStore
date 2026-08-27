@@ -47,6 +47,10 @@ class MaintenanceController final {
     [[nodiscard]] auto thread_running() const noexcept -> bool;
     // Lock-free admission probe for Store::put/erase (memory_order_acquire).
     [[nodiscard]] auto mutations_rejected() const noexcept -> bool;
+    // Synchronous compact callback query. Normal maintenance returns its
+    // configured byte rate; pressure/emergency return zero to preserve reclaim
+    // progress. The value is sampled once before the pre-intent build.
+    [[nodiscard]] auto compaction_copy_rate_limit() const noexcept -> std::uint64_t;
     // Publish or clear the emergency mutation gate (eval path + litmus TOCTOU).
     void publish_mutations_rejected(bool rejected) noexcept;
 
@@ -63,6 +67,9 @@ class MaintenanceController final {
     [[nodiscard]] auto cpu_budget_exhausted_locked(const MaintenanceConfig& config) const noexcept -> bool;
     [[nodiscard]] auto consume_foreground_latency_window_locked() noexcept
         -> std::pair<std::uint64_t, std::uint64_t>;
+    [[nodiscard]] static auto same_no_gain_candidate(const MaintenanceObservation& left,
+                                                     const MaintenanceObservation& right) noexcept -> bool;
+    void clear_no_gain_backoff_locked() noexcept;
 
     MaintenanceConfig config_;
     CompactCallback compact_;
@@ -84,6 +91,9 @@ class MaintenanceController final {
     std::uint64_t skips_{};
     std::uint64_t suspend_count_{};
     std::uint64_t consecutive_no_gain_{};
+    std::uint64_t no_gain_scans_suppressed_{};
+    std::optional<MaintenanceObservation> no_gain_candidate_{};
+    std::optional<std::chrono::steady_clock::time_point> no_gain_retry_at_{};
     std::uint64_t bytes_copied_window_{};
     std::uint64_t total_bytes_copied_{};
     std::uint64_t last_bytes_copied_{};
@@ -98,6 +108,10 @@ class MaintenanceController final {
     std::uint64_t total_no_gain_expired_records_dropped_{};
     std::uint64_t last_eval_duration_ns_{};
     std::uint64_t last_compact_duration_ns_{};
+    std::uint64_t last_compaction_pacing_delay_ns_{};
+    std::uint64_t total_compaction_pacing_delay_ns_{};
+    std::uint64_t last_compaction_pacing_sleep_count_{};
+    std::uint64_t last_compaction_pacing_burst_bytes_{};
     std::optional<std::chrono::steady_clock::time_point> last_useful_at_{};
     std::chrono::steady_clock::time_point rate_window_start_{};
     std::uint64_t rate_window_bytes_copied_{};

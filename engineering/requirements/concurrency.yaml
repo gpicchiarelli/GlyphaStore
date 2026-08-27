@@ -9,7 +9,16 @@ requirements:
     adoption. Embedded sync may omit a dedicated Writer thread (ADR 0037); daemon retains a
     dedicated executor. Reactor never Store-mutates. Every Writer path shares a pre-Store
     generation-admission decision; current plus at most 64 retired generations, with explicit
-    known-not-committed backpressure at retire or incremental-merge capacity.
+    known-not-committed backpressure at retire, incremental-merge capacity, or paired lane
+    slot/byte exhaustion. The immutable base uses an exact 64-byte record plus 5 bytes of lookup
+    payload per bucket; a sequence-coherent per-lane census exposes the current generation's
+    allocation-payload lower bound without presenting it as total RSS. Large immutable-record
+    arrays use guarded geometric mappings with at most one spare per base lineage; the spare-pool
+    lock is absent from GET and ordinary Delta publication and process-wide spare bytes are
+    observable. Incremental merge debt is advanced proportionally to the bounded post-cut capacity
+    consumed by the next publication, with a bounded coalesced-batch floor and explicit debt,
+    capacity, and maximum-quantum telemetry; fixed terminal retry bursts are not the normal
+    admission mechanism.
   autorita:
   - docs/spec/concurrency-memory-model.md
   - docs/spec/mutation-lifecycle.md
@@ -25,6 +34,9 @@ requirements:
   - tests/integration/concurrency_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
   - tests/unit/shard_combining_executor_tests.cpp
+  - tests/unit/pair_read_generation_tests.cpp
+  - tests/integration/server_reactor_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -32,6 +44,7 @@ requirements:
   evidenze:
   - workflow: ci.yml
   - path: engineering/evidence/paired-generation-admission-local-2026-08-27.md
+  - path: benchmarks/results/local-macos-2026-08-27-read-generation-memory/README.md
   rischio_residuo:
   - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
     routing independence; embedded catalog refresh may defer until a combiner turn
@@ -41,6 +54,8 @@ requirements:
   - HAZ-009
   - HAZ-027
   - HAZ-028
+  - HAZ-031
+  - HAZ-032
   gates:
   - GATE-CONCURRENCY-SPEC
 - id: GS-CONCUR-COMBINE-001
@@ -50,8 +65,16 @@ requirements:
   stato: implementato
   descrizione: Per-shard IDLE/EXECUTING token grants sole mutate+publish rights. Embedded sync
     callers that win the token combine already-queued work (≤32) with no wait-to-fill; lost-wakeup-safe
-    release. Daemon keeps dedicated executor; mutation windows / GET visibility barrier land under
-    ADR 0037 Phase C. ACK/RAW and fail-closed polarity unchanged.
+    release. Daemon keeps a dedicated executor and opportunistically combines already-queued work
+    under explicit record/byte bounds. Durable-group collection is capped by the oldest configured
+    pre-Store admission deadline, and sync work is limited to 32 records per dedicated turn with an
+    older FIFO continuation, so neither repeated admissions nor one large batch can indefinitely
+    postpone already-admitted async work. Close reasons, turn splits, and wait time are observable.
+    Incremental merge work is charged against bounded post-cut capacity before Store entry;
+    coalesced batches amortize a bounded extra quantum and dedicated idle work runs only after
+    completion delivery with token release between quanta.
+    Mutation windows / GET visibility barrier land under ADR 0037 Phase C. ACK/RAW and fail-closed
+    polarity unchanged.
   autorita:
   - docs/adr/0037-shard-execution-token-flat-combining.md
   - docs/spec/concurrency-memory-model.md
@@ -63,6 +86,7 @@ requirements:
   prove:
   - tests/unit/shard_combining_executor_tests.cpp
   - tests/integration/paired_store_tests.cpp
+  - tests/integration/server_reactor_tests.cpp
   - tests/integration/server_reactor_durable_tests.cpp
   piattaforme:
   - linux-x86_64
@@ -71,12 +95,16 @@ requirements:
   evidenze:
   - workflow: ci.yml
   - path: benchmarks/results/local-macos-2026-08-26-shard-combining/README.md
+  - path: benchmarks/results/local-macos-2026-08-27-writer-deadline-fairness/README.md
+  - path: benchmarks/results/local-macos-2026-08-27-merge-debt-scheduler/README.md
   rischio_residuo:
-  - durable_group/periodic flusher token sharing deferred; daemon windows still one TCP port
+  - durable_group/periodic flusher token sharing deferred; daemon windows still one TCP port;
+    adversarial multi-hour and cross-platform fairness evidence is open
   hazards:
   - HAZ-003
   - HAZ-027
   - HAZ-028
+  - HAZ-032
   gates:
   - GATE-CONCURRENCY-SPEC
 - id: GS-CONCUR-LIN-001

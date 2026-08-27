@@ -4,16 +4,20 @@ requirements:
   categoria: persistence
   criticita: critica
   stato: provato
-  descrizione: A durable_sync mutation may be acknowledged only after the persistent sequence defined
-    by persistence v1 completes for that mutation.
+  descrizione: A durable_sync mutation, and every member of a strict durable_group Writer batch,
+    may be acknowledged only after the persistent sequence defined by persistence v1 completes.
+    A paired Writer threshold observation cannot replace the final commit-slot synchronization.
   autorita:
   - docs/spec/persistence-v1.md
   - docs/architecture/durability-recovery.md
   implementazione:
   - src/persistence/durable_flush_coordinator.cpp
   - src/persistence/segment_file.cpp
+  - src/persistence/runtime_catalog_ops.cpp
+  - src/store/store_access.cpp
   prove:
   - tests/integration/persistence_recovery_tests.cpp
+  - tests/integration/server_reactor_durable_tests.cpp
   - tests/crash/crash_persistence.cpp
   piattaforme:
   - linux-x86_64
@@ -39,12 +43,18 @@ requirements:
   autorita:
   - docs/spec/persistence-v1.md
   - docs/architecture/durability-recovery.md
+  - docs/architecture/durable-compaction.md
+  - docs/adr/0039-pre-intent-staged-compaction-output.md
   implementazione:
   - src/persistence/manifest.cpp
   - src/persistence/filesystem.cpp
   - src/persistence/segment_file.cpp
+  - src/persistence/compaction_builder.cpp
+  - src/persistence/runtime_catalog_maintenance.cpp
   prove:
   - tests/integration/persistence_recovery_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
+  - tests/integration/persistence_recovery_compaction_tests.cpp
   - tests/crash/crash_persistence.cpp
   piattaforme:
   - linux-x86_64
@@ -54,6 +64,7 @@ requirements:
   - workflow: durability-evidence.yml
   rischio_residuo:
   - Filesystem/power-loss certification matrices remain open
+  - The post-staging v1 publication/retirement transaction remains a whole-Worker lease
   hazards:
   - HAZ-014
   - HAZ-015

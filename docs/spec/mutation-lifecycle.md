@@ -1,7 +1,7 @@
 Status: descriptive of as-implemented paired Writer mutation lifecycle (behavior-neutral refactor baseline)
 Applies to: `ShardPairRuntime::run`, durable/volatile sync and async mutation paths
 Owner: store/concurrency maintainers
-Last reviewed: 2026-08-02
+Last reviewed: 2026-08-27
 Requirement: `GS-CONCUR-PAIR-001`
 
 # Mutation lifecycle (as implemented)
@@ -68,6 +68,22 @@ Source flags in `src/store/paired/shard_pair_runtime.cpp` (`run`):
 `Admitted` does **not** require handoff to a dedicated Writer thread when combining is enabled
 ([ADR 0037](../adr/0037-shard-execution-token-flat-combining.md)): the caller that holds the
 execution token is the Writer for that turn.
+
+The async Writer may combine several already-admitted FIFO mutations into one publication, bounded
+by record count and admission bytes. Volatile mode never waits to manufacture a batch and never
+changes per-mutation Store order. After completion outcomes are delivered, one wakeup per distinct
+Reader target group is sufficient because the Reader drains the completion SPSC queue; the
+official single-Reader pair therefore receives one wakeup per batch. The ACK decision itself
+remains per request. Admission retains one completion slot plus its byte credit until that
+completion is drained: the preallocated payload slot is released by the Reader only after it pops
+the outcome. In durable-group mode the oldest FIFO admission deadline caps the collection wait. If
+that inclusive deadline is reached before Store entry, the mutation remains known-not-committed and
+completes as overload; the Writer does not wait onward to the durability batch deadline. On the
+dedicated runtime, synchronous work is split into at most 32-record turns. An older remainder stays
+in a Writer-local FIFO continuation, but an already-admitted async batch runs between quanta. This
+prevents either repeated sync admissions or one large caller batch from monopolizing the Writer.
+Both payload and completion rings share the same bounded lane capacity. Capacity exhaustion is a
+known-not-committed overload before Store entry.
 
 ## 3. Linearization points
 

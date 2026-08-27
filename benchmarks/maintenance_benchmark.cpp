@@ -61,6 +61,7 @@ struct Options {
     std::size_t reclaim_value_bytes{256U * 1024U};
     std::size_t put_percent{5};
     std::size_t maintenance_interval_ms{10};
+    std::size_t maintenance_copy_bytes_per_sec{};
     std::size_t cooldown_ms{250};
     std::size_t idle_duration_ms{3'000};
     std::optional<Mode> mode;
@@ -156,6 +157,11 @@ struct Sample {
     std::uint64_t maintenance_bytes_copied{};
     std::uint64_t maintenance_skips{};
     std::uint64_t maintenance_evaluations{};
+    std::uint64_t maintenance_no_gain_scans_suppressed{};
+    std::uint64_t maintenance_no_gain_retry_after_ns{};
+    std::uint64_t maintenance_pacing_delay_ns{};
+    std::uint64_t maintenance_pacing_sleep_count{};
+    std::uint64_t maintenance_pacing_burst_bytes{};
     glyphastore::MaintenanceSkipReason maintenance_last_skip{};
     glyphastore::MaintenanceObservation maintenance_observation{};
     glyphastore::DurableRotationStats rotation{};
@@ -361,6 +367,8 @@ class TemporaryDirectory final {
         } else if (argument == "--maintenance-interval-ms" && index + 1 < argc) {
             options.maintenance_interval_ms = parse_size(argv[++index], argument);
             options.maintenance_interval_set = true;
+        } else if (argument == "--maintenance-copy-bytes-per-sec" && index + 1 < argc) {
+            options.maintenance_copy_bytes_per_sec = parse_size(argv[++index], argument);
         } else if (argument == "--cooldown-ms" && index + 1 < argc) {
             options.cooldown_ms = parse_size(argv[++index], argument);
         } else if (argument == "--idle-duration-ms" && index + 1 < argc) {
@@ -374,6 +382,7 @@ class TemporaryDirectory final {
                          " [--operations N] [--threads N] [--keys N] [--value-bytes N]"
                          " [--reclaim-value-bytes N]"
                          " [--put-percent N] [--maintenance-interval-ms N]"
+                         " [--maintenance-copy-bytes-per-sec N]"
                          " [--cooldown-ms N] [--idle-duration-ms N]"
                          " [--scenario mixed|forced-rotation|idle|churn]"
                          " [--mode disabled|cooperative|background]\n";
@@ -448,9 +457,9 @@ class TemporaryDirectory final {
         .maintenance =
             {
                 .mode = maintenance_mode(mode),
+                .max_copy_bytes_per_sec = options.maintenance_copy_bytes_per_sec,
                 .min_eval_interval_ms = default_idle_intervals ? 1'000U : interval,
                 .max_eval_interval_ms = default_idle_intervals ? 60'000U : interval,
-                .max_no_gain_attempts = 1'000,
                 .dead_byte_ratio_bp_normal = 5'000,
             },
     };
@@ -821,6 +830,11 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
             cooperative ? cooperative_stats.bytes_copied : maintenance.total_bytes_copied,
         .maintenance_skips = cooperative ? 0 : maintenance.skips,
         .maintenance_evaluations = cooperative ? 0 : maintenance.evaluation_cycles,
+        .maintenance_no_gain_scans_suppressed = cooperative ? 0 : maintenance.no_gain_scans_suppressed,
+        .maintenance_no_gain_retry_after_ns = cooperative ? 0 : maintenance.no_gain_retry_after_ns,
+        .maintenance_pacing_delay_ns = cooperative ? 0 : maintenance.last_compaction_pacing_delay_ns,
+        .maintenance_pacing_sleep_count = cooperative ? 0 : maintenance.last_compaction_pacing_sleep_count,
+        .maintenance_pacing_burst_bytes = cooperative ? 0 : maintenance.last_compaction_pacing_burst_bytes,
         .maintenance_last_skip =
             cooperative ? glyphastore::MaintenanceSkipReason::none : maintenance.last_skip_reason,
         .maintenance_observation =
@@ -1044,20 +1058,23 @@ void print_sample(const Sample& sample) {
                                         : 0.0;
     std::cout << mode_name(sample.mode) << ',' << sample.repeat << ',' << sample.operations << ','
               << sample.gets << ',' << sample.puts << ',' << sample.generation_backpressure_retries << ','
-              << sample.foreground_seconds << ','
-              << operations_per_second << ',' << microseconds(sample.all_latency.p50_ns) << ','
-              << microseconds(sample.all_latency.p95_ns) << ',' << microseconds(sample.all_latency.p99_ns)
-              << ',' << microseconds(sample.all_latency.maximum_ns) << ','
-              << microseconds(sample.get_latency.p50_ns) << ',' << microseconds(sample.get_latency.p95_ns)
-              << ',' << microseconds(sample.get_latency.p99_ns) << ','
-              << microseconds(sample.get_latency.maximum_ns) << ',' << microseconds(sample.put_latency.p50_ns)
-              << ',' << microseconds(sample.put_latency.p95_ns) << ','
-              << microseconds(sample.put_latency.p99_ns) << ',' << microseconds(sample.put_latency.maximum_ns)
-              << ',' << sample.maintenance_attempts << ',' << sample.maintenance_completed << ','
-              << sample.maintenance_useful << ',' << sample.maintenance_conflicts << ','
-              << sample.maintenance_bytes_copied << ',' << sample.maintenance_skips << ','
-              << sample.maintenance_evaluations << ',' << skip_reason_name(sample.maintenance_last_skip)
-              << ',';
+              << sample.foreground_seconds << ',' << operations_per_second << ','
+              << microseconds(sample.all_latency.p50_ns) << ',' << microseconds(sample.all_latency.p95_ns)
+              << ',' << microseconds(sample.all_latency.p99_ns) << ','
+              << microseconds(sample.all_latency.maximum_ns) << ',' << microseconds(sample.get_latency.p50_ns)
+              << ',' << microseconds(sample.get_latency.p95_ns) << ','
+              << microseconds(sample.get_latency.p99_ns) << ',' << microseconds(sample.get_latency.maximum_ns)
+              << ',' << microseconds(sample.put_latency.p50_ns) << ','
+              << microseconds(sample.put_latency.p95_ns) << ',' << microseconds(sample.put_latency.p99_ns)
+              << ',' << microseconds(sample.put_latency.maximum_ns) << ',' << sample.maintenance_attempts
+              << ',' << sample.maintenance_completed << ',' << sample.maintenance_useful << ','
+              << sample.maintenance_conflicts << ',' << sample.maintenance_bytes_copied << ','
+              << sample.maintenance_skips << ',' << sample.maintenance_evaluations << ','
+              << sample.maintenance_no_gain_scans_suppressed << ','
+              << sample.maintenance_no_gain_retry_after_ns << ','
+              << microseconds(sample.maintenance_pacing_delay_ns) / 1'000.0 << ','
+              << sample.maintenance_pacing_sleep_count << ',' << sample.maintenance_pacing_burst_bytes << ','
+              << skip_reason_name(sample.maintenance_last_skip) << ',';
     if (sample.maintenance_observation.compaction_candidate_worker) {
         std::cout << *sample.maintenance_observation.compaction_candidate_worker;
     } else {
@@ -1186,7 +1203,9 @@ int main(int argc, char** argv) {
         std::cout << "# background_policy=min_eval_interval_ms=max_eval_interval_ms="
                   << options.maintenance_interval_ms
                   << ";dead_byte_ratio_bp_normal=5000;"
-                     "max_copy_bytes_per_cycle=default\n";
+                     "max_copy_bytes_per_cycle=default;max_no_gain_attempts=default;"
+                     "max_copy_bytes_per_sec="
+                  << options.maintenance_copy_bytes_per_sec << '\n';
 
         if (options.scenario == Scenario::forced_rotation) {
             std::cout << "# overlap=compaction intent publication releases a forced unrelated-Worker "
@@ -1224,7 +1243,10 @@ int main(int argc, char** argv) {
                      "get_p99_us,get_max_us,put_p50_us,put_p95_us,put_p99_us,put_max_us,"
                      "maintenance_attempts,maintenance_completed,maintenance_useful,"
                      "maintenance_conflicts,maintenance_bytes_copied,maintenance_skips,"
-                     "maintenance_evaluations,maintenance_last_skip,candidate_worker,"
+                     "maintenance_evaluations,maintenance_no_gain_scans_suppressed,"
+                     "maintenance_no_gain_retry_after_ns,maintenance_pacing_delay_ms,"
+                     "maintenance_pacing_sleep_count,maintenance_pacing_burst_bytes,"
+                     "maintenance_last_skip,candidate_worker,"
                      "candidate_sealed_bytes,candidate_live_bytes,candidate_dead_bytes,"
                      "candidate_dead_ratio_bp,rotation_attempts,rotations_committed,"
                      "rotation_compaction_waits,rotation_final_record_commit_attempts,"

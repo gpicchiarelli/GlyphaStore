@@ -159,8 +159,8 @@ constexpr std::array kOptionSpecs{
                     "Limit one normal maintenance compaction (default: 128MiB; 0 disables)"},
     cli::OptionSpec{maintenance_max_copy_bytes_per_sec, "maintenance-max-copy-bytes-per-sec", '\0',
                     cli::OptionArity::required, "BYTES",
-                    "Limit normal-mode compaction copy bytes per one-second window (default: 0=unlimited; "
-                    "pressure/emergency bypass)"},
+                    "Pace private normal-mode compaction writes (default: 0=unlimited; embedded profile "
+                    "64MiB/s; production profile 128MiB/s; pressure/emergency bypass)"},
     cli::OptionSpec{maintenance_max_cpu_ms_per_window, "maintenance-max-cpu-ms-per-window", '\0',
                     cli::OptionArity::required, "MILLISECONDS",
                     "Limit normal-mode compaction wall time per one-second window (default: 0=unlimited; "
@@ -357,12 +357,17 @@ using SettingMap = std::map<std::string, std::string, std::less<>>;
             {"max-segments", "32"},
             {"max-hot-cache-bytes", "67108864"},
             {"max-temporary-compaction-bytes", "268435456"},
+            // Conservative latency-first starting point. Operators should
+            // replace it with a device-specific value from the maintenance A/B.
+            {"maintenance-max-copy-bytes-per-sec", "67108864"},
         };
     }
     if (lowered == "production") {
         return SettingMap{
             {"storage-mode", "durable-periodic"},
             {"maintenance-mode", "background"},
+            // Bounded starting point, deliberately overrideable by config/env/CLI.
+            {"maintenance-max-copy-bytes-per-sec", "134217728"},
         };
     }
     return fail(ErrorCode::invalid_argument, "unknown deployment profile: " + std::string{name} +

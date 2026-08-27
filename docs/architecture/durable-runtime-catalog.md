@@ -144,6 +144,9 @@ attempts/failures, committed occupancy and maxima, close reasons, and total/maxi
 `flush_pending_commit` duration. In strict group mode that duration covers the synchronized v1 batch
 commit boundary. In periodic/deferred mode it measures deferred commit publication only; the later
 whole-store dirty flush is a distinct operation and must not be interpreted as included sync time.
+For paired strict batches, threshold closes use `SegmentCommitSync::immediate` and the explicit
+Writer finalize immediately commits any residual extent; a deferred threshold publication is not a
+strict commit and cannot authorize an ACK.
 
 ## Observable shutdown
 

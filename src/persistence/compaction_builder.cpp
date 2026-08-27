@@ -1,5 +1,6 @@
 #include "glyphastore/persistence/compaction_builder.hpp"
 
+#include "glyphastore/core/byte_rate_limiter.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/persistence/compaction_intent.hpp"
 #include "glyphastore/persistence/resource_limits.hpp"
@@ -8,11 +9,13 @@
 #include "glyphastore/segment/record.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <limits>
 #include <optional>
 #include <ranges>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -20,11 +23,12 @@ namespace glyphastore {
 namespace {
 
 struct PackedRecord {
-    IndexEntry source;
+    std::size_t source_index{};
     DurableCompactionPlacement placement;
     RecordRef output{};
     std::uint32_t encoded_crc{};
 };
+static_assert(sizeof(PackedRecord) <= 64, "compaction placement metadata must remain within one cache line");
 
 struct VerifiedRecordContext {
     std::string_view key;
@@ -61,6 +65,66 @@ auto checked_add(const std::uint64_t left, const std::uint64_t right, const char
     return left + right;
 }
 
+auto elapsed_ns(const std::chrono::steady_clock::time_point start) noexcept -> std::uint64_t {
+    const auto elapsed =
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start)
+            .count();
+    return elapsed > 0 ? static_cast<std::uint64_t>(elapsed) : 0;
+}
+
+auto steady_now_ns() noexcept -> std::uint64_t {
+    const auto elapsed = std::chrono::steady_clock::now().time_since_epoch();
+    const auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count();
+    return nanoseconds > 0 ? static_cast<std::uint64_t>(nanoseconds) : 0U;
+}
+
+struct CompactionWritePacerContext final {
+    BoundedByteRateLimiter* limiter{};
+    DurableCompactionCopyStats* stats{};
+};
+
+auto acquire_compaction_write(void* opaque, const std::size_t requested_bytes) -> Result<std::size_t> {
+    auto& context = *static_cast<CompactionWritePacerContext*>(opaque);
+    if (context.limiter == nullptr || context.stats == nullptr || requested_bytes == 0U) {
+        return fail(ErrorCode::internal_error, "compaction pacing context is invalid");
+    }
+    const auto decision = context.limiter->request(requested_bytes, steady_now_ns());
+    if (decision.granted_bytes == 0U || decision.granted_bytes > requested_bytes ||
+        decision.granted_bytes > std::numeric_limits<std::size_t>::max()) {
+        return fail(ErrorCode::internal_error, "compaction pacing returned an invalid write grant");
+    }
+    if (decision.sleep_ns != 0U) {
+        const auto sleep_started = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::nanoseconds{decision.sleep_ns});
+        const auto slept = elapsed_ns(sleep_started);
+        context.stats->pacing_delay_ns =
+            slept > std::numeric_limits<std::uint64_t>::max() - context.stats->pacing_delay_ns
+                ? std::numeric_limits<std::uint64_t>::max()
+                : context.stats->pacing_delay_ns + slept;
+        if (context.stats->pacing_sleep_count != std::numeric_limits<std::uint64_t>::max()) {
+            ++context.stats->pacing_sleep_count;
+        }
+    }
+    return static_cast<std::size_t>(decision.granted_bytes);
+}
+
+auto add_capacity_bytes(std::uint64_t& total, const std::size_t capacity, const std::size_t element_size)
+    -> Status {
+    const auto count = static_cast<std::uint64_t>(capacity);
+    const auto width = static_cast<std::uint64_t>(element_size);
+    if (width != 0 && count > std::numeric_limits<std::uint64_t>::max() / width) {
+        return fail(ErrorCode::arithmetic_overflow,
+                    "durable compaction transient metadata accounting overflow");
+    }
+    auto next =
+        checked_add(total, count * width, "durable compaction transient metadata accounting overflow");
+    if (!next) {
+        return unexpected(next.error());
+    }
+    total = *next;
+    return {};
+}
+
 auto segment_identity(const Manifest& manifest, const ManifestSegmentEntry& entry) -> SegmentHeaderIdentity {
     return {.store_id = manifest.store_id,
             .segment_id = entry.segment_id,
@@ -88,20 +152,63 @@ auto find_source_index(const std::span<const ManifestSegmentEntry> sources, cons
     return static_cast<std::size_t>(found - sources.begin());
 }
 
+class StagedSegmentGuard final {
+  public:
+    StagedSegmentGuard(DataDirectory& directory, std::span<const SegmentHeaderIdentity> identities) noexcept
+        : directory_(&directory), identities_(identities) {}
+    ~StagedSegmentGuard() {
+        if (directory_ != nullptr) {
+            DurableSegmentFile::discard_staged(*directory_, identities_.first(created_count_));
+        }
+    }
+
+    StagedSegmentGuard(const StagedSegmentGuard&) = delete;
+    auto operator=(const StagedSegmentGuard&) -> StagedSegmentGuard& = delete;
+
+    void mark_created() noexcept {
+        if (created_count_ < identities_.size()) {
+            ++created_count_;
+        }
+    }
+
+    void release() noexcept {
+        directory_ = nullptr;
+    }
+
+  private:
+    DataDirectory* directory_{};
+    std::span<const SegmentHeaderIdentity> identities_{};
+    std::size_t created_count_{};
+};
+
 } // namespace
 
 auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& current,
                                      const WorkerId worker_id, std::vector<IndexEntry> entries,
                                      const std::uint64_t now_ns, const DurableResourceLimits& limits,
-                                     const DurableCompactionIntentGate intent_gate)
-    -> DurableCompactionBuildResult {
+                                     const DurableCompactionIntentGate intent_gate,
+                                     const DurableCompactionPacing pacing) -> DurableCompactionBuildResult {
     bool recovery_required{};
+    DurableCompactionCopyStats copy_stats{};
+    BoundedByteRateLimiter copy_rate_limiter{pacing.bytes_per_second};
+    copy_stats.pacing_burst_bytes = copy_rate_limiter.burst_bytes();
+    const auto build_started = std::chrono::steady_clock::now();
     const auto failure = [&](Error error) {
         return build_failure(recovery_required ? DurableCompactionBuildOutcome::recovery_required
                                                : DurableCompactionBuildOutcome::not_started,
-                             std::move(error));
+                             std::move(error), copy_stats);
     };
     try {
+        CompactionWritePacerContext write_pacer_context{
+            .limiter = &copy_rate_limiter,
+            .stats = &copy_stats,
+        };
+        const SegmentRecordWritePacing write_pacing = pacing.bytes_per_second == 0U
+                                                          ? SegmentRecordWritePacing{}
+                                                          : SegmentRecordWritePacing{
+                                                                .context = &write_pacer_context,
+                                                                .acquire = &acquire_compaction_write,
+                                                            };
         if (!directory.healthy()) {
             return failure(
                 Error{ErrorCode::io_error, "cannot build compaction through a poisoned data directory"});
@@ -214,13 +321,13 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         }
 
         DurableCompactionLayout layout;
-        DurableCompactionCopyStats copy_stats{};
         std::vector<PackedRecord> packed;
         packed.reserve(source_entries.size());
         std::optional<std::size_t> open_source_index;
         std::optional<DurableSegmentFile> open_source;
         std::vector<std::byte> scratch;
-        for (auto& entry : source_entries) {
+        for (std::size_t entry_index = 0; entry_index < source_entries.size(); ++entry_index) {
+            auto& entry = source_entries[entry_index];
             const auto source_index = find_source_index(sources, entry.record.segment_id);
             if (!source_index || sources[*source_index].generation != entry.record.generation) {
                 return failure(Error{ErrorCode::corrupted_data,
@@ -261,12 +368,13 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 return failure(placement.error());
             }
             packed.push_back(
-                {.source = std::move(entry), .placement = *placement, .encoded_crc = crc32c(scratch)});
+                {.source_index = entry_index, .placement = *placement, .encoded_crc = crc32c(scratch)});
         }
         open_source.reset();
         open_source_index.reset();
 
         if (layout.segment_count() >= sources.size()) {
+            copy_stats.pre_intent_duration_ns = elapsed_ns(build_started);
             return build_failure(
                 DurableCompactionBuildOutcome::not_beneficial,
                 Error{ErrorCode::not_found, "durable compaction would not reclaim a physical Segment"},
@@ -282,14 +390,14 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                  "durable compaction planner disagrees with the exact Record layout"});
         }
         for (auto& record : packed) {
+            const auto& source = source_entries[record.source_index];
             const auto& replacement = plan->replacements[record.placement.segment_index];
             record.output = {.segment_id = replacement.segment_id,
                              .offset = record.placement.offset,
-                             .size = record.source.record.size,
-                             .sequence = record.source.record.sequence,
+                             .size = source.record.size,
+                             .sequence = source.record.sequence,
                              .generation = replacement.generation};
-            const HashedKey hashed{.key = record.source.key,
-                                   .hash = hash_key_routing(record.source.key, routing)};
+            const HashedKey hashed{.key = source.key, .hash = hash_key_routing(source.key, routing)};
             auto inserted = prepared_index.insert_or_assign(hashed, record.output);
             if (!inserted || !inserted->inserted) {
                 return failure(inserted ? Error{ErrorCode::corrupted_data,
@@ -318,20 +426,14 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
             return failure(available.error());
         }
 
+        std::vector<SegmentHeaderIdentity> staged_identities;
+        staged_identities.reserve(plan->replacements.size());
+        for (const auto& replacement : plan->replacements) {
+            staged_identities.push_back(segment_identity(current, replacement));
+        }
+        StagedSegmentGuard staged_guard{directory, staged_identities};
         std::vector<SelectedSegmentCommit> replacement_commits;
         replacement_commits.reserve(plan->replacements.size());
-        if (intent_gate.acquire != nullptr) {
-            if (auto acquired = intent_gate.acquire(intent_gate.context); !acquired) {
-                return failure(acquired.error());
-            }
-        }
-        const auto published = directory.publish_compaction_intent(intent, limits.max_manifest_bytes);
-        if (!published.durable()) {
-            recovery_required = published.outcome == CompactionIntentPublicationOutcome::indeterminate;
-            return failure(published.error.value_or(
-                Error{ErrorCode::io_error, "durable compaction intent publication failed"}));
-        }
-        recovery_required = true;
 
         std::optional<DurableSegmentFile> output;
         std::optional<std::size_t> output_index;
@@ -346,16 +448,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                     Error{ErrorCode::io_error, "durable compaction replacement seal failed"}));
             }
             const auto selected = output->selected_commit();
-            output.reset();
-            const auto& replacement = plan->replacements[*output_index];
-            auto reopened = DurableSegmentFile::open(directory, segment_identity(current, replacement),
-                                                     SegmentFileOpenMode::read_only);
-            if (!reopened || reopened->selected_commit() != selected) {
-                return reopened ? fail(ErrorCode::corrupted_data,
-                                       "durable compaction replacement boundary changed on reopen")
-                                : unexpected(reopened.error());
-            }
-            const auto& commit = reopened->selected_commit().commit;
+            const auto& commit = selected.commit;
             const auto expected_count = group_end - output_group_begin;
             const auto expected_end = static_cast<std::uint32_t>(packed[group_end - 1U].output.offset.value +
                                                                  packed[group_end - 1U].output.size.value);
@@ -368,13 +461,14 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
             }
             for (auto index = output_group_begin; index < group_end; ++index) {
                 const auto& record = packed[index];
-                VerifiedRecordContext context{.key = record.source.key,
-                                              .key_hash = hash_key_routing(record.source.key, routing),
+                const auto& source = source_entries[record.source_index];
+                VerifiedRecordContext context{.key = source.key,
+                                              .key_hash = hash_key_routing(source.key, routing),
                                               .worker_count = current.worker_count,
                                               .worker_id = worker_id,
                                               .now_ns = now_ns};
                 if (auto visited =
-                        reopened->visit_record(record.output, scratch, &context, &verify_indexed_put);
+                        output->visit_record(record.output, scratch, &context, &verify_indexed_put);
                     !visited) {
                     return visited;
                 }
@@ -384,6 +478,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 }
             }
             replacement_commits.push_back(selected);
+            output.reset();
             return {};
         };
 
@@ -391,6 +486,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         open_source_index.reset();
         for (std::size_t index = 0; index < packed.size(); ++index) {
             const auto& record = packed[index];
+            const auto& source = source_entries[record.source_index];
             if (!output_index || *output_index != record.placement.segment_index) {
                 if (output) {
                     if (auto finalized = finalize_output(index); !finalized) {
@@ -399,16 +495,15 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 }
                 output_group_begin = index;
                 output_index = record.placement.segment_index;
-                const auto& replacement = plan->replacements[*output_index];
-                auto created = DurableSegmentFile::create(directory, segment_identity(current, replacement));
-                if (!created.durable()) {
-                    return failure(created.error.value_or(
-                        Error{ErrorCode::io_error, "durable compaction replacement creation failed"}));
+                auto created = DurableSegmentFile::create_staged(directory, staged_identities[*output_index]);
+                if (!created) {
+                    return failure(created.error());
                 }
-                output.emplace(std::move(*created.file));
+                staged_guard.mark_created();
+                output.emplace(std::move(*created));
             }
 
-            const auto source_index = find_source_index(sources, record.source.record.segment_id);
+            const auto source_index = find_source_index(sources, source.record.segment_id);
             if (!source_index) {
                 return failure(Error{ErrorCode::internal_error, "durable compaction lost a source identity"});
             }
@@ -425,13 +520,13 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 open_source.emplace(std::move(*opened));
                 open_source_index = *source_index;
             }
-            VerifiedRecordContext context{.key = record.source.key,
-                                          .key_hash = hash_key_routing(record.source.key, routing),
+            VerifiedRecordContext context{.key = source.key,
+                                          .key_hash = hash_key_routing(source.key, routing),
                                           .worker_count = current.worker_count,
                                           .worker_id = worker_id,
                                           .now_ns = now_ns};
             if (auto visited =
-                    open_source->visit_record(record.source.record, scratch, &context, &verify_indexed_put);
+                    open_source->visit_record(source.record, scratch, &context, &verify_indexed_put);
                 !visited) {
                 return failure(visited.error());
             }
@@ -440,7 +535,10 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 return failure(Error{ErrorCode::corrupted_data,
                                      "durable compaction source or output layout changed during copy"});
             }
-            const auto appended = output->append_record(scratch);
+            // Grants are acquired immediately before each bounded physical
+            // write. The old Manifest remains the sole authority while this
+            // sleeps, so pacing cannot lengthen an ambiguous recovery window.
+            const auto appended = output->append_record(scratch, write_pacing);
             if (!appended.committed()) {
                 return failure(appended.error.value_or(
                     Error{ErrorCode::io_error, "durable compaction Record copy failed"}));
@@ -458,6 +556,57 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
             return failure(
                 Error{ErrorCode::internal_error, "durable compaction replacement build is incomplete"});
         }
+
+        const auto index_stats = prepared_index.stats();
+        if (auto accounted = add_capacity_bytes(copy_stats.transient_metadata_lower_bound_bytes,
+                                                source_entries.capacity(), sizeof(IndexEntry));
+            !accounted) {
+            return failure(accounted.error());
+        }
+        if (auto accounted = add_capacity_bytes(copy_stats.transient_metadata_lower_bound_bytes,
+                                                packed.capacity(), sizeof(PackedRecord));
+            !accounted) {
+            return failure(accounted.error());
+        }
+        if (auto accounted = add_capacity_bytes(copy_stats.transient_metadata_lower_bound_bytes,
+                                                scratch.capacity(), sizeof(std::byte));
+            !accounted) {
+            return failure(accounted.error());
+        }
+        auto accounted_index = checked_add(static_cast<std::uint64_t>(index_stats.table_allocated_bytes),
+                                           static_cast<std::uint64_t>(index_stats.arena_allocated_bytes),
+                                           "durable compaction transient Index accounting overflow");
+        if (!accounted_index) {
+            return failure(accounted_index.error());
+        }
+        auto accounted_total = checked_add(copy_stats.transient_metadata_lower_bound_bytes, *accounted_index,
+                                           "durable compaction transient metadata accounting overflow");
+        if (!accounted_total) {
+            return failure(accounted_total.error());
+        }
+        copy_stats.transient_metadata_lower_bound_bytes = *accounted_total;
+        copy_stats.pre_intent_duration_ns = elapsed_ns(build_started);
+
+        // The expensive copy and full output verification are complete while
+        // Mold is the only authority. The existing private temporary names are
+        // non-authoritative and recovery-safe. Acquire the publication lease
+        // only for intent -> promotion -> Manifest.
+        if (intent_gate.acquire != nullptr) {
+            if (auto acquired = intent_gate.acquire(intent_gate.context); !acquired) {
+                return failure(acquired.error());
+            }
+        }
+        const auto published = directory.publish_compaction_intent(intent, limits.max_manifest_bytes);
+        if (!published.durable()) {
+            recovery_required = published.outcome == CompactionIntentPublicationOutcome::indeterminate;
+            return failure(published.error.value_or(
+                Error{ErrorCode::io_error, "durable compaction intent publication failed"}));
+        }
+        recovery_required = true;
+        if (auto promoted = DurableSegmentFile::promote_staged(directory, staged_identities); !promoted) {
+            return failure(promoted.error());
+        }
+        staged_guard.release();
 
         return {.outcome = DurableCompactionBuildOutcome::prepared,
                 .prepared = PreparedDurableCompaction{.plan = std::move(*plan),
@@ -493,7 +642,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
         }
     }
     return build_durable_worker_compaction(directory, current, worker_id, std::move(entries), now_ns, limits,
-                                           {});
+                                           {}, {});
 }
 
 } // namespace glyphastore

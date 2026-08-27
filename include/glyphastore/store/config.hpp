@@ -91,10 +91,14 @@ struct MaintenanceConfig {
     // Preflight limit for one normal-mode evaluation/compaction. Zero explicitly
     // disables this limit; pressure and emergency always bypass it.
     std::uint64_t max_copy_bytes_per_cycle{kDefaultMaintenanceMaxCopyBytesPerCycle};
-    // Inclusive per-second copy budget across normal-mode compact work in the
-    // current one-second steady_clock window. Zero disables the rate limit;
-    // pressure and emergency bypass it.
+    // Private pre-intent replacement-write rate under normal pressure. The
+    // limiter spaces <=1 MiB physical writes with a bounded initial burst. The
+    // one-second controller window prevents adjacent jobs from each receiving
+    // a fresh burst. Zero disables pacing; pressure/emergency bypass it.
     std::uint64_t max_copy_bytes_per_sec{};
+    // Persistence v1 compacts one complete Worker sealed set in one atomic
+    // transaction. Kept as a source-compatible guard for existing aggregate
+    // initializers; the only supported value is 1.
     std::uint32_t max_segments_per_cycle{1};
     // Inclusive CPU budget for compact work inside the same one-second window
     // (milliseconds of wall time charged to compact). Zero disables; pressure
@@ -113,7 +117,10 @@ struct MaintenanceConfig {
     // admitted despite the latency guard. Zero permits indefinite deferral
     // until pressure; pressure/emergency always bypass independently.
     std::uint32_t max_latency_deferral_ms{30'000};
-    std::uint32_t max_no_gain_attempts{8};
+    // Exact no-gain results are deterministic for an unchanged physical
+    // candidate. One attempt is therefore sufficient before bounded memoized
+    // backoff; zero disables that backoff.
+    std::uint32_t max_no_gain_attempts{1};
     std::uint32_t dead_byte_ratio_bp_normal{5'000};
     std::uint32_t segment_count_pressure_pct{80};
     std::uint64_t free_bytes_pressure_margin{};
@@ -156,6 +163,8 @@ enum class StoreConcurrencyMode : std::uint8_t {
 inline constexpr std::size_t kDefaultPairedMergeDeltaEntries = 8'192;
 inline constexpr std::size_t kDefaultPairedMergeMaximumPostEntries = 32'736;
 inline constexpr std::size_t kDefaultPairedMergeQuantumSlots = 4'096;
+inline constexpr std::uint32_t kDefaultPairedWriterBatchMaxRecords = 32;
+inline constexpr std::size_t kDefaultPairedWriterBatchMaxBytes = 256U * 1024U;
 
 // Paired runtime tuning. Embedded callers only need the merge quanta: the
 // synchronous put/erase handoff borrows caller memory and needs no payload
@@ -172,6 +181,10 @@ struct PairedConcurrencyConfig {
     // Inclusive queue-wait budget for asynchronous submissions. Zero never
     // expires queued work. Synchronous embedded mutations always wait.
     std::uint32_t async_queue_wait_ms{};
+    // Volatile Writer micro-batch bounds. Only work already present in the
+    // bounded lane is combined; the Writer never waits to manufacture a batch.
+    std::uint32_t async_writer_batch_max_records{kDefaultPairedWriterBatchMaxRecords};
+    std::size_t async_writer_batch_max_bytes{kDefaultPairedWriterBatchMaxBytes};
     std::size_t merge_delta_entries{kDefaultPairedMergeDeltaEntries};
     std::size_t merge_maximum_post_entries{kDefaultPairedMergeMaximumPostEntries};
     std::size_t merge_quantum_slots{kDefaultPairedMergeQuantumSlots};
