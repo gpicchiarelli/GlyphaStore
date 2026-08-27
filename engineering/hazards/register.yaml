@@ -340,6 +340,8 @@ hazards:
   evento_pericoloso: Esaurimento dello spazio
   cause:
   - ENOSPC during mutation/rotation
+  - ENOSPC / storage_exhausted during compaction staging, intent, or promotion
+  - ENOSPC / storage_exhausted during online backup segment/manifest copy or destination sync
   conseguenze:
   - Availability loss; risk of partial publish if mishandled
   severita: alta
@@ -351,12 +353,16 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - tests/integration/persistence_recovery_tests.cpp
-  rischio_residuo: System-level disk-full matrices open
+  - tests/integration/persistence_recovery_compaction_tests.cpp
+  - tests/unit/store_backup_tests.cpp
+  - tests/integration/compaction_builder_tests.cpp
+  rischio_residuo: System-level disk-full matrices open; E3/E4 not certified
   stato: mitigato
   accettazione_rischio: Deterministic ENOSPC seams + resource preflight
   requisiti:
   - GS-RECOVERY-FAILCLOSED-001
   - GS-OPS-CONFIG-001
+  - GS-PERSIST-FAULT-001
 - id: HAZ-017
   evento_pericoloso: Quota esaurita
   cause:
@@ -828,6 +834,7 @@ hazards:
   - tests/unit/maintenance_controller_tests.cpp
   - tests/unit/daemon_config_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
+  - tests/integration/persistence_recovery_compaction_tests.cpp
   - benchmarks/results/local-macos-2026-08-27-compaction-pacing/README.md
   rischio_residuo: sleep granularity, filesystem caching e condivisione del device richiedono tuning
     e campagne su Linux, FreeBSD, OpenBSD e hardware controllato; il bypass di pressione resta un burst
@@ -836,3 +843,5 @@ hazards:
   accettazione_rischio: Mitigazione locale e configurabile; nessun claim universale o production-ready
   requisiti:
   - GS-OPS-CONFIG-001
+  - GS-OPS-DEBT-001
+  - GS-PERSIST-AMP-001

@@ -70,11 +70,11 @@ The volatile engine under `src/experimental/` is lab-only.
 
 ### Durability and recovery
 
-- [ ] **GATE-BACKUP-RESTORE** — Backup restore verification and version migration
-  State: `IMPLEMENTATA` · Release target: `beta`
+- [x] **GATE-BACKUP-RESTORE** — Backup restore verification and version migration
+  State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-MIGRATE-001`
-  Residual risk: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
-  Offline tools and online fenced backup implemented; normative snapshot boundary published.
+  Residual risk: Released-tag artifact consumption remains open; zero-fence hot backup out of scope; E3/E4 open; glyphastored mid-BACKUP kill covered by glyphastore_crash_backup_daemon
+  Offline tools and online fenced backup with ENOSPC and concurrent fence proofs in CI; normative snapshot boundary published. Not E3/E4 certified.
 
 - [x] **GATE-DURABLE-ACK** — Acknowledgement semantics for durable mutations
   State: `PROVATA_IN_CI` · Release target: `beta`
@@ -96,17 +96,17 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-WRITE-ORDER** — Write ordering synchronization and manifest publication
   State: `PROVATA_IN_CI` · Release target: `beta`
-  Requirements: `GS-PERSIST-ORDER-001`
-  Residual risk: Filesystem/power-loss certification matrices open
-  Platform-aware publication implemented with fault and process-kill tests.
+  Requirements: `GS-PERSIST-ORDER-001`, `GS-PERSIST-AMP-001`
+  Residual risk: Filesystem/power-loss certification matrices open; E3/E4 not certified
+  Platform-aware publication with fault and process-kill tests; write-amp and temporary-space budgets reject before compaction intent (GS-PERSIST-AMP-001).
 
 ### Verification
 
-- [ ] **GATE-FAULT-INJECTION** — Fault injection for allocation filesystem clock socket thread failures
-  State: `IMPLEMENTATA` · Release target: `beta`
-  Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`
+- [x] **GATE-FAULT-INJECTION** — Fault injection for allocation filesystem clock socket thread failures
+  State: `PROVATA_IN_CI` · Release target: `beta`
+  Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`, `GS-PERSIST-AMP-001`
   Residual risk: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
-  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix; E3 honesty enforced in CI.
+  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC matrix across mutation, compaction, and backup; platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
 
 - [x] **GATE-FUZZ-CI** — Fuzz targets run in CI with retained corpora
   State: `PROVATA_IN_CI` · Release target: `alpha`
@@ -122,7 +122,7 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-SOAK** — Long-running stress and soak coverage
   State: `PROVATA_IN_CI` · Release target: `beta`
-  Requirements: `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`
+  Requirements: `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`, `GS-OPS-DEBT-001`
   Residual risk: Controlled multi-hour hardware soak with mandatory rotation evidence open
   Smoke/long soaks exist and are budget-linked; hardware soak remains release residual.
 
@@ -148,7 +148,7 @@ The volatile engine under `src/experimental/` is lab-only.
 
 - [x] **GATE-OPS-RUNBOOKS** — Graceful drain overload backup restore corruption runbooks
   State: `PROVATA_IN_CI` · Release target: `alpha`
-  Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`
+  Requirements: `GS-OPS-BACKUP-001`, `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`, `GS-OPS-DEBT-001`
   Residual risk: Staging/production rehearsal still operator-owned
   Operator procedures exercised by ops-runbooks CI and linked via perf/ops budgets.
 
