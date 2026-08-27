@@ -316,10 +316,15 @@ gates:
   - workflow: soak-extended.yml
   - workflow: assurance.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Controlled multi-hour hardware soak with mandatory rotation evidence open
+  rischio_residuo: >
+    Controlled multi-hour hardware soak with mandatory rotation evidence open;
+    adversarial soak profiles (hot-key / connection-churn / queue-saturation /
+    adversarial-reclaim) are software stubs only
   riapertura:
   - Removing smoke soak from PR path without alternative
-  narrative: Smoke/long soaks exist and are budget-linked; hardware soak remains release residual.
+  narrative: >
+    Smoke/long soaks exist and are budget-linked; Wave 4 adversarial profile stubs
+    exercise shape + SIGTERM drain; hardware soak remains release residual.
 - id: GATE-PERFORMANCE
   titolo: Performance tests track latency throughput memory regressions
   sezione: verification
@@ -362,8 +367,10 @@ gates:
   evidenze:
   - workflow: ops-runbooks.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Operator misuse of unsupported filesystems; multi-hour adversarial reclaim
-    fairness soak open
+  rischio_residuo: >
+    Operator misuse of unsupported filesystems; multi-hour adversarial reclaim
+    fairness soak open (Wave 4 adversarial-reclaim profile is a software stub only);
+    intentional Prometheus/OpenMetrics non-support remains documented residual
   riapertura:
   - Precedence change without docs/tests
   - Reclaim cursor pinned on reclaim_threshold without peer advance
@@ -384,10 +391,14 @@ gates:
   evidenze:
   - workflow: ops-runbooks.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Histogram approximations are not SLOs; no Prometheus exporter
+  rischio_residuo: >
+    Histogram approximations are not SLOs; OpenMetrics/Prometheus exporter is
+    intentional non-support (docs/operations/observability.md)
   riapertura:
   - Removing HEALTH/READY/STATS fields without versioning
-  narrative: Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability catalog exist.
+  narrative: >
+    Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability
+    catalog exist; no first-party Prometheus scrape endpoint.
 - id: GATE-OPS-RUNBOOKS
   titolo: Graceful drain overload backup restore corruption runbooks
   sezione: operations_security
@@ -431,10 +442,14 @@ gates:
   - workflow: ci.yml
   - workflow: openbsd-libressl.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Multi-tenant Phase 8 and hostile-public CRL ops residual
+  rischio_residuo: >
+    Multi-tenant Phase 8 remainder unsupported/deferred (ADR 0028, at-rest crypto);
+    hostile-public CRL ops residual; restart-only TLS cert material
   riapertura:
   - Weakening default-deny secure profile
-  narrative: Secure profile Phases 2–6 landed; Phase 8 deferred.
+  narrative: >
+    Secure profile Phases 2–6 landed; Phase 8 remainder documented as
+    unsupported/deferred (Wave 4 honesty).
 - id: GATE-THREAT-SUPPLY
   titolo: Threat model and security release process including supply chain
   sezione: operations_security

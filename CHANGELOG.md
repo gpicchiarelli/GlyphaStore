@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+- Wave 4 (L5+L6) daemon/security/operability: handoff exactly-once + concurrent mesh
+  tests; TLS `WANT_WRITE` response-flush litmus; abuse principal quotas and security-audit
+  counters under concurrency; RST connection-slot release + connection rate-limit window
+  reconnect; adversarial soak profile stubs (`hot-key` / `connection-churn` /
+  `queue-saturation` / `adversarial-reclaim`) with SIGTERM drain; intentional
+  OpenMetrics/Prometheus non-support and Phase 8 remainder unsupported/deferred residuals
+  (ADR 0028, restart-only TLS certs). Claim ceiling unchanged (architectural prototype).
+  No L1 publish/reclaim ownership in this wave.
+
 - Wave 0 (L0) assurance hygiene: close stale `GATE-CONCURRENCY-SPEC` residual for ADR 0037
   Phase C (daemon mutation windows + GET barrier already landed; prove paths include
   `mutation_window_tests`). Add living `docs/assurance/evidence-taxonomy.md` (`local` /

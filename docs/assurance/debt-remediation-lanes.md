@@ -35,6 +35,13 @@ requirements + proofs + evidence. Evidence labels: [evidence-taxonomy.md](eviden
 | **5** | L7 | C ABI cross-release, BSD packages, Cosign/SLSA/SBOM, sealed `release.yml` | Artifact sealing / N−1 fixtures |
 | **6** | L3+L4 (blocked) | Hard-pinned 1–8 scaling + absolute budgets + ACCETTATA when runners exist | macOS `local` ≠ scaling |
 
+Wave 4 progress (branch `debt/l5l6-wave4-daemon-sec`): handoff exactly-once + concurrent
+tests; TLS `WANT_WRITE` flush litmus; abuse/audit concurrency; RST slot release + rate-limit
+window reconnect; adversarial soak profile stubs (`hot-key` / `connection-churn` /
+`queue-saturation` / `adversarial-reclaim`); intentional Prometheus non-support + Phase 8
+remainder unsupported/deferred residuals. Claim ceiling unchanged (architectural prototype).
+No L1 publish/reclaim ownership in this wave.
+
 ## Anti-duplication rules
 
 1. **L1 merge lock** on publication/reclaim APIs; other lanes rebase or wait.

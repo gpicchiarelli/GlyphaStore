@@ -84,7 +84,9 @@ classes:
       - soak-extended.yml
     notes: >
       Multi-hour software path evidence. Controlled hardware soak with mandatory
-      rotation evidence remains open (residual on GATE-SOAK).
+      rotation evidence remains open (residual on GATE-SOAK). Wave 4 adversarial
+      profiles (hot-key, connection-churn, queue-saturation, adversarial-reclaim)
+      are software stubs in scripts/soak_daemon.sh and do not close HAZ-026 fairness.
 
   - id: OVERLOAD-RUNBOOK
     gate: GATE-OPS-RUNBOOKS

@@ -4,13 +4,15 @@ requirements:
   categoria: operations
   criticita: alta
   stato: provato
-  descrizione: Daemon and embedded durable config have documented precedence, validation, safe defaults,
+  descrizione: >
+    Daemon and embedded durable config have documented precedence, validation, safe defaults,
     and resource limits; production profile fails closed before listen. Exact normal-mode no-gain
     maintenance is memoized only for an unchanged physical candidate, expires within the configured
     maximum evaluation interval, and is bypassed under pressure/emergency. Normal background
     compaction paces bounded physical writes only under private pre-intent ownership; large candidates
     make progress, named profile defaults are explicit and overrideable, and capacity pressure bypasses
-    pacing without changing persistence-v1 authority.
+    pacing without changing persistence-v1 authority. OpenMetrics/Prometheus scrape exporters are
+    intentional non-support (operator STATS + JSON logs only).
   autorita:
   - docs/cli.md
   - docs/operations/durable-tcp-daemon.md
@@ -41,8 +43,14 @@ requirements:
   - workflow: ci.yml
   rischio_residuo:
   - Misconfiguration on unsupported filesystems remains an operator hazard
-  - Multi-hour adversarial reclaim fairness soak remains open
+  - >-
+    Multi-hour adversarial reclaim fairness soak remains open (Wave 4
+    adversarial-reclaim / hot-key / queue-saturation / connection-churn profiles
+    are software stubs only)
   - Device-wide fairness across multiple Store processes and multi-platform rate calibration remain open
+  - >-
+    OpenMetrics/Prometheus exporter intentional non-support
+    (docs/operations/observability.md)
   hazards:
   - HAZ-025
   - HAZ-026
@@ -123,9 +131,12 @@ requirements:
   categoria: operations
   criticita: media
   stato: implementato
-  descrizione: Software soak profiles (smoke/long/1h/4h) and graceful-drain/overload runbooks are
-    linked to GATE-SOAK and GATE-OPS-RUNBOOKS via engineering/performance/budgets.yaml. Hardware
-    multi-hour soak with mandatory rotation evidence remains residual.
+  descrizione: >
+    Software soak profiles (smoke/long/1h/4h plus Wave 4 adversarial stubs hot-key,
+    connection-churn, queue-saturation, adversarial-reclaim) and graceful-drain/overload
+    runbooks are linked to GATE-SOAK and GATE-OPS-RUNBOOKS via engineering/performance/budgets.yaml.
+    Adversarial stubs exercise shape and SIGTERM drain only. Hardware multi-hour soak with
+    mandatory rotation evidence remains residual.
   autorita:
   - docs/operations/soak.md
   - docs/operations/graceful-drain-and-overload.md
@@ -149,6 +160,9 @@ requirements:
   - workflow: assurance.yml
   rischio_residuo:
   - Controlled multi-hour hardware soak with mandatory rotation evidence remains open
+  - >-
+    Adversarial soak profiles are software stubs only and do not close HAZ-026
+    multi-hour reclaim fairness
   hazards:
   - HAZ-025
   gates:

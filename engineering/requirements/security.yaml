@@ -27,7 +27,10 @@ requirements:
   - workflow: ci.yml
   - workflow: openbsd-libressl.yml
   rischio_residuo:
-  - Hostile public bind still wants operator CRL; multi-tenant Phase 8 and physical E3 honesty open
+  - >-
+    Hostile public bind still wants operator CRL; multi-tenant Phase 8 remainder
+    unsupported/deferred (ADR 0028, at-rest crypto); restart-only TLS certs;
+    OpenMetrics/Prometheus intentional non-support; physical E3 honesty open
   hazards:
   - HAZ-023
   - HAZ-024

@@ -182,19 +182,30 @@ available for trusted deployments.
 
 ## 7. Residual risks (still block hostile public bind)
 
+Wave 4 honesty (architectural prototype ceiling):
+
+- **Phase 8 remainder unsupported** for hostile multi-tenant / public-Internet claims:
+  per-tenant data-dir / process isolation stays deferred ([ADR 0028](../adr/0028-per-tenant-data-dir-deferred.md));
+  at-rest crypto unsupported. Key-prefix + keyed routing + STATS admin gate are first-slice
+  only — not adversarial multi-tenant certification.
+- **TLS cert/key material is restart-only**: replace PEMs on disk and recycle the daemon
+  (or listener). There is no hot reload / in-band credential opcode (§5).
+- OpenMetrics/Prometheus scrape exporters are **intentionally unsupported** this cycle
+  ([observability.md](../operations/observability.md) §7); use wire STATS + JSON logs.
 - Live AIA OCSP HTTP lookups (intentionally unsupported; use `--tls-crl` + optional
-  `--tls-ocsp-fail-closed`).  
+  `--tls-ocsp-fail-closed`).
 - Hostile multi-tenant isolation beyond key-prefix + keyed Index/Worker routing + STATS gate
   (Phase 8 remainder: per-tenant data-dir / process isolation and at-rest crypto). UDS/`SO_PEERCRED`
   ([ADR 0029](../adr/0029-uds-peercred.md)) is optional local transport/authn only — not multi-tenant
   isolation. Prefix scope + STATS admin gate + keyed Index seed improve posture but do **not**
-  certify adversarial multi-tenant deployments.  
+  certify adversarial multi-tenant deployments.
 - Non-C++ SDK support for the keyed-routing identity required by `--secure-profile`.
 - Physical E3/E4 power-loss certification (storage, not wire).
 
 Phase 5 abuse controls and Phase 6 audit + local CRL fail-closed are implemented. Configure
 `--tls-crl` before calling a deployment public-Internet ready. Production readiness still lists
 multi-tenant Phase 8 remainder and E3 as open.
+
 ## References
 
 - [ADR 0020](../adr/0020-tls-outer-transport.md) · [ADR 0021](../adr/0021-secure-profile-authentication.md) ·

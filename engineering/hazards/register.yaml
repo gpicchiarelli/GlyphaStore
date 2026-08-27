@@ -514,7 +514,9 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - scripts/test-secure-profile-interop.sh
-  rischio_residuo: Cleartext default for loopback; hostile public needs CRL
+  rischio_residuo: >
+    Cleartext default for loopback; hostile public needs CRL; Phase 8 remainder
+    unsupported/deferred (ADR 0028); restart-only TLS cert material
   stato: mitigato
   accettazione_rischio: Secure profile default-deny; cleartext trusted-bind only
   requisiti:
@@ -592,8 +594,10 @@ hazards:
   - tests/integration/server_reactor_tests.cpp
   - tests/unit/maintenance_controller_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
-  rischio_residuo: The post-staging v1 intent/promotion/publication/retirement window remains monolithic;
+  rischio_residuo: >
+    The post-staging v1 intent/promotion/publication/retirement window remains monolithic;
     copy pacing and multi-hour adversarial cross-platform fairness soak remain open
+    (Wave 4 adversarial-reclaim / hot-key soak profiles are software stubs only)
   stato: mitigato
   accettazione_rischio: Cursor advance, bounded no-gain memo, pressure bypass, and p99 deferral hysteresis are documented and tested
   requisiti:

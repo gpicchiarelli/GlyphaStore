@@ -123,8 +123,9 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-SOAK** — Long-running stress and soak coverage
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`
-  Residual risk: Controlled multi-hour hardware soak with mandatory rotation evidence open
-  Smoke/long soaks exist and are budget-linked; hardware soak remains release residual.
+  Residual risk: Controlled multi-hour hardware soak with mandatory rotation evidence open; adversarial soak profiles (hot-key / connection-churn / queue-saturation / adversarial-reclaim) are software stubs only
+
+  Smoke/long soaks exist and are budget-linked; Wave 4 adversarial profile stubs exercise shape + SIGTERM drain; hardware soak remains release residual.
 
 - [x] **GATE-TEST-SUITES** — Distinct unit integration property concurrency crash recovery suites
   State: `PROVATA_IN_CI` · Release target: `alpha`
@@ -137,13 +138,15 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-AUTH-TRANSPORT** — Authentication authorization transport security rate limits audit
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-SEC-PROFILE-001`
-  Residual risk: Multi-tenant Phase 8 and hostile-public CRL ops residual
-  Secure profile Phases 2–6 landed; Phase 8 deferred.
+  Residual risk: Multi-tenant Phase 8 remainder unsupported/deferred (ADR 0028, at-rest crypto); hostile-public CRL ops residual; restart-only TLS cert material
+
+  Secure profile Phases 2–6 landed; Phase 8 remainder documented as unsupported/deferred (Wave 4 honesty).
 
 - [x] **GATE-CONFIG** — Configuration precedence validation safe defaults limits
   State: `PROVATA_IN_CI` · Release target: `alpha`
   Requirements: `GS-OPS-CONFIG-001`
-  Residual risk: Operator misuse of unsupported filesystems; multi-hour adversarial reclaim fairness soak open
+  Residual risk: Operator misuse of unsupported filesystems; multi-hour adversarial reclaim fairness soak open (Wave 4 adversarial-reclaim profile is a software stub only); intentional Prometheus/OpenMetrics non-support remains documented residual
+
   Validated durable defaults and daemon profiles; HAZ-026 reclaim cursor-advance proofs in CI.
 
 - [x] **GATE-OPS-RUNBOOKS** — Graceful drain overload backup restore corruption runbooks
@@ -155,8 +158,9 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-TELEMETRY** — Structured logs metrics health readiness diagnostics
   State: `PROVATA_IN_CI` · Release target: `alpha`
   Requirements: `GS-OPS-CONFIG-001`
-  Residual risk: Histogram approximations are not SLOs; no Prometheus exporter
-  Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability catalog exist.
+  Residual risk: Histogram approximations are not SLOs; OpenMetrics/Prometheus exporter is intentional non-support (docs/operations/observability.md)
+
+  Wire HEALTH/READY/STATS, JSON lifecycle logging, and operator observability catalog exist; no first-party Prometheus scrape endpoint.
 
 - [ ] **GATE-THREAT-SUPPLY** — Threat model and security release process including supply chain
   State: `IMPLEMENTATA` · Release target: `beta`
