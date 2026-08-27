@@ -50,7 +50,8 @@ requirements:
   rischio_residuo:
   - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
     routing independence; embedded catalog refresh may defer until a combiner turn; ADR 0036
-    generation_slot_pool remains opt-in (default Alternative A) — async/daemon Writer publish sites,
+    generation_slot_pool remains opt-in (default Alternative A) — durable-group Writer sites,
+    V11/V12 affine performance, and multi-OS sanitizer soaks under the flag remain open
     V11/V12 performance, and full TSAN soak under the flag are still open
   hazards:
   - HAZ-003
