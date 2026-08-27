@@ -79,6 +79,9 @@ struct GenerationState final {
     alignas(128) std::atomic_bool refresh_requested{};
     alignas(128) std::atomic_bool reclaim_requested{};
     std::atomic<std::uint64_t> generations_retired{};
+    std::atomic<std::uint64_t> shutdown_generations_reclaimed{};
+    std::atomic<std::uint64_t> generation_admission_backpressure_total{};
+    std::atomic_bool reader_shutdown_finalized{};
     std::atomic<std::size_t> retired_generation_count{};
     std::atomic<std::size_t> delta_entries{};
     std::atomic<std::size_t> delta_record_versions{};
@@ -122,6 +125,12 @@ struct LaneMetrics final {
     std::atomic<std::uint64_t> completed{};
     std::atomic<std::uint64_t> conflict_retries{};
     std::atomic<std::uint64_t> conflict_retry_commits{};
+    std::atomic<std::uint64_t> writer_batches{};
+    std::atomic<std::uint64_t> writer_batch_records{};
+    std::atomic<std::size_t> maximum_writer_batch_records{};
+    std::atomic<std::uint64_t> publications{};
+    std::atomic<std::uint64_t> publication_records{};
+    std::atomic<std::uint64_t> completion_notifications{};
     std::atomic<std::uint64_t> total_queue_wait_ns{};
     std::atomic<std::uint64_t> maximum_queue_wait_ns{};
     std::atomic<std::uint64_t> total_service_ns{};

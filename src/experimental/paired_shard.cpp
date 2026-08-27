@@ -477,6 +477,28 @@ struct PublicationDescriptor final {
     std::uint32_t slot{};
 };
 
+// ADR 0036 prototype: publication is one release/acquire word. The low 16 bits
+// encode slot + 1 (zero is reserved); the upper 48 bits identify the slot
+// incarnation. Unlike an atomic descriptor pointer, the token cannot exhibit
+// pointer ABA when a fixed slot is eventually reused.
+constexpr std::uint64_t kPublicationSlotBits = 16U;
+constexpr std::uint64_t kPublicationSlotMask = (1ULL << kPublicationSlotBits) - 1U;
+constexpr std::uint64_t kMaximumPublicationEpoch =
+    std::numeric_limits<std::uint64_t>::max() >> kPublicationSlotBits;
+
+[[nodiscard]] constexpr auto encode_publication_token(const std::uint64_t epoch,
+                                                      const std::size_t slot) noexcept -> std::uint64_t {
+    return (epoch << kPublicationSlotBits) | (static_cast<std::uint64_t>(slot) + 1U);
+}
+
+[[nodiscard]] constexpr auto publication_token_epoch(const std::uint64_t token) noexcept -> std::uint64_t {
+    return token >> kPublicationSlotBits;
+}
+
+[[nodiscard]] constexpr auto publication_token_slot(const std::uint64_t token) noexcept -> std::size_t {
+    return static_cast<std::size_t>((token & kPublicationSlotMask) - 1U);
+}
+
 enum class GenerationSlotState : std::uint8_t { free, published, retired };
 
 struct GenerationSlot final {
@@ -485,6 +507,7 @@ struct GenerationSlot final {
     Clock::time_point retired_at{};
     std::uint64_t retire_after_turn{};
     std::atomic_size_t output_pins{};
+    std::uint64_t publication_count{}; // Writer-only; survives free/reuse.
     GenerationSlotState state{GenerationSlotState::free};
 };
 
@@ -534,6 +557,8 @@ void PrototypeReadPin::reset() noexcept {
 
 struct VolatileShardPairPrototype::Impl final {
     static constexpr std::size_t kGenerationPoolCapacity = kQueueCapacity + 2U;
+    static_assert(kGenerationPoolCapacity < kPublicationSlotMask);
+    static_assert(std::atomic_uint64_t::is_always_lock_free);
 
     explicit Impl(const std::size_t maximum_value, const std::size_t merge_entries,
                   const PrototypeWriterBatchConfig writer_batch_config,
@@ -553,8 +578,9 @@ struct VolatileShardPairPrototype::Impl final {
         initial.descriptor = {
             .generation = &*initial.generation, .epoch = 0, .visible_through = 0, .slot = 0};
         initial.state = GenerationSlotState::published;
+        initial.publication_count = 1;
         current_generation_slot = 0;
-        publication.store(&initial.descriptor, std::memory_order_release);
+        publication.store(encode_publication_token(0, 0), std::memory_order_release);
         local_publication = &initial.descriptor;
         generation_live.store(1, std::memory_order_relaxed);
     }
@@ -706,13 +732,17 @@ struct VolatileShardPairPrototype::Impl final {
                            .epoch = next_epoch,
                            .visible_through = next_visible,
                            .slot = static_cast<std::uint32_t>(next_slot)};
+        if (next.publication_count != 0) {
+            generation_slot_reuses.fetch_add(1U, std::memory_order_relaxed);
+        }
+        ++next.publication_count;
         next.state = GenerationSlotState::published;
         generation_live.fetch_add(1U, std::memory_order_relaxed);
         update_high_watermark(generation_high_watermark, generation_live.load(std::memory_order_relaxed));
 
         const auto previous_slot = current_generation_slot;
         current_generation_slot = next_slot;
-        publication.store(&next.descriptor, std::memory_order_release);
+        publication.store(encode_publication_token(next_epoch, next_slot), std::memory_order_release);
 
         // Two quiescent boundaries cover a Reader concurrent with publication:
         // one to finish an old-generation turn, one to prove it advanced.
@@ -746,7 +776,18 @@ struct VolatileShardPairPrototype::Impl final {
                 next_delta = make_empty_delta(merge_delta_entries);
                 merged = true;
             }
-            const auto next_epoch = writer_epoch.load(std::memory_order_relaxed) + 1U;
+            const auto current_epoch = writer_epoch.load(std::memory_order_relaxed);
+            if (current_epoch >= kMaximumPublicationEpoch) {
+                for (const auto slot : batch) {
+                    push_completion(slot, PrototypeCompletion{.request_id = slots[slot].request_id,
+                                                              .error = ErrorCode::arithmetic_overflow,
+                                                              .visible_through = visible_through,
+                                                              .epoch = current_epoch});
+                }
+                notify_reader();
+                return;
+            }
+            const auto next_epoch = current_epoch + 1U;
             const auto generation_slot = acquire_generation_slot();
             if (!generation_slot.has_value()) {
                 for (const auto slot : batch) {
@@ -863,7 +904,7 @@ struct VolatileShardPairPrototype::Impl final {
     SpscRing<std::uint32_t, kQueueCapacity> mutations;
     SpscRing<InternalCompletion, kQueueCapacity> completions;
     std::array<GenerationSlot, kGenerationPoolCapacity> generations{};
-    std::atomic<const PublicationDescriptor*> publication{};
+    std::atomic_uint64_t publication{};
     const PublicationDescriptor* local_publication{};
     std::size_t current_generation_slot{}; // Writer-only
     std::shared_ptr<const ImmutableReadIndex> base;
@@ -900,6 +941,7 @@ struct VolatileShardPairPrototype::Impl final {
     std::atomic_uint64_t delta_merges{};
     std::atomic_uint64_t publication_backpressure{};
     std::atomic_uint64_t generation_slot_exhaustions{};
+    std::atomic_uint64_t generation_slot_reuses{};
     std::atomic_uint64_t generation_retire_count{};
     std::atomic_uint64_t generation_retire_delay_ns{};
     std::atomic_size_t generation_output_pins{};
@@ -970,7 +1012,20 @@ void VolatileShardPairPrototype::adopt_publication() noexcept {
     // A turn boundary invalidates spans returned by the preceding turn. The
     // Writer waits for two such boundaries before reclaiming retired storage.
     impl_->reader_turns.fetch_add(1U, std::memory_order_seq_cst);
-    impl_->local_publication = impl_->publication.load(std::memory_order_acquire);
+    const auto token = impl_->publication.load(std::memory_order_acquire);
+    if (token == 0) {
+        impl_->accepting.store(false, std::memory_order_release);
+        impl_->invariant_failed.store(true, std::memory_order_release);
+        return;
+    }
+    const auto slot = publication_token_slot(token);
+    if (slot >= impl_->generations.size() ||
+        impl_->generations[slot].descriptor.epoch != publication_token_epoch(token)) {
+        impl_->accepting.store(false, std::memory_order_release);
+        impl_->invariant_failed.store(true, std::memory_order_release);
+        return;
+    }
+    impl_->local_publication = &impl_->generations[slot].descriptor;
 }
 
 auto VolatileShardPairPrototype::get(const std::string_view key, const std::uint64_t now_ns) noexcept
@@ -1004,17 +1059,27 @@ void VolatileShardPairPrototype::stop_and_drain() noexcept {
     impl_->accepting.store(false, std::memory_order_release);
     // Complete a real adoption between two quiescent boundaries. This keeps
     // local_publication valid even when the Reader had not adopted the most
-    // recent pre-shutdown generation. The pool is sized for every mutation
-    // that admission could already have accepted.
-    impl_->reader_turns.fetch_add(1U, std::memory_order_seq_cst);
-    impl_->local_publication = impl_->publication.load(std::memory_order_acquire);
+    // recent pre-shutdown generation. Any batch that cannot obtain a slot is
+    // classified explicitly by the bounded exhaustion path.
+    adopt_publication();
     impl_->reader_turns.fetch_add(1U, std::memory_order_seq_cst);
     if (impl_->writer.joinable()) {
         impl_->writer.join();
     }
     // The Writer may have published queued mutations during the join. Current
     // storage is never reclaimed, so this final acquire is lifetime-safe.
-    impl_->local_publication = impl_->publication.load(std::memory_order_acquire);
+    const auto token = impl_->publication.load(std::memory_order_acquire);
+    if (token == 0) {
+        impl_->invariant_failed.store(true, std::memory_order_release);
+        return;
+    }
+    const auto slot = publication_token_slot(token);
+    if (slot < impl_->generations.size() &&
+        impl_->generations[slot].descriptor.epoch == publication_token_epoch(token)) {
+        impl_->local_publication = &impl_->generations[slot].descriptor;
+    } else {
+        impl_->invariant_failed.store(true, std::memory_order_release);
+    }
 }
 
 auto VolatileShardPairPrototype::stats() const noexcept -> PrototypePairStats {
@@ -1049,6 +1114,7 @@ auto VolatileShardPairPrototype::stats() const noexcept -> PrototypePairStats {
         .delta_merges = impl_->delta_merges.load(std::memory_order_relaxed),
         .publication_backpressure = impl_->publication_backpressure.load(std::memory_order_relaxed),
         .generation_slot_exhaustions = impl_->generation_slot_exhaustions.load(std::memory_order_relaxed),
+        .generation_slot_reuses = impl_->generation_slot_reuses.load(std::memory_order_relaxed),
         .generation_live = impl_->generation_live.load(std::memory_order_relaxed),
         .generation_high_watermark = impl_->generation_high_watermark.load(std::memory_order_relaxed),
         .generation_retire_count = impl_->generation_retire_count.load(std::memory_order_relaxed),

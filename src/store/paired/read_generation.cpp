@@ -1,5 +1,6 @@
 #include "glyphastore/store/paired/read_generation.hpp"
 
+#include "experimental/pair_read_generation_shell.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
 
@@ -331,6 +332,47 @@ struct DeltaDirectoryBlock final {
 struct DeltaDirectoryChunk final {
     std::array<std::shared_ptr<const DeltaDirectoryBlock>, kDeltaDirectoryChunkBlocks> blocks{};
 };
+
+struct DeltaBuilderScratch final {
+    DeltaBuilderScratch() {
+        mutable_chunks.reserve(kMaximumPublicationBatch);
+        mutable_blocks.reserve(kMaximumPublicationBatch);
+        mutable_pages.reserve(kMaximumPublicationBatch);
+    }
+
+    void reset() noexcept {
+        mutable_chunks.clear();
+        mutable_blocks.clear();
+        mutable_pages.clear();
+    }
+
+    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryChunk>>> mutable_chunks;
+    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryBlock>>> mutable_blocks;
+    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaPage>>> mutable_pages;
+};
+
+[[nodiscard]] auto copy_flat_delta_spine(const std::vector<std::shared_ptr<const DeltaPage>>& source)
+    -> std::vector<std::shared_ptr<const DeltaPage>> {
+    GS_PHASE_PUT(delta_flat_spine_copy);
+    return source;
+}
+
+[[nodiscard]] auto
+copy_directory_delta_spine(const std::vector<std::shared_ptr<const DeltaDirectoryChunk>>& source)
+    -> std::vector<std::shared_ptr<const DeltaDirectoryChunk>> {
+    GS_PHASE_PUT(delta_directory_spine_copy);
+    return source;
+}
+
+[[nodiscard]] auto current_delta_builder_scratch() -> DeltaBuilderScratch& {
+    thread_local DeltaBuilderScratch scratch;
+    return scratch;
+}
+
+[[nodiscard]] auto post_delta_builder_scratch() -> DeltaBuilderScratch& {
+    thread_local DeltaBuilderScratch scratch;
+    return scratch;
+}
 
 struct CompactReadRecord;
 
@@ -878,10 +920,12 @@ class DeltaState final {
 
 class DeltaBuilder final {
   public:
-    explicit DeltaBuilder(const DeltaState& previous, std::shared_ptr<DeltaArena> allocation_arena = {})
-        : previous_(&previous), flat_pages_(previous.flat_pages_),
-          directory_chunks_(previous.directory_chunks_), primary_arena_(previous.primary_arena_),
-          secondary_arena_(previous.secondary_arena_), size_(previous.size_) {
+    explicit DeltaBuilder(const DeltaState& previous, DeltaBuilderScratch& scratch,
+                          std::shared_ptr<DeltaArena> allocation_arena = {})
+        : previous_(&previous), flat_pages_(copy_flat_delta_spine(previous.flat_pages_)),
+          directory_chunks_(copy_directory_delta_spine(previous.directory_chunks_)),
+          primary_arena_(previous.primary_arena_), secondary_arena_(previous.secondary_arena_),
+          scratch_(&scratch), size_(previous.size_) {
         if (allocation_arena) {
             if (allocation_arena != primary_arena_ && allocation_arena != secondary_arena_) {
                 if (secondary_arena_) {
@@ -891,9 +935,7 @@ class DeltaBuilder final {
             }
         }
         allocation_arena_ = secondary_arena_ ? secondary_arena_ : primary_arena_;
-        mutable_chunks_.reserve(kMaximumPublicationBatch);
-        mutable_blocks_.reserve(kMaximumPublicationBatch);
-        mutable_pages_.reserve(kMaximumPublicationBatch);
+        scratch_->reset();
     }
 
     struct PreparedSlot final {
@@ -948,6 +990,7 @@ class DeltaBuilder final {
     }
 
     [[nodiscard]] auto store(const ReadRecordView& record) -> const DeltaRecord* {
+        GS_PHASE_PUT(delta_record_store);
         return allocation_arena_->store(record);
     }
 
@@ -997,42 +1040,57 @@ class DeltaBuilder final {
         if (last_mutable_page_index_ == page_index && last_mutable_page_ != nullptr) {
             return *last_mutable_page_;
         }
-        const auto found_page = std::find_if(mutable_pages_.begin(), mutable_pages_.end(),
+        auto& mutable_pages = scratch_->mutable_pages;
+        const auto found_page = std::find_if(mutable_pages.begin(), mutable_pages.end(),
                                              [&](const auto& entry) { return entry.first == page_index; });
-        if (found_page != mutable_pages_.end()) {
+        if (found_page != mutable_pages.end()) {
             last_mutable_page_index_ = page_index;
             last_mutable_page_ = found_page->second.get();
             return *found_page->second;
         }
         const auto* existing = page_at(page_index);
-        auto page = existing ? std::make_shared<DeltaPage>(*existing) : std::make_shared<DeltaPage>();
-        mutable_pages_.emplace_back(page_index, page);
+        std::shared_ptr<DeltaPage> page;
+        {
+            GS_PHASE_PUT(delta_page_clone);
+            page = existing ? std::make_shared<DeltaPage>(*existing) : std::make_shared<DeltaPage>();
+        }
+        mutable_pages.emplace_back(page_index, page);
         if (directory_chunks_.empty()) {
             flat_pages_[page_index] = page;
         } else {
             const auto block_index = page_index / kDeltaDirectoryBlockPages;
             const auto chunk_index = block_index / kDeltaDirectoryChunkBlocks;
             const auto block_offset = block_index % kDeltaDirectoryChunkBlocks;
-            auto found_chunk = std::find_if(mutable_chunks_.begin(), mutable_chunks_.end(),
+            auto& mutable_chunks = scratch_->mutable_chunks;
+            auto found_chunk = std::find_if(mutable_chunks.begin(), mutable_chunks.end(),
                                             [&](const auto& entry) { return entry.first == chunk_index; });
-            if (found_chunk == mutable_chunks_.end()) {
-                auto chunk = directory_chunks_[chunk_index]
-                                 ? std::make_shared<DeltaDirectoryChunk>(*directory_chunks_[chunk_index])
-                                 : std::make_shared<DeltaDirectoryChunk>();
-                mutable_chunks_.emplace_back(chunk_index, chunk);
+            if (found_chunk == mutable_chunks.end()) {
+                std::shared_ptr<DeltaDirectoryChunk> chunk;
+                {
+                    GS_PHASE_PUT(delta_chunk_clone);
+                    chunk = directory_chunks_[chunk_index]
+                                ? std::make_shared<DeltaDirectoryChunk>(*directory_chunks_[chunk_index])
+                                : std::make_shared<DeltaDirectoryChunk>();
+                }
+                mutable_chunks.emplace_back(chunk_index, chunk);
                 directory_chunks_[chunk_index] = chunk;
-                found_chunk = std::prev(mutable_chunks_.end());
+                found_chunk = std::prev(mutable_chunks.end());
             }
-            auto found_block = std::find_if(mutable_blocks_.begin(), mutable_blocks_.end(),
+            auto& mutable_blocks = scratch_->mutable_blocks;
+            auto found_block = std::find_if(mutable_blocks.begin(), mutable_blocks.end(),
                                             [&](const auto& entry) { return entry.first == block_index; });
-            if (found_block == mutable_blocks_.end()) {
-                auto block =
-                    found_chunk->second->blocks[block_offset]
-                        ? std::make_shared<DeltaDirectoryBlock>(*found_chunk->second->blocks[block_offset])
-                        : std::make_shared<DeltaDirectoryBlock>();
-                mutable_blocks_.emplace_back(block_index, block);
+            if (found_block == mutable_blocks.end()) {
+                std::shared_ptr<DeltaDirectoryBlock> block;
+                {
+                    GS_PHASE_PUT(delta_block_clone);
+                    block = found_chunk->second->blocks[block_offset]
+                                ? std::make_shared<DeltaDirectoryBlock>(
+                                      *found_chunk->second->blocks[block_offset])
+                                : std::make_shared<DeltaDirectoryBlock>();
+                }
+                mutable_blocks.emplace_back(block_index, block);
                 found_chunk->second->blocks[block_offset] = block;
-                found_block = std::prev(mutable_blocks_.end());
+                found_block = std::prev(mutable_blocks.end());
             }
             found_block->second->pages[page_index % kDeltaDirectoryBlockPages] = page;
         }
@@ -1044,12 +1102,13 @@ class DeltaBuilder final {
     const DeltaState* previous_{};
     std::vector<std::shared_ptr<const DeltaPage>> flat_pages_;
     std::vector<std::shared_ptr<const DeltaDirectoryChunk>> directory_chunks_;
-    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryChunk>>> mutable_chunks_;
-    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaDirectoryBlock>>> mutable_blocks_;
-    std::vector<std::pair<std::size_t, std::shared_ptr<DeltaPage>>> mutable_pages_;
     std::shared_ptr<DeltaArena> primary_arena_;
     std::shared_ptr<DeltaArena> secondary_arena_;
     std::shared_ptr<DeltaArena> allocation_arena_;
+    // Writer-thread-local reusable capacity; never shared with Reader and
+    // cleared before each publication. The separate current/post scratch
+    // instances cover the only two simultaneously live builders.
+    DeltaBuilderScratch* scratch_{};
     DeltaPage* last_mutable_page_{};
     std::size_t last_mutable_page_index_{std::numeric_limits<std::size_t>::max()};
     std::size_t size_{};
@@ -1102,8 +1161,36 @@ struct PairReadGenerationEnableShared final : PairReadGeneration {
                                           const std::uint64_t epoch, const std::uint64_t visible_through)
     -> std::shared_ptr<const PairReadGeneration> {
     // Co-allocate generation shell + embedded DeltaState in one control block.
+    GS_PHASE_PUT(generation_shell_allocate);
     return std::make_shared<PairReadGenerationEnableShared>(routing, std::move(base), std::move(delta), epoch,
                                                             visible_through);
+}
+
+[[nodiscard]] auto
+make_shared_generation_in_shell(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
+                                DeltaState delta, const std::uint64_t epoch,
+                                const std::uint64_t visible_through,
+                                std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
+    -> std::shared_ptr<const PairReadGeneration> {
+    if (!storage) {
+        throw std::bad_alloc{};
+    }
+    GS_PHASE_PUT(generation_shell_allocate);
+    using Allocator = experimental::PairReadGenerationShellAllocator<PairReadGenerationEnableShared>;
+    return std::allocate_shared<PairReadGenerationEnableShared>(
+        Allocator{std::move(storage)}, routing, std::move(base), std::move(delta), epoch, visible_through);
+}
+
+[[nodiscard]] auto
+make_shared_generation_in_borrowed_shell(WorkerRoutingState routing,
+                                         std::shared_ptr<const ImmutableReadIndex> base, DeltaState delta,
+                                         const std::uint64_t epoch, const std::uint64_t visible_through,
+                                         experimental::PairReadGenerationInlineShellStorage& storage)
+    -> std::shared_ptr<const PairReadGeneration> {
+    GS_PHASE_PUT(generation_shell_allocate);
+    using Allocator = experimental::PairReadGenerationBorrowedShellAllocator<PairReadGenerationEnableShared>;
+    return std::allocate_shared<PairReadGenerationEnableShared>(Allocator{storage}, routing, std::move(base),
+                                                                std::move(delta), epoch, visible_through);
 }
 
 auto PairReadGeneration::empty(const WorkerRoutingState routing)
@@ -1169,7 +1256,7 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
         return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
     }
 
-    DeltaBuilder builder{*previous->delta_};
+    DeltaBuilder builder{*previous->delta_, current_delta_builder_scratch()};
     auto visible_through = previous->visible_through_;
     for (const auto& mutation : mutations) {
         const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
@@ -1209,28 +1296,122 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
 auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGeneration> previous,
                                              const std::span<const ReadMutation> mutations,
                                              PairReadMerge* merge)
+    -> Result<std::shared_ptr<const PairReadGeneration>> {
+    if (!previous) {
+        return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
+    }
+    const auto* previous_view = previous.get();
+    return publish_incremental_construct(*previous_view, std::move(previous), mutations, merge, {}, nullptr,
+                                         nullptr, nullptr);
+}
+
+auto PairReadGeneration::publish_incremental_in_shell(
+    std::shared_ptr<const PairReadGeneration> previous, const std::span<const ReadMutation> mutations,
+    PairReadMerge* merge, std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
+    -> Result<std::shared_ptr<const PairReadGeneration>> {
+    if (!previous) {
+        return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
+    }
+    const auto* previous_view = previous.get();
+    return publish_incremental_construct(*previous_view, std::move(previous), mutations, merge,
+                                         std::move(storage), nullptr, nullptr, nullptr);
+}
+
+auto PairReadGeneration::publish_incremental_in_borrowed_shell(
+    std::shared_ptr<const PairReadGeneration> previous, const std::span<const ReadMutation> mutations,
+    experimental::PairReadGenerationInlineShellStorage& storage)
+    -> Result<std::shared_ptr<const PairReadGeneration>> {
+    if (!previous) {
+        return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
+    }
+    const auto* previous_view = previous.get();
+    return publish_incremental_construct(*previous_view, std::move(previous), mutations, nullptr, {},
+                                         &storage, nullptr, nullptr);
+}
+
+auto PairReadGeneration::publish_incremental_direct(const PairReadGeneration& previous,
+                                                    const std::span<const ReadMutation> mutations,
+                                                    experimental::PairReadGenerationDirectStorage& storage)
+    -> Result<const PairReadGeneration*> {
+    const PairReadGeneration* direct_result{};
+    auto built = publish_incremental_construct(previous, {}, mutations, nullptr, {}, nullptr, &storage,
+                                               &direct_result);
+    if (!built) {
+        return unexpected(std::move(built.error()));
+    }
+    if (direct_result == nullptr) {
+        return fail(ErrorCode::internal_error, "direct generation construction returned no object");
+    }
+    return direct_result;
+}
+
+auto PairReadGeneration::empty_direct(const WorkerRoutingState routing,
+                                      experimental::PairReadGenerationDirectStorage& storage)
+    -> Result<const PairReadGeneration*> try {
+    static_assert(sizeof(PairReadGenerationEnableShared) <=
+                  experimental::PairReadGenerationDirectStorage::kBytes);
+    static_assert(alignof(PairReadGenerationEnableShared) <=
+                  experimental::PairReadGenerationDirectStorage::kAlignment);
+    auto base = std::make_shared<const ImmutableReadIndex>();
+    auto delta = make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries);
+    auto* location =
+        storage.claim(sizeof(PairReadGenerationEnableShared), alignof(PairReadGenerationEnableShared));
+    try {
+        return std::construct_at(static_cast<PairReadGenerationEnableShared*>(location), routing,
+                                 std::move(base), std::move(delta), 0, 0);
+    } catch (...) {
+        storage.release(location);
+        throw;
+    }
+} catch (const std::bad_alloc&) {
+    return fail(ErrorCode::resource_exhausted, "direct empty generation allocation failed");
+} catch (...) {
+    return fail(ErrorCode::internal_error, "direct empty generation construction failed");
+}
+
+auto PairReadGeneration::publish_incremental_construct(
+    const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
+    const std::span<const ReadMutation> mutations, PairReadMerge* merge,
+    std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
+    experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
+    experimental::PairReadGenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
     -> Result<std::shared_ptr<const PairReadGeneration>> try {
-    if (!previous || mutations.size() > kMaximumPublicationBatch ||
-        (merge != nullptr && (!merge->state_ || merge->state_->current.get() != previous.get()))) {
+    const auto construction_modes = static_cast<unsigned>(owned_storage != nullptr) +
+                                    static_cast<unsigned>(borrowed_storage != nullptr) +
+                                    static_cast<unsigned>(direct_storage != nullptr);
+    if (construction_modes > 1U || (direct_storage != nullptr) != (direct_result != nullptr) ||
+        (direct_storage != nullptr && merge != nullptr)) {
+        return fail(ErrorCode::invalid_argument, "read publication has invalid construction ownership");
+    }
+    if (direct_result != nullptr) {
+        *direct_result = nullptr;
+    }
+    if (mutations.size() > kMaximumPublicationBatch ||
+        (merge != nullptr &&
+         (!previous_owner || !merge->state_ || merge->state_->current.get() != &previous))) {
         return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
     }
     if (mutations.empty()) {
-        return previous;
+        if (!previous_owner) {
+            return fail(ErrorCode::invalid_argument, "direct publication requires a non-empty mutation");
+        }
+        return previous_owner;
     }
-    if (previous->epoch_ == std::numeric_limits<std::uint64_t>::max()) {
+    if (previous.epoch_ == std::numeric_limits<std::uint64_t>::max()) {
         return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
     }
-    if (!can_publish_incremental(*previous, merge, mutations.size())) {
+    if (!can_publish_incremental(previous, merge, mutations.size())) {
         return fail(ErrorCode::resource_exhausted, "incremental read delta capacity exhausted");
     }
 
     std::optional<DeltaBuilder> post_builder;
     if (merge != nullptr) {
-        post_builder.emplace(merge->state_->post_delta);
+        post_builder.emplace(merge->state_->post_delta, post_delta_builder_scratch());
     }
-    DeltaBuilder current_builder{*previous->delta_, post_builder ? post_builder->allocation_arena()
-                                                                 : std::shared_ptr<DeltaArena>{}};
-    auto visible_through = previous->visible_through_;
+    DeltaBuilder current_builder{*previous.delta_, current_delta_builder_scratch(),
+                                 post_builder ? post_builder->allocation_arena()
+                                              : std::shared_ptr<DeltaArena>{}};
+    auto visible_through = previous.visible_through_;
     for (const auto& mutation : mutations) {
         const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
         const bool volatile_pinned = same_segment(mutation.segment, mutation.record);
@@ -1262,8 +1443,35 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
     if (post_builder) {
         next_post.emplace(std::move(*post_builder).freeze());
     }
-    auto next = make_shared_generation(previous->routing_, previous->base_, std::move(next_delta),
-                                       previous->epoch_ + 1U, visible_through);
+    std::shared_ptr<const PairReadGeneration> next;
+    if (direct_storage != nullptr) {
+        static_assert(sizeof(PairReadGenerationEnableShared) <=
+                      experimental::PairReadGenerationDirectStorage::kBytes);
+        static_assert(alignof(PairReadGenerationEnableShared) <=
+                      experimental::PairReadGenerationDirectStorage::kAlignment);
+        auto* location = direct_storage->claim(sizeof(PairReadGenerationEnableShared),
+                                               alignof(PairReadGenerationEnableShared));
+        try {
+            auto* constructed = std::construct_at(static_cast<PairReadGenerationEnableShared*>(location),
+                                                  previous.routing_, previous.base_, std::move(next_delta),
+                                                  previous.epoch_ + 1U, visible_through);
+            *direct_result = constructed;
+        } catch (...) {
+            direct_storage->release(location);
+            throw;
+        }
+    } else if (borrowed_storage != nullptr) {
+        next = make_shared_generation_in_borrowed_shell(previous.routing_, previous.base_,
+                                                        std::move(next_delta), previous.epoch_ + 1U,
+                                                        visible_through, *borrowed_storage);
+    } else if (owned_storage) {
+        next =
+            make_shared_generation_in_shell(previous.routing_, previous.base_, std::move(next_delta),
+                                            previous.epoch_ + 1U, visible_through, std::move(owned_storage));
+    } else {
+        next = make_shared_generation(previous.routing_, previous.base_, std::move(next_delta),
+                                      previous.epoch_ + 1U, visible_through);
+    }
     if (merge != nullptr) {
         merge->state_->post_delta = std::move(*next_post);
         merge->state_->current = next;
@@ -1474,3 +1682,45 @@ auto PairReadGeneration::base_entries() const noexcept -> std::size_t {
 }
 
 } // namespace glyphastore::store::paired
+
+auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental(
+    std::shared_ptr<const store::paired::PairReadGeneration> previous,
+    const std::span<const store::paired::ReadMutation> mutations,
+    std::shared_ptr<PairReadGenerationShellStorage> storage, store::paired::PairReadMerge* merge)
+    -> Result<std::shared_ptr<const store::paired::PairReadGeneration>> {
+    return store::paired::PairReadGeneration::publish_incremental_in_shell(std::move(previous), mutations,
+                                                                           merge, std::move(storage));
+}
+
+auto glyphastore::experimental::PairReadGenerationShellAccess::empty_direct(
+    const WorkerRoutingState routing, PairReadGenerationDirectStorage& storage)
+    -> Result<const store::paired::PairReadGeneration*> {
+    return store::paired::PairReadGeneration::empty_direct(routing, storage);
+}
+
+auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental_borrowed(
+    std::shared_ptr<const store::paired::PairReadGeneration> previous,
+    const std::span<const store::paired::ReadMutation> mutations,
+    PairReadGenerationInlineShellStorage& storage)
+    -> Result<std::shared_ptr<const store::paired::PairReadGeneration>> {
+    return store::paired::PairReadGeneration::publish_incremental_in_borrowed_shell(std::move(previous),
+                                                                                    mutations, storage);
+}
+
+auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental_direct(
+    const store::paired::PairReadGeneration& previous,
+    const std::span<const store::paired::ReadMutation> mutations, PairReadGenerationDirectStorage& storage)
+    -> Result<const store::paired::PairReadGeneration*> {
+    return store::paired::PairReadGeneration::publish_incremental_direct(previous, mutations, storage);
+}
+
+void glyphastore::experimental::PairReadGenerationShellAccess::destroy_direct(
+    const store::paired::PairReadGeneration* generation, PairReadGenerationDirectStorage& storage) noexcept {
+    if (generation == nullptr) {
+        return;
+    }
+    auto* concrete = const_cast<store::paired::PairReadGenerationEnableShared*>(
+        static_cast<const store::paired::PairReadGenerationEnableShared*>(generation));
+    std::destroy_at(concrete);
+    storage.release(concrete);
+}

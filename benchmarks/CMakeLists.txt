@@ -56,6 +56,40 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     glyphastore_xcode_scheme(glyphastore_paired_benchmark RELEASE ARGUMENTS
         --ops 500000 --keys 4096 --value-bytes 64 --warmup 1 --repeats 7
     )
+    add_executable(glyphastore_generation_shell_benchmark
+        generation_shell_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_generation_shell_benchmark
+        PRIVATE GlyphaStore::core glyphastore_project_options
+    )
+    target_include_directories(glyphastore_generation_shell_benchmark
+        PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_generation_shell_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_generation_shell_benchmark)
+    glyphastore_enable_hardening(glyphastore_generation_shell_benchmark)
+    glyphastore_enable_ipo(glyphastore_generation_shell_benchmark)
+    set_target_properties(glyphastore_generation_shell_benchmark PROPERTIES FOLDER "Benchmarks")
+    add_executable(glyphastore_generation_publication_benchmark
+        generation_publication_benchmark.cpp
+    )
+    target_link_libraries(
+        glyphastore_generation_publication_benchmark
+        PRIVATE GlyphaStore::server glyphastore_project_options
+    )
+    target_include_directories(glyphastore_generation_publication_benchmark
+        PRIVATE "${CMAKE_SOURCE_DIR}/src"
+    )
+    target_compile_definitions(glyphastore_generation_publication_benchmark
+        PRIVATE GLYPHASTORE_GIT_SHA="${GLYPHASTORE_GIT_SHA}"
+    )
+    glyphastore_set_warnings(glyphastore_generation_publication_benchmark)
+    glyphastore_enable_hardening(glyphastore_generation_publication_benchmark)
+    glyphastore_enable_ipo(glyphastore_generation_publication_benchmark)
+    set_target_properties(glyphastore_generation_publication_benchmark PROPERTIES FOLDER "Benchmarks")
     add_executable(glyphastore_paired_reactor_benchmark
         paired_reactor_benchmark.cpp
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_reactor.cpp

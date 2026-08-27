@@ -218,6 +218,12 @@ struct Result {
     std::uint64_t durable_byte_limit_closes{};
     std::uint64_t durable_adaptive_target_closes{};
     std::uint64_t durable_deadline_closes{};
+    double median_paired_writer_batch_records{};
+    std::uint64_t paired_writer_batches{};
+    std::uint64_t paired_writer_batch_records{};
+    std::uint64_t paired_publications{};
+    std::uint64_t paired_publication_records{};
+    std::uint64_t paired_completion_notifications{};
     double median_reactor_input_buffer_compactions{};
     double maximum_reactor_input_buffer_compactions{};
     double median_reactor_input_buffer_bytes_moved{};
@@ -571,6 +577,12 @@ inline void print_result(std::ostream& out, const Result& result) {
         << "durable_byte_limit_closes=" << result.durable_byte_limit_closes << ' '
         << "durable_adaptive_target_closes=" << result.durable_adaptive_target_closes << ' '
         << "durable_deadline_closes=" << result.durable_deadline_closes << ' '
+        << "median_paired_writer_batch_records=" << result.median_paired_writer_batch_records << ' '
+        << "paired_writer_batches=" << result.paired_writer_batches << ' '
+        << "paired_writer_batch_records=" << result.paired_writer_batch_records << ' '
+        << "paired_publications=" << result.paired_publications << ' '
+        << "paired_publication_records=" << result.paired_publication_records << ' '
+        << "paired_completion_notifications=" << result.paired_completion_notifications << ' '
         << "median_reactor_input_buffer_compactions=" << result.median_reactor_input_buffer_compactions << ' '
         << "maximum_reactor_input_buffer_compactions=" << result.maximum_reactor_input_buffer_compactions
         << ' ' << "median_reactor_input_buffer_bytes_moved=" << result.median_reactor_input_buffer_bytes_moved

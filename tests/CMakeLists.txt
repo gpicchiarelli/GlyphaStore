@@ -138,6 +138,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/unit/worker_routing_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/hot_record_table_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/paired_shard_prototype_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/generation_slot_pool_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/pair_read_generation_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/manifest_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/mutation_slot_pool_tests.cpp

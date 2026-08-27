@@ -7,7 +7,9 @@ requirements:
   descrizione: Official daemon and paired Store runtime use one ShardPair (Reader + sole mutation
     executor via execution token + bounded lanes) per owner id with immutable ReadGeneration
     adoption. Embedded sync may omit a dedicated Writer thread (ADR 0037); daemon retains a
-    dedicated executor. Reactor never Store-mutates.
+    dedicated executor. Reactor never Store-mutates. Every Writer path shares a pre-Store
+    generation-admission decision; current plus at most 64 retired generations, with explicit
+    known-not-committed backpressure at retire or incremental-merge capacity.
   autorita:
   - docs/spec/concurrency-memory-model.md
   - docs/spec/mutation-lifecycle.md
@@ -29,6 +31,7 @@ requirements:
   claim_massimo: architectural-prototype
   evidenze:
   - workflow: ci.yml
+  - path: engineering/evidence/paired-generation-admission-local-2026-08-27.md
   rischio_residuo:
   - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
     routing independence; embedded catalog refresh may defer until a combiner turn

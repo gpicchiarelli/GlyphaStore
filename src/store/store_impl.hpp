@@ -423,8 +423,16 @@ struct Store::Impl {
         if (maintenance) {
             maintenance->join();
         }
-        // Keep pair_runtime until Store destruction so thin daemon adapters can
-        // still read stats after stop_and_drain / close.
+        // All Store operations and maintenance are quiescent. The daemon also
+        // joins Reactor and cold-I/O workers before entering Store::close().
+        // Revoke raw generation adoption and release generation/file pins while
+        // retaining the paired runtime's scalar post-stop telemetry.
+        if (pair_runtime) {
+            auto finalized = pair_runtime->finalize_reader_shutdown();
+            if (result && !finalized) {
+                result = std::move(finalized);
+            }
+        }
 
         try {
             if (durable_runtime) {

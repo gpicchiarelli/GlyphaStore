@@ -110,8 +110,11 @@ persisted Worker id is one ownership shard with:
 - per-shard admission, completion, batching, publication, and latency counters.
 
 Embedded GET takes a counted read lease and returns an owning `OwnedValue`. A daemon Reader adopts
-the generation once per event-loop turn and may use a bounded internal borrow only through response
-encoding lifetime. No refcount increment/decrement occurs per daemon GET.
+the generation once per event-loop turn and may use a bounded internal borrow only through value
+materialization. A cleartext hot GET of platform-qualified size may then move that owning value into
+the connection's single output lease: the lease contains bytes, not a `RecordRef`, Segment/file handle
+or generation borrow, and blocks further parsing on that connection until drain. TLS and smaller
+values use contiguous encoding. No refcount increment/decrement occurs per daemon GET.
 
 Embedded synchronous mutations contend for a per-shard execution token and may be flat-combined.
 They do not require a permanent Writer thread when the asynchronous lane is disabled. The daemon
@@ -134,6 +137,22 @@ not ordinary paired GET.
 generations and snapshots retain immutable ownership needed for safe retirement. Normal lookup does
 not scan Segments or peer Workers: routing selects the owner and its generation resolves the exact
 Record.
+
+Read-generation ownership is bounded to one current generation plus at most 64 retired generations
+per shard. A single admission decision is applied by dedicated Writers and embedded combiners before
+any sync, async, volatile or durable batch enters Store authority: a full retire backlog or an
+incremental delta that cannot absorb the whole publication batch returns `resource_exhausted` as
+known-not-committed. Refresh and merge completion use the same retire-capacity boundary. No
+housekeeping path may grow the generation graph beyond the bound.
+
+Reader quiescence makes retired generations reclaimable; reclamation itself is opportunistic on the
+next Writer turn. A subsequent mutation must reclaim before its admission decision, but an idle
+observer is not promised that `retired_generation_count` immediately reaches zero.
+
+All generation installation sites pass through one bounded helper that repeats the retire-capacity
+check. A violation is process-fatal because continuing could silently exceed bounded ownership or
+acknowledge authority that cannot be safely published. The valid branch remains Writer-local and
+adds no allocation, lock or atomic operation; GET is unaffected.
 
 Volatile `flush()` is a successful no-op. Volatile compaction selects sparse sealed Segments from at
 most one owner, copy-builds replacement state, validates liveness, publishes a coherent generation,
@@ -262,9 +281,13 @@ quiescence, and then releases generations, runtime state, and the data-directory
 sticky and idempotent.
 
 The daemon first stops network admission, drains/classifies queued mutations and completions within
-its configured deadline, sends decided responses where possible, then closes the Store and sockets.
-A client disconnect never cancels Store work already executing; an undelivered mutation outcome is
-indeterminate to that client.
+its configured deadline, and sends decided responses where possible. It then joins Reactors,
+Writers and cold-I/O workers before entering `Store::close()`. Close drains Store operations and
+maintenance, revokes the published generation pointer, advances a terminal Reader safe frontier,
+and releases both retired and final Writer generation ownership before closing durable resources;
+scalar epoch/counter telemetry remains available. Finalization fails without partial release if a
+counted Reader lease remains. A client disconnect never cancels Store work already executing; an
+undelivered mutation outcome is indeterminate to that client.
 
 ## 12. Extension rules
 

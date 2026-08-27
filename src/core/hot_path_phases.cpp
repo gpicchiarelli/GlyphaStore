@@ -157,12 +157,12 @@ auto format_report() -> std::string {
         [](const std::size_t index) { return snapshot_get(static_cast<GetPhase>(index)); },
         static_cast<std::size_t>(GetPhase::count));
     append_section(
-        out, "[PUT/ERASE]",
+        out, "[PUT/ERASE scopes; some Writer scopes contain Store leaf scopes]",
         [](const std::size_t index) { return put_phase_name(static_cast<PutPhase>(index)); },
         [](const std::size_t index) { return snapshot_put(static_cast<PutPhase>(index)); },
         static_cast<std::size_t>(PutPhase::count));
     append_section(
-        out, "[TCP leaf phases; additive]",
+        out, "[TCP leaf phases; additive; write outcome rows use sample counts]",
         [](const std::size_t index) { return tcp_phase_name(static_cast<TcpPhase>(index)); },
         [](const std::size_t index) { return snapshot_tcp(static_cast<TcpPhase>(index)); },
         static_cast<std::size_t>(TcpPhase::count));

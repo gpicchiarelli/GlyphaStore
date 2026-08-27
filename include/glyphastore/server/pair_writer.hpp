@@ -57,6 +57,12 @@ struct PairWriterStats final {
     std::uint64_t completed{};
     std::uint64_t conflict_retries{};
     std::uint64_t conflict_retry_commits{};
+    std::uint64_t writer_batches{};
+    std::uint64_t writer_batch_records{};
+    std::size_t maximum_writer_batch_records{};
+    std::uint64_t publications{};
+    std::uint64_t publication_records{};
+    std::uint64_t completion_notifications{};
     std::uint64_t total_queue_wait_ns{};
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
@@ -67,6 +73,9 @@ struct PairWriterStats final {
     std::uint64_t read_refresh_failures{};
     std::uint64_t read_refresh_deferrals{};
     std::uint64_t generations_retired{};
+    std::uint64_t shutdown_generations_reclaimed{};
+    std::uint64_t generation_admission_backpressure_total{};
+    bool reader_shutdown_finalized{};
     std::size_t retired_generation_count{};
     std::size_t delta_entries{};
     std::size_t delta_record_versions{};

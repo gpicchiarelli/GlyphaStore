@@ -131,6 +131,7 @@ struct ThreadStats {
     std::uint64_t get_hits{};
     std::uint64_t puts{};
     std::uint64_t put_successes{};
+    std::uint64_t generation_backpressure_retries{};
     std::uint64_t failures{};
     std::vector<std::uint64_t> all_latency_ns;
     std::vector<std::uint64_t> get_latency_ns;
@@ -144,6 +145,7 @@ struct Sample {
     std::uint64_t operations{};
     std::uint64_t gets{};
     std::uint64_t puts{};
+    std::uint64_t generation_backpressure_retries{};
     LatencySummary all_latency;
     LatencySummary get_latency;
     LatencySummary put_latency;
@@ -159,6 +161,14 @@ struct Sample {
     glyphastore::DurableRotationStats rotation{};
     std::size_t segments_after{};
 };
+
+[[nodiscard]] auto is_generation_backpressure(const glyphastore::Error& error) noexcept -> bool {
+    if (error.code != glyphastore::ErrorCode::resource_exhausted) {
+        return false;
+    }
+    return error.message == "mutation rejected until paired Reader reaches quiescence" ||
+           error.message == "mutation rejected until incremental read merge advances";
+}
 
 struct RotationSample {
     Mode mode{};
@@ -675,7 +685,23 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
                 if (put) {
                     const auto marker = static_cast<std::uint64_t>(operation + options.keys);
                     std::memcpy(value.data(), &marker, sizeof(marker));
-                    succeeded = store->put(foreground_keys[key_index], value).has_value();
+                    const auto retry_deadline = Clock::now() + std::chrono::seconds{5};
+                    for (;;) {
+                        auto status = store->put(foreground_keys[key_index], value);
+                        if (status) {
+                            succeeded = true;
+                            break;
+                        }
+                        if (!is_generation_backpressure(status.error()) || Clock::now() >= retry_deadline) {
+                            break;
+                        }
+                        ++stats.generation_backpressure_retries;
+                        if ((stats.generation_backpressure_retries & 63U) == 0U) {
+                            std::this_thread::sleep_for(std::chrono::microseconds{50});
+                        } else {
+                            std::this_thread::yield();
+                        }
+                    }
                     ++stats.puts;
                     stats.put_successes += succeeded ? 1U : 0U;
                 } else {
@@ -728,6 +754,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
     std::uint64_t get_hits{};
     std::uint64_t puts{};
     std::uint64_t put_successes{};
+    std::uint64_t generation_backpressure_retries{};
     std::uint64_t failures{};
     for (const auto& stats : thread_stats) {
         operations += stats.all_latency_ns.size();
@@ -735,6 +762,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         get_hits += stats.get_hits;
         puts += stats.puts;
         put_successes += stats.put_successes;
+        generation_backpressure_retries += stats.generation_backpressure_retries;
         failures += stats.failures;
     }
     if (operations != options.operations || get_hits != gets || put_successes != puts || failures != 0 ||
@@ -781,6 +809,7 @@ void verify_reopened(glyphastore::Store& store, const std::vector<std::string>& 
         .operations = operations,
         .gets = gets,
         .puts = puts,
+        .generation_backpressure_retries = generation_backpressure_retries,
         .all_latency = all_latency,
         .get_latency = get_latency,
         .put_latency = put_latency,
@@ -1014,7 +1043,8 @@ void print_sample(const Sample& sample) {
         sample.foreground_seconds > 0.0 ? static_cast<double>(sample.operations) / sample.foreground_seconds
                                         : 0.0;
     std::cout << mode_name(sample.mode) << ',' << sample.repeat << ',' << sample.operations << ','
-              << sample.gets << ',' << sample.puts << ',' << sample.foreground_seconds << ','
+              << sample.gets << ',' << sample.puts << ',' << sample.generation_backpressure_retries << ','
+              << sample.foreground_seconds << ','
               << operations_per_second << ',' << microseconds(sample.all_latency.p50_ns) << ','
               << microseconds(sample.all_latency.p95_ns) << ',' << microseconds(sample.all_latency.p99_ns)
               << ',' << microseconds(sample.all_latency.maximum_ns) << ','
@@ -1188,7 +1218,8 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "# latency_measurement=per-operation steady_clock;instrumented throughput\n";
-        std::cout << "mode,repeat,operations,get_operations,put_operations,foreground_s,"
+        std::cout << "mode,repeat,operations,get_operations,put_operations,"
+                     "generation_backpressure_retries,foreground_s,"
                      "foreground_ops_s,p50_us,p95_us,p99_us,max_us,get_p50_us,get_p95_us,"
                      "get_p99_us,get_max_us,put_p50_us,put_p95_us,put_p99_us,put_max_us,"
                      "maintenance_attempts,maintenance_completed,maintenance_useful,"

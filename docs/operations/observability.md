@@ -100,10 +100,18 @@ short soaks may leave them at zero.
 ### 3.4 Paired Writer lanes (`lane[N].*`)
 
 Epochs / queues: `reader_safe_epoch`, `writer_epoch`, `queue_depth`, `queued_bytes`,
-`maximum_queue_depth`, `maximum_queued_bytes`, payload slot/arena admission fields.
+`maximum_queue_depth`, `maximum_queued_bytes`, payload slot/arena admission fields. Shutdown
+lifetime fields are `reader_shutdown_finalized` and `shutdown_generations_reclaimed`; the former is
+terminal and the latter counts all generation owners released by the daemon post-drain edge.
+`generation_admission_backpressure_total` counts mutations rejected before Store because the
+retire bound or incremental publication capacity was exhausted; it is distinct from queue-full and
+queue-wait expiry.
 
 Flow: `admitted`, `rejected`, `expired_before_store`, `completed`, `conflict_retries`,
-`conflict_retry_commits`, plus read-refresh / generation / delta / merge counters.
+`conflict_retry_commits`, `writer_batches`, `writer_batch_records`,
+`maximum_writer_batch_records`, `publications`, `publication_records` and
+`completion_notifications`, plus read-refresh / generation / delta / merge counters. Compare
+`completion_notifications` with `completed` to quantify completion wakeup behavior.
 
 **Latency histograms** (approx; not SLOs):
 

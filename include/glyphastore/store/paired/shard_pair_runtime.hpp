@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <vector>
@@ -89,6 +90,12 @@ struct ShardPairStats final {
     std::uint64_t completed{};
     std::uint64_t conflict_retries{};
     std::uint64_t conflict_retry_commits{};
+    std::uint64_t writer_batches{};
+    std::uint64_t writer_batch_records{};
+    std::size_t maximum_writer_batch_records{};
+    std::uint64_t publications{};
+    std::uint64_t publication_records{};
+    std::uint64_t completion_notifications{};
     std::uint64_t total_queue_wait_ns{};
     std::uint64_t maximum_queue_wait_ns{};
     std::uint64_t total_service_ns{};
@@ -99,6 +106,9 @@ struct ShardPairStats final {
     std::uint64_t read_refresh_failures{};
     std::uint64_t read_refresh_deferrals{};
     std::uint64_t generations_retired{};
+    std::uint64_t shutdown_generations_reclaimed{};
+    std::uint64_t generation_admission_backpressure_total{};
+    bool reader_shutdown_finalized{};
     std::size_t retired_generation_count{};
     std::size_t delta_entries{};
     std::size_t delta_record_versions{};
@@ -173,6 +183,11 @@ class ShardPairRuntime final {
     // Returns unavailable if the deadline expired before Writers finished.
     [[nodiscard]] auto stop_and_drain(std::optional<std::chrono::milliseconds> deadline = std::nullopt)
         -> Status;
+    // Daemon lifecycle only: call after every Reader/Reactor, Writer and cold-I/O
+    // thread has joined. Clears the adoptable raw pointer and deterministically
+    // releases all generation ownership before Store file handles close.
+    // Fails without partial finalization if a counted embedded ReadLease remains.
+    [[nodiscard]] auto finalize_reader_shutdown() -> Status;
     // Arms expire_remaining_ and completes every still-queued (pre-Store) async
     // mutation as resource_exhausted so Reactors can flush wire OVERLOADED before
     // hard-closing sockets. Safe while a Writer is blocked in Store: queue pops are
@@ -292,6 +307,7 @@ class ShardPairRuntime final {
     std::atomic_bool stopping_{};
     std::atomic_bool expire_remaining_{};
     std::atomic_bool healthy_{true};
+    std::mutex reader_shutdown_mutex_{};
 };
 
 } // namespace glyphastore::store::paired
