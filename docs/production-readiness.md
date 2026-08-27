@@ -53,8 +53,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified
   State: `IMPLEMENTATA` · Release target: `alpha`
   Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001`
-  Residual risk: TLC job best-effort; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design); ADR 0037 Phase C windows residual
-  Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining), B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative.
+  Residual risk: TLC job best-effort; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design); durable_group/periodic flusher token sharing deferred; adversarial multi-hour combiner fairness evidence open
+  Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining Phases A–C), B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative. Phase C daemon mutation windows (≤32) and GET visibility barrier landed in reactor_dispatch + mutation_window; unit proof mutation_window_tests; ADR 0037 marks Phase C landed.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices
   State: `PROVATA_IN_CI` · Release target: `alpha`

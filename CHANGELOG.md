@@ -1,5 +1,12 @@
 ## [Unreleased]
 
+- Wave 0 (L0) assurance hygiene: close stale `GATE-CONCURRENCY-SPEC` residual for ADR 0037
+  Phase C (daemon mutation windows + GET barrier already landed; prove paths include
+  `mutation_window_tests`). Add living `docs/assurance/evidence-taxonomy.md` (`local` /
+  `CI` / `hardware` / `release`; ban promoting macOS unpinned rows to scaling) and
+  `docs/assurance/debt-remediation-lanes.md` (L0–L7 / Waves 0–6 map). Claim ceiling
+  unchanged (architectural prototype).
+
 - ADR 0037 (accepted): shard execution token + flat combining. Embedded volatile and
   `durable_sync` omit dedicated Writer threads when the async lane is off; callers that
   win `IDLE→EXECUTING` combine already-queued sync work (≤32, no wait-to-fill). Daemon
