@@ -2,6 +2,7 @@
 
 #include "experimental/pair_read_generation_shell.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
+#include "glyphastore/store/paired/generation_slot_pool.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
 
 #include <algorithm>
@@ -1709,7 +1710,7 @@ auto PairReadGeneration::publish_incremental_in_borrowed_shell(
 
 auto PairReadGeneration::publish_incremental_direct(const PairReadGeneration& previous,
                                                     const std::span<const ReadMutation> mutations,
-                                                    experimental::PairReadGenerationDirectStorage& storage)
+                                                    GenerationDirectStorage& storage)
     -> Result<const PairReadGeneration*> {
     const PairReadGeneration* direct_result{};
     auto built = publish_incremental_construct(previous, {}, mutations, nullptr, {}, nullptr, &storage,
@@ -1723,13 +1724,10 @@ auto PairReadGeneration::publish_incremental_direct(const PairReadGeneration& pr
     return direct_result;
 }
 
-auto PairReadGeneration::empty_direct(const WorkerRoutingState routing,
-                                      experimental::PairReadGenerationDirectStorage& storage)
+auto PairReadGeneration::empty_direct(const WorkerRoutingState routing, GenerationDirectStorage& storage)
     -> Result<const PairReadGeneration*> try {
-    static_assert(sizeof(PairReadGenerationEnableShared) <=
-                  experimental::PairReadGenerationDirectStorage::kBytes);
-    static_assert(alignof(PairReadGenerationEnableShared) <=
-                  experimental::PairReadGenerationDirectStorage::kAlignment);
+    static_assert(sizeof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kBytes);
+    static_assert(alignof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kAlignment);
     auto base = std::make_shared<const ImmutableReadIndex>();
     auto delta = make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries);
     auto* location =
@@ -1747,18 +1745,108 @@ auto PairReadGeneration::empty_direct(const WorkerRoutingState routing,
     return fail(ErrorCode::internal_error, "direct empty generation construction failed");
 }
 
+auto PairReadGeneration::from_durable_snapshot_direct(
+    const WorkerRoutingState routing,
+    const std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+    GenerationDirectStorage& storage) -> Result<const PairReadGeneration*> {
+    return build_durable_snapshot_direct(routing, records, 0, 0, storage);
+}
+
+auto PairReadGeneration::replace_durable_snapshot_direct(
+    const PairReadGeneration& previous,
+    const std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+    GenerationDirectStorage& storage) -> Result<const PairReadGeneration*> {
+    if (previous.epoch_ >= GenerationPublicationToken::kMaximumEpoch) {
+        return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
+    }
+    return build_durable_snapshot_direct(previous.routing_, records, previous.epoch_ + 1U,
+                                         previous.visible_through_, storage);
+}
+
+auto PairReadGeneration::build_durable_snapshot_direct(
+    const WorkerRoutingState routing,
+    const std::span<const DurableRuntimeCatalog::PublishedReadRecord> records, const std::uint64_t epoch,
+    const std::uint64_t visible_floor, GenerationDirectStorage& storage)
+    -> Result<const PairReadGeneration*> try {
+    if (epoch > GenerationPublicationToken::kMaximumEpoch) {
+        return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
+    }
+    static_assert(sizeof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kBytes);
+    static_assert(alignof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kAlignment);
+    auto visible_through = visible_floor;
+    for (const auto& record : records) {
+        visible_through = std::max(visible_through, record.reference().sequence.value);
+    }
+    auto base = std::make_shared<const ImmutableReadIndex>(records);
+    auto delta = make_empty_delta(PairReadGeneration::kMaximumIncrementalDeltaEntries);
+    auto* location =
+        storage.claim(sizeof(PairReadGenerationEnableShared), alignof(PairReadGenerationEnableShared));
+    try {
+        return std::construct_at(static_cast<PairReadGenerationEnableShared*>(location), routing,
+                                 std::move(base), std::move(delta), epoch, visible_through);
+    } catch (...) {
+        storage.release(location);
+        throw;
+    }
+} catch (const std::bad_alloc&) {
+    return fail(ErrorCode::resource_exhausted, "direct durable read generation allocation failed");
+} catch (...) {
+    return fail(ErrorCode::internal_error, "direct durable read generation construction failed");
+}
+
+auto PairReadGeneration::finish_incremental_merge_direct(const PairReadGeneration& current,
+                                                         PairReadMerge& merge,
+                                                         GenerationDirectStorage& storage)
+    -> Result<const PairReadGeneration*> try {
+    if (!merge.state_ || merge.state_->current.get() != &current ||
+        merge.state_->phase != PairReadMerge::State::Phase::ready || !merge.state_->builder) {
+        return fail(ErrorCode::invalid_argument, "incremental read merge is not ready");
+    }
+    if (current.epoch_ >= GenerationPublicationToken::kMaximumEpoch) {
+        return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
+    }
+    static_assert(sizeof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kBytes);
+    static_assert(alignof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kAlignment);
+    auto next_base = std::move(*merge.state_->builder).freeze();
+    merge.state_->builder.reset();
+    auto* location =
+        storage.claim(sizeof(PairReadGenerationEnableShared), alignof(PairReadGenerationEnableShared));
+    try {
+        return std::construct_at(static_cast<PairReadGenerationEnableShared*>(location), current.routing_,
+                                 std::move(next_base), std::move(merge.state_->post_delta),
+                                 current.epoch_ + 1U, current.visible_through_);
+    } catch (...) {
+        storage.release(location);
+        throw;
+    }
+} catch (const std::bad_alloc&) {
+    return fail(ErrorCode::resource_exhausted, "direct incremental merge publication allocation failed");
+} catch (...) {
+    return fail(ErrorCode::internal_error, "direct incremental merge publication failed");
+}
+
+void PairReadGeneration::destroy_direct(const PairReadGeneration* generation,
+                                        GenerationDirectStorage& storage) noexcept {
+    if (generation == nullptr) {
+        return;
+    }
+    auto* concrete = const_cast<PairReadGenerationEnableShared*>(
+        static_cast<const PairReadGenerationEnableShared*>(generation));
+    std::destroy_at(concrete);
+    storage.release(concrete);
+}
+
 auto PairReadGeneration::publish_incremental_construct(
     const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
     const std::span<const ReadMutation> mutations, PairReadMerge* merge,
     std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
     experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
-    experimental::PairReadGenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
+    GenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
     -> Result<std::shared_ptr<const PairReadGeneration>> try {
     const auto construction_modes = static_cast<unsigned>(owned_storage != nullptr) +
                                     static_cast<unsigned>(borrowed_storage != nullptr) +
                                     static_cast<unsigned>(direct_storage != nullptr);
-    if (construction_modes > 1U || (direct_storage != nullptr) != (direct_result != nullptr) ||
-        (direct_storage != nullptr && merge != nullptr)) {
+    if (construction_modes > 1U || (direct_storage != nullptr) != (direct_result != nullptr)) {
         return fail(ErrorCode::invalid_argument, "read publication has invalid construction ownership");
     }
     if (direct_result != nullptr) {
@@ -1775,7 +1863,7 @@ auto PairReadGeneration::publish_incremental_construct(
         }
         return previous_owner;
     }
-    if (previous.epoch_ == std::numeric_limits<std::uint64_t>::max()) {
+    if (previous.epoch_ >= GenerationPublicationToken::kMaximumEpoch) {
         return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
     }
     if (!can_publish_incremental(previous, merge, mutations.size())) {
@@ -1823,10 +1911,8 @@ auto PairReadGeneration::publish_incremental_construct(
     }
     std::shared_ptr<const PairReadGeneration> next;
     if (direct_storage != nullptr) {
-        static_assert(sizeof(PairReadGenerationEnableShared) <=
-                      experimental::PairReadGenerationDirectStorage::kBytes);
-        static_assert(alignof(PairReadGenerationEnableShared) <=
-                      experimental::PairReadGenerationDirectStorage::kAlignment);
+        static_assert(sizeof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kBytes);
+        static_assert(alignof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kAlignment);
         auto* location = direct_storage->claim(sizeof(PairReadGenerationEnableShared),
                                                alignof(PairReadGenerationEnableShared));
         try {
@@ -1834,6 +1920,8 @@ auto PairReadGeneration::publish_incremental_construct(
                                                   previous.routing_, previous.base_, std::move(next_delta),
                                                   previous.epoch_ + 1U, visible_through);
             *direct_result = constructed;
+            // Merge retains a non-owning view; the slot pool owns destruction.
+            next = std::shared_ptr<const PairReadGeneration>(constructed, [](const PairReadGeneration*) {});
         } catch (...) {
             direct_storage->release(location);
             throw;
@@ -2177,11 +2265,5 @@ auto glyphastore::experimental::PairReadGenerationShellAccess::publish_increment
 
 void glyphastore::experimental::PairReadGenerationShellAccess::destroy_direct(
     const store::paired::PairReadGeneration* generation, PairReadGenerationDirectStorage& storage) noexcept {
-    if (generation == nullptr) {
-        return;
-    }
-    auto* concrete = const_cast<store::paired::PairReadGenerationEnableShared*>(
-        static_cast<const store::paired::PairReadGenerationEnableShared*>(generation));
-    std::destroy_at(concrete);
-    storage.release(concrete);
+    store::paired::PairReadGeneration::destroy_direct(generation, storage);
 }

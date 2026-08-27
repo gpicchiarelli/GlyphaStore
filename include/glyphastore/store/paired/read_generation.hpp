@@ -6,6 +6,7 @@
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/segment/segment.hpp"
+#include "glyphastore/store/paired/generation_direct_storage.hpp"
 #include "glyphastore/store/value.hpp"
 
 #include <cstddef>
@@ -18,7 +19,6 @@ namespace glyphastore::experimental {
 struct PairReadGenerationShellAccess;
 class PairReadGenerationShellStorage;
 class PairReadGenerationInlineShellStorage;
-class PairReadGenerationDirectStorage;
 } // namespace glyphastore::experimental
 
 namespace glyphastore::store::paired {
@@ -70,6 +70,7 @@ struct ReadGenerationMemoryStats final {
 class ImmutableReadIndex;
 class DeltaState;
 class PairReadMerge;
+class GenerationSlotPool;
 
 // Immutable two-level read view published by one paired Writer and adopted by
 // its Reader. GET performs at most one delta lookup and one base lookup.
@@ -129,6 +130,24 @@ class PairReadGeneration {
                                                       const PairReadMerge* merge,
                                                       std::size_t maximum_new_entries) noexcept -> bool;
 
+    // Direct-object constructors for GenerationSlotPool (no shared control block).
+    [[nodiscard]] static auto empty_direct(WorkerRoutingState routing, GenerationDirectStorage& storage)
+        -> Result<const PairReadGeneration*>;
+    [[nodiscard]] static auto
+    from_durable_snapshot_direct(WorkerRoutingState routing,
+                                 std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+                                 GenerationDirectStorage& storage) -> Result<const PairReadGeneration*>;
+    [[nodiscard]] static auto
+    replace_durable_snapshot_direct(const PairReadGeneration& previous,
+                                    std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+                                    GenerationDirectStorage& storage) -> Result<const PairReadGeneration*>;
+    [[nodiscard]] static auto finish_incremental_merge_direct(const PairReadGeneration& current,
+                                                              PairReadMerge& merge,
+                                                              GenerationDirectStorage& storage)
+        -> Result<const PairReadGeneration*>;
+    static void destroy_direct(const PairReadGeneration* generation,
+                               GenerationDirectStorage& storage) noexcept;
+
     [[nodiscard]] auto get(const HashedKey& key, std::uint64_t now_ns) const -> Result<OwnedValue>;
     [[nodiscard]] auto prepare_durable(const HashedKey& key) const
         -> Result<DurableRuntimeCatalog::PublishedReadView>;
@@ -154,6 +173,11 @@ class PairReadGeneration {
                            std::uint64_t epoch, std::uint64_t visible_floor)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
     [[nodiscard]] static auto
+    build_durable_snapshot_direct(WorkerRoutingState routing,
+                                  std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
+                                  std::uint64_t epoch, std::uint64_t visible_floor,
+                                  GenerationDirectStorage& storage) -> Result<const PairReadGeneration*>;
+    [[nodiscard]] static auto
     publish_incremental_in_shell(std::shared_ptr<const PairReadGeneration> previous,
                                  std::span<const ReadMutation> mutations, PairReadMerge* merge,
                                  std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
@@ -168,14 +192,11 @@ class PairReadGeneration {
         std::span<const ReadMutation> mutations, PairReadMerge* merge,
         std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
         experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
-        experimental::PairReadGenerationDirectStorage* direct_storage,
+        GenerationDirectStorage* direct_storage,
         const PairReadGeneration** direct_result) -> Result<std::shared_ptr<const PairReadGeneration>>;
-    [[nodiscard]] static auto
-    publish_incremental_direct(const PairReadGeneration& previous, std::span<const ReadMutation> mutations,
-                               experimental::PairReadGenerationDirectStorage& storage)
-        -> Result<const PairReadGeneration*>;
-    [[nodiscard]] static auto empty_direct(WorkerRoutingState routing,
-                                           experimental::PairReadGenerationDirectStorage& storage)
+    [[nodiscard]] static auto publish_incremental_direct(const PairReadGeneration& previous,
+                                                         std::span<const ReadMutation> mutations,
+                                                         GenerationDirectStorage& storage)
         -> Result<const PairReadGeneration*>;
     // Generation + embedded DeltaState are co-allocated in the .cpp via a private
     // derived helper. delta_ points into that storage for the object's lifetime.
@@ -194,6 +215,7 @@ class PairReadGeneration {
     // Allow the .cpp co-allocation helper to construct and bind embedded delta storage.
     friend struct PairReadGenerationEnableShared;
     friend struct experimental::PairReadGenerationShellAccess;
+    friend class GenerationSlotPool;
 };
 
 // Opaque Writer-owned state. It is never published to or touched by Reader.
