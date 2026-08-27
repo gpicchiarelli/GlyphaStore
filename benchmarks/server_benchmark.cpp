@@ -55,6 +55,8 @@ struct Options {
     std::size_t client_pipeline{};
     bool executor_affinity{};
     bool latency{};
+    bool latency_split{};
+    std::size_t latency_sample_stride{1};
     bool client_api{};
     Workload workload{Workload::read_after_write};
     StorageProfile storage{StorageProfile::volatile_memory};
@@ -134,6 +136,8 @@ struct Sample {
     double seconds{};
     glyphastore::bench::ResourceSample resources{};
     std::vector<double> latency_ns;
+    std::vector<double> get_latency_ns;
+    std::vector<double> put_latency_ns;
     bool valid{};
     DurableProfileSample durable;
     ReactorProfileSample reactor;
@@ -144,6 +148,8 @@ struct ClientResult {
     std::size_t ingress_bytes{};
     std::size_t egress_bytes{};
     std::vector<double> latency_ns;
+    std::vector<double> get_latency_ns;
+    std::vector<double> put_latency_ns;
 };
 
 [[nodiscard]] auto parse_size(const std::string_view value, const char* flag) -> std::size_t {
@@ -548,6 +554,16 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
             result.executor_affinity = true;
         } else if (argument == "--latency") {
             result.latency = true;
+        } else if (argument == "--latency-split") {
+            result.latency = true;
+            result.latency_split = true;
+        } else if (argument == "--latency-sample-stride") {
+            result.latency = true;
+            result.latency_sample_stride = next_size("--latency-sample-stride");
+            if (result.latency_sample_stride == 0) {
+                std::cerr << "--latency-sample-stride must be >= 1\n";
+                std::exit(2);
+            }
         } else if (argument == "--client-api") {
             result.client_api = true;
         } else if (argument == "--storage-mode") {
@@ -643,7 +659,8 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
         } else if (argument == "--help" || argument == "-h") {
             std::cout << "usage: glyphastore_server_benchmarks [--ops N] [--key-size N]"
                          " [--value-size N] [--workers N] [--clients N] [--pipeline N]"
-                         " [--executor-affinity] [--latency] [--client-api] [--client-pipeline N]"
+                         " [--executor-affinity] [--latency] [--latency-split]"
+                         " [--latency-sample-stride N] [--client-api] [--client-pipeline N]"
                          " [--workload read-after-write|get-only|read-99-write-1|read-95-write-5|"
                          "read-90-write-10]"
                          " [--storage-mode volatile|durable-sync|durable-group|durable-periodic]"
@@ -851,7 +868,9 @@ class BufferedResponseReader final {
 
 [[nodiscard]] auto run_client(const int descriptor, const ClientWork& work,
                               const glyphastore::bench::KeyMaterial& material, const std::size_t pipeline,
-                              const bool measure_latency, const Workload workload) -> ClientResult {
+                              const bool measure_latency, const bool latency_split,
+                              const std::size_t latency_sample_stride, const Workload workload)
+    -> ClientResult {
     const auto bytes_per_pair =
         2U * (glyphastore::server::kResponseHeaderBytes + material.values.front().size());
     const auto response_capacity = pipeline > glyphastore::server::kMaxFrameBytes / bytes_per_pair
@@ -860,9 +879,14 @@ class BufferedResponseReader final {
     BufferedResponseReader responses{response_capacity};
     ClientResult result;
     if (measure_latency) {
-        result.latency_ns.reserve(work.response_count);
+        result.latency_ns.reserve(work.response_count / std::max<std::size_t>(latency_sample_stride, 1U) + 1U);
+        if (latency_split) {
+            result.get_latency_ns.reserve(result.latency_ns.capacity());
+            result.put_latency_ns.reserve(result.latency_ns.capacity());
+        }
     }
     std::size_t responses_remaining = work.response_count;
+    std::size_t latency_tick{};
     for (const auto& batch : work.batches) {
         const auto batch_started =
             measure_latency ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
@@ -880,16 +904,30 @@ class BufferedResponseReader final {
             }
             result.egress_bytes += decoded->consumed;
             const auto request_id = decoded->frame.request_id;
-            if (measure_latency && (workload == Workload::read_after_write || (request_id & 1U) != 0U)) {
+            const bool is_get = (request_id & 1U) != 0U;
+            const bool sample_this =
+                measure_latency && (workload == Workload::read_after_write || is_get) &&
+                (latency_tick % latency_sample_stride == 0U);
+            if (measure_latency && (workload == Workload::read_after_write || is_get)) {
+                ++latency_tick;
+            }
+            if (sample_this) {
                 const auto elapsed = std::chrono::steady_clock::now() - batch_started;
-                result.latency_ns.push_back(std::chrono::duration<double, std::nano>(elapsed).count());
+                const auto ns = std::chrono::duration<double, std::nano>(elapsed).count();
+                result.latency_ns.push_back(ns);
+                if (latency_split) {
+                    if (is_get) {
+                        result.get_latency_ns.push_back(ns);
+                    } else {
+                        result.put_latency_ns.push_back(ns);
+                    }
+                }
             }
             const auto operation = request_id / 2U;
             if (operation >= material.values.size()) {
                 return {};
             }
-            if ((request_id & 1U) != 0U &&
-                !std::ranges::equal(decoded->frame.value, material.values[operation])) {
+            if (is_get && !std::ranges::equal(decoded->frame.value, material.values[operation])) {
                 return {};
             }
             ++result.hits;
@@ -1042,7 +1080,8 @@ class BufferedResponseReader final {
             ready.count_down();
             start.wait();
             client_results[client] = run_client(descriptors[client], work[client], material, options.pipeline,
-                                                options.latency, options.workload);
+                                                options.latency, options.latency_split,
+                                                options.latency_sample_stride, options.workload);
         });
     }
     ready.wait();
@@ -1075,11 +1114,19 @@ class BufferedResponseReader final {
     const auto expected =
         options.config.operations * (options.workload == Workload::read_after_write ? 2U : 1U);
     std::vector<double> latency_ns;
+    std::vector<double> get_latency_ns;
+    std::vector<double> put_latency_ns;
     if (options.latency) {
         latency_ns.reserve(expected);
         for (auto& client_result : client_results) {
             latency_ns.insert(latency_ns.end(), std::make_move_iterator(client_result.latency_ns.begin()),
                               std::make_move_iterator(client_result.latency_ns.end()));
+            get_latency_ns.insert(get_latency_ns.end(),
+                                  std::make_move_iterator(client_result.get_latency_ns.begin()),
+                                  std::make_move_iterator(client_result.get_latency_ns.end()));
+            put_latency_ns.insert(put_latency_ns.end(),
+                                  std::make_move_iterator(client_result.put_latency_ns.begin()),
+                                  std::make_move_iterator(client_result.put_latency_ns.end()));
         }
     }
     for (const auto descriptor : descriptors) {
@@ -1093,6 +1140,8 @@ class BufferedResponseReader final {
             .seconds = elapsed,
             .resources = resources,
             .latency_ns = std::move(latency_ns),
+            .get_latency_ns = std::move(get_latency_ns),
+            .put_latency_ns = std::move(put_latency_ns),
             .valid = stopped.has_value() && hits == expected,
             .durable = profile,
             .reactor = reactor};
@@ -1139,8 +1188,14 @@ class BufferedResponseReader final {
         clients.emplace_back([&, client_index] {
             auto& result = client_results[client_index];
             if (options.latency) {
-                result.latency_ns.reserve((options.config.operations / options.config.threads + 1U) * 2U);
+                result.latency_ns.reserve((options.config.operations / options.config.threads + 1U) * 2U /
+                                          std::max<std::size_t>(options.latency_sample_stride, 1U));
+                if (options.latency_split) {
+                    result.get_latency_ns.reserve(result.latency_ns.capacity());
+                    result.put_latency_ns.reserve(result.latency_ns.capacity());
+                }
             }
+            std::size_t latency_tick{};
             std::vector<std::vector<glyphastore::client::PipelineRequest>> pipeline_batches;
             if (options.client_pipeline != 0) {
                 std::vector<std::vector<glyphastore::client::PipelineRequest>> pending(client.worker_count());
@@ -1186,9 +1241,21 @@ class BufferedResponseReader final {
                             return;
                         }
                         if (options.latency) {
-                            result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
-                                                            std::chrono::steady_clock::now() - batch_started)
-                                                            .count());
+                            const auto sample_this = latency_tick % options.latency_sample_stride == 0U;
+                            ++latency_tick;
+                            if (sample_this) {
+                                const auto ns = std::chrono::duration<double, std::nano>(
+                                                    std::chrono::steady_clock::now() - batch_started)
+                                                    .count();
+                                result.latency_ns.push_back(ns);
+                                if (options.latency_split) {
+                                    if (batch[index].opcode == glyphastore::client::PipelineOpcode::get) {
+                                        result.get_latency_ns.push_back(ns);
+                                    } else {
+                                        result.put_latency_ns.push_back(ns);
+                                    }
+                                }
+                            }
                         }
                     }
                     result.hits += batch.size();
@@ -1216,9 +1283,17 @@ class BufferedResponseReader final {
                     return;
                 }
                 if (options.latency) {
-                    result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
-                                                    std::chrono::steady_clock::now() - put_started)
-                                                    .count());
+                    const auto sample_this = latency_tick % options.latency_sample_stride == 0U;
+                    ++latency_tick;
+                    if (sample_this) {
+                        const auto ns = std::chrono::duration<double, std::nano>(
+                                            std::chrono::steady_clock::now() - put_started)
+                                            .count();
+                        result.latency_ns.push_back(ns);
+                        if (options.latency_split) {
+                            result.put_latency_ns.push_back(ns);
+                        }
+                    }
                 }
                 ++result.hits;
                 const auto get_started = std::chrono::steady_clock::now();
@@ -1227,9 +1302,17 @@ class BufferedResponseReader final {
                     return;
                 }
                 if (options.latency) {
-                    result.latency_ns.push_back(std::chrono::duration<double, std::nano>(
-                                                    std::chrono::steady_clock::now() - get_started)
-                                                    .count());
+                    const auto sample_this = latency_tick % options.latency_sample_stride == 0U;
+                    ++latency_tick;
+                    if (sample_this) {
+                        const auto ns = std::chrono::duration<double, std::nano>(
+                                            std::chrono::steady_clock::now() - get_started)
+                                            .count();
+                        result.latency_ns.push_back(ns);
+                        if (options.latency_split) {
+                            result.get_latency_ns.push_back(ns);
+                        }
+                    }
                 }
                 ++result.hits;
                 result.ingress_bytes += 2U * glyphastore::server::kRequestHeaderBytes +
@@ -1263,12 +1346,18 @@ class BufferedResponseReader final {
     resources.peak_rss_bytes = after.peak_rss_bytes;
     std::size_t hits{};
     std::vector<double> latency_ns;
+    std::vector<double> get_latency_ns;
+    std::vector<double> put_latency_ns;
     for (auto& result : client_results) {
         hits += result.hits;
         resources.ingress_bytes += result.ingress_bytes;
         resources.egress_bytes += result.egress_bytes;
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(result.latency_ns.begin()),
                           std::make_move_iterator(result.latency_ns.end()));
+        get_latency_ns.insert(get_latency_ns.end(), std::make_move_iterator(result.get_latency_ns.begin()),
+                              std::make_move_iterator(result.get_latency_ns.end()));
+        put_latency_ns.insert(put_latency_ns.end(), std::make_move_iterator(result.put_latency_ns.begin()),
+                              std::make_move_iterator(result.put_latency_ns.end()));
     }
     client.close();
     const auto profile = durable_profile(**server, paired_before, durable_before);
@@ -1280,6 +1369,8 @@ class BufferedResponseReader final {
             .seconds = elapsed,
             .resources = resources,
             .latency_ns = std::move(latency_ns),
+            .get_latency_ns = std::move(get_latency_ns),
+            .put_latency_ns = std::move(put_latency_ns),
             .valid = stopped.has_value() && hits == expected,
             .durable = profile,
             .reactor = reactor};
@@ -1293,7 +1384,37 @@ class BufferedResponseReader final {
     return sorted[std::min(std::max(std::size_t{1}, rank), sorted.size()) - 1U];
 }
 
-[[nodiscard]] auto run_benchmark(const Options& options) -> Result {
+struct LatencyExtras {
+    double max_latency_ns{};
+    std::size_t get_latency_samples{};
+    double p50_get_latency_ns{};
+    double p95_get_latency_ns{};
+    double p99_get_latency_ns{};
+    double p999_get_latency_ns{};
+    double max_get_latency_ns{};
+    std::size_t put_latency_samples{};
+    double p50_put_latency_ns{};
+    double p95_put_latency_ns{};
+    double p99_put_latency_ns{};
+    double p999_put_latency_ns{};
+    double max_put_latency_ns{};
+};
+
+void fill_latency_percentiles(std::vector<double> samples, std::size_t& count, double& p50, double& p95,
+                              double& p99, double& p999, double& maximum) {
+    if (samples.empty()) {
+        return;
+    }
+    std::ranges::sort(samples);
+    count = samples.size();
+    p50 = percentile(samples, 0.50);
+    p95 = percentile(samples, 0.95);
+    p99 = percentile(samples, 0.99);
+    p999 = percentile(samples, 0.999);
+    maximum = samples.back();
+}
+
+[[nodiscard]] auto run_benchmark(const Options& options) -> std::pair<Result, LatencyExtras> {
     const auto material = make_material(options.config);
     const auto work = options.client_api
                           ? std::vector<ClientWork>{}
@@ -1313,6 +1434,8 @@ class BufferedResponseReader final {
     std::vector<double> seconds;
     std::vector<glyphastore::bench::ResourceSample> resources;
     std::vector<double> latency_ns;
+    std::vector<double> get_latency_ns;
+    std::vector<double> put_latency_ns;
     std::vector<DurableProfileSample> durable_profiles;
     std::vector<ReactorProfileSample> reactor_profiles;
     seconds.reserve(options.settings.measured_iterations);
@@ -1332,6 +1455,10 @@ class BufferedResponseReader final {
         reactor_profiles.push_back(measured.reactor);
         latency_ns.insert(latency_ns.end(), std::make_move_iterator(measured.latency_ns.begin()),
                           std::make_move_iterator(measured.latency_ns.end()));
+        get_latency_ns.insert(get_latency_ns.end(), std::make_move_iterator(measured.get_latency_ns.begin()),
+                              std::make_move_iterator(measured.get_latency_ns.end()));
+        put_latency_ns.insert(put_latency_ns.end(), std::make_move_iterator(measured.put_latency_ns.begin()),
+                              std::make_move_iterator(measured.put_latency_ns.end()));
     }
     const auto client_name = options.client_pipeline != 0             ? "cpp_client_pipeline_read_after_write"
                              : options.client_api                     ? "cpp_client_read_after_write"
@@ -1345,6 +1472,7 @@ class BufferedResponseReader final {
         benchmark_name, options.config, options.settings,
         options.config.operations * (options.workload == Workload::read_after_write ? 2U : 1U), hits,
         std::move(seconds), std::move(resources));
+    LatencyExtras extras{};
     if (!latency_ns.empty()) {
         std::ranges::sort(latency_ns);
         result.latency_samples = latency_ns.size();
@@ -1352,6 +1480,15 @@ class BufferedResponseReader final {
         result.p95_latency_ns = percentile(latency_ns, 0.95);
         result.p99_latency_ns = percentile(latency_ns, 0.99);
         result.p999_latency_ns = percentile(latency_ns, 0.999);
+        extras.max_latency_ns = latency_ns.back();
+    }
+    if (options.latency_split) {
+        fill_latency_percentiles(std::move(get_latency_ns), extras.get_latency_samples, extras.p50_get_latency_ns,
+                                 extras.p95_get_latency_ns, extras.p99_get_latency_ns, extras.p999_get_latency_ns,
+                                 extras.max_get_latency_ns);
+        fill_latency_percentiles(std::move(put_latency_ns), extras.put_latency_samples, extras.p50_put_latency_ns,
+                                 extras.p95_put_latency_ns, extras.p99_put_latency_ns, extras.p999_put_latency_ns,
+                                 extras.max_put_latency_ns);
     }
     const auto median_profile = [&](auto member) {
         std::vector<double> values;
@@ -1477,7 +1614,7 @@ class BufferedResponseReader final {
                   << ";foreground_p99_ns_max="
                   << maximum_profile(&DurableProfileSample::maintenance_last_foreground_p99_ns) << '\n';
     }
-    return result;
+    return {std::move(result), extras};
 }
 
 } // namespace
@@ -1543,6 +1680,8 @@ int main(int argc, char** argv) {
                                                                 : "pipelined-response")
                                  : "disabled")
               << '\n';
+    std::cout << "# latency_sample_stride=" << parsed.latency_sample_stride << '\n';
+    std::cout << "# latency_split=" << (parsed.latency_split ? 1 : 0) << '\n';
 #if defined(__APPLE__)
     std::cout << "# executor_affinity_semantics=mach-advisory\n";
 #elif defined(__linux__)
@@ -1550,11 +1689,32 @@ int main(int argc, char** argv) {
 #else
     std::cout << "# executor_affinity_semantics=unavailable\n";
 #endif
-    const auto result = run_benchmark(parsed);
+    const auto [result, extras] = run_benchmark(parsed);
     if (result.samples != parsed.settings.measured_iterations) {
         std::cerr << "benchmark error: TCP sample validation failed\n";
         return 1;
     }
     glyphastore::bench::print_result(std::cout, result);
+    if (parsed.latency || parsed.latency_split) {
+        std::cout << "latency_extras";
+        if (parsed.latency) {
+            std::cout << " max_latency_ns=" << extras.max_latency_ns;
+        }
+        if (parsed.latency_split) {
+            std::cout << " get_latency_samples=" << extras.get_latency_samples
+                      << " p50_get_latency_ns=" << extras.p50_get_latency_ns
+                      << " p95_get_latency_ns=" << extras.p95_get_latency_ns
+                      << " p99_get_latency_ns=" << extras.p99_get_latency_ns
+                      << " p999_get_latency_ns=" << extras.p999_get_latency_ns
+                      << " max_get_latency_ns=" << extras.max_get_latency_ns
+                      << " put_latency_samples=" << extras.put_latency_samples
+                      << " p50_put_latency_ns=" << extras.p50_put_latency_ns
+                      << " p95_put_latency_ns=" << extras.p95_put_latency_ns
+                      << " p99_put_latency_ns=" << extras.p99_put_latency_ns
+                      << " p999_put_latency_ns=" << extras.p999_put_latency_ns
+                      << " max_put_latency_ns=" << extras.max_put_latency_ns;
+        }
+        std::cout << '\n';
+    }
     return 0;
 }

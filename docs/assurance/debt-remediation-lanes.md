@@ -33,7 +33,21 @@ requirements + proofs + evidence. Evidence labels: [evidence-taxonomy.md](eviden
 | **3** | L4 | Compaction crash matrix, ENOSPC/EINTR, backup E2E, debt bounds | Manifest/commit-slot polarity |
 | **4** | L5+L6 | Handoff/TLS/authz/telemetry/drain/soaks; Phase 8 honesty | QSBR under short-write; OVERLOADED polarity |
 | **5** | L7 | C ABI cross-release, BSD packages, Cosign/SLSA/SBOM, sealed `release.yml` | Artifact sealing / N−1 fixtures |
-| **6** | L3+L4 (blocked) | Hard-pinned 1–8 scaling + absolute budgets + ACCETTATA when runners exist | macOS `local` ≠ scaling |
+| **6** | L3+L4 (**blocked**) | Hard-pinned 1–8 scaling + absolute budgets + ACCETTATA when runners exist | macOS `local` ≠ scaling |
+
+### Wave 6 blockers (scaffolding landed; proofs not)
+
+Wave 6 docs/scripts may prepare matrices and `specified_waiting_for_runner` placeholders, but
+**must not** invent runner results or promote gates:
+
+1. Self-hosted runner label `glyphastore-linux-perf` with retained `pass-candidate` (evidence
+   class `hardware`) — see [performance-budgets.md](performance-budgets.md),
+   [paired-shards-linux-p1.md](../benchmarks/paired-shards-linux-p1.md),
+   harness `scripts/benchmark_paired_linux_ab.sh`.
+2. Physical E3 durability lab (E3/E4 remain open; rehearsal ≠ certification —
+   [evidence-taxonomy.md](evidence-taxonomy.md)).
+3. Absolute p99 GET/PUT thresholds stay **TBD** until hardware samples exist.
+4. No `ACCETTATA_PER_RILASCIO` from scaffolding alone.
 
 ## Anti-duplication rules
 

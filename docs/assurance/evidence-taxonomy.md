@@ -48,7 +48,9 @@ One evidence path may carry only one primary label in gate/requirement YAML. Do 
 
 ## Related
 
-- [Debt remediation lanes](debt-remediation-lanes.md) — which wave owns evidence upgrades
-- [Performance budgets](performance-budgets.md)
+- [Debt remediation lanes](debt-remediation-lanes.md) — which wave owns evidence upgrades (Wave 6
+  hardware scaling is blocked on `glyphastore-linux-perf` + physical E3 lab)
+- [Performance budgets](performance-budgets.md) — absolute placeholders stay
+  `specified_waiting_for_runner`
 - [Release checklist](release-checklist.md)
 - Generated gate view: [production-readiness.md](../production-readiness.md)

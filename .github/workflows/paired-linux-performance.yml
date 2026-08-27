@@ -60,8 +60,12 @@ jobs:
           BENCHMARK_REPEATS: ${{ inputs.repeats }}
           BENCHMARK_PRESET: unix-release
           REQUIRE_LINUX_TOOLS: "1"
+          CHECK_CPU_MIGRATION: "1"
+          LATENCY_SAMPLE_STRIDE: "1"
+          LATENCY_SPLIT: "1"
           # Operators must set SERVER_CPUS / CLIENT_CPUS / NUMA_NODE on the runner
-          # environment (machine-specific). Missing sets mark the run inconclusive.
+          # environment (machine-specific). Missing or overlapping sets mark the run
+          # inconclusive. Absolute budgets stay specified_waiting_for_runner.
         run: ./scripts/benchmark_paired_linux_ab.sh
 
       - name: Upload artifacts
