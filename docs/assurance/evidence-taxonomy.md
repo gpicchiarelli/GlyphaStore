@@ -39,6 +39,16 @@ One evidence path may carry only one primary label in gate/requirement YAML. Do 
 4. **Rehearsal ≠ certification.** E3 script rehearsal remains honesty scaffolding until
    physical campaign evidence exists.
 
+## Correctness gates vs performance gates
+
+Correctness, portability, and distribution gates (`CI`, `Assurance`, FreeBSD/OpenBSD,
+`install-consumer`, release sealing / evidence producers) close or advance independently of
+absolute performance budgets and hard-pinned scaling rows. Hardware performance evidence
+(`hardware` label, runner `glyphastore-linux-perf`) must not be required to land Wave 5 sealing
+scaffolding, and Wave 5 must not absorb absolute perf claims from macOS `local` benches.
+Wave 6 owns ACCETTATA hardware work; it does not reopen Wave 5 sealing residuals
+([wave5-l7-residuals.md](../distribution/wave5-l7-residuals.md)).
+
 ## PR / merge checklist (evidence)
 
 - [ ] Label stated (`local` / `CI` / `hardware` / `release`) next to any new bench or campaign path

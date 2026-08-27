@@ -15,3 +15,6 @@ Tagged release promotion uses the machine-readable contract in
 [`docs/distribution/release-evidence.md`](../../docs/distribution/release-evidence.md). Evidence JSON
 and every referenced log are carried as sealed release candidate files; this directory stores only
 durable pointers or reviewed campaign records, never hand-written replacements for missing CI runs.
+
+Release retention checklist (Wave 5 scaffolding, no tagged drops yet):
+[`release/README.md`](release/README.md).

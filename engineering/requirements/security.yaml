@@ -56,7 +56,7 @@ requirements:
   - workflow: assurance.yml
   - workflow: actionlint.yml
   rischio_residuo:
-  - Dependabot must update SHAs rather than floating tags
+  - Dependabot must rewrite floating tags to 40-character commit SHAs before merge
   - A skipped, cancelled, queued, or unavailable hosted workflow is not evidence for the candidate
   gates:
   - GATE-THREAT-SUPPLY

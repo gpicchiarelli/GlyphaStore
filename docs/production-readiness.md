@@ -169,8 +169,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-ARTIFACT-DELIVERY** — Candidate Verify Publish preserves exact artifact identity
   State: `IMPLEMENTATA` · Release target: `rc`
   Requirements: `GS-RELEASE-ARTIFACT-001`
-  Residual risk: Native BSD package bytes, registered service accounts, the OpenBSD package evidence producer, a prior tagged Store, a complete attested prior ABI/wire release, and retained tagged evidence are still missing
-  Exact candidate admission and a closed same-run evidence import remove the candidate-seal/evidence cycle; SDK, persistence, bidirectional C-ABI, bidirectional wire, the complete Linux security matrix, native FreeBSD package lifecycle and independent reproducibility evidence have same-run producers; FreeBSD generates non-circular distinfo from the sealed source and verifies the real ports account authority; persistence rejects self/current fixtures; ABI/wire require an attested complete prior release and retained compiled consumers; rebuilt comparison bytes cannot enter promotion; publish cannot rebuild; and policy deliberately prevents release until the remaining proofs exist.
+  Residual risk: Native BSD package bytes, registered service accounts, a prior tagged Store, a complete attested prior ABI/wire release, and retained tagged evidence are still missing
+  Exact candidate admission and a closed same-run evidence import remove the candidate-seal/evidence cycle; SDK, persistence, bidirectional C-ABI, bidirectional wire, the complete Linux security matrix, native FreeBSD and OpenBSD package lifecycles and independent reproducibility evidence have same-run producers; both BSD producers generate non-circular distinfo from the sealed source and verify account-registration markers; persistence rejects self/current fixtures; ABI/wire require an attested complete prior release and retained compiled consumers; rebuilt comparison bytes cannot enter promotion; publish cannot rebuild or clobber; and policy deliberately prevents release until the remaining proofs exist.
 
 - [x] **GATE-CMAKE-INSTALL** — CMake installs versioned package metadata and GlyphaStore::core
   State: `PROVATA_IN_CI` · Release target: `alpha`
@@ -181,14 +181,14 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-INSTALL-CONSUMER** — CI builds external consumer from installed prefix
   State: `PROVATA_LOCALMENTE` · Release target: `alpha`
   Requirements: `GS-CORE-API-001`, `GS-COMPAT-CABI-001`
-  Residual risk: Existing C++ consumer is proven in CI; the newly added pure-C installed consumer awaits post-merge CI evidence
-  Install-consumer job builds supported C++ targets and now also the pure-C ABI target; local proof exists.
+  Residual risk: Same-SHA install-consumer scaffold (symbols + layout probe) is in ci.yml; cross-release old-binary × new-library remains open
+  Install-consumer job builds supported C++ targets and the pure-C ABI target, then runs check_abi_symbols and c_abi_layout_probe against the installed prefix; cross-release proof remains open (wave5-l7-residuals.md).
 
 - [ ] **GATE-RELEASE-MATRIX** — Release CI covers supported compilers OS arch optimized builds
   State: `IMPLEMENTATA` · Release target: `rc`
   Requirements: `GS-COMPAT-FIXTURE-001`, `GS-RELEASE-ARTIFACT-001`
   Residual risk: No immutable tag or native BSD package evidence exists; Windows is out of scope
-  Platform build/test workflows exist; tag publication is now blocked until exact native packages and same-commit evidence enter the sealed manifest.
+  Platform build/test workflows exist; FreeBSD and OpenBSD package evidence producers are wired fail-closed in release.yml; tag publication is blocked until exact native packages and same-commit evidence enter the sealed manifest.
 
 - [ ] **GATE-REPRO-SBOM** — Artifacts reproducible signed checksummed with provenance and SBOM
   State: `IMPLEMENTATA` · Release target: `rc`

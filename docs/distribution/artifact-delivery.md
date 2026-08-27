@@ -101,7 +101,7 @@ Each record follows the artifact-bound contract in
 [`release-evidence.md`](release-evidence.md): required check IDs, commands and retained non-empty
 logs are validated in addition to commit/version/subject digests. `validate-release-policy`
 enforces these names and bindings. Installed-SDK, persistence, C-ABI, wire, security-matrix,
-FreeBSD-package, and reproducibility evidence now have same-run
+FreeBSD-package, OpenBSD-package, and reproducibility evidence now have same-run
 producers. Persistence requires a complete Store created by a strictly older tagged release. ABI
 requires the complete attested prior release plus its sealed compiled consumer and proves both
 dynamic-library directions. Wire requires that same prior release plus its sealed compiled wire-v2
@@ -109,11 +109,11 @@ client and proves new/new plus both N−1 client/server directions. Neither cros
 accepts a same-build substitute. Reproducibility rebuilds all four deterministic archives on a
 distinct runner and requires an exact size and SHA-256 match; rebuilt bytes cannot replace candidate
 bytes. The security producer executes the complete Linux sanitizer/static/CodeQL/supply-chain
-matrix and inspects the SBOMs and distributed ELF from the externally anchored candidate. The
-FreeBSD producer uses the native ports/pkg/rc.subr stack and is intentionally blocked until the
-service account is registered. The remaining OpenBSD record, the
-prior baselines, and native packages remain absent, so the release workflow is expected to stop
-before attestation/publication.
+matrix and inspects the SBOMs and distributed ELF from the externally anchored candidate. Both BSD
+producers use the native ports/pkg stacks and are intentionally blocked until service accounts are
+registered. Prior baselines and retained native packages remain absent, so the release workflow is
+expected to stop before attestation/publication. See
+[`wave5-l7-residuals.md`](wave5-l7-residuals.md).
 Removing the gate to cut an early release is forbidden; a deliberate policy change needs an ADR,
 requirements, hazards, tests, and residual-risk review.
 
@@ -121,8 +121,9 @@ requirements, hazards, tests, and residual-risk review.
 
 Candidate and Verify have `contents: read`; only Verify receives short-lived OIDC and attestation
 permissions. Publish alone receives `contents: write` and is protected by the `release` Environment.
-It aborts if the GitHub Release already exists and never uses asset clobbering. A bad release is
-withdrawn and replaced by a new version, never by different bytes under the same name.
+It aborts if the GitHub Release already exists, never rebuilds candidate bytes, and never uses asset
+clobbering (`--clobber`). Different bytes under the same tag name require a new version; a bad
+release is withdrawn and replaced, never republished in place.
 
 The reusable workflow is a trust-boundary-compatible design, but this repository does not claim
 SLSA Build Level 3: achieving that level also requires hosting/pinning the reusable builder in an

@@ -1,5 +1,9 @@
 ## [Unreleased]
 
+- Wave 5 (L7): OpenBSD package evidence producer + seal wiring; install-consumer same-SHA ABI
+  scaffold; Dependabot SHA discipline in `validate_actions_pins.py`; honest residuals in
+  `docs/distribution/wave5-l7-residuals.md` (no fake packages/signatures/tags).
+
 - Wave 0 (L0) assurance hygiene: close stale `GATE-CONCURRENCY-SPEC` residual for ADR 0037
   Phase C (daemon mutation windows + GET barrier already landed; prove paths include
   `mutation_window_tests`). Add living `docs/assurance/evidence-taxonomy.md` (`local` /

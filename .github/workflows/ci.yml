@@ -236,6 +236,8 @@ jobs:
   install-consumer:
     name: Release install / external consumer
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -262,6 +264,23 @@ jobs:
         run: |
           cmake --build build/consumer
           ctest --test-dir build/consumer --output-on-failure
+      - name: Installed ABI symbols and layout probe
+        run: |
+          set -euo pipefail
+          prefix="${{ github.workspace }}/build/install-prefix"
+          python engineering/tools/check_abi_symbols.py \
+            --library "$prefix/lib/libglyphastore.so.1" \
+            --allowlist abi/symbols-v1.txt
+          read -r -a pkg_config_flags <<< "$(
+            PKG_CONFIG_PATH="$prefix/lib/pkgconfig" \
+              pkg-config --cflags --libs glyphastore-abi
+          )"
+          cc -std=c11 tests/abi/c_abi_layout_probe.c \
+            "${pkg_config_flags[@]}" \
+            -o build/consumer/c-abi-layout-probe
+          LD_LIBRARY_PATH="$prefix/lib" build/consumer/c-abi-layout-probe
+          echo "Same-SHA install-consumer ABI scaffold OK; cross-release residual:"
+          echo "docs/distribution/wave5-l7-residuals.md"
 
   release-optimized:
     name: Release optimized / unix-release

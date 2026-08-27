@@ -47,6 +47,7 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
         abi_evidence = self.release.index("  abi-compatibility-evidence:")
         wire_evidence = self.release.index("  wire-compatibility-evidence:")
         freebsd_evidence = self.release.index("  freebsd-package-evidence:")
+        openbsd_evidence = self.release.index("  openbsd-package-evidence:")
         security_sanitizers = self.release.index("  security-sanitizers:")
         security_codeql = self.release.index("  security-codeql:")
         security_static = self.release.index("  security-static:")
@@ -60,7 +61,8 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(persistence_evidence, abi_evidence)
         self.assertLess(abi_evidence, wire_evidence)
         self.assertLess(wire_evidence, freebsd_evidence)
-        self.assertLess(freebsd_evidence, security_sanitizers)
+        self.assertLess(freebsd_evidence, openbsd_evidence)
+        self.assertLess(openbsd_evidence, security_sanitizers)
         self.assertLess(security_sanitizers, security_codeql)
         self.assertLess(security_codeql, security_static)
         self.assertLess(security_static, security_supply_chain)
@@ -69,7 +71,7 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
         self.assertLess(reproducibility_evidence, verify)
         self.assertLess(verify, publish)
         self.assertIn(
-            "needs: [candidate, sdk-installed-evidence, persistent-compatibility-evidence, abi-compatibility-evidence, wire-compatibility-evidence, freebsd-package-evidence, security-matrix-evidence, reproducibility-evidence]",
+            "needs: [candidate, sdk-installed-evidence, persistent-compatibility-evidence, abi-compatibility-evidence, wire-compatibility-evidence, freebsd-package-evidence, openbsd-package-evidence, security-matrix-evidence, reproducibility-evidence]",
             self.release[verify:publish],
         )
         self.assertIn("needs: verify", self.release[publish:])
@@ -182,7 +184,7 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
 
     def test_freebsd_package_evidence_runs_only_on_native_package_manager(self) -> None:
         start = self.release.index("  freebsd-package-evidence:")
-        end = self.release.index("  security-sanitizers:")
+        end = self.release.index("  openbsd-package-evidence:")
         job = self.release[start:end]
         script = (ROOT / "scripts/test-freebsd-package-lifecycle.sh").read_text(encoding="utf-8")
 
@@ -205,6 +207,46 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("service glyphastored stop", script)
         self.assertIn("glyphastore_verify_store -- /var/db/glyphastore", script)
         self.assertIn("pkg delete -y glyphastore", script)
+        for check_id in (
+            "package-build",
+            "package-install",
+            "file-inventory",
+            "service-start",
+            "put-get-erase",
+            "graceful-shutdown",
+            "restart-recovery",
+            "uninstall",
+            "config-preservation",
+        ):
+            self.assertIn(f'"id":"{check_id}"', script)
+
+    def test_openbsd_package_evidence_runs_only_on_native_package_manager(self) -> None:
+        start = self.release.index("  openbsd-package-evidence:")
+        end = self.release.index("  security-sanitizers:")
+        job = self.release[start:end]
+        script = (ROOT / "scripts/test-openbsd-package-lifecycle.sh").read_text(encoding="utf-8")
+
+        self.assertIn("needs: candidate", job)
+        self.assertIn("validate_bsd_packaging.py --release", job)
+        self.assertIn("vmactions/openbsd-vm@", job)
+        self.assertIn("test-openbsd-package-lifecycle.sh", job)
+        self.assertIn("needs.candidate.outputs.candidate-seal-sha256", job)
+        self.assertIn("release_bundle.py bind-sbom", job)
+        self.assertIn("openbsd-package-evidence.json", job)
+        self.assertIn("release-input-${{ github.sha }}-openbsd-package", job)
+        self.assertIn('release: "7.9"', job)
+
+        self.assertIn('[[ "$(uname -s)" == "OpenBSD" ]]', script)
+        self.assertIn("PORTS_ACCOUNT_REGISTERED", script)
+        self.assertIn("$ports_root/databases/glyphastore", script)
+        self.assertIn("PACKAGE_REPOSITORY=", script)
+        self.assertIn("pkg_add", script)
+        self.assertIn("rcctl enable glyphastored", script)
+        self.assertIn("rcctl start glyphastored", script)
+        self.assertIn("rcctl stop glyphastored", script)
+        self.assertIn("glyphastore_verify_store -- /var/glyphastore", script)
+        self.assertIn("pkg_delete glyphastore", script)
+        self.assertIn("libglyphastore.so.${abi_version}", script)
         for check_id in (
             "package-build",
             "package-install",
@@ -293,7 +335,7 @@ class ArtifactReleaseWorkflowTests(unittest.TestCase):
 
     def test_attestation_and_immutability_are_enforced(self) -> None:
         self.assertEqual(
-            self.release.count("needs.candidate.outputs.candidate-seal-sha256"), 10
+            self.release.count("needs.candidate.outputs.candidate-seal-sha256"), 12
         )
         self.assertIn("subject-path: dist/release-candidate/verified-seal.json", self.release)
         self.assertIn("--bundle dist/release-provenance/verified-seal.sigstore.json", self.release)

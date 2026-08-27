@@ -1,6 +1,6 @@
 # BSD reference packaging
 
-Status: structural reference; native package evidence pending
+Status: structural reference + fail-closed native producers; retained tagged evidence pending
 
 `packaging/freebsd/` and `packaging/openbsd/` are upstream reference ports, not evidence that an
 official ports tree has accepted GlyphaStore or that a package has passed clean-host installation.
@@ -30,11 +30,13 @@ smokes, and retain their VM logs. This raises the portability signal but deliber
 `freebsd-package-evidence.json` or `openbsd-package-evidence.json`: no native package manager or
 service lifecycle was exercised by that installed-prefix test.
 
-The tag-only release graph additionally contains a FreeBSD package producer. It consumes the exact
-sealed source archive, requires the account in the native ports authority, generates same-run
-`distinfo`, builds through the ports framework, and exercises the installed package and rc.subr
-lifecycle. It is implementation, not proof: the account marker and retained tagged run are still
-absent. The equivalent OpenBSD producer remains to be implemented.
+The tag-only release graph contains fail-closed FreeBSD and OpenBSD package producers
+(`scripts/test-freebsd-package-lifecycle.sh`, `scripts/test-openbsd-package-lifecycle.sh`). Each
+consumes the exact sealed source archive, requires the account-registration marker, generates
+same-run `distinfo`, builds through the ports framework, and exercises the installed package and
+native service lifecycle (`rc.subr` / `rcctl`). They are implementation, not proof: the account
+markers and retained tagged runs are still absent. Honest Wave 5 residuals live in
+[`wave5-l7-residuals.md`](wave5-l7-residuals.md).
 
 Before either artifact enters a manifest, retain native evidence for build/fake or stage,
 packing-list and shared-symbol checks, package creation, install, service start/stop, protocol

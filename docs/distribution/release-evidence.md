@@ -39,12 +39,13 @@ responsible for actually executing the recorded commands. Manually fabricating a
 record is a supply-chain incident, not an accepted waiver mechanism.
 
 Native FreeBSD/OpenBSD CI currently retains installed-prefix ABI logs. Those are portability and
-installation signals, not the package lifecycle records above. The tag graph now has a native
-FreeBSD package producer; OpenBSD package evidence remains without a complete producer. Promotion
-remains blocked until ports account registration, native package creation, service lifecycle,
-restart recovery, configuration preservation, and uninstall have all succeeded on both native OSes.
-The native jobs generate `distinfo` from the already sealed source archive outside that archive;
-committing its self-digest into the source would be circular.
+installation signals, not the package lifecycle records above. The tag graph now has native
+FreeBSD and OpenBSD package producers. Both fail closed until ports account registration markers
+exist and a tagged native run retains evidence. Promotion remains blocked until ports account
+registration, native package creation, service lifecycle, restart recovery, configuration
+preservation, and uninstall have all succeeded on both native OSes. The native jobs generate
+`distinfo` from the already sealed source archive outside that archive; committing its self-digest
+into the source would be circular.
 
 The tag-only release graph now contains a same-run `sdk-installed-evidence` job. It extracts the
 sealed Linux prefix without rebuilding the engine, compiles C and C++ consumers solely through its
@@ -104,6 +105,14 @@ configuration, and uninstall with configuration/data preservation. The native pa
 evidence subject; its retained `distinfo`, logs, evidence record, and bound SPDX SBOM enter the
 closed importer. The producer is implemented but intentionally fails before VM execution until the
 upstream account-registration marker exists, and no native tagged result has yet been retained.
+
+`openbsd-package-evidence` mirrors that discipline on OpenBSD 7.9. It requires
+`packaging/openbsd/PORTS_ACCOUNT_REGISTERED`, copies the reference port into
+`$PORTSDIR/databases/glyphastore`, generates non-circular `distinfo`, builds with `DISTDIR` and
+`PACKAGE_REPOSITORY`, then `pkg_add`s the `.tgz`, checks ABI symbols on
+`libglyphastore.so.${ABI_VERSION}`, and exercises `rcctl` enable/start/stop, PUT/GET/ERASE, Store
+verify under `/var/glyphastore`, restart recovery, config preservation, and `pkg_delete`. Same
+fail-closed residual: no account marker and no retained tagged run yet.
 
 `reproducibility-evidence` runs on a distinct runner after the candidate seal exists. It checks out
 the exact annotated tag, repeats the declared release configuration and toolchain, installs into the
