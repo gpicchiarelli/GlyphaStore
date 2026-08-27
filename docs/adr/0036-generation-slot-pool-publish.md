@@ -4,7 +4,9 @@
 - Date: 2026-08-02
 - Deciders: storage and performance maintainers
 - Applies to: paired `PairReadGeneration` publication and reclaim (embedded Store and
-  daemon Reader–Writer pairs); **not implemented in production**
+  daemon Reader–Writer pairs); **Wave 1 opt-in production path exists behind
+  `PairedConcurrencyConfig::generation_slot_pool` (default false)**; Alternative A remains
+  the bit-identical default
 - Amends: none yet (would amend [ADR 0031](paired-reader-writer-shards.md) §Protocollo di
   publication / §Protocollo di reclamation **only after** the verification matrix below is
   closed and this ADR is accepted)
@@ -138,16 +140,16 @@ Prototype evidence closes lab gates only; production still uses Alternative A.
 
 | # | Gate | Evidence required | Status |
 | --- | --- | --- | --- |
-| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | **prototype-evidence** — coherent-adoption + forced slot-reincarnation tests; local Release/ASan+UBSan/TSan record in `engineering/evidence/adr0036-slot-token-local-2026-08-27.md` |
+| V1 | Litmus: publish release ↔ Reader acquire adopts one immutable generation | Unit / model or formal note + test | **production-partial** — production `GenerationSlotPool` V1 token adopt + ≥10k reincarnation (`tests/unit/generation_slot_pool_production_tests.cpp`); prior prototype-evidence retained. Default path remains Alternative A |
 | V2 | Litmus: reclaim never frees epoch ≥ any active lease / pin / safe epoch | TSAN stress + fault injection | **prototype-evidence** — `ADR 0036 V2…` + V13 stress under `macos-tsan`; production TSAN soak still open |
 | V3 | Two-boundary (or lease-equivalent) race: Reader mid-GET during publish+retire | Dedicated race test + TSAN | **prototype-evidence** — `ADR 0036 V3…` + V13 under `macos-tsan`; **production-baseline** — overwrite-storm under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
 | V4 | Cold I/O / `reader_safe_epoch` (or pin) holds reclaim across async completion | Integration | **prototype-evidence** (pin) — `paired slow-output pin…`; **production-baseline** — `paired Reader refreshes compacted durable pins…` + `durable cold read pin survives…` (`…/local-macos-2026-08-02-adr0036-v6-failclosed/`) |
-| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | **candidate-evidence** — slot candidate rejects late reservations, drains admitted `building` guards, retains slow borrows and fail-closes abandoned linearized authority. **production-baseline (Alternative A)** — after daemon joins Reactor/Writer/cold-I/O, authoritative `Store::close` drains maintenance, terminally revokes publication and releases every generation; active counted lease rejects without partial finalization; local Release/ASan+UBSan/TSan record. Slot-pool integration remains open |
-| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | **candidate-evidence** — slot reservation precedes Store entry; abandoned post-linearization guard invokes fail-closed; real durable committed PUT is snapshot-drained and visible in the recovered generation. Production integration remains open. Existing production baseline remains allocation-fault + paired durable litmus |
-| V7 | Incremental merge + post-cut publish under slot pressure | Pair read generation + Writer merge tests | **prototype-evidence** — `ADR 0036 V7 prototype…` (merge under pin pressure); production merge+slot open |
+| V5 | Shutdown drain: no UAF after stop; late mutations linearized or rejected fail-closed | Paired Store close tests | **production-partial** — opt-in slot pool V5 shutdown lease test (`ADR 0036 production slot V5…`); Alternative A production-baseline retained. Async/daemon flag paths still open |
+| V6 | Publication failure after Store mutation remains fail-closed | Existing paired fail-closed tests + new slot-exhaust case | **production-partial** — production pool unit proves reserve-before-mutate + abandoned linearized guard fail-closed; runtime integration under flag for all Writer sites still open. Existing production baseline remains allocation-fault + paired durable litmus |
+| V7 | Incremental merge + post-cut publish under slot pressure | Pair read generation + Writer merge tests | **prototype-evidence** — `ADR 0036 V7 prototype…` (merge under pin pressure); production merge+slot wiring present behind flag, dedicated V7 proof still open |
 | V8 | Durable catalog refresh / rotation does not invalidate in-flight GET | Paired durable refresh tests | **candidate-evidence** — real `PairReadGeneration` slot candidate preserves a cold Segment borrow across compaction refresh and publishes a Writer-owned rotation atomically; Release/ASan+UBSan/TSan local record. Production integration remains open |
-| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | **candidate-evidence** — capacity formula is tied to the official 64-generation retire bound: `1 current + 64 retired = 65`; exact saturation rejects before Store entry, preserves the current publication, then recovers after Reader frontier advancement. **production-baseline (Alternative A)** — one shared admission decision now covers embedded/dedicated sync, async and durable-batch Writer paths; refresh and merge completion cannot bypass the retire bound; all 14 installation sites repeat the bound through one fail-fast helper. Local evidence: `engineering/evidence/paired-generation-admission-local-2026-08-27.md`; diagnostic guard A/B: `benchmarks/results/generation-retire-install-guard-2026-08-27/`. Slot-pool integration remains open |
-| V10 | Same-key FIFO within `put_batch`; RAW after ACK | Existing paired Store batch tests | **production-baseline** (status-quo path) |
+| V9 | Pool exhaustion applies backpressure (no overwrite, no unbounded wait without admission bound) | Unit + overload | **production-partial** — production pool unit saturates 65 slots and recovers after frontier reclaim; Alternative A admission baseline retained. Full runtime overload under flag still open |
+| V10 | Same-key FIFO within `put_batch`; RAW after ACK | Existing paired Store batch tests | **production-partial** — opt-in slot pool FIFO test (`ADR 0036 production slot V10…`); status-quo path remains production-baseline |
 | V11 | Lab A/B vs status quo on Apple Silicon `macos-release` | Recorded under `benchmarks/results/` | open — two-thread direct slot diagnostic is +7.14% over the equivalent shared-slot protocol, but affinity was unavailable and this is not the official paired runtime |
 | V12 | **Hard reject** if worker-affine PUT 2t regresses >5% median vs interleaved baseline | Same as V11 | open — adopt-only throughput is positive but sampled p99 regressed 5.86%; the L1-hot GET mode improves publication p99 9.54% with unchanged GET p99, yet real paired GET/PUT, pinned Linux and correctly labelled macOS rows remain required |
 | V13 | ASan/UBSan/TSAN clean on paired + publish stress | CI jobs | **prototype-partial** — `ADR 0036 V13…` + full `paired Store` green under `macos-tsan` (`…/local-macos-2026-08-02-adr0036-tsan/`) and `macos-asan` ASan+UBSan (`…/local-macos-2026-08-02-adr0036-asan/`); full multi-OS CI matrix still open |
@@ -266,6 +268,24 @@ With one real `PairReadGeneration::get` per adoption, direct construction reache
 817,965 publications/s (**+12.40%**), improves sampled publication p50/p99 by 9.09%/9.54%, and
 leaves sampled GET p50/p99 unchanged at 83/250 ns. This mode uses a two-byte L1-hot value and still
 lacks socket/protocol work and affinity, so it strengthens direction without closing a gate.
+
+### Wave 1 production slot pool (opt-in) — 2026-08-27
+
+`GenerationSlotPool` lands in `src/store/paired/` behind
+`PairedConcurrencyConfig::generation_slot_pool` (default **false**). Requirements retained:
+
+- Publication token `{epoch:48, slot+1:16}` via `GenerationPublicationToken`; epoch overflow beyond
+  the 48-bit field fails publication with `epoch_exhausted` / arithmetic overflow before a torn
+  token can be released.
+- Slot reincarnation is allowed only after reclaim of retired epochs strictly below the Reader
+  safe frontier **and** `pins == 0`; V1 production unit forces ≥10k reincarnations with token
+  epoch/slot coherence.
+- Reserve-before-Store-mutate; abandoned linearized reservations trip fail-closed (V6).
+- Capacity 65 (`GenerationSlotCapacity<64>`); exhaustion is pre-Store backpressure (V9).
+
+Default Alternative A remains bit-identical. V11/V12 stay **open**. Async/durable-group Writer
+sites under the flag are not yet fully dual-pathed. Evidence:
+`engineering/evidence/adr0036-production-slot-local-2026-08-27.md` (`local`).
 
 ## Compatibility with landed hot-path work
 
