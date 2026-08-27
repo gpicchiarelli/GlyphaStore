@@ -879,7 +879,8 @@ class BufferedResponseReader final {
     BufferedResponseReader responses{response_capacity};
     ClientResult result;
     if (measure_latency) {
-        result.latency_ns.reserve(work.response_count / std::max<std::size_t>(latency_sample_stride, 1U) + 1U);
+        result.latency_ns.reserve(work.response_count / std::max<std::size_t>(latency_sample_stride, 1U) +
+                                  1U);
         if (latency_split) {
             result.get_latency_ns.reserve(result.latency_ns.capacity());
             result.put_latency_ns.reserve(result.latency_ns.capacity());
@@ -905,9 +906,8 @@ class BufferedResponseReader final {
             result.egress_bytes += decoded->consumed;
             const auto request_id = decoded->frame.request_id;
             const bool is_get = (request_id & 1U) != 0U;
-            const bool sample_this =
-                measure_latency && (workload == Workload::read_after_write || is_get) &&
-                (latency_tick % latency_sample_stride == 0U);
+            const bool sample_this = measure_latency && (workload == Workload::read_after_write || is_get) &&
+                                     (latency_tick % latency_sample_stride == 0U);
             if (measure_latency && (workload == Workload::read_after_write || is_get)) {
                 ++latency_tick;
             }
@@ -1079,9 +1079,9 @@ class BufferedResponseReader final {
         clients.emplace_back([&, client] {
             ready.count_down();
             start.wait();
-            client_results[client] = run_client(descriptors[client], work[client], material, options.pipeline,
-                                                options.latency, options.latency_split,
-                                                options.latency_sample_stride, options.workload);
+            client_results[client] =
+                run_client(descriptors[client], work[client], material, options.pipeline, options.latency,
+                           options.latency_split, options.latency_sample_stride, options.workload);
         });
     }
     ready.wait();
@@ -1483,11 +1483,13 @@ void fill_latency_percentiles(std::vector<double> samples, std::size_t& count, d
         extras.max_latency_ns = latency_ns.back();
     }
     if (options.latency_split) {
-        fill_latency_percentiles(std::move(get_latency_ns), extras.get_latency_samples, extras.p50_get_latency_ns,
-                                 extras.p95_get_latency_ns, extras.p99_get_latency_ns, extras.p999_get_latency_ns,
+        fill_latency_percentiles(std::move(get_latency_ns), extras.get_latency_samples,
+                                 extras.p50_get_latency_ns, extras.p95_get_latency_ns,
+                                 extras.p99_get_latency_ns, extras.p999_get_latency_ns,
                                  extras.max_get_latency_ns);
-        fill_latency_percentiles(std::move(put_latency_ns), extras.put_latency_samples, extras.p50_put_latency_ns,
-                                 extras.p95_put_latency_ns, extras.p99_put_latency_ns, extras.p999_put_latency_ns,
+        fill_latency_percentiles(std::move(put_latency_ns), extras.put_latency_samples,
+                                 extras.p50_put_latency_ns, extras.p95_put_latency_ns,
+                                 extras.p99_put_latency_ns, extras.p999_put_latency_ns,
                                  extras.max_put_latency_ns);
     }
     const auto median_profile = [&](auto member) {

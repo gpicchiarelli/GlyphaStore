@@ -107,6 +107,5 @@ GLYPHA_TEST("abuse controller principal quotas are process-wide under concurrenc
     GLYPHA_REQUIRE(admitted_count > 0);
     GLYPHA_REQUIRE(rejected_count > 0);
     const auto stats = controller.stats();
-    GLYPHA_REQUIRE(stats.principal_request_rejected + stats.principal_bandwidth_rejected ==
-                   rejected_count);
+    GLYPHA_REQUIRE(stats.principal_request_rejected + stats.principal_bandwidth_rejected == rejected_count);
 }

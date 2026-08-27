@@ -33,12 +33,12 @@ auto GenerationSlotPool::create(const WorkerRoutingState routing,
                                 const GenerationSlotFailureHook failure_hook)
     -> Result<std::unique_ptr<GenerationSlotPool>> {
     try {
-        auto pool = std::unique_ptr<GenerationSlotPool>{
-            new GenerationSlotPool{ConstructionToken{}, failure_hook}};
+        auto pool =
+            std::unique_ptr<GenerationSlotPool>{new GenerationSlotPool{ConstructionToken{}, failure_hook}};
         Result<const Generation*> initial =
-            records.empty() ? PairReadGeneration::empty_direct(routing, pool->slots_[0].storage)
-                            : PairReadGeneration::from_durable_snapshot_direct(
-                                  routing, records, pool->slots_[0].storage);
+            records.empty()
+                ? PairReadGeneration::empty_direct(routing, pool->slots_[0].storage)
+                : PairReadGeneration::from_durable_snapshot_direct(routing, records, pool->slots_[0].storage);
         if (!initial) {
             return unexpected(std::move(initial.error()));
         }
@@ -104,8 +104,7 @@ auto GenerationSlotPool::publish_incremental(Reservation& reservation,
     return commit_published(reservation, direct_result);
 }
 
-auto GenerationSlotPool::publish_direct(Reservation& reservation,
-                                        const Generation* generation) noexcept
+auto GenerationSlotPool::publish_direct(Reservation& reservation, const Generation* generation) noexcept
     -> GenerationSlotPublishStatus {
     if (reservation.owner_ != this || !reservation.store_linearized_ || reservation.slot_ >= kCapacity ||
         slots_[reservation.slot_].state != SlotState::building || generation == nullptr) {
@@ -114,8 +113,7 @@ auto GenerationSlotPool::publish_direct(Reservation& reservation,
     return commit_published(reservation, generation);
 }
 
-auto GenerationSlotPool::commit_published(Reservation& reservation,
-                                          const Generation* generation) noexcept
+auto GenerationSlotPool::commit_published(Reservation& reservation, const Generation* generation) noexcept
     -> GenerationSlotPublishStatus {
     const auto next_epoch = generation->epoch();
     if (next_epoch <= writer_epoch_.load(std::memory_order_relaxed)) {
@@ -239,8 +237,7 @@ auto GenerationSlotPool::accepting() const noexcept -> bool {
 }
 
 auto GenerationSlotPool::mark_reader_quiescent() noexcept -> bool {
-    if (accepting_.load(std::memory_order_acquire) ||
-        reserved_slots_.load(std::memory_order_acquire) != 0U) {
+    if (accepting_.load(std::memory_order_acquire) || reserved_slots_.load(std::memory_order_acquire) != 0U) {
         return false;
     }
     if (reader_quiescent_.load(std::memory_order_relaxed)) {
@@ -255,8 +252,7 @@ auto GenerationSlotPool::mark_reader_quiescent() noexcept -> bool {
 }
 
 auto GenerationSlotPool::try_finish_shutdown() noexcept -> bool {
-    if (accepting_.load(std::memory_order_acquire) ||
-        reserved_slots_.load(std::memory_order_acquire) != 0U ||
+    if (accepting_.load(std::memory_order_acquire) || reserved_slots_.load(std::memory_order_acquire) != 0U ||
         !reader_quiescent_.load(std::memory_order_acquire)) {
         return false;
     }
@@ -338,9 +334,8 @@ void GenerationSlotPool::destroy_slot(Slot& slot) noexcept {
 
 void GenerationSlotPool::update_high_watermark(const std::size_t value) noexcept {
     auto observed = live_high_watermark_.load(std::memory_order_relaxed);
-    while (value > observed &&
-           !live_high_watermark_.compare_exchange_weak(observed, value, std::memory_order_relaxed,
-                                                       std::memory_order_relaxed)) {
+    while (value > observed && !live_high_watermark_.compare_exchange_weak(
+                                   observed, value, std::memory_order_relaxed, std::memory_order_relaxed)) {
     }
 }
 

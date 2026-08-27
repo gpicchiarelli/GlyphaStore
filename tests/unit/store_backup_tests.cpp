@@ -880,7 +880,7 @@ GLYPHA_TEST("online backup storage_exhausted matrix leaves incomplete dest and h
             if (!state.fired && operation == state.target) {
                 state.fired = true;
                 return glyphastore::fail(glyphastore::ErrorCode::storage_exhausted,
-                                        "injected online backup storage_exhausted");
+                                         "injected online backup storage_exhausted");
             }
             return {};
         }

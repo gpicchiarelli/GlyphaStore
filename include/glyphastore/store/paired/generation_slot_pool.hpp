@@ -71,8 +71,8 @@ struct GenerationPublicationToken final {
 
     [[nodiscard]] static constexpr auto encode(const std::uint64_t epoch, const std::size_t slot) noexcept
         -> GenerationPublicationToken {
-        return GenerationPublicationToken{.raw = (epoch << kSlotBits) |
-                                                 (static_cast<std::uint64_t>(slot) + 1U)};
+        return GenerationPublicationToken{.raw =
+                                              (epoch << kSlotBits) | (static_cast<std::uint64_t>(slot) + 1U)};
     }
 
     [[nodiscard]] constexpr auto empty() const noexcept -> bool {
@@ -146,10 +146,10 @@ class GenerationSlotPool final {
         friend class GenerationSlotPool;
     };
 
-    [[nodiscard]] static auto
-    create(WorkerRoutingState routing,
-           std::span<const DurableRuntimeCatalog::PublishedReadRecord> records = {},
-           GenerationSlotFailureHook failure_hook = {}) -> Result<std::unique_ptr<GenerationSlotPool>>;
+    [[nodiscard]] static auto create(WorkerRoutingState routing,
+                                     std::span<const DurableRuntimeCatalog::PublishedReadRecord> records = {},
+                                     GenerationSlotFailureHook failure_hook = {})
+        -> Result<std::unique_ptr<GenerationSlotPool>>;
 
     GenerationSlotPool(const GenerationSlotPool&) = delete;
     auto operator=(const GenerationSlotPool&) -> GenerationSlotPool& = delete;
@@ -170,8 +170,7 @@ class GenerationSlotPool final {
     [[nodiscard]] auto
     adopt(std::uint64_t minimum_borrowed_epoch = std::numeric_limits<std::uint64_t>::max()) noexcept
         -> const Generation*;
-    [[nodiscard]] auto decode_published(GenerationPublicationToken token) const noexcept
-        -> const Generation*;
+    [[nodiscard]] auto decode_published(GenerationPublicationToken token) const noexcept -> const Generation*;
 
     void reclaim(std::uint64_t safe_epoch) noexcept;
     void stop_admission() noexcept;

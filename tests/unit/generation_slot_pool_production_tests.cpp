@@ -75,7 +75,8 @@ GLYPHA_TEST("ADR 0036 production slot V1 token adopt and reincarnation") {
                 continue;
             }
             reservation->mark_store_linearized();
-            GLYPHA_REQUIRE(pool.publish_incremental(*reservation, std::span{&mutation, 1}) == Status::published);
+            GLYPHA_REQUIRE(pool.publish_incremental(*reservation, std::span{&mutation, 1}) ==
+                           Status::published);
             break;
         }
         const auto token = pool.publication_token();
@@ -96,10 +97,9 @@ GLYPHA_TEST("ADR 0036 production slot V6 reserve-before-mutate fail-closed") {
     using Status = glyphastore::store::paired::GenerationSlotPublishStatus;
     std::atomic_uint64_t fail_closed_calls{};
     auto pool_result = Pool::create(
-        {}, {},
-        {.context = &fail_closed_calls, .fail_closed = [](void* context) noexcept {
-             static_cast<std::atomic_uint64_t*>(context)->fetch_add(1U, std::memory_order_relaxed);
-         }});
+        {}, {}, {.context = &fail_closed_calls, .fail_closed = [](void* context) noexcept {
+                     static_cast<std::atomic_uint64_t*>(context)->fetch_add(1U, std::memory_order_relaxed);
+                 }});
     GLYPHA_REQUIRE(pool_result.has_value());
     auto& pool = **pool_result;
     ProductionPoolShutdown guard{&pool};
@@ -115,7 +115,8 @@ GLYPHA_TEST("ADR 0036 production slot V6 reserve-before-mutate fail-closed") {
     auto reservation = pool.try_reserve();
     GLYPHA_REQUIRE(reservation.has_value());
     reservation->mark_store_linearized();
-    GLYPHA_REQUIRE(pool.publish_incremental(*reservation, std::span{&invalid, 1}) == Status::invalid_generation);
+    GLYPHA_REQUIRE(pool.publish_incremental(*reservation, std::span{&invalid, 1}) ==
+                   Status::invalid_generation);
     GLYPHA_REQUIRE(fail_closed_calls.load(std::memory_order_relaxed) == 1);
     GLYPHA_REQUIRE(pool.stats().unpublished_linearizations == 1);
 }

@@ -192,8 +192,8 @@ class PairReadGeneration {
         std::span<const ReadMutation> mutations, PairReadMerge* merge,
         std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
         experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
-        GenerationDirectStorage* direct_storage,
-        const PairReadGeneration** direct_result) -> Result<std::shared_ptr<const PairReadGeneration>>;
+        GenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
+        -> Result<std::shared_ptr<const PairReadGeneration>>;
     [[nodiscard]] static auto publish_incremental_direct(const PairReadGeneration& previous,
                                                          std::span<const ReadMutation> mutations,
                                                          GenerationDirectStorage& storage)

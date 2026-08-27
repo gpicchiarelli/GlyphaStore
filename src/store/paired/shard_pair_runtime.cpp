@@ -39,6 +39,39 @@ namespace {
     return count <= 0 ? 0U : static_cast<std::uint64_t>(count);
 }
 
+void cpu_relax() noexcept {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    __asm__ __volatile__("yield");
+#elif defined(__x86_64__) || defined(_M_X64)
+    __builtin_ia32_pause();
+#else
+    std::this_thread::yield();
+#endif
+}
+
+// Generation admission can transiently require Reader quiescence while short
+// embedded ReadLease GETs hold active_read_leases. Rejecting immediately made
+// concurrent overwrite storms fail PUTs (and litmus GETs) after ~64 publications.
+// Mirror the incremental-merge spin: reclaim, relax, and re-check before OVERLOAD.
+template <typename Refresh, typename Decide>
+[[nodiscard]] auto wait_generation_admission(GenerationAdmissionDecision decision, Refresh&& refresh,
+                                             Decide&& decide) -> GenerationAdmissionDecision {
+    for (unsigned spin = 0; (decision == GenerationAdmissionDecision::incremental_merge_required ||
+                             decision == GenerationAdmissionDecision::reader_quiescence_required) &&
+                            spin < 4096U;
+         ++spin) {
+        if (decision == GenerationAdmissionDecision::reader_quiescence_required) {
+            cpu_relax();
+            if ((spin & 15U) == 15U) {
+                std::this_thread::yield();
+            }
+        }
+        refresh();
+        decision = decide();
+    }
+    return decision;
+}
+
 [[nodiscard]] auto non_owning_generation_view(const PairReadGeneration* generation) noexcept
     -> std::shared_ptr<const PairReadGeneration> {
     return std::shared_ptr<const PairReadGeneration>(generation, [](const PairReadGeneration*) {});
@@ -925,43 +958,42 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     const auto update_delta_stats = [&]() noexcept {
         store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
     };
-    const auto publish_slot_incremental =
-        [&](GenerationSlotPool::Reservation& reservation, std::span<const ReadMutation> mutations) -> bool {
-            auto* pool = lane.generation.slot_pool.get();
-            const auto status =
-                pool->publish_incremental(reservation, mutations, lane.merge.read_merge.get());
-            if (status != GenerationSlotPublishStatus::published) {
-                return false;
-            }
-            mirror_slot_pool_publication(lane.generation);
-            update_delta_stats();
-            return true;
-        };
-    const auto publish_slot_direct =
-        [&](GenerationSlotPool::Reservation& reservation, const PairReadGeneration* generation) -> bool {
-            auto* pool = lane.generation.slot_pool.get();
-            const auto status = pool->publish_direct(reservation, generation);
-            if (status != GenerationSlotPublishStatus::published) {
-                return false;
-            }
-            mirror_slot_pool_publication(lane.generation);
-            update_delta_stats();
-            return true;
-        };
+    const auto publish_slot_incremental = [&](GenerationSlotPool::Reservation& reservation,
+                                              std::span<const ReadMutation> mutations) -> bool {
+        auto* pool = lane.generation.slot_pool.get();
+        const auto status = pool->publish_incremental(reservation, mutations, lane.merge.read_merge.get());
+        if (status != GenerationSlotPublishStatus::published) {
+            return false;
+        }
+        mirror_slot_pool_publication(lane.generation);
+        update_delta_stats();
+        return true;
+    };
+    const auto publish_slot_direct = [&](GenerationSlotPool::Reservation& reservation,
+                                         const PairReadGeneration* generation) -> bool {
+        auto* pool = lane.generation.slot_pool.get();
+        const auto status = pool->publish_direct(reservation, generation);
+        if (status != GenerationSlotPublishStatus::published) {
+            return false;
+        }
+        mirror_slot_pool_publication(lane.generation);
+        update_delta_stats();
+        return true;
+    };
     const auto start_merge_with_optional_pin = [&]() -> Result<std::unique_ptr<PairReadMerge>> {
-            if (!lane.generation.uses_slot_pool()) {
-                return PairReadGeneration::start_incremental_merge(lane.generation.writer_generation,
-                                                                   config_.merge_maximum_post_entries);
-            }
-            auto* pool = lane.generation.slot_pool.get();
-            const auto slot = pool->writer_slot();
-            pool->pin(slot);
-            auto cut = std::shared_ptr<const PairReadGeneration>(
-                pool->writer_generation(),
-                [pool, slot](const PairReadGeneration*) noexcept { pool->unpin(slot); });
-            return PairReadGeneration::start_incremental_merge(std::move(cut),
+        if (!lane.generation.uses_slot_pool()) {
+            return PairReadGeneration::start_incremental_merge(lane.generation.writer_generation,
                                                                config_.merge_maximum_post_entries);
-        };
+        }
+        auto* pool = lane.generation.slot_pool.get();
+        const auto slot = pool->writer_slot();
+        pool->pin(slot);
+        auto cut = std::shared_ptr<const PairReadGeneration>(
+            pool->writer_generation(),
+            [pool, slot](const PairReadGeneration*) noexcept { pool->unpin(slot); });
+        return PairReadGeneration::start_incremental_merge(std::move(cut),
+                                                           config_.merge_maximum_post_entries);
+    };
     const auto reclaim_quiescent = [&]() noexcept {
         if (lane.generation.uses_slot_pool()) {
             auto* pool = lane.generation.slot_pool.get();
@@ -1055,9 +1087,10 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 if (!next) {
                     return false;
                 }
-                install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
-                                          lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                          ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
+                install_writer_generation(
+                    lane.generation.writer_generation, lane.generation.retired_generations,
+                    lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                    ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
                 update_delta_stats();
                 publish_read_generation(lane.generation.published_generation,
                                         lane.generation.writer_generation.get());
@@ -1085,8 +1118,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         }
         constexpr std::size_t kReclaimPublishQuantum = 8;
         if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
-            lane.generation.retired_debt() + 1U >=
-                ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
             reclaim_quiescent();
         } else {
             lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
@@ -1360,16 +1392,22 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             // when it Store-commits. Reserve that bounded ownership capacity before
             // entering volatile or durable Store authority.
             reclaim_quiescent();
-            if (decide_generation_admission(lane.generation.retired_debt(),
-                                            ShardPairRuntime::kMaximumRetiredReadGenerations,
-                                            true) != GenerationAdmissionDecision::admitted) {
+            auto turn_admission = decide_generation_admission(
+                lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations, true);
+            turn_admission = wait_generation_admission(
+                turn_admission, [&] { reclaim_quiescent(); },
+                [&] {
+                    return decide_generation_admission(lane.generation.retired_debt(),
+                                                       ShardPairRuntime::kMaximumRetiredReadGenerations,
+                                                       true);
+                });
+            if (turn_admission != GenerationAdmissionDecision::admitted) {
                 for (auto* node = rev; node != nullptr;) {
                     auto* const next = node->next;
                     lane.generation.generation_admission_backpressure_total.fetch_add(
                         1U, std::memory_order_relaxed);
-                    node->status = Status{fail(ErrorCode::resource_exhausted,
-                                               generation_admission_message(
-                                                   GenerationAdmissionDecision::reader_quiescence_required))};
+                    node->status = Status{
+                        fail(ErrorCode::resource_exhausted, generation_admission_message(turn_admission))};
                     node->done.store(true, std::memory_order_release);
                     node->done.notify_one();
                     node = next;
@@ -1663,22 +1701,23 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                     reclaim_quiescent();
                     process_merge(chunk_size);
                     auto generation_admission = decide_generation_admission(
-                        lane.generation.retired_debt(),
-                        ShardPairRuntime::kMaximumRetiredReadGenerations,
+                        lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                         PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
                                                                     lane.merge.read_merge.get(), chunk_size));
-                    for (unsigned spin = 0;
-                         generation_admission == GenerationAdmissionDecision::incremental_merge_required &&
-                         spin < 256U;
-                         ++spin) {
-                        reclaim_quiescent();
-                        process_merge(chunk_size);
-                        generation_admission = decide_generation_admission(
-                            lane.generation.retired_debt(),
-                            ShardPairRuntime::kMaximumRetiredReadGenerations,
-                            PairReadGeneration::can_publish_incremental(
-                                *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size));
-                    }
+                    generation_admission = wait_generation_admission(
+                        generation_admission,
+                        [&] {
+                            reclaim_quiescent();
+                            process_merge(chunk_size);
+                        },
+                        [&] {
+                            return decide_generation_admission(
+                                lane.generation.retired_debt(),
+                                ShardPairRuntime::kMaximumRetiredReadGenerations,
+                                PairReadGeneration::can_publish_incremental(
+                                    *lane.generation.writer_generation, lane.merge.read_merge.get(),
+                                    chunk_size));
+                        });
                     if (generation_admission != GenerationAdmissionDecision::admitted) {
                         lane.generation.generation_admission_backpressure_total.fetch_add(
                             chunk_size, std::memory_order_relaxed);
@@ -1912,21 +1951,21 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 reclaim_quiescent();
                 process_merge(1U);
                 auto generation_admission = decide_generation_admission(
-                    lane.generation.retired_debt(),
-                    ShardPairRuntime::kMaximumRetiredReadGenerations,
+                    lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                     PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
                                                                 lane.merge.read_merge.get(), 1U));
-                for (unsigned spin = 0;
-                     generation_admission == GenerationAdmissionDecision::incremental_merge_required &&
-                     spin < 256U;
-                     ++spin) {
-                    process_merge(1U);
-                    generation_admission = decide_generation_admission(
-                        lane.generation.retired_debt(),
-                        ShardPairRuntime::kMaximumRetiredReadGenerations,
-                        PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                    lane.merge.read_merge.get(), 1U));
-                }
+                generation_admission = wait_generation_admission(
+                    generation_admission,
+                    [&] {
+                        reclaim_quiescent();
+                        process_merge(1U);
+                    },
+                    [&] {
+                        return decide_generation_admission(
+                            lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
+                            PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
+                                                                        lane.merge.read_merge.get(), 1U));
+                    });
                 if (generation_admission != GenerationAdmissionDecision::admitted) {
                     lane.generation.generation_admission_backpressure_total.fetch_add(
                         1U, std::memory_order_relaxed);
@@ -3249,7 +3288,8 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard,
                                   lane.generation.retired_generation_count, lane.generation.writer_epoch,
                                   ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
         store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
-        publish_read_generation(lane.generation.published_generation, lane.generation.writer_generation.get());
+        publish_read_generation(lane.generation.published_generation,
+                                lane.generation.writer_generation.get());
     }
     lane.merge.read_merge.reset();
     lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
@@ -3273,37 +3313,35 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
     const auto update_delta_stats = [&]() noexcept {
         store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
     };
-    const auto publish_slot_incremental =
-        [&](GenerationSlotPool::Reservation& reservation, std::span<const ReadMutation> mutations) -> bool {
-            auto* pool = lane.generation.slot_pool.get();
-            const auto status =
-                pool->publish_incremental(reservation, mutations, lane.merge.read_merge.get());
-            if (status != GenerationSlotPublishStatus::published) {
-                return false;
-            }
-            mirror_slot_pool_publication(lane.generation);
-            update_delta_stats();
-            return true;
-        };
-    const auto publish_slot_direct =
-        [&](GenerationSlotPool::Reservation& reservation, const PairReadGeneration* generation) -> bool {
-            auto* pool = lane.generation.slot_pool.get();
-            const auto status = pool->publish_direct(reservation, generation);
-            if (status != GenerationSlotPublishStatus::published) {
-                return false;
-            }
-            mirror_slot_pool_publication(lane.generation);
-            update_delta_stats();
-            return true;
-        };
+    const auto publish_slot_incremental = [&](GenerationSlotPool::Reservation& reservation,
+                                              std::span<const ReadMutation> mutations) -> bool {
+        auto* pool = lane.generation.slot_pool.get();
+        const auto status = pool->publish_incremental(reservation, mutations, lane.merge.read_merge.get());
+        if (status != GenerationSlotPublishStatus::published) {
+            return false;
+        }
+        mirror_slot_pool_publication(lane.generation);
+        update_delta_stats();
+        return true;
+    };
+    const auto publish_slot_direct = [&](GenerationSlotPool::Reservation& reservation,
+                                         const PairReadGeneration* generation) -> bool {
+        auto* pool = lane.generation.slot_pool.get();
+        const auto status = pool->publish_direct(reservation, generation);
+        if (status != GenerationSlotPublishStatus::published) {
+            return false;
+        }
+        mirror_slot_pool_publication(lane.generation);
+        update_delta_stats();
+        return true;
+    };
     const auto reclaim_proportional = [&]() noexcept {
         if (lane.merge.read_merge) {
             store_merge_progress(lane.merge);
         }
         constexpr std::size_t kReclaimPublishQuantum = 8;
         if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
-            lane.generation.retired_debt() + 1U >=
-                ShardPairRuntime::kMaximumRetiredReadGenerations) {
+            lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
             lane.generation.reclaim_requested.store(true, std::memory_order_release);
             combiner_housekeeping(shard);
         } else {
@@ -3342,9 +3380,10 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 if (!next) {
                     return false;
                 }
-                install_writer_generation(lane.generation.writer_generation, lane.generation.retired_generations,
-                                          lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                          ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
+                install_writer_generation(
+                    lane.generation.writer_generation, lane.generation.retired_generations,
+                    lane.generation.retired_generation_count, lane.generation.writer_epoch,
+                    ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
                 store_generation_memory_stats(lane.generation,
                                               lane.generation.writer_generation->memory_stats());
                 publish_read_generation(lane.generation.published_generation,
@@ -3413,21 +3452,17 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 lane.generation.reclaim_requested.store(true, std::memory_order_release);
                 combiner_housekeeping(shard, chunk_size);
                 auto generation_admission = decide_generation_admission(
-                    lane.generation.retired_debt(),
-                    ShardPairRuntime::kMaximumRetiredReadGenerations,
+                    lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                     PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
                                                                 lane.merge.read_merge.get(), chunk_size));
-                for (unsigned spin = 0;
-                     generation_admission == GenerationAdmissionDecision::incremental_merge_required &&
-                     spin < 256U;
-                     ++spin) {
-                    combiner_housekeeping(shard, chunk_size);
-                    generation_admission = decide_generation_admission(
-                        lane.generation.retired_debt(),
-                        ShardPairRuntime::kMaximumRetiredReadGenerations,
-                        PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                    lane.merge.read_merge.get(), chunk_size));
-                }
+                generation_admission = wait_generation_admission(
+                    generation_admission, [&] { combiner_housekeeping(shard, chunk_size); },
+                    [&] {
+                        return decide_generation_admission(
+                            lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
+                            PairReadGeneration::can_publish_incremental(
+                                *lane.generation.writer_generation, lane.merge.read_merge.get(), chunk_size));
+                    });
                 if (generation_admission != GenerationAdmissionDecision::admitted) {
                     lane.generation.generation_admission_backpressure_total.fetch_add(
                         chunk_size, std::memory_order_relaxed);
@@ -3450,10 +3485,10 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                         lane.generation.generation_admission_backpressure_total.fetch_add(
                             chunk_size, std::memory_order_relaxed);
                         for (std::size_t index = 0; index < chunk_size; ++index) {
-                            chunk[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted,
-                                     generation_admission_message(
-                                         GenerationAdmissionDecision::reader_quiescence_required))};
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted,
+                                            generation_admission_message(
+                                                GenerationAdmissionDecision::reader_quiescence_required))};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
@@ -3582,17 +3617,14 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                 PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
                                                             lane.merge.read_merge.get(), 1U));
-            for (unsigned spin = 0;
-                 generation_admission == GenerationAdmissionDecision::incremental_merge_required &&
-                 spin < 256U;
-                 ++spin) {
-                combiner_housekeeping(shard, 1U);
-                generation_admission = decide_generation_admission(
-                    lane.generation.retired_debt(),
-                    ShardPairRuntime::kMaximumRetiredReadGenerations,
-                    PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                lane.merge.read_merge.get(), 1U));
-            }
+            generation_admission = wait_generation_admission(
+                generation_admission, [&] { combiner_housekeeping(shard, 1U); },
+                [&] {
+                    return decide_generation_admission(
+                        lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
+                        PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
+                                                                    lane.merge.read_merge.get(), 1U));
+                });
             if (generation_admission != GenerationAdmissionDecision::admitted) {
                 lane.generation.generation_admission_backpressure_total.fetch_add(1U,
                                                                                   std::memory_order_relaxed);
