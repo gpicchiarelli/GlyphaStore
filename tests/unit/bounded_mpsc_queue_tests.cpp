@@ -2,6 +2,8 @@
 #include "glyphastore/server/bounded_spsc_queue.hpp"
 #include "test.hpp"
 
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <optional>
 #include <thread>
@@ -80,5 +82,77 @@ GLYPHA_TEST("bounded SPSC queue preserves FIFO order across concurrent wraparoun
         GLYPHA_REQUIRE(*value == expected);
     }
     producer.join();
+    GLYPHA_REQUIRE(queue.empty());
+}
+
+GLYPHA_TEST("bounded SPSC queue applies backpressure when full under hot producer") {
+    glyphastore::server::BoundedSpscQueue<std::size_t> queue{4};
+    GLYPHA_REQUIRE(queue.capacity() == 4);
+    std::size_t accepted{};
+    for (std::size_t value = 0; value < 16; ++value) {
+        if (queue.try_push(std::size_t{value})) {
+            ++accepted;
+        }
+    }
+    GLYPHA_REQUIRE(accepted == queue.capacity());
+    GLYPHA_REQUIRE(!queue.try_push(std::size_t{99}));
+    GLYPHA_REQUIRE(queue.size() == queue.capacity());
+
+    std::size_t drained{};
+    while (auto value = queue.try_pop()) {
+        GLYPHA_REQUIRE(*value == drained);
+        ++drained;
+    }
+    GLYPHA_REQUIRE(drained == accepted);
+    GLYPHA_REQUIRE(queue.empty());
+    GLYPHA_REQUIRE(queue.try_push(std::size_t{7}));
+    GLYPHA_REQUIRE(*queue.try_pop() == 7);
+}
+
+GLYPHA_TEST("bounded SPSC queue stays fair under slow consumer with bursty hot key") {
+    // Models Writer-side completion enqueue under a slow Reader drain: the
+    // producer must observe full-queue backpressure rather than overwrite, and
+    // FIFO order must survive intermittent consumer stalls.
+    constexpr std::size_t kCapacity = 8;
+    constexpr std::size_t kTotal = 4'000;
+    glyphastore::server::BoundedSpscQueue<std::size_t> queue{kCapacity};
+    std::atomic_bool producer_done{false};
+    std::atomic<std::size_t> rejected{0};
+    std::atomic<std::size_t> produced{0};
+
+    std::thread producer{[&] {
+        for (std::size_t value = 0; value < kTotal; ++value) {
+            while (!queue.try_push(std::size_t{value})) {
+                rejected.fetch_add(1U, std::memory_order_relaxed);
+                std::this_thread::yield();
+            }
+            produced.fetch_add(1U, std::memory_order_relaxed);
+            if ((value & 0x3FU) == 0U) {
+                // Hot-key burst: keep pressing while the consumer is stalled.
+                for (unsigned spin = 0; spin < 32U; ++spin) {
+                    std::this_thread::yield();
+                }
+            }
+        }
+        producer_done.store(true, std::memory_order_release);
+    }};
+
+    std::size_t expected{};
+    while (expected < kTotal) {
+        if (auto value = queue.try_pop()) {
+            GLYPHA_REQUIRE(*value == expected);
+            ++expected;
+            continue;
+        }
+        if (producer_done.load(std::memory_order_acquire) && queue.empty()) {
+            break;
+        }
+        // Slow consumer: park longer than a pause instruction.
+        std::this_thread::sleep_for(std::chrono::microseconds{20});
+    }
+    producer.join();
+    GLYPHA_REQUIRE(expected == kTotal);
+    GLYPHA_REQUIRE(produced.load() == kTotal);
+    GLYPHA_REQUIRE(rejected.load() > 0);
     GLYPHA_REQUIRE(queue.empty());
 }

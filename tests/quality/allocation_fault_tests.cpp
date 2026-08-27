@@ -561,6 +561,45 @@ void run_no_post_write_allocation(const glyphastore::DurableRuntimeOptions optio
     require(runtime->healthy(), "post-write allocation guard failed the runtime closed");
 }
 
+// Wave 2: steady-state paired volatile GET ≤ OwnedBytes::kInlineBytes (64) must not
+// heap-allocate. Warm the path first (lease / Index / SSO), then forbid operator new.
+void run_paired_volatile_get_inline_zero_heap() {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1}});
+    require(opened.has_value(), "failed to open paired volatile zero-heap GET Store");
+    auto& store = **opened;
+    constexpr std::string_view kKey = "wave2-inline-get";
+    // Exactly OwnedBytes::kInlineBytes — SSO ceiling, no heap on value_copy.
+    constexpr char kValueBytes[64] = {
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+        '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f',
+    };
+    const std::string_view kValue{kValueBytes, 64};
+    require(store.put(kKey, bytes(kValue)).has_value(), "failed to seed inline GET value");
+    {
+        const auto warm = store.get(kKey);
+        require(warm.has_value(), "warm GET failed before zero-heap window");
+        require(warm->bytes.size() == kValue.size(), "warm GET size mismatch");
+    }
+    allocation_fault::begin_forbid_all();
+    std::optional<glyphastore::Result<glyphastore::OwnedValue>> got;
+    try {
+        got = store.get(kKey);
+    } catch (...) {
+        static_cast<void>(allocation_fault::end_forbid_all());
+        throw;
+    }
+    const bool allocated = allocation_fault::end_forbid_all();
+    require(!allocated, "paired volatile GET ≤64 B allocated on the steady-state path");
+    require(got.has_value() && got->has_value(), "zero-heap GET failed");
+    require((*got)->bytes.size() == kValue.size(), "zero-heap GET size mismatch");
+    require(std::string_view(reinterpret_cast<const char*>((*got)->bytes.data()), (*got)->bytes.size()) ==
+                kValue,
+            "zero-heap GET value mismatch");
+    require(store.close().has_value(), "failed to close zero-heap GET Store");
+}
+
 void run_exhaustive_read_failures() {
     constexpr std::size_t kMaximumExpectedAllocations = 32;
     bool completed{};
@@ -2445,6 +2484,7 @@ void run_all_tests() {
     run_exhaustive_read_failures();
     run_no_post_write_allocation(synchronous);
     run_no_post_write_allocation(strict_group);
+    run_paired_volatile_get_inline_zero_heap();
     run_background_allocation_failure_waiters();
     run_exhaustive_compaction_allocation_failures();
     run_volatile_rotation_allocation_failures();
