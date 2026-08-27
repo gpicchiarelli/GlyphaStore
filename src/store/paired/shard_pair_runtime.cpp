@@ -583,13 +583,20 @@ auto ShardPairRuntime::adopt_read_generation(const std::size_t shard,
         // The current turn protects generation->epoch(); asynchronous I/O can
         // additionally keep an older epoch borrowed. The minimum is the sole
         // reclamation boundary published by Reader to Writer.
+        // Skip the acq_rel RMW when the published frontier is unchanged (Wave 2):
+        // redundant release-stores on the hot GET/adopt path woke no one and
+        // dirtied the Reader-hot cache line every turn.
         const auto safe_epoch = std::min(generation->epoch(), minimum_leased_epoch);
-        const auto previous =
-            lane.generation.reader_safe_epoch.exchange(safe_epoch, std::memory_order_acq_rel);
-        if (previous != safe_epoch &&
-            !lane.generation.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
-            lane.async.signal.fetch_add(1U, std::memory_order_release);
-            lane.async.signal.notify_one();
+        auto expected = lane.generation.reader_safe_epoch.load(std::memory_order_relaxed);
+        while (expected != safe_epoch) {
+            if (lane.generation.reader_safe_epoch.compare_exchange_weak(
+                    expected, safe_epoch, std::memory_order_acq_rel, std::memory_order_relaxed)) {
+                if (!lane.generation.reclaim_requested.exchange(true, std::memory_order_acq_rel)) {
+                    lane.async.signal.fetch_add(1U, std::memory_order_release);
+                    lane.async.signal.notify_one();
+                }
+                break;
+            }
         }
     }
     return generation;
@@ -2269,6 +2276,9 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 !lane.generation.refresh_requested.load(std::memory_order_acquire) &&
                 !lane.generation.reclaim_requested.load(std::memory_order_acquire) &&
                 !lane.merge.read_merge) {
+                // Wave 2 wakeup ladder: pause-spin → OS yield → park on signal.
+                // Keeps the hot handoff short while avoiding immediate
+                // atomic::wait under brief Writer contention.
                 bool woke = false;
                 for (unsigned spin = 0; spin < 16U; ++spin) {
                     if (lane.async.signal.load(std::memory_order_acquire) != observed) {
@@ -2282,6 +2292,13 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
 #else
                     std::this_thread::yield();
 #endif
+                }
+                for (unsigned yield_spin = 0; !woke && yield_spin < 8U; ++yield_spin) {
+                    if (lane.async.signal.load(std::memory_order_acquire) != observed) {
+                        woke = true;
+                        break;
+                    }
+                    std::this_thread::yield();
                 }
                 if (!woke) {
                     release_execution_token(lane.async.execution_token);
@@ -3052,6 +3069,7 @@ void ShardPairRuntime::wake(Lane& lane) noexcept {
 }
 
 void ShardPairRuntime::wait_sync_done(SyncMutation& node) noexcept {
+    // Caller-side ladder mirrors Writer idle: pause → yield → park (Wave 2).
     for (unsigned spin = 0; spin < 32U; ++spin) {
         if (node.done.load(std::memory_order_acquire)) {
             return;
@@ -3063,6 +3081,12 @@ void ShardPairRuntime::wait_sync_done(SyncMutation& node) noexcept {
 #else
         std::this_thread::yield();
 #endif
+    }
+    for (unsigned yield_spin = 0; yield_spin < 8U; ++yield_spin) {
+        if (node.done.load(std::memory_order_acquire)) {
+            return;
+        }
+        std::this_thread::yield();
     }
     node.done.wait(false, std::memory_order_acquire);
 }

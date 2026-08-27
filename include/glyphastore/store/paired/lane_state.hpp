@@ -2,6 +2,13 @@
 
 // By-value Lane sub-aggregates for ShardPairRuntime (behavior-neutral layout).
 // Normative: docs/spec/mutation-lifecycle.md Phase 4
+//
+// Cache-line policy (Wave 2):
+//   * Cross-thread atomics each sit alone on an alignas(128) line (Reader↔Writer).
+//   * Writer-local handles and telemetry pack together after a 128-byte barrier so
+//     they do not false-share with Reader-hot publish / lease fields.
+//   * LaneMetrics is Writer-updated / stats-polled; it starts on its own line so
+//     dense counter RMWs do not sit on ReclamationState::active_read_leases.
 
 #include "glyphastore/core/latency_histogram.hpp"
 #include "glyphastore/store/paired/generation_slot_pool.hpp"
@@ -56,12 +63,14 @@ struct AtomicLatencyHistogram final {
 };
 
 struct AsyncLaneState final {
+    // Reader/submitter ↔ Writer rendezvous (each alone on a line).
     alignas(128) std::mutex queue_consumer_mutex{};
     alignas(128) std::atomic<std::uint64_t> signal{};
     alignas(128) std::atomic_bool stopping{};
     // ADR 0037: IDLE=0 / EXECUTING=1 sole mutator ownership for the shard.
     alignas(128) std::atomic<std::uint32_t> execution_token{};
-    std::atomic<std::size_t> queued_bytes{};
+    // Admission-byte counter: producers and Writer; isolate from the token line.
+    alignas(128) std::atomic<std::size_t> queued_bytes{};
     bool async_enabled{};
 };
 
@@ -71,9 +80,12 @@ struct SyncLaneState final {
 };
 
 struct GenerationState final {
+    // --- Writer-local ownership (starts on a 128 B boundary via struct alignof) ---
     std::unique_ptr<GenerationSlotPool> slot_pool;
     std::shared_ptr<const PairReadGeneration> writer_generation;
     std::vector<std::shared_ptr<const PairReadGeneration>> retired_generations;
+
+    // --- Reader-hot / publish authority (each alone on a line) ---
     alignas(128) std::atomic<const PairReadGeneration*> published_generation{};
     alignas(128) std::atomic<std::uint64_t> published_token{};
     alignas(128) std::atomic<std::uint64_t> writer_epoch{};
@@ -81,7 +93,9 @@ struct GenerationState final {
     alignas(128) std::atomic<std::uint64_t> published_catalog_revision{};
     alignas(128) std::atomic_bool refresh_requested{};
     alignas(128) std::atomic_bool reclaim_requested{};
-    std::atomic<std::uint64_t> generations_retired{};
+
+    // --- Writer telemetry / census (isolated from Reader-hot reclaim_requested) ---
+    alignas(128) std::atomic<std::uint64_t> generations_retired{};
     std::atomic<std::uint64_t> shutdown_generations_reclaimed{};
     std::atomic<std::uint64_t> generation_admission_backpressure_total{};
     std::atomic_bool reader_shutdown_finalized{};
@@ -138,7 +152,7 @@ struct ReclamationState final {
     alignas(128) std::atomic_size_t active_read_leases{};
 };
 
-struct LaneMetrics final {
+struct alignas(128) LaneMetrics final {
     std::atomic<std::size_t> maximum_queue_depth{};
     std::atomic<std::size_t> maximum_queued_bytes{};
     std::atomic<std::size_t> payload_slots_in_use{};
@@ -187,6 +201,7 @@ static_assert(alignof(AsyncLaneState) >= 128);
 static_assert(alignof(GenerationState) >= 128);
 static_assert(alignof(SyncLaneState) >= 128);
 static_assert(alignof(ReclamationState) >= 128);
+static_assert(alignof(LaneMetrics) >= 128);
 static_assert(std::is_nothrow_default_constructible_v<AsyncLaneState>);
 static_assert(std::is_nothrow_default_constructible_v<LaneMetrics>);
 
