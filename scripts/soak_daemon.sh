@@ -2,16 +2,27 @@
 # Durable daemon soak / stress entry point.
 #
 # Profiles (SOAK_PROFILE or --profile):
-#   smoke  — default ~45s PUT/GET + reconnect + overwrite churn + drain (PR CI)
-#   long   — 30 minutes (weekly schedule / local)
-#   1h     — 3600s multi-hour path with RSS + STATS sampling
-#   4h     — 14400s multi-hour path with RSS + STATS sampling
+#   smoke               — default ~45s PUT/GET + reconnect + overwrite churn + drain (PR CI)
+#   long                — 30 minutes (weekly schedule / local)
+#   1h                  — 3600s multi-hour path with RSS + STATS sampling
+#   4h                  — 14400s multi-hour path with RSS + STATS sampling
+#   hot-key             — ~45s hammer one key (software stub; not hardware fairness cert)
+#   connection-churn    — ~45s reconnect every op (software stub)
+#   queue-saturation    — ~45s with tiny --durable-mutation-queue-capacity (expects OVERLOADED)
+#   adversarial-reclaim — ~45s heavy overwrite churn (software stub; not reclaim-fairness cert)
 #
 # Or set SOAK_SECONDS / --seconds N directly (overrides profile duration).
 #
-# Honesty: smoke and weekly 30m are CI-friendly evidence, not multi-hour hardware
-# certification. 1h/4h profiles sample RSS and STATS (rotation/compaction counters)
-# when feasible; rotation may still be zero depending on segment growth.
+# Honesty:
+# - smoke and weekly 30m are CI-friendly evidence, not multi-hour hardware certification.
+# - 1h/4h profiles sample RSS and STATS (rotation/compaction counters) when feasible;
+#   rotation may still be zero depending on segment growth.
+# - hot-key / connection-churn / queue-saturation / adversarial-reclaim are Wave 4 software
+#   stubs that exercise shape and drain under stress. They do **not** close HAZ-026
+#   multi-hour adversarial reclaim fairness, E3/E4 power-loss, or absolute hardware budgets.
+# - End-of-run always uses SIGTERM + --shutdown-drain-ms so the durability boundary is the
+#   graceful drain path (not SIGKILL). SIGTERM mid-mutation still leaves client ACK
+#   indeterminate after commit — see docs/operations/soak.md and graceful-drain-and-overload.md.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -30,15 +41,16 @@ storage_mode=durable-periodic
 sample_every="${SOAK_SAMPLE_EVERY:-}"
 rss_fail_factor="${SOAK_RSS_FAIL_FACTOR:-3}"
 rss_fail_delta_kb="${SOAK_RSS_FAIL_DELTA_KB:-262144}" # 256 MiB
+queue_capacity=""
 
 profile_seconds() {
   case "$1" in
-    smoke) echo 45 ;;
+    smoke|hot-key|connection-churn|queue-saturation|adversarial-reclaim) echo 45 ;;
     long) echo 1800 ;;
     1h) echo 3600 ;;
     4h) echo 14400 ;;
     *)
-      echo "unknown soak profile: $1 (expected smoke|long|1h|4h)" >&2
+      echo "unknown soak profile: $1 (expected smoke|long|1h|4h|hot-key|connection-churn|queue-saturation|adversarial-reclaim)" >&2
       return 2
       ;;
   esac
@@ -46,11 +58,18 @@ profile_seconds() {
 
 default_sample_every() {
   case "$1" in
-    smoke) echo 0 ;;
+    smoke|hot-key|connection-churn|queue-saturation|adversarial-reclaim) echo 0 ;;
     long) echo 60 ;;
     1h) echo 60 ;;
     4h) echo 120 ;;
     *) echo 0 ;;
+  esac
+}
+
+is_adversarial_profile() {
+  case "$1" in
+    hot-key|connection-churn|queue-saturation|adversarial-reclaim) return 0 ;;
+    *) return 1 ;;
   esac
 }
 
@@ -78,8 +97,8 @@ while [[ $# -gt 0 ]]; do
       ;;
     -h|--help)
       cat <<EOF
-Usage: $0 [--profile smoke|long|1h|4h] [--seconds N] [--workers N]
-          [--storage-mode MODE] [--sample-every SEC]
+Usage: $0 [--profile smoke|long|1h|4h|hot-key|connection-churn|queue-saturation|adversarial-reclaim]
+          [--seconds N] [--workers N] [--storage-mode MODE] [--sample-every SEC]
 Env: SOAK_PROFILE, SOAK_SECONDS, SOAK_SAMPLE_EVERY, GLYPHASTORED,
      GLYPHASTORE_INTEROP_CLIENT, SOAK_RSS_FAIL_FACTOR, SOAK_RSS_FAIL_DELTA_KB
 EOF
@@ -99,6 +118,9 @@ else
 fi
 if [[ -z "$sample_every" ]]; then
   sample_every="$(default_sample_every "$profile")"
+fi
+if [[ "$profile" == "queue-saturation" ]]; then
+  queue_capacity="${SOAK_DURABLE_MUTATION_QUEUE_CAPACITY:-2}"
 fi
 
 resolve_bin() {
@@ -168,6 +190,42 @@ with socket.create_connection(("127.0.0.1", port), timeout=5) as sock:
 PY
 }
 
+client_put() {
+  local key_hex="$1"
+  local value_hex="$2"
+  local allow_overloaded="${3:-0}"
+  local out
+  set +e
+  out="$("$client" --host 127.0.0.1 --port "$port" put --key-hex "$key_hex" --value-hex "$value_hex" 2>&1)"
+  local rc=$?
+  set -e
+  if (( rc == 0 )); then
+    return 0
+  fi
+  if (( allow_overloaded != 0 )) && [[ "$out" == *[Oo]verloaded* || "$out" == *OVERLOADED* ]]; then
+    return 0
+  fi
+  echo "PUT failed: $out" >&2
+  return 1
+}
+
+client_get() {
+  local key_hex="$1"
+  local allow_fail="${2:-0}"
+  set +e
+  "$client" --host 127.0.0.1 --port "$port" get --key-hex "$key_hex" >/dev/null 2>&1
+  local rc=$?
+  set -e
+  if (( rc == 0 )); then
+    return 0
+  fi
+  if (( allow_fail != 0 )); then
+    return 0
+  fi
+  echo "GET failed for key_hex=$key_hex" >&2
+  return 1
+}
+
 daemon="$(resolve_bin glyphastored "${GLYPHASTORED:-}" || true)"
 client="$(resolve_bin glyphastore_interop_client "${GLYPHASTORE_INTEROP_CLIENT:-}" || true)"
 if [[ -z "$daemon" || -z "$client" ]]; then
@@ -191,10 +249,15 @@ cleanup() {
 trap cleanup EXIT
 
 data_dir="$work/data"
-"$daemon" --quiet --bind 127.0.0.1 --port 0 --workers "$workers" \
-  --storage-mode "$storage_mode" --data-dir "$data_dir" --open-mode create-new \
-  --shutdown-drain-ms 5000 --maintenance-mode background \
-  >"$work/daemon.out" 2>"$work/daemon.err" &
+daemon_args=(
+  --quiet --bind 127.0.0.1 --port 0 --workers "$workers"
+  --storage-mode "$storage_mode" --data-dir "$data_dir" --open-mode create-new
+  --shutdown-drain-ms 5000 --maintenance-mode background
+)
+if [[ -n "$queue_capacity" ]]; then
+  daemon_args+=(--durable-mutation-queue-capacity "$queue_capacity")
+fi
+"$daemon" "${daemon_args[@]}" >"$work/daemon.out" 2>"$work/daemon.err" &
 daemon_pid=$!
 
 port=""
@@ -216,15 +279,18 @@ if [[ -z "$port" ]]; then
 fi
 
 rss0="$(rss_kb "$daemon_pid")"
-echo "soak start profile=$profile seconds=$seconds workers=$workers storage=$storage_mode port=$port rss_kb=$rss0 sample_every=$sample_every"
+echo "soak start profile=$profile seconds=$seconds workers=$workers storage=$storage_mode port=$port rss_kb=$rss0 sample_every=$sample_every queue_capacity=${queue_capacity:-default}"
 deadline=$((SECONDS + seconds))
 ops=0
 reconnects=0
+overloaded=0
 samples=0
 rss_peak="$rss0"
 last_sample_at=$SECONDS
 rotation_committed=0
 useful_compactions=0
+hot_key="soak-hot-key"
+hot_key_hex="$(printf '%s' "$hot_key" | to_hex)"
 
 while (( SECONDS < deadline )); do
   if ! kill -0 "$daemon_pid" 2>/dev/null; then
@@ -232,30 +298,99 @@ while (( SECONDS < deadline )); do
     cat "$work/daemon.out" "$work/daemon.err" >&2 || true
     exit 1
   fi
-  key="soak-key-$ops"
-  value="soak-value-$ops-$(date +%s)"
-  key_hex="$(printf '%s' "$key" | to_hex)"
-  value_hex="$(printf '%s' "$value" | to_hex)"
-  if ! "$client" --host 127.0.0.1 --port "$port" put --key-hex "$key_hex" --value-hex "$value_hex" >/dev/null; then
-    echo "PUT failed at op=$ops" >&2
-    exit 1
-  fi
-  if ! "$client" --host 127.0.0.1 --port "$port" get --key-hex "$key_hex" >/dev/null; then
-    echo "GET failed at op=$ops" >&2
-    exit 1
-  fi
-  ops=$((ops + 1))
-  # Periodic reconnect stress: open a fresh client path every 25 ops.
-  if (( ops % 25 == 0 )); then
-    reconnects=$((reconnects + 1))
-    # Force a new TCP session by invoking the client again (each invocation connects).
-    "$client" --host 127.0.0.1 --port "$port" get --key-hex "$key_hex" >/dev/null
-  fi
-  # Overwrite churn to create reclaimable sealed history for background vacuum.
-  if (( ops % 7 == 0 )); then
-    overwrite_hex="$(printf 'overwrite-%s' "$ops" | to_hex)"
-    "$client" --host 127.0.0.1 --port "$port" put --key-hex "$key_hex" --value-hex "$overwrite_hex" >/dev/null
-  fi
+
+  case "$profile" in
+    hot-key)
+      value="hot-$ops-$(date +%s)"
+      value_hex="$(printf '%s' "$value" | to_hex)"
+      if ! client_put "$hot_key_hex" "$value_hex" 0; then
+        exit 1
+      fi
+      if ! client_get "$hot_key_hex" 0; then
+        exit 1
+      fi
+      ops=$((ops + 1))
+      ;;
+    connection-churn)
+      key="churn-key-$ops"
+      value="churn-value-$ops-$(date +%s)"
+      key_hex="$(printf '%s' "$key" | to_hex)"
+      value_hex="$(printf '%s' "$value" | to_hex)"
+      if ! client_put "$key_hex" "$value_hex" 0; then
+        exit 1
+      fi
+      if ! client_get "$key_hex" 0; then
+        exit 1
+      fi
+      ops=$((ops + 1))
+      reconnects=$((reconnects + 1))
+      ;;
+    queue-saturation)
+      key="sat-key-$ops"
+      value="sat-value-$ops-$(date +%s)-padpadpadpadpadpad"
+      key_hex="$(printf '%s' "$key" | to_hex)"
+      value_hex="$(printf '%s' "$value" | to_hex)"
+      set +e
+      out="$("$client" --host 127.0.0.1 --port "$port" put --key-hex "$key_hex" --value-hex "$value_hex" 2>&1)"
+      rc=$?
+      set -e
+      if (( rc == 0 )); then
+        ops=$((ops + 1))
+        client_get "$key_hex" 1 || true
+      elif [[ "$out" == *[Oo]verloaded* || "$out" == *OVERLOADED* ]]; then
+        overloaded=$((overloaded + 1))
+        ops=$((ops + 1))
+      else
+        echo "PUT failed under queue-saturation: $out" >&2
+        exit 1
+      fi
+      ;;
+    adversarial-reclaim)
+      key="reclaim-key-$((ops % 8))"
+      value="reclaim-value-$ops-$(date +%s)"
+      key_hex="$(printf '%s' "$key" | to_hex)"
+      value_hex="$(printf '%s' "$value" | to_hex)"
+      if ! client_put "$key_hex" "$value_hex" 0; then
+        exit 1
+      fi
+      if (( ops % 2 == 0 )); then
+        overwrite_hex="$(printf 'adv-overwrite-%s' "$ops" | to_hex)"
+        if ! client_put "$key_hex" "$overwrite_hex" 0; then
+          exit 1
+        fi
+      fi
+      if ! client_get "$key_hex" 0; then
+        exit 1
+      fi
+      ops=$((ops + 1))
+      if (( ops % 10 == 0 )); then
+        reconnects=$((reconnects + 1))
+      fi
+      ;;
+    *)
+      key="soak-key-$ops"
+      value="soak-value-$ops-$(date +%s)"
+      key_hex="$(printf '%s' "$key" | to_hex)"
+      value_hex="$(printf '%s' "$value" | to_hex)"
+      if ! client_put "$key_hex" "$value_hex" 0; then
+        exit 1
+      fi
+      if ! client_get "$key_hex" 0; then
+        exit 1
+      fi
+      ops=$((ops + 1))
+      # Periodic reconnect stress: open a fresh client path every 25 ops.
+      if (( ops % 25 == 0 )); then
+        reconnects=$((reconnects + 1))
+        "$client" --host 127.0.0.1 --port "$port" get --key-hex "$key_hex" >/dev/null
+      fi
+      # Overwrite churn to create reclaimable sealed history for background vacuum.
+      if (( ops % 7 == 0 )); then
+        overwrite_hex="$(printf 'overwrite-%s' "$ops" | to_hex)"
+        client_put "$key_hex" "$overwrite_hex" 0
+      fi
+      ;;
+  esac
 
   if (( sample_every > 0 )) && (( SECONDS - last_sample_at >= sample_every )); then
     last_sample_at=$SECONDS
@@ -274,6 +409,11 @@ while (( SECONDS < deadline )); do
     echo "soak sample t=${SECONDS}s ops=$ops rss_kb=$rss_now rss_peak_kb=$rss_peak rotations=$rotation_committed useful_compactions=$useful_compactions"
   fi
 done
+
+if [[ "$profile" == "queue-saturation" ]] && (( overloaded == 0 )); then
+  echo "queue-saturation profile expected at least one OVERLOADED admission" >&2
+  exit 1
+fi
 
 stats_final="$(fetch_stats "$port")"
 required=(
@@ -306,7 +446,12 @@ if [[ "$profile" == "1h" || "$profile" == "4h" ]] || (( seconds >= 3600 )); then
   fi
 fi
 
+# Graceful durability-boundary drain (never SIGKILL for routine soak teardown).
 kill -TERM "$daemon_pid"
 wait "$daemon_pid"
 daemon_pid=""
-echo "soak ok profile=$profile ops=$ops reconnects=$reconnects seconds=$seconds samples=$samples rss_kb=$rss0->$rss_final peak=$rss_peak rotations=${rotation_committed:-0} useful_compactions=${useful_compactions:-0}"
+if is_adversarial_profile "$profile"; then
+  echo "soak ok profile=$profile (adversarial software stub) ops=$ops reconnects=$reconnects overloaded=$overloaded seconds=$seconds samples=$samples rss_kb=$rss0->$rss_final peak=$rss_peak rotations=${rotation_committed:-0} useful_compactions=${useful_compactions:-0}"
+else
+  echo "soak ok profile=$profile ops=$ops reconnects=$reconnects seconds=$seconds samples=$samples rss_kb=$rss0->$rss_final peak=$rss_peak rotations=${rotation_committed:-0} useful_compactions=${useful_compactions:-0}"
+fi
