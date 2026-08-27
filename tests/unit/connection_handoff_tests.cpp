@@ -1,7 +1,13 @@
 #include "glyphastore/server/connection_handoff.hpp"
 #include "test.hpp"
 
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <string>
+#include <thread>
 #include <utility>
+#include <vector>
 
 GLYPHA_TEST("connection handoff mesh is bounded and preserves binding state") {
     glyphastore::server::ConnectionHandoffMesh mesh{2, 2};
@@ -45,4 +51,132 @@ GLYPHA_TEST("connection handoff mesh stop_accepting refuses new transfers") {
     GLYPHA_REQUIRE(received.has_value());
     GLYPHA_REQUIRE(received->bound_worker == 1);
     GLYPHA_REQUIRE(!mesh.has_pending(1));
+}
+
+GLYPHA_TEST("connection handoff mesh preserves buffered state exactly once") {
+    // Exactly-once ownership: successful push transfers buffered fields; full-queue
+    // rejection leaves the producer owning the ConnectionHandoff unchanged.
+    // BoundedMpscQueue bit-ceils capacity to at least 2, so request 2 and fill both slots.
+    glyphastore::server::ConnectionHandoffMesh mesh{1, 2};
+    const auto now = std::chrono::steady_clock::now();
+    glyphastore::server::ConnectionHandoff first{
+        .principal = "alice.example",
+        .capabilities = glyphastore::server::Capability::read | glyphastore::server::Capability::write,
+        .key_prefix = "tenant/",
+        .input = {std::byte{0x01}, std::byte{0x02}},
+        .output = {std::byte{0x0a}},
+        .bound_worker = 0,
+        .initialized = true,
+        .peer_read_closed = true,
+        .last_activity = now,
+        .partial_request_since = now,
+        .connection_rate_window_start_ns = 42,
+        .connection_rate_used = 7,
+    };
+    GLYPHA_REQUIRE(mesh.try_handoff(0, std::move(first)));
+    glyphastore::server::ConnectionHandoff filler{.bound_worker = 0, .initialized = true};
+    GLYPHA_REQUIRE(mesh.try_handoff(0, std::move(filler)));
+
+    glyphastore::server::ConnectionHandoff rejected{
+        .principal = "bob.example",
+        .capabilities = glyphastore::server::Capability::admin,
+        .key_prefix = "other/",
+        .input = {std::byte{0xff}},
+        .output = {std::byte{0xee}},
+        .bound_worker = 0,
+        .initialized = true,
+        .peer_read_closed = false,
+        .connection_rate_used = 3,
+    };
+    GLYPHA_REQUIRE(!mesh.try_handoff(0, std::move(rejected)));
+    GLYPHA_REQUIRE(rejected.principal == "bob.example");
+    GLYPHA_REQUIRE(rejected.capabilities == glyphastore::server::Capability::admin);
+    GLYPHA_REQUIRE(rejected.key_prefix == "other/");
+    GLYPHA_REQUIRE(rejected.input.size() == 1);
+    GLYPHA_REQUIRE(rejected.output.size() == 1);
+    GLYPHA_REQUIRE(rejected.initialized);
+    GLYPHA_REQUIRE(rejected.connection_rate_used == 3);
+
+    const auto received = mesh.try_pop(0);
+    GLYPHA_REQUIRE(received.has_value());
+    GLYPHA_REQUIRE(received->principal == "alice.example");
+    GLYPHA_REQUIRE(received->capabilities ==
+                   (glyphastore::server::Capability::read | glyphastore::server::Capability::write));
+    GLYPHA_REQUIRE(received->key_prefix == "tenant/");
+    GLYPHA_REQUIRE(received->input.size() == 2);
+    GLYPHA_REQUIRE(received->output.size() == 1);
+    GLYPHA_REQUIRE(received->bound_worker == 0);
+    GLYPHA_REQUIRE(received->initialized);
+    GLYPHA_REQUIRE(received->peer_read_closed);
+    GLYPHA_REQUIRE(received->connection_rate_window_start_ns == 42);
+    GLYPHA_REQUIRE(received->connection_rate_used == 7);
+    GLYPHA_REQUIRE(mesh.try_pop(0).has_value());
+    GLYPHA_REQUIRE(!mesh.try_pop(0).has_value());
+}
+
+GLYPHA_TEST("connection handoff mesh concurrent producers preserve exactly-once delivery") {
+    constexpr std::size_t kProducers = 4;
+    constexpr std::size_t kPerProducer = 64;
+    constexpr std::size_t kCapacity = 8;
+    glyphastore::server::ConnectionHandoffMesh mesh{1, kCapacity};
+    std::atomic<std::size_t> accepted{0};
+    std::atomic<std::size_t> rejected{0};
+    std::atomic<bool> start{false};
+
+    std::vector<std::thread> producers;
+    producers.reserve(kProducers);
+    for (std::size_t producer = 0; producer < kProducers; ++producer) {
+        producers.emplace_back([&, producer] {
+            while (!start.load(std::memory_order_acquire)) {
+                std::this_thread::yield();
+            }
+            for (std::size_t index = 0; index < kPerProducer; ++index) {
+                glyphastore::server::ConnectionHandoff cell{
+                    .principal = "p" + std::to_string(producer),
+                    .bound_worker = 0,
+                    .initialized = true,
+                    .connection_rate_used = static_cast<std::uint32_t>((producer << 16U) | index),
+                };
+                for (;;) {
+                    if (mesh.try_handoff(0, std::move(cell))) {
+                        accepted.fetch_add(1U, std::memory_order_relaxed);
+                        break;
+                    }
+                    rejected.fetch_add(1U, std::memory_order_relaxed);
+                    // Producer still owns `cell` after full-queue rejection.
+                    GLYPHA_REQUIRE(cell.initialized);
+                    GLYPHA_REQUIRE(cell.bound_worker == 0);
+                    std::this_thread::yield();
+                }
+            }
+        });
+    }
+
+    std::size_t popped = 0;
+    std::thread consumer{[&] {
+        while (!start.load(std::memory_order_acquire)) {
+            std::this_thread::yield();
+        }
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (popped < kProducers * kPerProducer && std::chrono::steady_clock::now() < deadline) {
+            if (auto cell = mesh.try_pop(0); cell.has_value()) {
+                GLYPHA_REQUIRE(cell->initialized);
+                GLYPHA_REQUIRE(cell->bound_worker == 0);
+                ++popped;
+            } else {
+                std::this_thread::yield();
+            }
+        }
+    }};
+
+    start.store(true, std::memory_order_release);
+    for (auto& thread : producers) {
+        thread.join();
+    }
+    consumer.join();
+
+    GLYPHA_REQUIRE(accepted.load(std::memory_order_relaxed) == kProducers * kPerProducer);
+    GLYPHA_REQUIRE(popped == kProducers * kPerProducer);
+    GLYPHA_REQUIRE(!mesh.has_pending(0));
+    GLYPHA_REQUIRE(rejected.load(std::memory_order_relaxed) > 0);
 }

@@ -1409,3 +1409,88 @@ GLYPHA_TEST("server accept rate limit drops excess handshakes") {
     server.request_stop();
     GLYPHA_REQUIRE(server.join().has_value());
 }
+
+GLYPHA_TEST("client RST hard-close releases reactor connection slot") {
+    // Abortive close (SO_LINGER l_linger=0) must free the bounded connection slot
+    // so a subsequent peer can INIT+BIND under maximum_connections=1.
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 1,
+        .worker_count = 1,
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first = connect_to(server.port());
+    GLYPHA_REQUIRE(first >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(first, 0, 1));
+
+    linger reset_on_close{.l_onoff = 1, .l_linger = 0};
+    GLYPHA_REQUIRE(::setsockopt(first, SOL_SOCKET, SO_LINGER, &reset_on_close, sizeof(reset_on_close)) == 0);
+    static_cast<void>(::close(first));
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+    while (server.active_connections_per_executor()[0] != 0 && std::chrono::steady_clock::now() < deadline) {
+        std::this_thread::yield();
+    }
+    GLYPHA_REQUIRE(server.active_connections_per_executor()[0] == 0);
+
+    const auto second = connect_to(server.port());
+    GLYPHA_REQUIRE(second >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(second, 0, 1));
+    const auto ping = probe_lifecycle(second, glyphastore::server::RequestOpcode::ping, 7);
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(ping->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(second));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
+
+GLYPHA_TEST("connection rate limit reconnect after window reset admits again") {
+    auto opened = glyphastore::server::Server::create({
+        .port = 0,
+        .maximum_connections = 8,
+        .worker_count = 1,
+        .abuse =
+            {
+                .connection_max_requests_per_sec = 2,
+            },
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& server = **opened;
+    GLYPHA_REQUIRE(server.start().has_value());
+
+    const auto first = connect_to(server.port());
+    GLYPHA_REQUIRE(first >= 0);
+    // INIT + BIND consume the two-request budget; the next PING must be overloaded.
+    GLYPHA_REQUIRE(initialize_and_bind(first, 0, 1));
+    const auto overloaded = glyphastore::server::encode_request({
+        .opcode = glyphastore::server::RequestOpcode::ping,
+        .request_id = 99,
+        .value = bytes("x"),
+    });
+    GLYPHA_REQUIRE(overloaded.has_value());
+    GLYPHA_REQUIRE(send_all(first, *overloaded));
+    const auto overloaded_frame = receive_response(first);
+    const auto overloaded_response = glyphastore::server::decode_response(overloaded_frame);
+    GLYPHA_REQUIRE(overloaded_response.has_value());
+    GLYPHA_REQUIRE(overloaded_response->frame.status == glyphastore::server::ResponseStatus::overloaded);
+    static_cast<void>(::close(first));
+
+    std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+
+    const auto second = connect_to(server.port());
+    GLYPHA_REQUIRE(second >= 0);
+    GLYPHA_REQUIRE(initialize_and_bind(second, 0, 1));
+    // INIT+BIND filled the fresh connection window; wait for the next second so PING admits.
+    std::this_thread::sleep_for(std::chrono::milliseconds{1100});
+    const auto ping = probe_lifecycle(second, glyphastore::server::RequestOpcode::ping, 100);
+    GLYPHA_REQUIRE(ping.has_value());
+    GLYPHA_REQUIRE(ping->decoded.frame.status == glyphastore::server::ResponseStatus::ok);
+
+    static_cast<void>(::close(second));
+    server.request_stop();
+    GLYPHA_REQUIRE(server.join().has_value());
+}
