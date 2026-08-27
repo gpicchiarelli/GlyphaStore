@@ -97,6 +97,8 @@ C++ result/snapshot fields are diagnostic additions; the stable C ABI is unchang
 - Controller tests prove a candidate larger than one second of rate is admitted and pressure
   bypasses the bound.
 - Daemon configuration tests prove profile defaults and explicit override precedence.
+- Wave 3: paced write faults during private staging remain pre-intent without residue
+  (`GS-OPS-DEBT-001` observability; persistence v1 authority unchanged).
 - The maintenance A/B retains disabled, unlimited-background, 64 MiB/s and 128 MiB/s samples with
   foreground throughput, p99, maximum latency and pacing telemetry.
 - ASan, TSan, fault injection, crash recovery and assurance validation remain required.

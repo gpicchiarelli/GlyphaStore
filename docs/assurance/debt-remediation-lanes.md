@@ -35,6 +35,13 @@ requirements + proofs + evidence. Evidence labels: [evidence-taxonomy.md](eviden
 | **5** | L7 | C ABI cross-release, BSD packages, Cosign/SLSA/SBOM, sealed `release.yml` | Artifact sealing / N−1 fixtures |
 | **6** | L3+L4 (blocked) | Hard-pinned 1–8 scaling + absolute budgets + ACCETTATA when runners exist | macOS `local` ≠ scaling |
 
+## Wave progress (living)
+
+| Wave | Status | Notes |
+| --- | --- | --- |
+| **0** | Landed | Assurance hygiene; evidence taxonomy; this map |
+| **3** | In progress (L4) | Compaction `storage_exhausted` + paced pre-intent faults; write-amp budget before intent (`GS-PERSIST-AMP-001`); backup ENOSPC/concurrent fence proofs; `GS-OPS-DEBT-001`; platform-durability evidence path placeholders. **E3/E4 remain open** (rehearsal ≠ certification). |
+
 ## Anti-duplication rules
 
 1. **L1 merge lock** on publication/reclaim APIs; other lanes rebase or wait.
