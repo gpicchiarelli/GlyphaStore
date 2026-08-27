@@ -59,6 +59,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_execution.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/fail_closed_state.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/generation_slot_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store_access.cpp

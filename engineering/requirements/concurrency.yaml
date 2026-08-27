@@ -35,6 +35,7 @@ requirements:
   - tests/concurrency/linearizability_tests.cpp
   - tests/unit/shard_combining_executor_tests.cpp
   - tests/unit/pair_read_generation_tests.cpp
+  - tests/unit/generation_slot_pool_production_tests.cpp
   - tests/integration/server_reactor_tests.cpp
   - tests/integration/server_reactor_durable_tests.cpp
   piattaforme:
@@ -45,9 +46,13 @@ requirements:
   - workflow: ci.yml
   - path: engineering/evidence/paired-generation-admission-local-2026-08-27.md
   - path: benchmarks/results/local-macos-2026-08-27-read-generation-memory/README.md
+  - path: engineering/evidence/adr0036-production-slot-local-2026-08-27.md
   rischio_residuo:
   - legacy_mutex remains temporary until 0.2 (GS-CONCUR-LEGACY-001); multi-shard composition relies on
-    routing independence; embedded catalog refresh may defer until a combiner turn
+    routing independence; embedded catalog refresh may defer until a combiner turn; ADR 0036
+    generation_slot_pool remains opt-in (default Alternative A) — durable-group Writer sites,
+    V11/V12 affine performance, and multi-OS sanitizer soaks under the flag remain open
+    V11/V12 performance, and full TSAN soak under the flag are still open
   hazards:
   - HAZ-003
   - HAZ-008

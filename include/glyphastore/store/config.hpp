@@ -192,6 +192,9 @@ struct PairedConcurrencyConfig {
     // epoch handshake (glyphastored). Embedded readers use the counted read
     // lease instead, so the Writer reclaims retired generations at quiescence.
     bool reader_epoch_lease{};
+    // ADR 0036 Wave 1: opt-in fixed generation slot pool. Default false keeps
+    // Alternative A shared_ptr publication bit-identical.
+    bool generation_slot_pool{};
 
     auto operator==(const PairedConcurrencyConfig&) const -> bool = default;
 };

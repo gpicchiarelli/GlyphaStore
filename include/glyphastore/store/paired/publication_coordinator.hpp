@@ -6,6 +6,7 @@
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
+#include "glyphastore/store/paired/generation_slot_pool.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 
 #include <atomic>
@@ -60,6 +61,18 @@ inline void publish_read_generation(std::atomic<const PairReadGeneration*>& publ
     GS_PHASE_PUT(generation_publish);
     GS_FAULT_SITE(publish);
     published.store(generation, std::memory_order_release);
+}
+
+// Release-publish the ADR 0036 slot token and mirror the generation pointer for
+// GET/ReadLease compatibility while Wave 1 dual-publishes both authorities.
+inline void publish_read_generation_token(std::atomic<std::uint64_t>& published_token,
+                                          std::atomic<const PairReadGeneration*>& published,
+                                          const GenerationPublicationToken token,
+                                          const PairReadGeneration* generation) noexcept {
+    GS_PHASE_PUT(generation_publish);
+    GS_FAULT_SITE(publish);
+    published.store(generation, std::memory_order_relaxed);
+    published_token.store(token.raw, std::memory_order_release);
 }
 
 // Retire previous writer generation and install next after a successful incremental

@@ -1669,3 +1669,52 @@ GLYPHA_TEST("paired volatile exclusive compact gates Index publish") {
     static_cast<void>(store.close());
 }
 #endif
+
+GLYPHA_TEST("ADR 0036 production slot V5 shutdown finalization rejects a live Reader lease") {
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1}, .paired = {.generation_slot_pool = true}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+    GLYPHA_REQUIRE(!runtime->finalize_reader_shutdown().has_value());
+
+    {
+        glyphastore::store::paired::ShardPairRuntime::ReadLease lease{*runtime, 0};
+        GLYPHA_REQUIRE(static_cast<bool>(lease));
+        GLYPHA_REQUIRE(store.put("adr0036-slot-shutdown", bytes("value")).has_value());
+        GLYPHA_REQUIRE(runtime->stop_and_drain().has_value());
+
+        const auto blocked = runtime->finalize_reader_shutdown();
+        GLYPHA_REQUIRE(!blocked.has_value());
+        GLYPHA_REQUIRE(blocked.error().code == glyphastore::ErrorCode::unavailable);
+        GLYPHA_REQUIRE(runtime->adopt_read_generation(0) != nullptr);
+    }
+
+    GLYPHA_REQUIRE(runtime->finalize_reader_shutdown().has_value());
+    GLYPHA_REQUIRE(runtime->adopt_read_generation(0) == nullptr);
+    GLYPHA_REQUIRE(runtime->stats()[0].reader_shutdown_finalized);
+    static_cast<void>(store.close());
+}
+
+GLYPHA_TEST("ADR 0036 production slot V10 put_batch preserves same-key FIFO within one batch") {
+    auto opened = glyphastore::Store::open(
+        {.worker_config = {.explicit_count = 1}, .paired = {.generation_slot_pool = true}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    const std::vector<glyphastore::Store::PutItem> items{
+        {.key = "adr0036-fifo", .value = bytes("one")},
+        {.key = "adr0036-fifo", .value = bytes("two")},
+        {.key = "adr0036-fifo", .value = bytes("three")},
+    };
+    const auto statuses = store.put_batch(items);
+    GLYPHA_REQUIRE(statuses.size() == items.size());
+    for (const auto& status : statuses) {
+        GLYPHA_REQUIRE(status.has_value());
+    }
+    const auto got = store.get("adr0036-fifo");
+    GLYPHA_REQUIRE(got.has_value());
+    GLYPHA_REQUIRE(std::string_view(reinterpret_cast<const char*>(got->bytes.data()), got->bytes.size()) ==
+                   "three");
+    static_cast<void>(store.close());
+}

@@ -308,6 +308,7 @@ class ShardPairRuntime final {
     void finish_submission() noexcept;
     void wake(Lane& lane) noexcept;
     void wait_sync_done(SyncMutation& node) noexcept;
+    void trip_generation_slot_fail_closed() noexcept;
 
     static constexpr auto kAdmissionClosed = std::size_t{1}
                                              << (std::numeric_limits<std::size_t>::digits - 1U);

@@ -14,6 +14,7 @@ Requirement: `GS-CONCUR-MEM-001`.
 | Variable | W / R | Orders | HB / role | Proof |
 | --- | --- | --- | --- | --- |
 | `Lane::published_generation` | Writer / Readers | release / acquire | Publish ⇒ observe generation | linearizability tests, TLA+ |
+| `Lane::published_token` | Writer / Readers | release / acquire | ADR 0036 opt-in `{epoch,slot}` token; dual-published with pointer mirror while Wave 1 lands | generation_slot_pool_production_tests |
 | `Lane::published_catalog_revision` | Writer / Readers | release / acquire | Durable refresh coherence | durable paired paths |
 | `Lane::reader_safe_epoch` | Reader / Writer reclaim | acq_rel | Min leased epoch before free | generation lease tests |
 | `Lane::active_read_leases` | Readers / Writer | relaxed + seq_cst fence before adopt | Closes UAF window | ASan CI |

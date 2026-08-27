@@ -6,6 +6,7 @@
 #include "experimental/generation_slot_pool.hpp"
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/worker_routing.hpp"
+#include "glyphastore/store/paired/generation_direct_storage.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 
 #include <algorithm>
@@ -130,57 +131,9 @@ class PairReadGenerationInlineShellStorage final {
     template <typename T> friend class PairReadGenerationBorrowedShellAllocator;
 };
 
-// Direct-object storage: no allocator and no shared control block. Only the
-// private construction ring may claim/release it; destruction while occupied
-// is an invariant failure.
-class PairReadGenerationDirectStorage final {
-  public:
-    static constexpr std::size_t kBytes = PairReadGenerationShellStorage::kBytes;
-    static constexpr std::size_t kAlignment = PairReadGenerationShellStorage::kAlignment;
-
-    PairReadGenerationDirectStorage() = default;
-    ~PairReadGenerationDirectStorage() {
-        if (occupied_) {
-            std::terminate();
-        }
-    }
-    PairReadGenerationDirectStorage(const PairReadGenerationDirectStorage&) = delete;
-    auto operator=(const PairReadGenerationDirectStorage&) -> PairReadGenerationDirectStorage& = delete;
-
-    [[nodiscard]] auto allocation_count() const noexcept -> std::uint64_t {
-        return allocation_count_;
-    }
-    [[nodiscard]] auto reuse_count() const noexcept -> std::uint64_t {
-        return reuse_count_;
-    }
-
-  private:
-    [[nodiscard]] auto claim(const std::size_t bytes, const std::size_t alignment) -> void* {
-        if (bytes > storage_.size() || alignment > kAlignment || occupied_) {
-            throw std::bad_alloc{};
-        }
-        occupied_ = true;
-        if (allocation_count_ != 0U) {
-            ++reuse_count_;
-        }
-        ++allocation_count_;
-        return storage_.data();
-    }
-
-    void release(void* pointer) noexcept {
-        if (pointer == storage_.data()) {
-            occupied_ = false;
-        }
-    }
-
-    alignas(kAlignment) std::array<std::byte, kBytes> storage_{};
-    std::uint64_t allocation_count_{};
-    std::uint64_t reuse_count_{};
-    bool occupied_{};
-
-    friend struct PairReadGenerationShellAccess;
-    friend class glyphastore::store::paired::PairReadGeneration;
-};
+// Direct-object storage lives in the production paired namespace. Lab code keeps
+// the historical name as an alias so DirectRing / DirectSlotPool stay unchanged.
+using PairReadGenerationDirectStorage = store::paired::GenerationDirectStorage;
 
 template <std::size_t Capacity> class PairReadGenerationShellBank final {
   public:
