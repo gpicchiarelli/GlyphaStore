@@ -1067,6 +1067,33 @@ struct BackupCapacityCopyIo {
     }
 };
 
+struct BackupSyncEioIo {
+    bool armed{};
+    bool fired{};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void*, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto sync_file(void* context, const int descriptor, const glyphastore::FileSyncMode) -> int {
+        auto& io = *static_cast<BackupSyncEioIo*>(context);
+        if (!io.armed) {
+            return ::fsync(descriptor);
+        }
+        io.fired = true;
+        errno = EIO;
+        return -1;
+    }
+};
+
 } // namespace
 
 // GS-PERSIST-FAULT-001 / Wave 3 L4: backup byte-copy loop uses FileIoHooks (positional)
@@ -1142,4 +1169,39 @@ GLYPHA_TEST("online backup FileIoHooks capacity faults leave source healthy") {
         GLYPHA_REQUIRE(!glyphastore::verify_durable_store_path(dest).has_value());
         GLYPHA_REQUIRE(store.close().has_value());
     }
+}
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: delayed-writeback EIO from FileIoHooks during backup
+// file sync maps to io_error without poisoning the live source.
+GLYPHA_TEST("online backup FileIoHooks sync EIO leaves source healthy") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto dest = root.path() / "dest";
+
+    BackupSyncEioIo io{};
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = source,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.file_io = {.context = &io,
+                                         .read_some_at = &BackupSyncEioIo::read_some_at,
+                                         .write_some_at = &BackupSyncEioIo::write_some_at,
+                                         .sync_file = &BackupSyncEioIo::sync_file}},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("keep", bytes("alive")).has_value());
+
+    io.armed = true;
+    const auto backed = store.backup_to(dest);
+    io.armed = false;
+    GLYPHA_REQUIRE(io.fired);
+    GLYPHA_REQUIRE(!backed.has_value());
+    GLYPHA_REQUIRE(backed.error().code == glyphastore::ErrorCode::io_error);
+    GLYPHA_REQUIRE(store.put("after", bytes("ok")).has_value());
+    GLYPHA_REQUIRE(value_string(*store.get("keep")) == "alive");
+    GLYPHA_REQUIRE(value_string(*store.get("after")) == "ok");
+    GLYPHA_REQUIRE(!glyphastore::verify_durable_store_path(dest).has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
 }
