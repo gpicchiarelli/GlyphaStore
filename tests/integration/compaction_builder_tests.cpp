@@ -249,6 +249,67 @@ auto text(const glyphastore::OwnedValue& value) -> std::string {
     return {reinterpret_cast<const char*>(value.bytes.data()), value.bytes.size()};
 }
 
+auto amp_reject_manifest() -> glyphastore::Manifest {
+    return {
+        .store_id = {std::byte{0x41}, std::byte{0x42}, std::byte{0x43}},
+        .manifest_generation = 31,
+        .worker_count = 1,
+        .routing_epoch = 1,
+        .next_segment_id = glyphastore::SegmentId{5},
+        .next_segment_generation = glyphastore::GenerationId{1},
+        .segments =
+            {
+                {.segment_id = glyphastore::SegmentId{1},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{2},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{3},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::sealed},
+                {.segment_id = glyphastore::SegmentId{4},
+                 .generation = glyphastore::GenerationId{1},
+                 .owner_worker = glyphastore::WorkerId{0},
+                 .role = glyphastore::ManifestSegmentRole::active},
+            },
+    };
+}
+
+auto fill_sealed_with_max_records(glyphastore::DataDirectory& directory, const glyphastore::Manifest& manifest,
+                                  const glyphastore::ManifestSegmentEntry& entry,
+                                  const std::uint64_t first_sequence, const std::size_t record_count,
+                                  const std::string_view key_prefix) -> std::uint64_t {
+    auto created = glyphastore::DurableSegmentFile::create(directory, identity(manifest, entry));
+    GLYPHA_REQUIRE(created.durable());
+    // Near-max Records so a few dozen live copies exceed one Segment payload and force
+    // multi-output compaction (needed for amp=1 with three sealed sources).
+    constexpr auto kValueBytes = glyphastore::kMaxNormalRecordSize - 256U;
+    const std::string value(kValueBytes, 'v');
+    std::uint64_t sequence = first_sequence;
+    for (std::size_t index = 0; index < record_count; ++index) {
+        const auto key = std::string{key_prefix} + std::to_string(index);
+        const glyphastore::RecordInput input{
+            .sequence = glyphastore::SequenceNumber{sequence},
+            .opcode = glyphastore::Opcode::put,
+            .type = glyphastore::ValueType::bytes,
+            .key_hash = glyphastore::hash_key(key),
+            .key = bytes(key),
+            .value = bytes(value),
+        };
+        const auto encoded = glyphastore::encode_record(input);
+        GLYPHA_REQUIRE(encoded.has_value());
+        GLYPHA_REQUIRE(encoded->size() <= glyphastore::kMaxNormalRecordSize);
+        GLYPHA_REQUIRE(created.file->append_record(*encoded).committed());
+        ++sequence;
+    }
+    GLYPHA_REQUIRE(created.file->seal().committed());
+    return sequence;
+}
+
 } // namespace
 
 GLYPHA_TEST("durable compaction builder copies exact visible Records and preserves v1 sequences") {
@@ -1309,9 +1370,9 @@ GLYPHA_TEST("background reclaim_threshold skip advances past live-only Worker to
     GLYPHA_REQUIRE((*store)->close().has_value());
 }
 
-// GS-PERSIST-AMP-001: write-amplification / temporary-space budgets reject before
-// durable intent; Mold remains sole authority and no compaction intent residue remains.
-GLYPHA_TEST("compaction write-amplification budget rejects before intent without residue") {
+// GS-PERSIST-AMP-001: temporary-space budget rejects before durable intent; Mold
+// remains sole authority and no compaction intent residue remains.
+GLYPHA_TEST("compaction temporary-space budget rejects before intent without residue") {
     CompactionBuildDirectory temporary;
     const auto old = build_manifest();
     {
@@ -1321,8 +1382,8 @@ GLYPHA_TEST("compaction write-amplification budget rejects before intent without
     }
 
     glyphastore::DurableResourceLimits limits{};
-    limits.max_write_amplification = 1;
-    // Two sealed sources that reclaim one Segment pass amp=1; force rejection via temporary budget.
+    limits.max_write_amplification = 4;
+    // Two sealed → one output passes amp=1; force rejection via temporary budget alone.
     limits.max_temporary_compaction_bytes = 1;
     auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
     GLYPHA_REQUIRE(directory.has_value());
@@ -1334,6 +1395,57 @@ GLYPHA_TEST("compaction write-amplification budget rejects before intent without
     GLYPHA_REQUIRE(rejected.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
     GLYPHA_REQUIRE(rejected.error.has_value());
     GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::storage_exhausted);
+    GLYPHA_REQUIRE(rejected.error->message.find("temporary-space") != std::string::npos);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->manifest() == old);
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path(), 100);
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->manifest() == old);
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+}
+
+// GS-PERSIST-AMP-001: write-amplification alone rejects before intent (temporary budget
+// remains permissive). Three sealed sources + live bytes requiring two outputs yields
+// temporary=2·S and reclaimed=1·S, so amp=1 fails while temporary budget does not.
+GLYPHA_TEST("compaction write-amplification budget rejects before intent without residue") {
+    CompactionBuildDirectory temporary;
+    const auto old = amp_reject_manifest();
+    {
+        auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+        GLYPHA_REQUIRE(directory.has_value());
+        GLYPHA_REQUIRE(directory->publish_manifest(old).durable());
+        // Payload per Segment is ~64MiB-4KiB; ~33 max-size Records per sealed Segment
+        // leaves enough live bytes for two outputs across three sealed sources.
+        auto next_sequence =
+            fill_sealed_with_max_records(*directory, old, old.segments[0], 1, 33, "amp-a-");
+        next_sequence =
+            fill_sealed_with_max_records(*directory, old, old.segments[1], next_sequence, 33, "amp-b-");
+        next_sequence =
+            fill_sealed_with_max_records(*directory, old, old.segments[2], next_sequence, 1, "amp-c-");
+        const std::vector<TestRecord> active_records{
+            {.sequence = next_sequence, .key = "amp-active", .value = "live"},
+        };
+        static_cast<void>(create_records(*directory, old, old.segments[3], active_records));
+    }
+
+    glyphastore::DurableResourceLimits limits{};
+    limits.max_write_amplification = 1;
+    limits.max_temporary_compaction_bytes = 8ULL * glyphastore::kSegmentSizeBytes;
+    limits.max_store_bytes = 16ULL * glyphastore::kSegmentSizeBytes;
+    auto directory = glyphastore::DataDirectory::open_and_lock(temporary.path());
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(
+        std::move(*directory), 100, glyphastore::DurableRuntimeOptions{.limits = limits});
+    GLYPHA_REQUIRE(runtime.has_value());
+    const auto rejected = (*runtime)->compact_worker(0, 100);
+    GLYPHA_REQUIRE(!rejected.compacted());
+    GLYPHA_REQUIRE(rejected.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+    GLYPHA_REQUIRE(rejected.error.has_value());
+    GLYPHA_REQUIRE(rejected.error->code == glyphastore::ErrorCode::storage_exhausted);
+    GLYPHA_REQUIRE(rejected.error->message.find("write-amplification") != std::string::npos);
     GLYPHA_REQUIRE((*runtime)->healthy());
     GLYPHA_REQUIRE((*runtime)->manifest() == old);
     GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));

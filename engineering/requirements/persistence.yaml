@@ -154,6 +154,7 @@ requirements:
   rischio_residuo:
   - Device-level write-amp and temporary peak under real filesystem caching remain open
   - E3/E4 platform rows are not certified
+  - Runtime amp rejection is covered by compact_worker integration (local/CI); not a device campaign
   hazards:
   - HAZ-016
   - HAZ-033
