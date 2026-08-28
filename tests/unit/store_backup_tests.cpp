@@ -12,9 +12,11 @@
 
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <fcntl.h>
 #include <filesystem>
 #include <fstream>
 #include <optional>
@@ -1006,4 +1008,138 @@ GLYPHA_TEST("fenced backup concurrent with mutation and compaction keeps source 
     });
     GLYPHA_REQUIRE(reopened.has_value());
     GLYPHA_REQUIRE(value_string(*(*reopened)->get("seed")) == "v");
+}
+
+namespace {
+
+struct BackupFragmentedCopyIo {
+    bool armed{};
+    std::size_t write_calls{};
+    std::size_t remaining_eintr{3};
+    std::size_t maximum_chunk{32};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& io = *static_cast<BackupFragmentedCopyIo*>(context);
+        if (!io.armed) {
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+        ++io.write_calls;
+        if (io.remaining_eintr > 0) {
+            --io.remaining_eintr;
+            errno = EINTR;
+            return -1;
+        }
+        const auto count = std::min(bytes.size(), io.maximum_chunk);
+        return static_cast<std::ptrdiff_t>(
+            ::pwrite(descriptor, bytes.data(), count, static_cast<off_t>(offset)));
+    }
+};
+
+struct BackupCapacityCopyIo {
+    bool armed{};
+    bool fired{};
+    int error_number{ENOSPC};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& io = *static_cast<BackupCapacityCopyIo*>(context);
+        if (!io.armed) {
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+        io.fired = true;
+        errno = io.error_number;
+        return -1;
+    }
+};
+
+} // namespace
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: backup byte-copy loop uses FileIoHooks (positional)
+// and retries EINTR / short pwrite while producing a verified destination.
+GLYPHA_TEST("online backup copy loop retries EINTR and short writes via FileIoHooks") {
+    BackupTemporaryDirectory root;
+    const auto source = root.path() / "source";
+    const auto dest = root.path() / "dest";
+
+    BackupFragmentedCopyIo io{};
+    auto opened = glyphastore::Store::open({
+        .worker_config = {.explicit_count = 1},
+        .storage_mode = glyphastore::StorageMode::durable_sync,
+        .data_directory = source,
+        .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+        .filesystem_hooks = {.file_io = {.context = &io,
+                                         .read_some_at = &BackupFragmentedCopyIo::read_some_at,
+                                         .write_some_at = &BackupFragmentedCopyIo::write_some_at}},
+    });
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    GLYPHA_REQUIRE(store.put("keep", bytes("alive")).has_value());
+
+    io.armed = true;
+    const auto backed = store.backup_to(dest);
+    GLYPHA_REQUIRE(backed.has_value());
+    GLYPHA_REQUIRE(io.write_calls > 0);
+    GLYPHA_REQUIRE(io.remaining_eintr == 0);
+    GLYPHA_REQUIRE(glyphastore::verify_durable_store_path(dest).has_value());
+    GLYPHA_REQUIRE(store.put("after", bytes("ok")).has_value());
+    GLYPHA_REQUIRE(value_string(*store.get("keep")) == "alive");
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: capacity errno from FileIoHooks during backup copy
+// maps to storage_exhausted without poisoning the live source.
+GLYPHA_TEST("online backup FileIoHooks capacity faults leave source healthy") {
+    struct Case {
+        int error_number;
+    };
+    std::vector<Case> cases{{ENOSPC}};
+#if defined(EDQUOT)
+    cases.push_back({EDQUOT});
+#endif
+    for (const auto& fault : cases) {
+        BackupTemporaryDirectory root;
+        const auto source = root.path() / "source";
+        const auto dest = root.path() / "dest";
+
+        BackupCapacityCopyIo io{.error_number = fault.error_number};
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .filesystem_hooks = {.file_io = {.context = &io,
+                                             .read_some_at = &BackupCapacityCopyIo::read_some_at,
+                                             .write_some_at = &BackupCapacityCopyIo::write_some_at}},
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("keep", bytes("alive")).has_value());
+
+        io.armed = true;
+        const auto backed = store.backup_to(dest);
+        io.armed = false;
+        GLYPHA_REQUIRE(io.fired);
+        GLYPHA_REQUIRE(!backed.has_value());
+        GLYPHA_REQUIRE(backed.error().code == glyphastore::ErrorCode::storage_exhausted);
+        GLYPHA_REQUIRE(store.put("after", bytes("ok")).has_value());
+        GLYPHA_REQUIRE(value_string(*store.get("keep")) == "alive");
+        GLYPHA_REQUIRE(value_string(*store.get("after")) == "ok");
+        GLYPHA_REQUIRE(!glyphastore::verify_durable_store_path(dest).has_value());
+        GLYPHA_REQUIRE(store.close().has_value());
+    }
 }

@@ -11,6 +11,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <sys/stat.h>
 #include <thread>
@@ -41,9 +42,10 @@ constexpr std::size_t kBackupSegmentCopyParallelism = 4;
     return descriptor;
 }
 
-[[nodiscard]] auto copy_named_file(int source_directory, int destination_directory, const char* name)
-    -> Result<std::uint64_t> {
-    FileDescriptor source{interrupted_open_at(source_directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)};
+[[nodiscard]] auto copy_named_file(int source_directory, int destination_directory, const char* name,
+                                   const FileIoHooks& io_hooks) -> Result<std::uint64_t> {
+    FileDescriptor source{interrupted_open_at(source_directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW),
+                          io_hooks};
     if (!source.valid()) {
         if (errno == ENOENT) {
             return fail(ErrorCode::not_found, std::string{"backup source file is missing: "} + name);
@@ -52,7 +54,8 @@ constexpr std::size_t kBackupSegmentCopyParallelism = 4;
     }
     FileDescriptor destination{interrupted_open_at(destination_directory, name,
                                                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                                                   S_IRUSR | S_IWUSR)};
+                                                   S_IRUSR | S_IWUSR),
+                               io_hooks};
     if (!destination.valid()) {
         if (errno == EEXIST) {
             return fail(ErrorCode::sequence_conflict,
@@ -61,39 +64,32 @@ constexpr std::size_t kBackupSegmentCopyParallelism = 4;
         return persistence_system_error("openat(backup destination file)");
     }
 
+    const auto total_size = source.size();
+    if (!total_size) {
+        return unexpected(total_size.error());
+    }
+
     // Heap buffer: wire BACKUP runs on the reactor thread (smaller stack than main).
+    // Positional copy so FilesystemHooks::file_io (EINTR / short / capacity) applies.
     constexpr std::size_t kCopyBufferBytes = 1U << 20;
     const auto buffer = std::make_unique<std::byte[]>(kCopyBufferBytes);
-    std::uint64_t copied{};
-    for (;;) {
-        ssize_t read_count{};
-        do {
-            read_count = ::read(source.get(), buffer.get(), kCopyBufferBytes);
-        } while (read_count < 0 && errno == EINTR);
-        if (read_count < 0) {
-            return persistence_system_error("read(backup source file)");
+    std::uint64_t offset{};
+    while (offset < *total_size) {
+        const auto remaining = *total_size - offset;
+        const auto chunk = static_cast<std::size_t>(std::min<std::uint64_t>(remaining, kCopyBufferBytes));
+        const std::span<std::byte> window{buffer.get(), chunk};
+        if (auto read = source.read_exact_at(window, offset); !read) {
+            return unexpected(read.error());
         }
-        if (read_count == 0) {
-            break;
+        if (auto written = destination.write_all_at(window, offset); !written) {
+            return unexpected(written.error());
         }
-        std::size_t offset{};
-        const auto total = static_cast<std::size_t>(read_count);
-        while (offset < total) {
-            ssize_t written{};
-            do {
-                written = ::write(destination.get(), buffer.get() + offset, total - offset);
-            } while (written < 0 && errno == EINTR);
-            if (written < 0) {
-                return persistence_system_error("write(backup destination file)");
-            }
-            offset += static_cast<std::size_t>(written);
-        }
-        copied += static_cast<std::uint64_t>(read_count);
+        offset += chunk;
     }
     if (auto synced = destination.sync(FileSyncMode::full); !synced) {
         return unexpected(synced.error());
     }
-    return copied;
+    return *total_size;
 }
 
 struct SegmentCopyTotals {
@@ -121,7 +117,9 @@ struct SegmentCopyTotals {
     }
 
     // Checkpoint/fault hooks are not thread-safe across parallel copy workers; serialize when armed.
-    const bool hooks_armed = hooks.before != nullptr || hooks.after != nullptr;
+    const bool hooks_armed = hooks.before != nullptr || hooks.after != nullptr ||
+                             hooks.file_io.read_some_at != nullptr || hooks.file_io.write_some_at != nullptr ||
+                             hooks.file_io.sync_file != nullptr;
     const auto workers = hooks_armed ? std::size_t{1}
                                      : std::max<std::size_t>(1, std::min({max_parallelism, names.size(),
                                                                           kBackupSegmentCopyParallelism}));
@@ -134,7 +132,8 @@ struct SegmentCopyTotals {
                 !allowed) {
                 return unexpected(allowed.error());
             }
-            auto copied = copy_named_file(source_directory, destination_directory, name.c_str());
+            auto copied =
+                copy_named_file(source_directory, destination_directory, name.c_str(), hooks.file_io);
             if (!copied) {
                 return unexpected(copied.error());
             }
@@ -160,7 +159,8 @@ struct SegmentCopyTotals {
             if (index >= names.size()) {
                 return;
             }
-            auto copied = copy_named_file(source_directory, destination_directory, names[index].c_str());
+            auto copied = copy_named_file(source_directory, destination_directory, names[index].c_str(),
+                                          hooks.file_io);
             if (!copied) {
                 failed.store(true, std::memory_order_relaxed);
                 const std::lock_guard lock{error_mutex};
@@ -255,7 +255,8 @@ auto backup_durable_store_from_open_directory(DataDirectory& source, const Manif
             !allowed) {
             return unexpected(allowed.error());
         }
-        auto manifest_copied = copy_named_file(source_fd, destination_root.get(), kManifestFilename);
+        auto manifest_copied =
+            copy_named_file(source_fd, destination_root.get(), kManifestFilename, hooks.file_io);
         if (!manifest_copied) {
             return unexpected(manifest_copied.error());
         }
