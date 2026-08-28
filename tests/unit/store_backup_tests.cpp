@@ -1171,6 +1171,50 @@ GLYPHA_TEST("online backup FileIoHooks capacity faults leave source healthy") {
     }
 }
 
+// GS-PERSIST-FAULT-001 / Wave 3 L4: write-path EIO / EROFS from FileIoHooks during backup
+// copy leave an incomplete dest and a healthy source.
+GLYPHA_TEST("online backup FileIoHooks write EIO and EROFS leave source healthy") {
+    struct Case {
+        int error_number;
+        glyphastore::ErrorCode expected;
+    };
+    const std::array cases{
+        Case{EIO, glyphastore::ErrorCode::io_error},
+        Case{EROFS, glyphastore::ErrorCode::read_only_filesystem},
+    };
+    for (const auto& fault : cases) {
+        BackupTemporaryDirectory root;
+        const auto source = root.path() / "source";
+        const auto dest = root.path() / "dest";
+
+        BackupCapacityCopyIo io{.error_number = fault.error_number};
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = source,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .filesystem_hooks = {.file_io = {.context = &io,
+                                             .read_some_at = &BackupCapacityCopyIo::read_some_at,
+                                             .write_some_at = &BackupCapacityCopyIo::write_some_at}},
+        });
+        GLYPHA_REQUIRE(opened.has_value());
+        auto& store = **opened;
+        GLYPHA_REQUIRE(store.put("keep", bytes("alive")).has_value());
+
+        io.armed = true;
+        const auto backed = store.backup_to(dest);
+        io.armed = false;
+        GLYPHA_REQUIRE(io.fired);
+        GLYPHA_REQUIRE(!backed.has_value());
+        GLYPHA_REQUIRE(backed.error().code == fault.expected);
+        GLYPHA_REQUIRE(store.put("after", bytes("ok")).has_value());
+        GLYPHA_REQUIRE(value_string(*store.get("keep")) == "alive");
+        GLYPHA_REQUIRE(value_string(*store.get("after")) == "ok");
+        GLYPHA_REQUIRE(!glyphastore::verify_durable_store_path(dest).has_value());
+        GLYPHA_REQUIRE(store.close().has_value());
+    }
+}
+
 // GS-PERSIST-FAULT-001 / Wave 3 L4: delayed-writeback EIO from FileIoHooks during backup
 // file sync maps to io_error without poisoning the live source.
 GLYPHA_TEST("online backup FileIoHooks sync EIO leaves source healthy") {

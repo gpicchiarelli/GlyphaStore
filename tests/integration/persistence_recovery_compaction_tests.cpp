@@ -1772,6 +1772,56 @@ GLYPHA_TEST("online compaction FileIoHooks capacity faults reject before intent"
     }
 }
 
+// GS-PERSIST-FAULT-001 / Wave 3 L4: write-path EIO / EROFS from FileIoHooks during
+// pre-intent staging reject before intent; Mold remains sole authority. E0–E2 only.
+GLYPHA_TEST("online compaction FileIoHooks write EIO and EROFS reject before intent") {
+    struct Case {
+        int error_number;
+        glyphastore::ErrorCode expected;
+        const char* label;
+    };
+    const std::array cases{
+        Case{EIO, glyphastore::ErrorCode::io_error, "eio"},
+        Case{EROFS, glyphastore::ErrorCode::read_only_filesystem, "erofs"},
+    };
+    for (const auto& fault : cases) {
+        RecoveryTemporaryDirectory temporary;
+        const auto store_id = recovery_store_id();
+        const auto first_key = std::string{fault.label} + "-first";
+        const auto second_key = std::string{fault.label} + "-second";
+        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key,
+                                                                "first-value", second_key, "second-value");
+        const auto old = recovery_manifest(store_id, 1, entries);
+
+        CompactionCapacityWriteIo io{.error_number = fault.error_number};
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), glyphastore::FilesystemHooks{
+                                  .file_io = {.context = &io,
+                                              .read_some_at = &CompactionCapacityWriteIo::read_some_at,
+                                              .write_some_at = &CompactionCapacityWriteIo::write_some_at}});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+        GLYPHA_REQUIRE(runtime.has_value());
+        io.armed = true;
+        const auto result = (*runtime)->compact_worker(0, 0);
+        GLYPHA_REQUIRE(io.fired);
+        GLYPHA_REQUIRE(!result.compacted());
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(result.error->code == fault.expected);
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+        GLYPHA_REQUIRE((*runtime)->healthy());
+        GLYPHA_REQUIRE((*runtime)->manifest() == old);
+        GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+        runtime->reset();
+
+        auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(first_key)) == "first-value");
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(second_key)) == "second-value");
+    }
+}
+
 // GS-PERSIST-FAULT-001 / Wave 3 L4: FileIoHooks sync EIO during pre-intent staging maps to
 // io_error; Mold remains sole authority and no intent residue remains. E0–E2 only.
 GLYPHA_TEST("online compaction FileIoHooks sync EIO rejects before intent") {
