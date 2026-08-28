@@ -8,6 +8,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <cerrno>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
@@ -1564,4 +1565,181 @@ GLYPHA_TEST("paced compaction write_record fault leaves Mold without intent") {
     GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
     GLYPHA_REQUIRE(owned_text(*(*reopened)->get("paced-a")) == "alpha");
     GLYPHA_REQUIRE(owned_text(*(*reopened)->get("paced-b")) == "beta");
+}
+
+namespace {
+
+// FileIoHooks for compaction staging: EINTR then short pwrite completions (GS-PERSIST-FAULT-001).
+struct CompactionFragmentedWriteIo {
+    bool armed{};
+    std::size_t write_calls{};
+    std::size_t remaining_eintr{3};
+    std::size_t maximum_chunk{16};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& io = *static_cast<CompactionFragmentedWriteIo*>(context);
+        if (!io.armed) {
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+        ++io.write_calls;
+        if (io.remaining_eintr > 0) {
+            --io.remaining_eintr;
+            errno = EINTR;
+            return -1;
+        }
+        const auto count = std::min(bytes.size(), io.maximum_chunk);
+        return static_cast<std::ptrdiff_t>(
+            ::pwrite(descriptor, bytes.data(), count, static_cast<off_t>(offset)));
+    }
+};
+
+struct CompactionCapacityWriteIo {
+    bool armed{};
+    bool fired{};
+    int error_number{ENOSPC};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        auto& io = *static_cast<CompactionCapacityWriteIo*>(context);
+        if (!io.armed) {
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+        io.fired = true;
+        errno = io.error_number;
+        return -1;
+    }
+};
+
+auto seed_two_sealed_compaction_fixture(const std::filesystem::path& path, const glyphastore::StoreId& store_id,
+                                        const std::string_view first_key, const std::string_view first_value,
+                                        const std::string_view second_key, const std::string_view second_value)
+    -> std::vector<glyphastore::ManifestSegmentEntry> {
+    const std::vector entries{
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{2},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::sealed},
+        glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{3},
+                                          .generation = glyphastore::GenerationId{1},
+                                          .owner_worker = glyphastore::WorkerId{0},
+                                          .role = glyphastore::ManifestSegmentRole::active},
+    };
+    auto directory = glyphastore::DataDirectory::open_and_lock(path);
+    GLYPHA_REQUIRE(directory.has_value());
+    auto first = create_segment(*directory, store_id, entries[0]);
+    append_record(first, 1, first_key, first_value);
+    GLYPHA_REQUIRE(first.seal().committed());
+    auto second = create_segment(*directory, store_id, entries[1]);
+    append_record(second, 2, second_key, second_value);
+    GLYPHA_REQUIRE(second.seal().committed());
+    static_cast<void>(create_segment(*directory, store_id, entries[2]));
+    GLYPHA_REQUIRE(directory->publish_manifest(recovery_manifest(store_id, 1, entries)).durable());
+    return entries;
+}
+
+} // namespace
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: compaction staging retries EINTR and completes short
+// pwrite transfers end-to-end (FileIoHooks), then publishes cleanly. E0–E2 only.
+GLYPHA_TEST("online compaction staging retries EINTR and short writes before intent") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const auto entries =
+        seed_two_sealed_compaction_fixture(temporary.path(), store_id, "eintr-a", "alpha", "eintr-b", "beta");
+
+    CompactionFragmentedWriteIo io{};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.file_io = {.context = &io,
+                                                 .read_some_at = &CompactionFragmentedWriteIo::read_some_at,
+                                                 .write_some_at = &CompactionFragmentedWriteIo::write_some_at}});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+    io.armed = true;
+    const auto result = (*runtime)->compact_worker(0, 0);
+    GLYPHA_REQUIRE(result.compacted());
+    GLYPHA_REQUIRE(io.write_calls > 0);
+    GLYPHA_REQUIRE(io.remaining_eintr == 0);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->manifest().manifest_generation == 2);
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get("eintr-a")) == "alpha");
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get("eintr-b")) == "beta");
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("eintr-a")) == "alpha");
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("eintr-b")) == "beta");
+    GLYPHA_REQUIRE(entries.size() == 3);
+}
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: capacity errno from FileIoHooks during pre-intent
+// compaction staging maps to storage_exhausted; Mold remains sole authority.
+GLYPHA_TEST("online compaction FileIoHooks capacity faults reject before intent") {
+    struct Case {
+        int error_number;
+        const char* label;
+    };
+    std::vector<Case> cases{{ENOSPC, "enospc"}};
+#if defined(EDQUOT)
+    cases.push_back({EDQUOT, "edquot"});
+#endif
+    for (const auto& fault : cases) {
+        RecoveryTemporaryDirectory temporary;
+        const auto store_id = recovery_store_id();
+        const auto first_key = std::string{fault.label} + "-first";
+        const auto second_key = std::string{fault.label} + "-second";
+        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key,
+                                                                "first-value", second_key, "second-value");
+        const auto old = recovery_manifest(store_id, 1, entries);
+
+        CompactionCapacityWriteIo io{.error_number = fault.error_number};
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(), glyphastore::FilesystemHooks{
+                                  .file_io = {.context = &io,
+                                              .read_some_at = &CompactionCapacityWriteIo::read_some_at,
+                                              .write_some_at = &CompactionCapacityWriteIo::write_some_at}});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+        GLYPHA_REQUIRE(runtime.has_value());
+        io.armed = true;
+        const auto result = (*runtime)->compact_worker(0, 0);
+        GLYPHA_REQUIRE(io.fired);
+        GLYPHA_REQUIRE(!result.compacted());
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(result.error->code == glyphastore::ErrorCode::storage_exhausted);
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::not_compacted);
+        GLYPHA_REQUIRE((*runtime)->healthy());
+        GLYPHA_REQUIRE((*runtime)->manifest() == old);
+        GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+        runtime->reset();
+
+        auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(first_key)) == "first-value");
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(second_key)) == "second-value");
+    }
 }

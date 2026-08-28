@@ -113,6 +113,7 @@ requirements:
   rischio_residuo:
   - Native disk-full, quota, and delayed-writeback campaigns remain open
   - No platform row is E3/E4 certified
+  - Compaction FileIoHooks EINTR/short + ENOSPC/EDQUOT staging proofs are local/CI only (not device campaigns)
   hazards:
   - HAZ-001
   - HAZ-016
