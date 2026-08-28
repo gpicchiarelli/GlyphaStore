@@ -39,7 +39,9 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/resource_limits.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_detail.cpp
-    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_ops.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_read_ops.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_rotate_ops.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_mutate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_maintenance.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_verify.cpp
@@ -59,8 +61,16 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_execution.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/fail_closed_state.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation_publish.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation_merge.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/read_generation_direct.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/generation_slot_pool.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/lane_publication.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/volatile_sync_chunk.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_loop.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_async.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_sync_lane.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store_access.cpp
     ${CMAKE_SOURCE_DIR}/src/store/prepared_cold_read.cpp

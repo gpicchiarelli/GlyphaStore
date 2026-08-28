@@ -23,6 +23,8 @@ class Store;
 
 namespace glyphastore::store::paired {
 
+struct WriterAsyncBatchEnv;
+
 enum class MutationKind : std::uint8_t { put, erase };
 
 // Opaque per-request context. The runtime never interprets it; glyphastored
@@ -285,6 +287,8 @@ class ShardPairRuntime final {
     void request_read_refresh(std::size_t shard) noexcept;
 
   private:
+    friend struct WriterAsyncBatchEnv;
+
     struct Lane;
     struct SyncMutation;
 
@@ -293,6 +297,7 @@ class ShardPairRuntime final {
                      std::vector<std::uint64_t> initial_catalog_revisions);
 
     void run(std::size_t shard) noexcept;
+    void run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept;
     // Drain already-queued sync mutations for `shard` (FIFO after LIFO admission,
     // ≤32 publication chunks). Caller must hold the execution token (combiner or
     // dedicated Writer). ACK polarity matches the historical run() sync path.
