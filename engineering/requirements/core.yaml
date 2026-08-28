@@ -47,7 +47,8 @@ requirements:
   prove:
   - tests/integration/store_tests.cpp
   - tests/integration/concurrency_tests.cpp
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   - tests/integration/server_reactor_security_tests.cpp
   piattaforme:
   - linux-x86_64

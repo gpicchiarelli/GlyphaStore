@@ -103,7 +103,8 @@ gates:
   - tests/unit/mutation_window_tests.cpp
   - tests/fixtures/error_taxonomy_v1.json
   - tests/integration/server_reactor_security_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   - engineering/formal/shard_pair/ShardPair.tla
   piattaforme:
   - linux-x86_64
@@ -134,7 +135,8 @@ gates:
   - GS-PERSIST-ACK-001
   prove:
   - tests/crash/crash_persistence.cpp
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   - docs/architecture/platform-durability-evidence.md
   - docs/adr/0037-shard-execution-token-flat-combining.md
   piattaforme:

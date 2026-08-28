@@ -195,15 +195,18 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/integration/concurrency_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/runtime_equivalence_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/optimization_regression_tests.cpp
-        ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_core_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_litmus_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_crash_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_test_support.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_reactor_prototype_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/rebuild_vacuum_tests.cpp
-        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_tests.cpp
-        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_durable_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_paired_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_server_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_durable_lifecycle_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_durable_wire_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_security_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/store_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/property/history_property_tests.cpp
@@ -240,7 +243,10 @@ if(BUILD_TESTING)
         # Linux/macOS primary). TSan's runtime already owns operator new/delete, so the
         # fault-injection overrides cannot link under -fsanitize=thread.
         add_executable(glyphastore_allocation_fault_tests
-            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_tests.cpp
+            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_harness.cpp
+            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_core_tests.cpp
+            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_paired_tests.cpp
+            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_main.cpp
         )
         target_link_libraries(glyphastore_allocation_fault_tests
             PRIVATE GlyphaStore::server glyphastore_project_options

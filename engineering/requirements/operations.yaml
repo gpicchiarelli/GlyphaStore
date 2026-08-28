@@ -28,7 +28,8 @@ requirements:
   - tests/integration/store_tests.cpp
   - tests/unit/maintenance_controller_tests.cpp
   - tests/unit/maintenance_controller_pressure_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
   - tests/unit/byte_rate_limiter_tests.cpp
   - tests/unit/segment_file_tests.cpp

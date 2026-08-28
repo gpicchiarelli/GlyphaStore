@@ -30,14 +30,17 @@ requirements:
   - src/server
   - src/worker
   prove:
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   - tests/integration/concurrency_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
   - tests/unit/shard_combining_executor_tests.cpp
   - tests/unit/pair_read_generation_tests.cpp
   - tests/unit/generation_slot_pool_production_tests.cpp
-  - tests/integration/server_reactor_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -93,9 +96,12 @@ requirements:
   prove:
   - tests/unit/shard_combining_executor_tests.cpp
   - tests/unit/mutation_window_tests.cpp
-  - tests/integration/paired_store_tests.cpp
-  - tests/integration/server_reactor_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -252,7 +258,8 @@ requirements:
   - src/store/paired/shard_pair_runtime.cpp
   prove:
   - tests/concurrency/linearizability_tests.cpp
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -282,7 +289,8 @@ requirements:
   prove:
   - tests/integration/runtime_equivalence_tests.cpp
   - tests/integration/concurrency_tests.cpp
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64

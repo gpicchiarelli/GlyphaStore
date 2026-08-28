@@ -17,23 +17,14 @@ waivers:
     titolo: Phase C decomposition follow-up for newly enlarged sources
     ambito: size
     motivo: >
-      Sources crossed the 1600-line structural gate during mutation lifecycle,
-      durability, ADR 0036 production slot wiring, and debt-remediation proof
-      suites. Behavior remains covered by the current test matrix; splitting is
-      tracked as structural work and must not be confused with closure of the
-      underlying assurance gates.
+      Closed: shard_pair_runtime_writer_loop.cpp was split into writer_loop and
+      writer_async translation units under the 1600-line structural gate. Kept for
+      audit trail.
     scadenza: "2026-12-31"
     approvatore: maintainers
-    stato: attiva
+    stato: revocata
     requisiti:
       - GS-CORE-BUILD-001
     gates:
       - GATE-CMAKE-INSTALL
-    paths:
-      - src/store/paired/shard_pair_runtime.cpp
-      - src/store/paired/read_generation.cpp
-      - src/persistence/runtime_catalog_ops.cpp
-      - tests/quality/allocation_fault_tests.cpp
-      - tests/integration/server_reactor_durable_tests.cpp
-      - tests/integration/server_reactor_tests.cpp
-      - tests/integration/paired_store_tests.cpp
+    paths: []

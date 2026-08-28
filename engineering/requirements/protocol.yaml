@@ -21,8 +21,10 @@ requirements:
   - scripts/test-sdk-interop.sh
   - tests/fixtures/error_taxonomy_v1.json
   - tests/integration/server_reactor_security_tests.cpp
-  - tests/integration/server_reactor_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   piattaforme:
   - linux-x86_64
   - macos-arm64

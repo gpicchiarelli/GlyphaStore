@@ -56,7 +56,8 @@ hazards:
   contenimento:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
   rischio_residuo: Checker histories are bounded; durable adversarial I/O schedules remain open
   stato: mitigato
@@ -213,7 +214,8 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - scripts/test-sdk-interop.sh
-  - tests/integration/server_reactor_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
   rischio_residuo: Keyed routing interop residual toolchain gaps
   stato: mitigato
   accettazione_rischio: WRONG_OWNER + owner binding; keyed SipHash covered in secure-profile smoke
@@ -420,7 +422,8 @@ hazards:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
   - tests/crash/crash_persistence.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   rischio_residuo: OpenBSD fdatasync≡fsync cost; platform matrices open
   stato: mitigato
   accettazione_rischio: Platform-aware sync paths + fault tests
@@ -567,7 +570,8 @@ hazards:
   prove:
   - docs/operations/graceful-drain-and-overload.md
   - scripts/exercise_ops_runbooks.sh
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   rischio_residuo: Queue deadlines bound voluntary coalescing, but scheduler descheduling and
     in-flight Store service remain outside the pre-Store budget
   stato: mitigato
@@ -597,7 +601,8 @@ hazards:
   prove:
   - docs/operations/durable-tcp-daemon.md
   - docs/architecture/maintenance-controller.md
-  - tests/integration/server_reactor_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
   - tests/unit/maintenance_controller_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
   rischio_residuo: >
@@ -646,7 +651,8 @@ hazards:
   contenimento:
   - Stop serving affected ops; operator repair/salvage modes are explicit
   prove:
-  - tests/integration/paired_store_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
   - tests/concurrency/linearizability_tests.cpp
   - docs/spec/concurrency-memory-model.md
   - docs/assurance/memory-order-inventory.md
@@ -760,8 +766,10 @@ hazards:
   - Applicare backpressure sui limiti esistenti e ridurre shard/dataset quando il budget non e provato
   prove:
   - tests/unit/pair_read_generation_tests.cpp
-  - tests/integration/server_reactor_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   - benchmarks/memory_census_benchmark.cpp
   - benchmarks/results/local-macos-2026-08-27-read-generation-memory/README.md
   - benchmarks/results/local-macos-2026-08-27-put-census-o1/README.md
@@ -799,8 +807,10 @@ hazards:
   - Osservare debito, capacita residua, massimo quantum e backpressure per shard
   prove:
   - tests/unit/pair_read_generation_tests.cpp
-  - tests/integration/paired_store_tests.cpp
-  - tests/integration/server_reactor_tests.cpp
+  - tests/integration/paired_store_core_tests.cpp
+  - tests/integration/paired_store_litmus_tests.cpp
+  - tests/integration/server_reactor_paired_tests.cpp
+  - tests/integration/server_reactor_server_tests.cpp
   - benchmarks/results/local-macos-2026-08-27-merge-debt-scheduler/README.md
   rischio_residuo: Su basi molto grandi il budget proporzionale puo superare il quantum minimo per
     evitare l'esaurimento bounded; p99 e soglie ottimali richiedono campagne multi-piattaforma con
