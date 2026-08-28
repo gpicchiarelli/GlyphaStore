@@ -1653,6 +1653,39 @@ struct CompactionSyncEioIo {
     }
 };
 
+// Sync EINTR must retry inside FileDescriptor::sync before staging can publish.
+struct CompactionSyncEintrIo {
+    bool armed{};
+    std::size_t sync_calls{};
+    std::size_t remaining_eintr{3};
+
+    static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                             const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto write_some_at(void*, const int descriptor, const std::span<const std::byte> bytes,
+                              const std::uint64_t offset) -> std::ptrdiff_t {
+        return static_cast<std::ptrdiff_t>(
+            ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+    }
+
+    static auto sync_file(void* context, const int descriptor, const glyphastore::FileSyncMode) -> int {
+        auto& io = *static_cast<CompactionSyncEintrIo*>(context);
+        if (!io.armed) {
+            return ::fsync(descriptor);
+        }
+        ++io.sync_calls;
+        if (io.remaining_eintr > 0) {
+            --io.remaining_eintr;
+            errno = EINTR;
+            return -1;
+        }
+        return ::fsync(descriptor);
+    }
+};
+
 auto seed_two_sealed_compaction_fixture(const std::filesystem::path& path, const glyphastore::StoreId& store_id,
                                         const std::string_view first_key, const std::string_view first_value,
                                         const std::string_view second_key, const std::string_view second_value)
@@ -1721,6 +1754,43 @@ GLYPHA_TEST("online compaction staging retries EINTR and short writes before int
     GLYPHA_REQUIRE(owned_text(*(*reopened)->get("eintr-a")) == "alpha");
     GLYPHA_REQUIRE(owned_text(*(*reopened)->get("eintr-b")) == "beta");
     GLYPHA_REQUIRE(entries.size() == 3);
+}
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: FileDescriptor::sync retries EINTR from FileIoHooks
+// during pre-intent staging, then publishes cleanly. E0–E2 only.
+GLYPHA_TEST("online compaction staging retries sync EINTR before intent") {
+    RecoveryTemporaryDirectory temporary;
+    const auto store_id = recovery_store_id();
+    const auto entries =
+        seed_two_sealed_compaction_fixture(temporary.path(), store_id, "sync-a", "alpha", "sync-b", "beta");
+
+    CompactionSyncEintrIo io{};
+    auto directory = glyphastore::DataDirectory::open_and_lock(
+        temporary.path(),
+        glyphastore::FilesystemHooks{.file_io = {.context = &io,
+                                                 .read_some_at = &CompactionSyncEintrIo::read_some_at,
+                                                 .write_some_at = &CompactionSyncEintrIo::write_some_at,
+                                                 .sync_file = &CompactionSyncEintrIo::sync_file}});
+    GLYPHA_REQUIRE(directory.has_value());
+    auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+    GLYPHA_REQUIRE(runtime.has_value());
+    io.armed = true;
+    const auto result = (*runtime)->compact_worker(0, 0);
+    GLYPHA_REQUIRE(result.compacted());
+    GLYPHA_REQUIRE(io.sync_calls > 0);
+    GLYPHA_REQUIRE(io.remaining_eintr == 0);
+    GLYPHA_REQUIRE((*runtime)->healthy());
+    GLYPHA_REQUIRE((*runtime)->manifest().manifest_generation == 2);
+    GLYPHA_REQUIRE(!std::filesystem::exists(temporary.path() / glyphastore::kCompactionIntentFilename));
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get("sync-a")) == "alpha");
+    GLYPHA_REQUIRE(owned_text(*(*runtime)->get("sync-b")) == "beta");
+    runtime->reset();
+
+    auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+    GLYPHA_REQUIRE(reopened.has_value());
+    GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("sync-a")) == "alpha");
+    GLYPHA_REQUIRE(owned_text(*(*reopened)->get("sync-b")) == "beta");
 }
 
 // GS-PERSIST-FAULT-001 / Wave 3 L4: capacity errno from FileIoHooks during pre-intent
