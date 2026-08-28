@@ -13,11 +13,14 @@ requirements:
   implementazione:
   - src/persistence/durable_flush_coordinator.cpp
   - src/persistence/segment_file.cpp
-  - src/persistence/runtime_catalog_ops.cpp
+  - src/persistence/runtime_catalog_read_ops.cpp
+  - src/persistence/runtime_catalog_rotate_ops.cpp
+  - src/persistence/runtime_catalog_mutate_ops.cpp
   - src/store/store_access.cpp
   prove:
   - tests/integration/persistence_recovery_tests.cpp
-  - tests/integration/server_reactor_durable_tests.cpp
+  - tests/integration/server_reactor_durable_lifecycle_tests.cpp
+  - tests/integration/server_reactor_durable_wire_tests.cpp
   - tests/crash/crash_persistence.cpp
   piattaforme:
   - linux-x86_64
