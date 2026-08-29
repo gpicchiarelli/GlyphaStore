@@ -45,6 +45,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_mutate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_maintenance.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file_io.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_verify.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_backup.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_migrate.cpp
@@ -84,7 +85,10 @@ add_library(glyphastore_core ${GLYPHASTORE_CORE_SOURCES})
 add_library(GlyphaStore::core ALIAS glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES EXPORT_NAME core)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
+    set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file_io.cpp
+    PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
 endif()
 
 function(glyphastore_configure_core_target target)
