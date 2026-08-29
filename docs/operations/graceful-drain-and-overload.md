@@ -154,5 +154,6 @@ Related Wave 4 litmus / soak:
 - `scripts/soak_daemon.sh` end-of-run **SIGTERM** drain (durability-boundary teardown; never
   routine `SIGKILL`) — [soak.md](soak.md).
 - Sticky post-commit Writer failure wire litmus: HEALTH may still succeed while READY must
-  fail under degraded durability (`server_reactor_durable_tests` —
+  fail under degraded durability (`server_reactor_durable_lifecycle_tests` /
+  `server_reactor_durable_wire_tests` —
   `sticky post-commit Writer failure is INTERNAL_ERROR on the wire`).

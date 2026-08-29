@@ -19,9 +19,13 @@ requirements:
   implementazione:
   - src/cli
   - src/store/maintenance.cpp
+  - src/store/maintenance_evaluate.cpp
   - src/server/server_stats.cpp
+  - src/server/daemon_config.cpp
+  - src/server/daemon_config_materialize.cpp
   - src/persistence/compaction_builder.cpp
   - src/persistence/segment_file.cpp
+  - src/persistence/segment_file_io.cpp
   - src/persistence/resource_limits.cpp
   - src/main.cpp
   prove:

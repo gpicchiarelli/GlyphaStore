@@ -1,7 +1,7 @@
 Status: living program map (not generated)
 Applies to: multi-bot debt remediation (Waves 0–6, lanes L0–L7)
 Owner: L0 orchestrator
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-29
 
 # Debt remediation — lane / wave map
 
@@ -9,6 +9,13 @@ Claim ceiling stays **architectural prototype**. Silent-change ban: wire v2, per
 routing, ACK/RAW, Manifest authority, borrow lifetimes, recovery polarity require ADR +
 requirements + proofs + evidence. Evidence labels: [evidence-taxonomy.md](evidence-taxonomy.md).
 `src/experimental/` stays out of daemon/install until ADR 0036 (or successor) accepts promotion.
+
+Structure-debt follow-up (L0 hygiene, not a numbered wave): production TU splits under the 1600-line
+gate (`reactor_*`, `daemon_config_*`, `client_*`, `filesystem_*`, `segment_file_*`,
+`runtime_catalog_*`, `writer_sync`, `read_generation_*`, `maintenance_*`), shared
+`glyphastore::le` codecs, and Writer ACK DualPath loader unification (`load_published_generation`)
+landed without changing ACK polarity or flipping `generation_slot_pool` default. Active size waivers
+remain empty (WAV-001/WAV-002/WAV-003 revoked audit trail).
 
 ## Lanes
 

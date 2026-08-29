@@ -1,7 +1,7 @@
 Status: descriptive of as-implemented paired Writer mutation lifecycle (behavior-neutral refactor baseline)
-Applies to: `ShardPairRuntime::run`, durable/volatile sync and async mutation paths
+Applies to: `ShardPairRuntime::run` and extracted Writer TUs (`writer_loop` / `writer_sync` / `writer_async` / `sync_lane`)
 Owner: store/concurrency maintainers
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-29
 Requirement: `GS-CONCUR-PAIR-001`
 
 # Mutation lifecycle (as implemented)
@@ -29,6 +29,11 @@ Illegal conflations to avoid when extracting types:
 - success-ACK before required visibility;
 - changing a decided completion after a later sibling error (except documented sticky visibility upgrade).
 
+Writer ACK-after-visibility and sticky upgrades must observe the published generation through
+`load_published_generation` (ADR 0036 DualPath: acquire on `{epoch,slot}` token when the opt-in
+slot pool is enabled, otherwise acquire on the mirrored pointer). The same loader is used for
+Reader adopt; do not reintroduce a Writer-only relaxed pointer load for ACK decisions.
+
 ## 2. Typed stages (target model; mirrors existing flags)
 
 ```text
@@ -52,7 +57,7 @@ MutationStage (orchestration)
               completion_decided → completed
 ```
 
-Source flags in `src/store/paired/shard_pair_runtime.cpp` (`run`):
+Source flags in the dedicated Writer path (`shard_pair_runtime_writer_*.cpp` / `run` orchestration):
 
 | Conceptual stage | Representative flags |
 | --- | --- |
@@ -143,16 +148,18 @@ Volatile: Store append success is not ACK until `generation_published`. Throw af
 | `mutation_execution` | Wire rewrite + durable single-op retry loop |
 | `mutation_batch` | FIFO key-dedup sub-batch + ≤32 publication chunk cap |
 | `publication_coordinator` | `publish_read_generation`, `install_writer_generation` |
+| `lane_publication` | DualPath `load_published_generation` / publish install helpers |
 | `mutation_recovery` | Catch → `plan_sync_durable_exception_*` (sync durable single-op wired) |
 | `completion_policy` | `decide_completion` + `status_from_completion` / wire codes |
 | `fail_closed_state` | Sticky arm (`pair_only` / `pair_and_store`), expire remaining, lane wake |
 | `lane_state` | By-value `AsyncLaneState` / `SyncLaneState` / `GenerationState` / `MergeState` / `ReclamationState` / `LaneMetrics` |
 | `connection_lifecycle` | `decide_connection_action`, `DecidedOutput`, Reactor drain predicates |
+| `shard_pair_runtime_writer_*` | Dedicated Writer `run` loop, sync drain, async batch (structure split) |
 
 ## 7. Related tests (golden lock)
 
-- `tests/integration/paired_store_tests.cpp` — RAW, batch siblings, fail-closed, known-not-committed vs sticky
-- `tests/integration/server_reactor_durable_tests.cpp` — wire OVERLOADED vs INTERNAL_ERROR, shutdown drain
+- `tests/integration/paired_store_core_tests.cpp` / `paired_store_litmus_tests.cpp` — RAW, batch siblings, fail-closed, known-not-committed vs sticky
+- `tests/integration/server_reactor_durable_lifecycle_tests.cpp` / `server_reactor_durable_wire_tests.cpp` — wire OVERLOADED vs INTERNAL_ERROR, shutdown drain
 - `tests/quality/allocation_fault_tests.cpp` — ACK-after-publish catch paths
 - `tests/unit/mutation_state_tests.cpp` — transition table + completion characterization
 - `tests/unit/completion_policy_recovery_tests.cpp` — Status mapping + sync durable exception plans

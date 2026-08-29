@@ -93,6 +93,8 @@ requirements:
   - include/glyphastore/server/mutation_window.hpp
   - src/store/paired/shard_pair_runtime.cpp
   - src/server/reactor_dispatch.cpp
+  - src/server/reactor_execute.cpp
+  - src/server/reactor_io.cpp
   prove:
   - tests/unit/shard_combining_executor_tests.cpp
   - tests/unit/mutation_window_tests.cpp

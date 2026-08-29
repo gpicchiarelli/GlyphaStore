@@ -1,7 +1,7 @@
 Status: historical Phase A gap baseline; not the current gate view
 Applies to: assurance program Phase A baseline (0.1.x)
 Owner: maintainers
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-29
 
 # Engineering baseline (Phase A)
 
@@ -33,7 +33,7 @@ generated [production-readiness view](../production-readiness.md).
 | No machine-readable requirement IDs (`GS-*`) | High | P0 (Phase A) | schemas + validator | Silent drift; checklist theatre |
 | No formal hazard register | High | P0 (Phase A) | requirements linkage | Untracked integrity failures |
 | Gates not multi-state / not CI-enforced | High | P0 (Phase A) | evidence paths | Closed boxes without proofs |
-| Monolithic oversized sources (Phase C + WAV-001 splits) | Medium | P2 (Phase C) | dependency matrix | Done; WAV-001 revoked |
+| Monolithic oversized sources (Phase C + WAV-001/002/003 splits) | Medium | P2 (Phase C) | dependency matrix | Done; size waivers revoked (audit trail only) |
 | No formal linearizability checker | High | P1 (Phase B) | history recorder | Concurrency regressions undetected |
 | Actions not pinned to commit SHA (Phase D: SHA pin + validator) | Medium | P2 (Phase D) | supply-chain policy | Done baseline; Dependabot must update SHAs |
 | Physical E3/E4 durability unset | High (claim honesty) | Keep open | hardware campaign | False durability confirmation |

@@ -1,5 +1,14 @@
 ## [Unreleased]
 
+- Structure / ACK hygiene follow-up (architectural prototype unchanged): unify Writer
+  ACK-after-visibility on DualPath `load_published_generation`; share
+  `include/glyphastore/core/little_endian.hpp`; split oversized production TUs under the
+  1600-line gate (reactor I/O/execute, daemon_config materialize, client transport/error,
+  filesystem directory, segment_file IO, runtime_catalog batch/compact, writer_sync,
+  read_generation internals/immutable, maintenance evaluate); harden detail-header ODR/includes.
+  ADR 0036 remains proposed; `generation_slot_pool` default stays false. WAV-003 revoked
+  (audit trail). Documentation paths and `GS-*` implementazione lists updated accordingly.
+
 - Wave 2 (L5 + L1 liaison) hot-path residual: Writer-local vs Reader-hot padding in
   `lane_state.hpp` (`queued_bytes`, telemetry barrier, `LaneMetrics`); skip redundant
   `reader_safe_epoch` acq_rel RMW when unchanged; Writer/caller pause→yield→park wakeup

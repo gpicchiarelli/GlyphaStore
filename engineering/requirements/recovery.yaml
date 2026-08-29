@@ -43,8 +43,10 @@ requirements:
   - docs/security/threat-model.md
   implementazione:
   - src/persistence/segment_file.cpp
+  - src/persistence/segment_file_io.cpp
   - src/persistence/bootstrap.cpp
   - src/persistence/filesystem.cpp
+  - src/persistence/filesystem_directory.cpp
   prove:
   - tests/integration/persistence_recovery_tests.cpp
   - tests/unit
