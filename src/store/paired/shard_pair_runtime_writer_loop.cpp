@@ -77,19 +77,30 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     FailClosedState fail_closed{store_, healthy_, expire_remaining_};
     LanePublicationContext publication_ctx{lane.generation, lane.merge, store_, shard,
                                            ShardPairRuntime::kMaximumRetiredReadGenerations};
-    const std::function<void()> publish_fail_closed = [&]() noexcept {
-        fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_and_store);
-    };
-    const std::function<void()> sticky_pair_before_durable_mark = [&]() noexcept {
-        fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_only);
-    };
-    const std::function<void()> update_delta_stats = [&]() noexcept {
-        store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
-    };
+    // Constructed once per Writer thread; allocation failure must not escape noexcept run().
+    std::function<void()> publish_fail_closed;
+    std::function<void()> sticky_pair_before_durable_mark;
+    std::function<void()> update_delta_stats;
+    std::function<void()> reclaim_quiescent;
+    std::function<void()> after_durable_drain;
+    std::function<bool()> drain_durable_snapshot;
+    std::function<void()> reclaim_proportional;
+    std::function<void(std::size_t)> process_merge;
+    std::function<void(std::size_t)> prepare_publish_retry;
     const auto start_merge_with_optional_pin = [&]() -> Result<std::unique_ptr<PairReadMerge>> {
         return start_incremental_merge(lane.generation, config_.merge_maximum_post_entries);
     };
-    const std::function<void()> reclaim_quiescent = [&]() noexcept {
+    try {
+        publish_fail_closed = [&]() noexcept {
+            fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_and_store);
+        };
+        sticky_pair_before_durable_mark = [&]() noexcept {
+            fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_only);
+        };
+        update_delta_stats = [&]() noexcept {
+            store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
+        };
+    reclaim_quiescent = [&]() noexcept {
         try {
             reclaim_quiescent_generations(lane.generation, lane.reclaim, config_.reader_epoch_lease);
         } catch (...) {
@@ -99,18 +110,18 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     // Drain durable Index authority into the published generation before sticky
     // close (allow_fail_closed: durable may already be unhealthy). Sync single-op
     // and batch catch use this so committed keys are not left unpublished.
-    const std::function<void()> after_durable_drain = [&]() noexcept {
+    after_durable_drain = [&]() noexcept {
         merge_retry_blocked = false;
         reclaim_quiescent();
     };
-    const std::function<bool()> drain_durable_snapshot = [&]() noexcept -> bool {
+    drain_durable_snapshot = [&]() noexcept -> bool {
         return try_drain_durable_snapshot(publication_ctx, true, &after_durable_drain);
     };
     // Publication produces one retired generation per successful incremental
     // publish. Reclaiming on every single-mutation publish dominated volatile
     // PUT ack time; reclaim proportionally when debt accumulates, and always
     // before hard retire limits / merge pressure checks.
-    const std::function<void()> reclaim_proportional = [&]() noexcept {
+    reclaim_proportional = [&]() noexcept {
         if (lane.merge.read_merge) {
             store_merge_progress(lane.merge);
         }
@@ -123,64 +134,7 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                                                            std::memory_order_relaxed);
         }
     };
-    const auto process_reclamation = [&]() noexcept {
-        if (lane.generation.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
-            reclaim_quiescent();
-        }
-    };
-    const auto process_refresh = [&]() noexcept {
-        try {
-            if (!lane.generation.refresh_requested.exchange(false, std::memory_order_acq_rel)) {
-                return;
-            }
-            reclaim_quiescent();
-            if (decide_generation_admission(lane.generation.retired_debt(),
-                                            ShardPairRuntime::kMaximumRetiredReadGenerations,
-                                            true) != GenerationAdmissionDecision::admitted) {
-                lane.metrics.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
-                return;
-            }
-            lane.metrics.read_refresh_attempts.fetch_add(1U, std::memory_order_relaxed);
-            auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, shard);
-            if (!snapshot) {
-                lane.metrics.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
-                if (snapshot.error().code != ErrorCode::resource_exhausted &&
-                    !(lane.async.stopping.load(std::memory_order_acquire) &&
-                      snapshot.error().code == ErrorCode::unavailable)) {
-                    publish_fail_closed();
-                }
-                return;
-            }
-            if (snapshot->catalog_revision ==
-                lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
-                return;
-            }
-            const auto outcome = replace_durable_snapshot_and_publish(publication_ctx, snapshot->records);
-            if (outcome.status == DualPathPublishStatus::deferred) {
-                lane.metrics.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
-                return;
-            }
-            if (outcome.status == DualPathPublishStatus::build_failed) {
-                lane.metrics.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
-                if (outcome.build_error != ErrorCode::resource_exhausted) {
-                    publish_fail_closed();
-                }
-                return;
-            }
-            if (outcome.status != DualPathPublishStatus::published) {
-                publish_fail_closed();
-                return;
-            }
-            note_catalog_snapshot_installed(publication_ctx, snapshot->catalog_revision);
-            merge_retry_blocked = false;
-            lane.metrics.read_refresh_successes.fetch_add(1U, std::memory_order_relaxed);
-        } catch (const std::bad_alloc&) {
-            publish_fail_closed();
-        } catch (...) {
-            publish_fail_closed();
-        }
-    };
-    const std::function<void(std::size_t)> process_merge = [&](const std::size_t publication_records) noexcept {
+    process_merge = [&](const std::size_t publication_records) noexcept {
         try {
             if (!lane.merge.read_merge && !merge_retry_blocked &&
                 (lane.generation.writer_generation->delta_entries() >= config_.merge_delta_entries ||
@@ -266,12 +220,72 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         }
     };
     // Stable once: avoid per-chunk std::function allocation under process_fail_at injection.
-    const std::function<void(std::size_t)> prepare_publish_retry =
-        [&](const std::size_t published_count) {
+        prepare_publish_retry = [&](const std::size_t published_count) {
             reclaim_quiescent();
             process_merge(published_count);
         };
+    } catch (...) {
+        fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_and_store);
+        return;
+    }
 
+    const auto process_reclamation = [&]() noexcept {
+        if (lane.generation.reclaim_requested.exchange(false, std::memory_order_acq_rel)) {
+            reclaim_quiescent();
+        }
+    };
+    const auto process_refresh = [&]() noexcept {
+        try {
+            if (!lane.generation.refresh_requested.exchange(false, std::memory_order_acq_rel)) {
+                return;
+            }
+            reclaim_quiescent();
+            if (decide_generation_admission(lane.generation.retired_debt(),
+                                            ShardPairRuntime::kMaximumRetiredReadGenerations,
+                                            true) != GenerationAdmissionDecision::admitted) {
+                lane.metrics.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
+                return;
+            }
+            lane.metrics.read_refresh_attempts.fetch_add(1U, std::memory_order_relaxed);
+            auto snapshot = detail::StoreAccess::snapshot_durable_reads(store_, shard);
+            if (!snapshot) {
+                lane.metrics.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
+                if (snapshot.error().code != ErrorCode::resource_exhausted &&
+                    !(lane.async.stopping.load(std::memory_order_acquire) &&
+                      snapshot.error().code == ErrorCode::unavailable)) {
+                    publish_fail_closed();
+                }
+                return;
+            }
+            if (snapshot->catalog_revision ==
+                lane.generation.published_catalog_revision.load(std::memory_order_acquire)) {
+                return;
+            }
+            const auto outcome = replace_durable_snapshot_and_publish(publication_ctx, snapshot->records);
+            if (outcome.status == DualPathPublishStatus::deferred) {
+                lane.metrics.read_refresh_deferrals.fetch_add(1U, std::memory_order_relaxed);
+                return;
+            }
+            if (outcome.status == DualPathPublishStatus::build_failed) {
+                lane.metrics.read_refresh_failures.fetch_add(1U, std::memory_order_relaxed);
+                if (outcome.build_error != ErrorCode::resource_exhausted) {
+                    publish_fail_closed();
+                }
+                return;
+            }
+            if (outcome.status != DualPathPublishStatus::published) {
+                publish_fail_closed();
+                return;
+            }
+            note_catalog_snapshot_installed(publication_ctx, snapshot->catalog_revision);
+            merge_retry_blocked = false;
+            lane.metrics.read_refresh_successes.fetch_add(1U, std::memory_order_relaxed);
+        } catch (const std::bad_alloc&) {
+            publish_fail_closed();
+        } catch (...) {
+            publish_fail_closed();
+        }
+    };
     for (;;) {
         // ADR 0037: refresh/merge/sync share the execution token with the combiner.
         if (!try_acquire_execution_token(lane.async.execution_token)) {

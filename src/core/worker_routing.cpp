@@ -1,6 +1,7 @@
 #include "glyphastore/core/worker_routing.hpp"
 
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include <atomic>
 #include <cstring>
@@ -40,31 +41,23 @@ std::atomic<std::uint64_t> g_worker_hash_seed{kDefaultWorkerHashSeed};
 }
 
 void put_u32(std::vector<std::byte>& out, const std::uint32_t value) {
-    for (std::size_t index = 0; index < 4; ++index) {
-        out.push_back(static_cast<std::byte>((value >> (index * 8U)) & 0xFFU));
-    }
+    const auto at = out.size();
+    out.resize(at + 4U);
+    le::put_u32(std::span<std::byte>{out}, at, value);
 }
 
 void put_u64(std::vector<std::byte>& out, const std::uint64_t value) {
-    for (std::size_t index = 0; index < 8; ++index) {
-        out.push_back(static_cast<std::byte>((value >> (index * 8U)) & 0xFFU));
-    }
+    const auto at = out.size();
+    out.resize(at + 8U);
+    le::put_u64(std::span<std::byte>{out}, at, value);
 }
 
 auto get_u32(const std::span<const std::byte> in, const std::size_t at) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t index = 0; index < 4; ++index) {
-        value |= static_cast<std::uint32_t>(std::to_integer<unsigned char>(in[at + index])) << (index * 8U);
-    }
-    return value;
+    return le::get_u32(in, at);
 }
 
 auto get_u64(const std::span<const std::byte> in, const std::size_t at) -> std::uint64_t {
-    std::uint64_t value{};
-    for (std::size_t index = 0; index < 8; ++index) {
-        value |= static_cast<std::uint64_t>(std::to_integer<unsigned char>(in[at + index])) << (index * 8U);
-    }
-    return value;
+    return le::get_u64(in, at);
 }
 
 } // namespace

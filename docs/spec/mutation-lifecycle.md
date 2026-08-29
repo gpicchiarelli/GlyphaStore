@@ -160,7 +160,8 @@ Volatile: Store append success is not ACK until `generation_published`. Throw af
 
 - `tests/integration/paired_store_core_tests.cpp` / `paired_store_litmus_tests.cpp` — RAW, batch siblings, fail-closed, known-not-committed vs sticky
 - `tests/integration/server_reactor_durable_lifecycle_tests.cpp` / `server_reactor_durable_wire_tests.cpp` — wire OVERLOADED vs INTERNAL_ERROR, shutdown drain
-- `tests/quality/allocation_fault_tests.cpp` — ACK-after-publish catch paths
+- `tests/quality/allocation_fault_core_tests.cpp` / `allocation_fault_paired_tests.cpp` /
+  `allocation_fault_paired_async_tests.cpp` — ACK-after-publish catch paths and sticky litmus
 - `tests/unit/mutation_state_tests.cpp` — transition table + completion characterization
 - `tests/unit/completion_policy_recovery_tests.cpp` — Status mapping + sync durable exception plans
 - `tests/unit/mutation_extraction_tests.cpp` — batch / rewrite / fail-closed views

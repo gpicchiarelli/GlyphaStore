@@ -248,6 +248,7 @@ if(BUILD_TESTING)
             ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_harness.cpp
             ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_core_tests.cpp
             ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_paired_tests.cpp
+            ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_paired_async_tests.cpp
             ${CMAKE_SOURCE_DIR}/tests/quality/allocation_fault_main.cpp
         )
         target_link_libraries(glyphastore_allocation_fault_tests
