@@ -258,6 +258,7 @@ set_target_properties(glyphastore_tls_layer PROPERTIES FOLDER "Libraries")
 
 add_library(glyphastore_client
     ${CMAKE_SOURCE_DIR}/src/client/client.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/client_error.cpp
 )
 add_library(GlyphaStore::client ALIAS glyphastore_client)
 set_target_properties(glyphastore_client PROPERTIES EXPORT_NAME client)
