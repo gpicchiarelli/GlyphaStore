@@ -1,6 +1,7 @@
 #include "glyphastore/client/client.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
 #include "harness.hpp"
@@ -733,11 +734,7 @@ store_config(const Options& options, const BenchmarkDataDirectory& directory,
 }
 
 [[nodiscard]] auto load_u32(const std::span<const std::byte> input) noexcept -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
-        value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(input[byte])) << (byte * 8U);
-    }
-    return value;
+    return glyphastore::le::get_u32(input, 0);
 }
 
 class BufferedResponseReader final {

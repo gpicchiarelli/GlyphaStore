@@ -64,8 +64,11 @@ Wave 6 docs/scripts may prepare matrices and `specified_waiting_for_runner` plac
 | **1** | Landed (partial) | Opt-in `generation_slot_pool` on official runtime; ADR 0036 still **proposed**; default remains Alternative A |
 | **2** | Landed (branch) | Hot-path padding / GET≤64 zero-heap proof / combining RAW litmus / wakeup+SPSC fairness; no dual ports |
 | **3** | Landed (partial — E3/E4 open) | In-process L4: compaction `storage_exhausted` + paced pre-intent faults; FileIoHooks EINTR/short write + sync EINTR + ENOSPC/EDQUOT/EIO/EROFS write + sync-EIO on compaction staging + backup copy; FileIoHooks intent write/sync and post-intent Manifest write/sync (promotion) faults; write-amp budget before intent (`GS-PERSIST-AMP-001`); backup ENOSPC/concurrent fence proofs; `GS-OPS-DEBT-001`; platform-durability evidence path placeholders. **Native disk-full / delayed-writeback device campaigns and E3/E4 certification remain open** (rehearsal ≠ certification). |
+| **4** | Landed (partial) | Daemon/sec: handoff exactly-once + concurrent tests; TLS `WANT_WRITE` flush litmus; abuse/audit concurrency; RST slot release + rate-limit window reconnect; adversarial soak profile stubs; Prometheus intentionally unsupported. Claim ceiling unchanged. No L1 publish/reclaim ownership. |
+| **5** | Open (residuals) | Wave 5 residuals tracked; no production-claim closure from scaffolding alone. |
+| **6** | Blocked | Absolute p99 / `glyphastore-linux-perf` and hardware campaigns absent; `specified_waiting_for_runner` placeholders only. |
 
-Wave 4 progress (branch `debt/l5l6-wave4-daemon-sec`): handoff exactly-once + concurrent
+Wave 4 detail (historically `debt/l5l6-wave4-daemon-sec`): handoff exactly-once + concurrent
 tests; TLS `WANT_WRITE` flush litmus; abuse/audit concurrency; RST slot release + rate-limit
 window reconnect; adversarial soak profile stubs (`hot-key` / `connection-churn` /
 `queue-saturation` / `adversarial-reclaim`); intentional Prometheus non-support + Phase 8

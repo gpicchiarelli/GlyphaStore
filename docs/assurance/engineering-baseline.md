@@ -37,8 +37,8 @@ generated [production-readiness view](../production-readiness.md).
 | No formal linearizability checker | High | P1 (Phase B) | history recorder | Concurrency regressions undetected |
 | Actions not pinned to commit SHA (Phase D: SHA pin + validator) | Medium | P2 (Phase D) | supply-chain policy | Done baseline; Dependabot must update SHAs |
 | Physical E3/E4 durability unset | High (claim honesty) | Keep open | hardware campaign | False durability confirmation |
-| Unified error taxonomy across wire/embedded/SDK | Medium | P1 (Phase B) | `docs/spec/error-taxonomy-v1.md` + fixture | Transport/deadline narrative vectors beyond fixture |
-| `legacy_mutex` policy not yet formalized | Medium | P1 (Phase B) | `docs/architecture/legacy-mutex-policy.md` | Removal still pending 0.2 |
+| Unified error taxonomy across wire/embedded/SDK | Closed (Phase B) | — | `docs/spec/error-taxonomy-v1.md` + `tests/fixtures/error_taxonomy_v1.json` | Transport/deadline vectors still narrative-only beyond wire fixture |
+| `legacy_mutex` policy formalized | Closed (Phase B) | — | `docs/architecture/legacy-mutex-policy.md` | Physical mutex removal still pending product 0.2 |
 | Performance budgets not gate-linked (Phase E: budget catalog) | Medium | P2 (Phase E) | hardware CI | Done baseline; absolute claims wait for `glyphastore-linux-perf` |
 
 ## Strategy

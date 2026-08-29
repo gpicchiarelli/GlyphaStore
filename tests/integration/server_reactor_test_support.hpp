@@ -1,5 +1,6 @@
 #pragma once
 
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/server.hpp"
@@ -61,11 +62,7 @@ open_paired_store_for_writer(std::size_t worker_count, std::size_t async_capacit
 }
 
 [[nodiscard]] inline auto load_u32(const std::span<const std::byte> input) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t byte = 0; byte < 4; ++byte) {
-        value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(input[byte])) << (byte * 8U);
-    }
-    return value;
+    return glyphastore::le::get_u32(input, 0);
 }
 
 [[nodiscard]] inline auto send_all(const int socket, const std::span<const std::byte> data) -> bool {

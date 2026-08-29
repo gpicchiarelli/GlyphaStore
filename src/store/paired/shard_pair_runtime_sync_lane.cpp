@@ -476,28 +476,70 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                         } else {
                             publication.record = captured->reference();
                             publication.durable.emplace(std::move(*captured));
+                            std::optional<GenerationSlotPool::Reservation> slot_reservation;
+                            if (lane.generation.uses_slot_pool()) {
+                                slot_reservation = try_reserve_publication_slot(lane.generation);
+                                if (!slot_reservation) {
+                                    status = Status{fail(
+                                        ErrorCode::resource_exhausted,
+                                        generation_admission_message(
+                                            GenerationAdmissionDecision::reader_quiescence_required))};
+                                    shadow_resolve_status();
+                                }
+                            }
+                            if (!status_resolved) {
+                                static_cast<void>(life.mark_publication_staged());
+                                if (!publish_incremental_read_mutations(
+                                        publication_ctx, std::span{&publication, 1}, slot_reservation,
+                                        nullptr)) {
+                                    generation_published = drain_durable_snapshot();
+                                    shadow_mark_published(generation_published);
+                                    publish_fail_closed();
+                                    status =
+                                        generation_published
+                                            ? ack_after_published_visibility()
+                                            : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                    shadow_resolve_status();
+                                } else {
+                                    store_generation_memory_stats(
+                                        lane.generation, lane.generation.writer_generation->memory_stats());
+                                    generation_published = true;
+                                    shadow_mark_published(true);
+                                    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
+                                        throw std::bad_alloc{};
+                                    }
+                                    reclaim_proportional();
+                                    status = Status{};
+                                    shadow_resolve_status();
+                                }
+                            }
+                        }
+                    } else {
+                        std::optional<GenerationSlotPool::Reservation> slot_reservation;
+                        if (lane.generation.uses_slot_pool()) {
+                            slot_reservation = try_reserve_publication_slot(lane.generation);
+                            if (!slot_reservation) {
+                                status = Status{fail(
+                                    ErrorCode::resource_exhausted,
+                                    generation_admission_message(
+                                        GenerationAdmissionDecision::reader_quiescence_required))};
+                                shadow_resolve_status();
+                            }
+                        }
+                        if (!status_resolved) {
                             static_cast<void>(life.mark_publication_staged());
-                            auto next = PairReadGeneration::publish_incremental(
-                                lane.generation.writer_generation, std::span{&publication, 1},
-                                lane.merge.read_merge.get());
-                            if (!next) {
+                            if (!publish_incremental_read_mutations(
+                                    publication_ctx, std::span{&publication, 1}, slot_reservation, nullptr)) {
                                 generation_published = drain_durable_snapshot();
                                 shadow_mark_published(generation_published);
                                 publish_fail_closed();
-                                status =
-                                    generation_published
-                                        ? ack_after_published_visibility()
-                                        : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                status = generation_published
+                                             ? ack_after_published_visibility()
+                                             : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                 shadow_resolve_status();
                             } else {
-                                install_writer_generation(
-                                    lane.generation.writer_generation, lane.generation.retired_generations,
-                                    lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                    ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
                                 store_generation_memory_stats(
                                     lane.generation, lane.generation.writer_generation->memory_stats());
-                                publish_read_generation(lane.generation.published_generation,
-                                                        lane.generation.writer_generation.get());
                                 generation_published = true;
                                 shadow_mark_published(true);
                                 if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
@@ -507,37 +549,6 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                 status = Status{};
                                 shadow_resolve_status();
                             }
-                        }
-                    } else {
-                        static_cast<void>(life.mark_publication_staged());
-                        auto next = PairReadGeneration::publish_incremental(lane.generation.writer_generation,
-                                                                            std::span{&publication, 1},
-                                                                            lane.merge.read_merge.get());
-                        if (!next) {
-                            generation_published = drain_durable_snapshot();
-                            shadow_mark_published(generation_published);
-                            publish_fail_closed();
-                            status = generation_published
-                                         ? ack_after_published_visibility()
-                                         : Status{fail(ErrorCode::unavailable, "read publication failed")};
-                            shadow_resolve_status();
-                        } else {
-                            install_writer_generation(
-                                lane.generation.writer_generation, lane.generation.retired_generations,
-                                lane.generation.retired_generation_count, lane.generation.writer_epoch,
-                                ShardPairRuntime::kMaximumRetiredReadGenerations, std::move(*next));
-                            store_generation_memory_stats(lane.generation,
-                                                          lane.generation.writer_generation->memory_stats());
-                            publish_read_generation(lane.generation.published_generation,
-                                                    lane.generation.writer_generation.get());
-                            generation_published = true;
-                            shadow_mark_published(true);
-                            if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
-                                throw std::bad_alloc{};
-                            }
-                            reclaim_proportional();
-                            status = Status{};
-                            shadow_resolve_status();
                         }
                     }
                 }
