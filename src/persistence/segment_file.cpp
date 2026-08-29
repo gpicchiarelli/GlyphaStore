@@ -1,4 +1,5 @@
 #include "glyphastore/persistence/segment_file.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/persistence/namespace_audit.hpp"
@@ -126,13 +127,8 @@ auto commit_failure(SegmentCommitOutcome outcome, Error error) -> SegmentCommitR
     return {.outcome = outcome, .error = std::move(error)};
 }
 
-auto get_u32(const std::span<const std::byte> bytes, std::size_t at) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t index = 0; index < sizeof(value); ++index) {
-        value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(bytes[at + index])) << (index * 8U);
-    }
-    return value;
-}
+using le::get_u32;
+
 
 auto fixed_hex(std::uint64_t value, std::size_t width) -> std::string {
     std::array<char, 16> digits{};

@@ -1,4 +1,5 @@
 #include "glyphastore/persistence/manifest.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/record.hpp"
@@ -17,47 +18,12 @@ namespace {
 inline constexpr std::size_t kManifestChecksumOffset = 80;
 inline constexpr std::size_t kChecksumBytes = 4;
 
-constexpr auto to_u8(std::byte value) noexcept -> std::uint8_t {
-    return std::to_integer<std::uint8_t>(value);
-}
-
-void put_u16(std::span<std::byte> out, std::size_t at, std::uint16_t value) {
-    out[at] = static_cast<std::byte>(value & 0xFFU);
-    out[at + 1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
-}
-
-void put_u32(std::span<std::byte> out, std::size_t at, std::uint32_t value) {
-    for (std::size_t index = 0; index < 4; ++index) {
-        out[at + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xFFU);
-    }
-}
-
-void put_u64(std::span<std::byte> out, std::size_t at, std::uint64_t value) {
-    for (std::size_t index = 0; index < 8; ++index) {
-        out[at + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xFFU);
-    }
-}
-
-auto get_u16(std::span<const std::byte> in, std::size_t at) -> std::uint16_t {
-    return static_cast<std::uint16_t>(to_u8(in[at])) |
-           static_cast<std::uint16_t>(static_cast<std::uint16_t>(to_u8(in[at + 1])) << 8U);
-}
-
-auto get_u32(std::span<const std::byte> in, std::size_t at) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t index = 0; index < 4; ++index) {
-        value |= static_cast<std::uint32_t>(to_u8(in[at + index])) << (index * 8U);
-    }
-    return value;
-}
-
-auto get_u64(std::span<const std::byte> in, std::size_t at) -> std::uint64_t {
-    std::uint64_t value{};
-    for (std::size_t index = 0; index < 8; ++index) {
-        value |= static_cast<std::uint64_t>(to_u8(in[at + index])) << (index * 8U);
-    }
-    return value;
-}
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
+using le::get_u16;
+using le::get_u32;
+using le::get_u64;
 
 auto all_zero(std::span<const std::byte> bytes) -> bool {
     return std::ranges::all_of(bytes, [](std::byte value) { return value == std::byte{0}; });

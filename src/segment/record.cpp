@@ -1,4 +1,5 @@
 #include "glyphastore/segment/record.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/core/checked_math.hpp"
 #include "glyphastore/segment/crc32c.hpp"
@@ -10,47 +11,12 @@
 namespace glyphastore {
 namespace {
 
-constexpr auto to_u8(std::byte value) noexcept -> std::uint8_t {
-    return std::to_integer<std::uint8_t>(value);
-}
-
-void put_u16(std::span<std::byte> out, std::size_t at, std::uint16_t value) {
-    out[at] = static_cast<std::byte>(value & 0xFFU);
-    out[at + 1] = static_cast<std::byte>((value >> 8U) & 0xFFU);
-}
-
-void put_u32(std::span<std::byte> out, std::size_t at, std::uint32_t value) {
-    for (std::size_t i = 0; i < 4; ++i) {
-        out[at + i] = static_cast<std::byte>((value >> (i * 8U)) & 0xFFU);
-    }
-}
-
-void put_u64(std::span<std::byte> out, std::size_t at, std::uint64_t value) {
-    for (std::size_t i = 0; i < 8; ++i) {
-        out[at + i] = static_cast<std::byte>((value >> (i * 8U)) & 0xFFU);
-    }
-}
-
-auto get_u16(std::span<const std::byte> in, std::size_t at) -> std::uint16_t {
-    return static_cast<std::uint16_t>(to_u8(in[at])) |
-           static_cast<std::uint16_t>(static_cast<std::uint16_t>(to_u8(in[at + 1])) << 8U);
-}
-
-auto get_u32(std::span<const std::byte> in, std::size_t at) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t i = 0; i < 4; ++i) {
-        value |= static_cast<std::uint32_t>(to_u8(in[at + i])) << (i * 8U);
-    }
-    return value;
-}
-
-auto get_u64(std::span<const std::byte> in, std::size_t at) -> std::uint64_t {
-    std::uint64_t value{};
-    for (std::size_t i = 0; i < 8; ++i) {
-        value |= static_cast<std::uint64_t>(to_u8(in[at + i])) << (i * 8U);
-    }
-    return value;
-}
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
+using le::get_u16;
+using le::get_u32;
+using le::get_u64;
 
 [[nodiscard]] auto validate_record_input(const RecordInput& input) -> Status {
     const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);
