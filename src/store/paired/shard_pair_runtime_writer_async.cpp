@@ -32,6 +32,17 @@ namespace glyphastore::store::paired {
 void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept {
     auto& lane = env.lane;
     const std::size_t shard = env.shard;
+    static const std::function<void()> kNoop{};
+    static const std::function<bool()> kNoopBool{[] { return false; }};
+    static const std::function<void(std::size_t)> kNoopSize{};
+    const std::function<void()>& publish_fail_closed =
+        env.hooks.publish_fail_closed != nullptr ? *env.hooks.publish_fail_closed : kNoop;
+    const std::function<void()>& reclaim_quiescent =
+        env.hooks.reclaim_quiescent != nullptr ? *env.hooks.reclaim_quiescent : kNoop;
+    const std::function<void(std::size_t)>& process_merge =
+        env.hooks.process_merge != nullptr ? *env.hooks.process_merge : kNoopSize;
+    const std::function<bool()>& drain_durable_snapshot =
+        env.hooks.drain_durable_snapshot != nullptr ? *env.hooks.drain_durable_snapshot : kNoopBool;
     const auto payload_for = [&lane](const runtime_detail::AsyncMutationTask& task) noexcept {
         auto payload = lane.payloads.view(task.payload_slot);
         if (!payload) {
@@ -210,10 +221,10 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
             }
             store_merge_progress(env.lane.merge);
             env.merge_retry_blocked = false;
-            env.hooks.reclaim_quiescent();
+            reclaim_quiescent();
         };
-        env.hooks.reclaim_quiescent();
-        env.hooks.process_merge(env.batch.size());
+        reclaim_quiescent();
+        process_merge(env.batch.size());
         auto generation_admission = decide_generation_admission(
             env.lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
             PairReadGeneration::can_publish_incremental(*env.lane.generation.writer_generation,
@@ -591,7 +602,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
         // When a later item fails publication after earlier commits, still publish
         // durable authority (snapshot) or already-staged volatile mutations so
         // successful siblings are not left unpublished with an error ACK.
-        // Snapshot/incremental MUST run before env.hooks.publish_fail_closed(): marking the
+        // Snapshot/incremental MUST run before publish_fail_closed(): marking the
         // durable catalog fail-closed first makes snapshot_published_reads reject.
         // After a successful durable drain, clear errors on clean commits (ACK-after-
         // publish) — capture-failed items must not keep error ACK while GET-visible.
@@ -602,7 +613,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
         try {
             if (post_commit_publication_failure && detail::StoreAccess::is_durable(store_) &&
                 (durable_commit_observed || !env.read_mutations.empty())) {
-                if (env.hooks.drain_durable_snapshot()) {
+                if (drain_durable_snapshot()) {
                     generation_published = true;
                     ack_clean_durable_after_drain();
                     if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
@@ -617,7 +628,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                         }
                     }
                 }
-                env.hooks.publish_fail_closed();
+                publish_fail_closed();
             } else if (post_commit_publication_failure && !env.read_mutations.empty()) {
                 const bool published_ok = publish_incremental_read_mutations(
                     env.publication_ctx, env.read_mutations, async_slot_reservation);
@@ -633,12 +644,12 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                     generation_published = true;
                     finish_published_generation();
                 }
-                env.hooks.publish_fail_closed();
+                publish_fail_closed();
             } else if (post_commit_publication_failure) {
                 if (async_slot_reservation) {
                     async_slot_reservation->reset();
                 }
-                env.hooks.publish_fail_closed();
+                publish_fail_closed();
             } else if (!env.read_mutations.empty()) {
                 bool published_ok = publish_incremental_read_mutations(
                     env.publication_ctx, env.read_mutations, async_slot_reservation);
@@ -646,7 +657,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                     // Durable happy-path incremental fail: drain Index before sticky close
                     // (mirror sync single-op). Volatile has nothing to drain.
                     if (detail::StoreAccess::is_durable(store_) && durable_commit_observed &&
-                        env.hooks.drain_durable_snapshot()) {
+                        drain_durable_snapshot()) {
                         generation_published = true;
                         ack_clean_durable_after_drain();
                         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
@@ -660,7 +671,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                                 "paired runtime is fail-closed");
                         }
                     }
-                    env.hooks.publish_fail_closed();
+                    publish_fail_closed();
                 } else {
                     generation_published = true;
                     finish_published_generation();
@@ -682,7 +693,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                     }
                 }
             }
-            env.hooks.publish_fail_closed();
+            publish_fail_closed();
         } catch (...) {
             if (generation_published) {
                 ack_staged_after_publish();
@@ -696,7 +707,7 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
                     }
                 }
             }
-            env.hooks.publish_fail_closed();
+            publish_fail_closed();
         }
         GS_PHASE_FINISH(generation_build_phase);
 

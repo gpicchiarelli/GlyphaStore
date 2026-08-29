@@ -509,22 +509,25 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     apply_volatile_sync_publication_chunk(
                         store_, shard, publication_ctx, std::span{view_storage.data(), chunk_size},
                         slot_reservation, VolatileSyncChunkMode::dedicated_writer, healthy_,
-                        publish_fail_closed, reclaim_proportional, prepare_publish_retry);
+                        &publish_fail_closed, &reclaim_proportional, &prepare_publish_retry);
                     bool chunk_failed = false;
+                    bool chunk_succeeded = false;
                     for (std::size_t index = 0; index < chunk_size; ++index) {
                         chunk[index]->status = view_storage[index].status;
                         if (!chunk[index]->status) {
                             chunk_failed = true;
+                        } else {
+                            chunk_succeeded = true;
                         }
                     }
                     for (std::size_t index = 0; index < chunk_size; ++index) {
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
-                    // put_batch >32 may span sync turns (kMaximumSyncTurnRecords=32) and/or
-                    // multiple publication chunks in one drain. A chunk that fails without
-                    // Store mutation must sticky-close so a later turn/chunk cannot success-ACK.
-                    if (chunk_failed) {
+                    // put_batch >32 may span sync turns. An all-failed chunk (typical of
+                    // process_fail_at before Store mutation) must sticky-close so a later
+                    // turn cannot success-ACK. Mixed success/failure stays non-sticky.
+                    if (chunk_failed && !chunk_succeeded) {
                         publish_fail_closed();
                         reject_remaining_fail_closed(rev);
                         break;

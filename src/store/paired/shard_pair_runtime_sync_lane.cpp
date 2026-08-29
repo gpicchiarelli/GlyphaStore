@@ -116,23 +116,32 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
     FailClosedState fail_closed{store_, healthy_, expire_remaining_};
     LanePublicationContext publication_ctx{lane.generation, lane.merge, store_, shard,
                                            ShardPairRuntime::kMaximumRetiredReadGenerations};
-    const auto publish_fail_closed = [&]() noexcept {
+    // Stable functors for apply_volatile (pointers; no per-chunk std::function temps).
+    // Construction itself may allocate — catch before the rest of this noexcept drain.
+    std::function<void()> publish_fail_closed;
+    std::function<void()> reclaim_proportional;
+    try {
+        publish_fail_closed = [&]() noexcept {
+            fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_and_store);
+        };
+        reclaim_proportional = [&]() noexcept {
+            if (lane.merge.read_merge) {
+                store_merge_progress(lane.merge);
+            }
+            constexpr std::size_t kReclaimPublishQuantum = 8;
+            if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
+                lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+                lane.generation.reclaim_requested.store(true, std::memory_order_release);
+                combiner_housekeeping(shard);
+            } else {
+                lane.generation.retired_generation_count.store(lane.generation.retired_debt(),
+                                                               std::memory_order_relaxed);
+            }
+        };
+    } catch (...) {
         fail_closed.arm(fail_closed_wakes_, FailClosedScope::pair_and_store);
-    };
-    const auto reclaim_proportional = [&]() noexcept {
-        if (lane.merge.read_merge) {
-            store_merge_progress(lane.merge);
-        }
-        constexpr std::size_t kReclaimPublishQuantum = 8;
-        if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
-            lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
-            lane.generation.reclaim_requested.store(true, std::memory_order_release);
-            combiner_housekeeping(shard);
-        } else {
-            lane.generation.retired_generation_count.store(lane.generation.retired_debt(),
-                                                           std::memory_order_relaxed);
-        }
-    };
+        return;
+    }
     const auto drain_durable_snapshot = [&]() noexcept -> bool {
         return try_drain_durable_snapshot(publication_ctx, true, reclaim_proportional);
     };
@@ -302,14 +311,25 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 }
                 apply_volatile_sync_publication_chunk(
                     store_, shard, publication_ctx, std::span{view_storage.data(), chunk_size},
-                    slot_reservation, VolatileSyncChunkMode::combiner, healthy_, publish_fail_closed,
-                    reclaim_proportional, {});
+                    slot_reservation, VolatileSyncChunkMode::combiner, healthy_, &publish_fail_closed,
+                    &reclaim_proportional, nullptr);
                 for (std::size_t index = 0; index < chunk_size; ++index) {
                     chunk[index]->status = view_storage[index].status;
                 }
                 for (std::size_t index = 0; index < chunk_size; ++index) {
                     chunk[index]->done.store(true, std::memory_order_release);
                     chunk[index]->done.notify_one();
+                }
+                if (!healthy_.load(std::memory_order_acquire)) {
+                    while (rev != nullptr) {
+                        auto* const next = rev->next;
+                        rev->status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                        rev->done.store(true, std::memory_order_release);
+                        rev->done.notify_one();
+                        rev = next;
+                    }
+                    break;
                 }
             }
             continue;

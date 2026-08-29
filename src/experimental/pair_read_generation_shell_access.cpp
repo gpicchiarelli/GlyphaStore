@@ -1,7 +1,7 @@
 // ADR 0036 lab-only ShellAccess definitions. Not part of the official paired
 // publication path; linked only into tests and generation-shell benchmarks.
 
-#include "store/paired/read_generation_shell_bridge.hpp"
+#include "experimental/pair_read_generation_shell_bridge.hpp"
 
 #include <utility>
 

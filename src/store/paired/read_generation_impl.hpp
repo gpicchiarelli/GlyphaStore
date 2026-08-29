@@ -3,7 +3,8 @@
 // Internal types for PairReadGeneration translation units.
 // Not installed; behavior-neutral extraction (Phase C decomposition).
 
-#include "store/paired/read_generation_index.hpp"
+#include "store/paired/read_generation_internals.hpp"
+#include "store/paired/read_generation_immutable.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 

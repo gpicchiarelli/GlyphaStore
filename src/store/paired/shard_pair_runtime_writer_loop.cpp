@@ -397,11 +397,11 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
             .read_mutation_indices = read_mutation_indices,
             .hooks = {},
         };
-        async_env.hooks.publish_fail_closed = publish_fail_closed;
-        async_env.hooks.reclaim_quiescent = reclaim_quiescent;
-        async_env.hooks.process_merge = process_merge;
-        async_env.hooks.drain_durable_snapshot = drain_durable_snapshot;
-        async_env.hooks.update_delta_stats = update_delta_stats;
+        async_env.hooks.publish_fail_closed = &publish_fail_closed;
+        async_env.hooks.reclaim_quiescent = &reclaim_quiescent;
+        async_env.hooks.process_merge = &process_merge;
+        async_env.hooks.drain_durable_snapshot = &drain_durable_snapshot;
+        async_env.hooks.update_delta_stats = &update_delta_stats;
         run_writer_async_batch(async_env);
     }
 }

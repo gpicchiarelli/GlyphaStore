@@ -43,12 +43,14 @@ struct VolatileSyncMutationView final {
 // Applies Store volatile mutations and publishes one incremental generation for
 // the chunk. Mutates `views[*].status` and invokes `reclaim_after_publish` on
 // success. Caller completes `done` notification.
+// Hooks are non-owning pointers to caller-stable functors. Passing temporaries
+// or assigning std::function under process_fail_at is unsafe (noexcept drains).
 void apply_volatile_sync_publication_chunk(
     Store& store, std::size_t shard, LanePublicationContext& publication,
     std::span<VolatileSyncMutationView> views,
     std::optional<GenerationSlotPool::Reservation>& slot_reservation, VolatileSyncChunkMode mode,
-    std::atomic_bool& healthy, const std::function<void()>& publish_fail_closed,
-    const std::function<void()>& reclaim_after_publish,
-    const std::function<void(std::size_t publication_count)>& prepare_publish_retry);
+    std::atomic_bool& healthy, const std::function<void()>* publish_fail_closed,
+    const std::function<void()>* reclaim_after_publish,
+    const std::function<void(std::size_t publication_count)>* prepare_publish_retry);
 
 } // namespace glyphastore::store::paired

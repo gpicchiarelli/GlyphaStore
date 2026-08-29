@@ -24,14 +24,21 @@ node_store_entered(const std::array<VolatileSyncMutationView*, kMaximumPublicati
     return false;
 }
 
+void invoke_hook(const std::function<void()>* hook) {
+    if (hook == nullptr) {
+        return;
+    }
+    (*hook)();
+}
+
 void handle_volatile_sync_exception(
     const VolatileSyncChunkMode mode, const bool store_mutated, const bool generation_published,
     std::span<VolatileSyncMutationView> views,
     const std::array<VolatileSyncMutationView*, kMaximumPublicationBatch>& published_nodes,
-    const std::size_t publication_count, const std::function<void()>& publish_fail_closed,
+    const std::size_t publication_count, const std::function<void()>* publish_fail_closed,
     const char* writer_failure_message) {
     if (store_mutated && !generation_published) {
-        publish_fail_closed();
+        invoke_hook(publish_fail_closed);
     }
     for (auto& view : views) {
         if (generation_published && view.status) {
@@ -63,7 +70,7 @@ apply_store_mutations(Store& store, const std::size_t shard, const VolatileSyncC
                       std::atomic_bool& healthy, std::span<VolatileSyncMutationView> views,
                       std::array<ReadMutation, kMaximumPublicationBatch>& publications,
                       std::array<VolatileSyncMutationView*, kMaximumPublicationBatch>& published_nodes,
-                      std::size_t& publication_count, const std::function<void()>& publish_fail_closed)
+                      std::size_t& publication_count, const std::function<void()>* publish_fail_closed)
     -> bool {
     const auto apply_one = [&](VolatileSyncMutationView& view) {
         GS_FAULT_SITE(mutate);
@@ -79,7 +86,7 @@ apply_store_mutations(Store& store, const std::size_t shard, const VolatileSyncC
             bool sticky = false;
             auto error = classify_volatile_mutation_error(published.error(), sticky);
             if (sticky) {
-                publish_fail_closed();
+                invoke_hook(publish_fail_closed);
             }
             view.status = Status{unexpected(std::move(error))};
             return;
@@ -92,7 +99,7 @@ apply_store_mutations(Store& store, const std::size_t shard, const VolatileSyncC
         ++publication_count;
         if (mode == VolatileSyncChunkMode::dedicated_writer &&
             glyphastore::fault::consume_fail(glyphastore::fault::Site::mutate)) {
-            publish_fail_closed();
+            invoke_hook(publish_fail_closed);
         }
     };
 
@@ -123,9 +130,9 @@ void apply_volatile_sync_publication_chunk(
     Store& store, const std::size_t shard, LanePublicationContext& publication,
     const std::span<VolatileSyncMutationView> views,
     std::optional<GenerationSlotPool::Reservation>& slot_reservation, const VolatileSyncChunkMode mode,
-    std::atomic_bool& healthy, const std::function<void()>& publish_fail_closed,
-    const std::function<void()>& reclaim_after_publish,
-    const std::function<void(std::size_t publication_count)>& prepare_publish_retry) {
+    std::atomic_bool& healthy, const std::function<void()>* publish_fail_closed,
+    const std::function<void()>* reclaim_after_publish,
+    const std::function<void(std::size_t publication_count)>* prepare_publish_retry) {
     if (views.empty()) {
         return;
     }
@@ -151,13 +158,16 @@ void apply_volatile_sync_publication_chunk(
         bool published_ok = false;
         {
             GS_PHASE_PUT(publish);
-            const auto& retry = mode == VolatileSyncChunkMode::dedicated_writer ? prepare_publish_retry
-                                                                                : std::function<void(std::size_t)>{};
+            static const std::function<void(std::size_t)> kNoopPrepare{};
+            const auto& retry = mode == VolatileSyncChunkMode::dedicated_writer &&
+                                        prepare_publish_retry != nullptr
+                                    ? *prepare_publish_retry
+                                    : kNoopPrepare;
             published_ok = publish_incremental_read_mutations(
                 publication, std::span{publications.data(), publication_count}, slot_reservation, retry);
         }
         if (!published_ok) {
-            publish_fail_closed();
+            invoke_hook(publish_fail_closed);
             for (std::size_t index = 0; index < publication_count; ++index) {
                 published_nodes[index]->status =
                     Status{fail(ErrorCode::unavailable, "read publication failed")};
@@ -171,7 +181,7 @@ void apply_volatile_sync_publication_chunk(
         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
             throw std::bad_alloc{};
         }
-        reclaim_after_publish();
+        invoke_hook(reclaim_after_publish);
     } catch (const std::bad_alloc&) {
         handle_volatile_sync_exception(mode, store_mutated, generation_published, views, published_nodes,
                                        publication_count, publish_fail_closed,

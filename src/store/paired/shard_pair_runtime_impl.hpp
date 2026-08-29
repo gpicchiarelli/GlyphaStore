@@ -240,11 +240,12 @@ struct ShardPairRuntime::Lane final {
 };
 
 struct WriterAsyncBatchHooks final {
-    std::function<void()> publish_fail_closed;
-    std::function<void()> reclaim_quiescent;
-    std::function<void(std::size_t)> process_merge;
-    std::function<bool()> drain_durable_snapshot;
-    std::function<void()> update_delta_stats;
+    // Non-owning pointers to Writer-loop-stable functors (same discipline as sync).
+    const std::function<void()>* publish_fail_closed{};
+    const std::function<void()>* reclaim_quiescent{};
+    const std::function<void(std::size_t)>* process_merge{};
+    const std::function<bool()>* drain_durable_snapshot{};
+    const std::function<void()>* update_delta_stats{};
 };
 
 struct WriterAsyncBatchEnv final {

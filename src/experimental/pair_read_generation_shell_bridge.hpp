@@ -1,7 +1,7 @@
 #pragma once
 
-// Official PairReadGeneration bridge to ADR 0036 generation-shell allocators.
-// Isolates experimental/ shell headers from read_generation_impl bulk.
+// ADR 0036 lab-only bridge: generation-shell allocators → PairReadGeneration.
+// Lives under experimental/; not part of the official paired publication path.
 
 #include "experimental/pair_read_generation_shell.hpp"
 #include "store/paired/read_generation_impl.hpp"
