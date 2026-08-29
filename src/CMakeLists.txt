@@ -289,6 +289,7 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/connection_handoff.cpp
     ${CMAKE_SOURCE_DIR}/src/server/crash_test_hooks.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/daemon_config_dump.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_log.cpp
     ${CMAKE_SOURCE_DIR}/src/server/disk_read_executor.cpp
     ${CMAKE_SOURCE_DIR}/src/server/pair_writer.cpp
@@ -296,6 +297,7 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/peercred.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_dispatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/reactor_io.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/server/security_audit.cpp
     ${CMAKE_SOURCE_DIR}/src/server/server.cpp
