@@ -270,13 +270,16 @@ struct WriterAsyncBatchEnv final {
 };
 
 struct WriterSyncDrainHooks final {
-    std::function<void()> publish_fail_closed;
-    std::function<void()> sticky_pair_before_durable_mark;
-    std::function<void()> reclaim_quiescent;
-    std::function<void()> reclaim_proportional;
-    std::function<bool()> drain_durable_snapshot;
-    std::function<void(std::size_t)> process_merge;
-    std::function<void()> update_delta_stats;
+    // Non-owning pointers to Writer-loop-stable functors. Assigning std::function
+    // into these each drain turn allocates and is unsafe under process_fail_at.
+    const std::function<void()>* publish_fail_closed{};
+    const std::function<void()>* sticky_pair_before_durable_mark{};
+    const std::function<void()>* reclaim_quiescent{};
+    const std::function<void()>* reclaim_proportional{};
+    const std::function<bool()>* drain_durable_snapshot{};
+    const std::function<void(std::size_t)>* process_merge{};
+    const std::function<void()>* update_delta_stats{};
+    const std::function<void(std::size_t)>* prepare_publish_retry{};
 };
 
 struct WriterSyncDrainEnv final {

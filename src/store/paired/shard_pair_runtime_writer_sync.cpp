@@ -16,6 +16,7 @@
 
 #include <cassert>
 #include <exception>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -31,13 +32,26 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
     auto& carried_sync = env.carried_sync;
     auto& merge_retry_blocked = env.merge_retry_blocked;
     auto& publication_ctx = env.publication_ctx;
-    const auto& publish_fail_closed = env.hooks.publish_fail_closed;
-    const auto& sticky_pair_before_durable_mark = env.hooks.sticky_pair_before_durable_mark;
-    const auto& reclaim_quiescent = env.hooks.reclaim_quiescent;
-    const auto& reclaim_proportional = env.hooks.reclaim_proportional;
-    const auto& drain_durable_snapshot = env.hooks.drain_durable_snapshot;
-    const auto& process_merge = env.hooks.process_merge;
-    const auto& update_delta_stats = env.hooks.update_delta_stats;
+    static const std::function<void()> kNoop{};
+    static const std::function<bool()> kNoopBool{[] { return false; }};
+    static const std::function<void(std::size_t)> kNoopSize{};
+    const std::function<void()>& publish_fail_closed =
+        env.hooks.publish_fail_closed != nullptr ? *env.hooks.publish_fail_closed : kNoop;
+    const std::function<void()>& sticky_pair_before_durable_mark =
+        env.hooks.sticky_pair_before_durable_mark != nullptr ? *env.hooks.sticky_pair_before_durable_mark
+                                                            : kNoop;
+    const std::function<void()>& reclaim_quiescent =
+        env.hooks.reclaim_quiescent != nullptr ? *env.hooks.reclaim_quiescent : kNoop;
+    const std::function<void()>& reclaim_proportional =
+        env.hooks.reclaim_proportional != nullptr ? *env.hooks.reclaim_proportional : kNoop;
+    const std::function<bool()>& drain_durable_snapshot =
+        env.hooks.drain_durable_snapshot != nullptr ? *env.hooks.drain_durable_snapshot : kNoopBool;
+    const std::function<void(std::size_t)>& process_merge =
+        env.hooks.process_merge != nullptr ? *env.hooks.process_merge : kNoopSize;
+    const std::function<void()>& update_delta_stats =
+        env.hooks.update_delta_stats != nullptr ? *env.hooks.update_delta_stats : kNoop;
+    const std::function<void(std::size_t)>& prepare_publish_retry =
+        env.hooks.prepare_publish_retry != nullptr ? *env.hooks.prepare_publish_retry : kNoopSize;
 
     bool drained_sync_turn = false;
     for (;;) {
@@ -401,86 +415,148 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     chunk[chunk_size++] = rev;
                     rev = rev->next;
                 }
-                reclaim_quiescent();
-                process_merge(chunk_size);
-                auto generation_admission = decide_generation_admission(
-                    lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
-                    PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                lane.merge.read_merge.get(), chunk_size));
-                generation_admission = runtime_detail::wait_generation_admission(
-                    generation_admission,
-                    [&] {
-                        reclaim_quiescent();
-                        process_merge(chunk_size);
-                    },
-                    [&] {
-                        return decide_generation_admission(
-                            lane.generation.retired_debt(),
-                            ShardPairRuntime::kMaximumRetiredReadGenerations,
-                            PairReadGeneration::can_publish_incremental(
-                                *lane.generation.writer_generation, lane.merge.read_merge.get(),
-                                chunk_size));
-                    });
-                if (generation_admission != GenerationAdmissionDecision::admitted) {
-                    lane.generation.generation_admission_backpressure_total.fetch_add(
-                        chunk_size, std::memory_order_relaxed);
-                    if (generation_admission == GenerationAdmissionDecision::incremental_merge_required) {
-                        lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
-                    }
-                    for (std::size_t index = 0; index < chunk_size; ++index) {
-                        // Never Store-entered — same polarity as async generation pressure.
-                        chunk[index]->status =
-                            Status{fail(ErrorCode::resource_exhausted,
-                                        generation_admission_message(generation_admission))};
-                        chunk[index]->done.store(true, std::memory_order_release);
-                        chunk[index]->done.notify_one();
-                    }
-                    continue;
-                }
                 std::optional<GenerationSlotPool::Reservation> slot_reservation;
-                if (lane.generation.uses_slot_pool()) {
-                    slot_reservation = try_reserve_publication_slot(lane.generation);
-                    if (!slot_reservation) {
-                        lane.generation.generation_admission_backpressure_total.fetch_add(
-                            chunk_size, std::memory_order_relaxed);
+                // run_writer_sync_drain is noexcept: allocation faults from merge /
+                // reclaim / admission must not escape past apply_volatile's own try.
+                try {
+                    reclaim_quiescent();
+                    process_merge(chunk_size);
+                    if (!healthy_.load(std::memory_order_acquire)) {
                         for (std::size_t index = 0; index < chunk_size; ++index) {
                             chunk[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted,
-                                     generation_admission_message(
-                                         GenerationAdmissionDecision::reader_quiescence_required))};
+                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            chunk[index]->done.store(true, std::memory_order_release);
+                            chunk[index]->done.notify_one();
+                        }
+                        reject_remaining_fail_closed(rev);
+                        break;
+                    }
+                    auto generation_admission = decide_generation_admission(
+                        lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
+                        PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
+                                                                    lane.merge.read_merge.get(),
+                                                                    chunk_size));
+                    generation_admission = runtime_detail::wait_generation_admission(
+                        generation_admission,
+                        [&] {
+                            reclaim_quiescent();
+                            process_merge(chunk_size);
+                        },
+                        [&] {
+                            return decide_generation_admission(
+                                lane.generation.retired_debt(),
+                                ShardPairRuntime::kMaximumRetiredReadGenerations,
+                                PairReadGeneration::can_publish_incremental(
+                                    *lane.generation.writer_generation, lane.merge.read_merge.get(),
+                                    chunk_size));
+                        });
+                    if (!healthy_.load(std::memory_order_acquire)) {
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            chunk[index]->status = Status{
+                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            chunk[index]->done.store(true, std::memory_order_release);
+                            chunk[index]->done.notify_one();
+                        }
+                        reject_remaining_fail_closed(rev);
+                        break;
+                    }
+                    if (generation_admission != GenerationAdmissionDecision::admitted) {
+                        lane.generation.generation_admission_backpressure_total.fetch_add(
+                            chunk_size, std::memory_order_relaxed);
+                        if (generation_admission ==
+                            GenerationAdmissionDecision::incremental_merge_required) {
+                            lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
+                        }
+                        for (std::size_t index = 0; index < chunk_size; ++index) {
+                            // Never Store-entered — same polarity as async generation pressure.
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted,
+                                            generation_admission_message(generation_admission))};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
                         continue;
                     }
-                }
-                std::array<VolatileSyncMutationView, kMaximumPublicationBatch> view_storage{};
-                for (std::size_t index = 0; index < chunk_size; ++index) {
-                    const auto* node = chunk[index];
-                    view_storage[index] = VolatileSyncMutationView{
-                        .kind = node->kind == MutationKind::put ? VolatileSyncMutationView::Kind::put
-                                                                : VolatileSyncMutationView::Kind::erase,
-                        .key = node->key,
-                        .value = node->value,
-                        .expire_at_ns = node->expire_at_ns,
-                        .status = node->status,
-                    };
-                }
-                apply_volatile_sync_publication_chunk(
-                    store_, shard, publication_ctx, std::span{view_storage.data(), chunk_size},
-                    slot_reservation, VolatileSyncChunkMode::dedicated_writer, healthy_,
-                    publish_fail_closed, reclaim_proportional, [&](const std::size_t published_count) {
-                        reclaim_quiescent();
-                        process_merge(published_count);
-                    });
-                for (std::size_t index = 0; index < chunk_size; ++index) {
-                    chunk[index]->status = view_storage[index].status;
-                }
-                for (std::size_t index = 0; index < chunk_size; ++index) {
-                    chunk[index]->done.store(true, std::memory_order_release);
-                    chunk[index]->done.notify_one();
-                }
-                if (!healthy_.load(std::memory_order_acquire)) {
+                    if (lane.generation.uses_slot_pool()) {
+                        slot_reservation = try_reserve_publication_slot(lane.generation);
+                        if (!slot_reservation) {
+                            lane.generation.generation_admission_backpressure_total.fetch_add(
+                                chunk_size, std::memory_order_relaxed);
+                            for (std::size_t index = 0; index < chunk_size; ++index) {
+                                chunk[index]->status = Status{
+                                    fail(ErrorCode::resource_exhausted,
+                                         generation_admission_message(
+                                             GenerationAdmissionDecision::reader_quiescence_required))};
+                                chunk[index]->done.store(true, std::memory_order_release);
+                                chunk[index]->done.notify_one();
+                            }
+                            continue;
+                        }
+                    }
+                    std::array<VolatileSyncMutationView, kMaximumPublicationBatch> view_storage{};
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        const auto* node = chunk[index];
+                        view_storage[index] = VolatileSyncMutationView{
+                            .kind = node->kind == MutationKind::put ? VolatileSyncMutationView::Kind::put
+                                                                    : VolatileSyncMutationView::Kind::erase,
+                            .key = node->key,
+                            .value = node->value,
+                            .expire_at_ns = node->expire_at_ns,
+                            .status = node->status,
+                        };
+                    }
+                    // Use the Writer-stable prepare_publish_retry (no per-chunk std::function).
+                    apply_volatile_sync_publication_chunk(
+                        store_, shard, publication_ctx, std::span{view_storage.data(), chunk_size},
+                        slot_reservation, VolatileSyncChunkMode::dedicated_writer, healthy_,
+                        publish_fail_closed, reclaim_proportional, prepare_publish_retry);
+                    bool chunk_failed = false;
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        chunk[index]->status = view_storage[index].status;
+                        if (!chunk[index]->status) {
+                            chunk_failed = true;
+                        }
+                    }
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        chunk[index]->done.store(true, std::memory_order_release);
+                        chunk[index]->done.notify_one();
+                    }
+                    // put_batch >32 may span sync turns (kMaximumSyncTurnRecords=32) and/or
+                    // multiple publication chunks in one drain. A chunk that fails without
+                    // Store mutation must sticky-close so a later turn/chunk cannot success-ACK.
+                    if (chunk_failed) {
+                        publish_fail_closed();
+                        reject_remaining_fail_closed(rev);
+                        break;
+                    }
+                    if (!healthy_.load(std::memory_order_acquire)) {
+                        reject_remaining_fail_closed(rev);
+                        break;
+                    }
+                } catch (const std::bad_alloc&) {
+                    publish_fail_closed();
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        if (chunk[index]->done.load(std::memory_order_acquire)) {
+                            continue;
+                        }
+                        chunk[index]->status = Status{
+                            fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                        chunk[index]->done.store(true, std::memory_order_release);
+                        chunk[index]->done.notify_one();
+                    }
+                    reject_remaining_fail_closed(rev);
+                    break;
+                } catch (...) {
+                    publish_fail_closed();
+                    for (std::size_t index = 0; index < chunk_size; ++index) {
+                        if (chunk[index]->done.load(std::memory_order_acquire)) {
+                            continue;
+                        }
+                        chunk[index]->status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired Writer failure")};
+                        chunk[index]->done.store(true, std::memory_order_release);
+                        chunk[index]->done.notify_one();
+                    }
                     reject_remaining_fail_closed(rev);
                     break;
                 }
