@@ -39,11 +39,13 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/recovery/recovery_scanner.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/resource_limits.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_batch.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_detail.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_read_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_rotate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_mutate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_maintenance.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_compact.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file_io.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_verify.cpp
