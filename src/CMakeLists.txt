@@ -28,6 +28,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/compaction_builder.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/compaction_intent.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/filesystem.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/filesystem_directory.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/manifest.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/namespace_audit.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/durable_flush_coordinator.cpp
