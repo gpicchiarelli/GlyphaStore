@@ -58,6 +58,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/segment/segment.cpp
     ${CMAKE_SOURCE_DIR}/src/segment/segment_header.cpp
     ${CMAKE_SOURCE_DIR}/src/store/maintenance.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/maintenance_evaluate.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_slot_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_state.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/completion_policy.cpp
