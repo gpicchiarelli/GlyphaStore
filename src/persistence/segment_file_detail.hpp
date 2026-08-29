@@ -2,6 +2,7 @@
 
 #include "glyphastore/persistence/segment_file.hpp"
 
+#include "filesystem_detail.hpp"
 #include "system_error.hpp"
 
 #include <array>
@@ -9,6 +10,7 @@
 #include <charconv>
 #include <cstdint>
 #include <fcntl.h>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
@@ -17,21 +19,8 @@
 
 namespace glyphastore::segment_file_detail {
 
-inline auto interrupted_open(const char* path, int flags) -> int {
-    int descriptor{};
-    do {
-        descriptor = ::open(path, flags);
-    } while (descriptor < 0 && errno == EINTR);
-    return descriptor;
-}
-
-inline auto interrupted_open_at(int directory, const char* name, int flags, mode_t mode = 0) -> int {
-    int descriptor{};
-    do {
-        descriptor = ::openat(directory, name, flags, mode);
-    } while (descriptor < 0 && errno == EINTR);
-    return descriptor;
-}
+using persistence_detail::interrupted_open;
+using persistence_detail::interrupted_open_at;
 
 inline auto validate_private_segment(int descriptor) -> Status {
     struct stat status{};

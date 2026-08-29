@@ -1,26 +1,15 @@
 #include "glyphastore/persistence/filesystem.hpp"
 
-#include "glyphastore/persistence/namespace_audit.hpp"
-#include "glyphastore/persistence/segment_file.hpp"
+#include "filesystem_detail.hpp"
 #include "system_error.hpp"
 
-#include <algorithm>
 #include <cerrno>
 #include <climits>
-#include <cstring>
-#include <dirent.h>
 #include <fcntl.h>
 #include <limits>
-#include <memory>
-#include <string>
-#include <string_view>
-#include <sys/file.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <unistd.h>
-#include <vector>
-
-#include "filesystem_detail.hpp"
+#include <utility>
 
 namespace glyphastore {
 

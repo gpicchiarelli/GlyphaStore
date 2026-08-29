@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 
 namespace glyphastore::maintenance_detail {
 

@@ -1,15 +1,18 @@
 #pragma once
 
 #include "glyphastore/client/client.hpp"
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/protocol.hpp"
 #include "glyphastore/server/tls.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <netdb.h>
@@ -17,6 +20,7 @@
 #include <netinet/tcp.h>
 #include <optional>
 #include <poll.h>
+#include <ranges>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
@@ -81,11 +85,11 @@ struct ExchangeFailure {
 
 using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
 
-[[nodiscard]] auto system_error(const ErrorCode code, const std::string_view operation) -> Error {
+[[nodiscard]] inline auto system_error(const ErrorCode code, const std::string_view operation) -> Error {
     return {code, std::string{operation} + ": " + std::strerror(errno)};
 }
 
-[[nodiscard]] auto wait_for(const int descriptor, const short events, const Clock::time_point deadline)
+[[nodiscard]] inline auto wait_for(const int descriptor, const short events, const Clock::time_point deadline)
     -> Status {
     for (;;) {
         const auto now = Clock::now();
@@ -113,7 +117,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     }
 }
 
-[[nodiscard]] auto connect_socket(const ClientConfig& config) -> Result<Socket> {
+[[nodiscard]] inline auto connect_socket(const ClientConfig& config) -> Result<Socket> {
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -172,14 +176,6 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
     return unexpected(std::move(last_error));
 }
 
-[[nodiscard]] auto load_u32(const std::span<const std::byte> input) noexcept -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t index = 0; index < sizeof(value); ++index) {
-        value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(input[index])) << (index * 8U);
-    }
-    return value;
-}
-
 struct WorkerConnection {
     explicit WorkerConnection(const std::uint32_t index) : worker(index) {
         input.reserve(64U * 1024U);
@@ -200,7 +196,7 @@ struct WorkerConnection {
     std::size_t input_offset{};
 };
 
-[[nodiscard]] auto send_frame(WorkerConnection& connection, const std::span<const std::byte> frame,
+[[nodiscard]] inline auto send_frame(WorkerConnection& connection, const std::span<const std::byte> frame,
                               const Clock::time_point deadline)
     -> std::variant<std::size_t, ExchangeFailure> {
     std::size_t sent{};
@@ -252,7 +248,7 @@ struct WorkerConnection {
     return sent;
 }
 
-[[nodiscard]] auto receive_exact(WorkerConnection& connection, const std::span<std::byte> output,
+[[nodiscard]] inline auto receive_exact(WorkerConnection& connection, const std::span<std::byte> output,
                                  const Clock::time_point deadline) -> Status {
     std::size_t received{};
     while (received < output.size()) {
@@ -300,14 +296,14 @@ struct WorkerConnection {
     return {};
 }
 
-[[nodiscard]] auto receive_response(WorkerConnection& connection, const ClientConfig& config,
+[[nodiscard]] inline auto receive_response(WorkerConnection& connection, const ClientConfig& config,
                                     const Clock::time_point deadline, const std::size_t request_bytes_sent)
     -> ExchangeResult {
     std::array<std::byte, sizeof(std::uint32_t)> size_bytes{};
     if (auto received = receive_exact(connection, size_bytes, deadline); !received) {
         return ExchangeFailure{received.error(), request_bytes_sent};
     }
-    const auto frame_size = static_cast<std::size_t>(load_u32(size_bytes));
+    const auto frame_size = static_cast<std::size_t>(le::get_u32(size_bytes, 0));
     if (frame_size < server::kResponseHeaderBytes || frame_size > config.maximum_frame_bytes) {
         return ExchangeFailure{{ErrorCode::corrupted_data, "server response size is outside client limits"},
                                request_bytes_sent};
@@ -332,7 +328,7 @@ struct WorkerConnection {
                          .value = {decoded->frame.value.begin(), decoded->frame.value.end()}};
 }
 
-[[nodiscard]] auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
+[[nodiscard]] inline auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
                             const ClientConfig& config, const Clock::time_point deadline) -> ExchangeResult {
     auto sent = send_frame(connection, request, deadline);
     if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
@@ -342,13 +338,13 @@ struct WorkerConnection {
     return receive_response(connection, config, deadline, request_bytes_sent);
 }
 
-[[nodiscard]] auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
+[[nodiscard]] inline auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
                             const ClientConfig& config) -> ExchangeResult {
     const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
     return exchange(connection, request, config, deadline);
 }
 
-[[nodiscard]] auto category_for(const ErrorCode code) -> std::string {
+[[nodiscard]] inline auto category_for(const ErrorCode code) -> std::string {
     switch (code) {
     case ErrorCode::invalid_argument:
     case ErrorCode::record_too_large:
@@ -370,11 +366,6 @@ struct WorkerConnection {
     }
 }
 
-[[nodiscard]] auto retryability_for(const std::string_view category, const bool mutation_sent,
-                                    const bool indeterminate) -> std::string {
-    return portable_retryability(category, mutation_sent, indeterminate);
-}
-
 [[nodiscard]] auto
 enrich_error(Error error, const std::string_view operation, const std::optional<std::uint64_t> request_id,
              const std::optional<std::uint32_t> worker, const std::optional<std::uint64_t> routing_epoch,
@@ -393,29 +384,29 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
     }
     if (mutation) {
         error.mutation_outcome = indeterminate ? "indeterminate" : "rejected";
-        error.retryability = retryability_for(error.category, bytes_sent > 0, indeterminate);
+        error.retryability = portable_retryability(error.category, bytes_sent > 0, indeterminate);
         if (bytes_sent > 0 && error.category == "transport") {
             error.retryability = "reconcile_first";
         }
     } else {
-        error.retryability = retryability_for(error.category, false, false);
+        error.retryability = portable_retryability(error.category, false, false);
     }
     return error;
 }
 
-[[nodiscard]] auto response_error(const server::ResponseStatus status) -> Error {
+[[nodiscard]] inline auto response_error(const server::ResponseStatus status) -> Error {
     return error_from_wire_status(static_cast<std::uint16_t>(status));
 }
 
-[[nodiscard]] auto as_bytes(const std::string_view value) noexcept -> std::span<const std::byte> {
+[[nodiscard]] inline auto as_bytes(const std::string_view value) noexcept -> std::span<const std::byte> {
     return {reinterpret_cast<const std::byte*>(value.data()), value.size()};
 }
 
-[[nodiscard]] auto is_mutation(const PipelineOpcode opcode) noexcept -> bool {
+[[nodiscard]] inline auto is_mutation(const PipelineOpcode opcode) noexcept -> bool {
     return opcode == PipelineOpcode::put || opcode == PipelineOpcode::erase;
 }
 
-[[nodiscard]] auto operation_name(const server::RequestOpcode opcode) noexcept -> std::string_view {
+[[nodiscard]] inline auto operation_name(const server::RequestOpcode opcode) noexcept -> std::string_view {
     switch (opcode) {
     case server::RequestOpcode::init:
         return "init";
@@ -441,7 +432,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
     return "unknown";
 }
 
-[[nodiscard]] auto operation_name(const PipelineOpcode opcode) noexcept -> std::string_view {
+[[nodiscard]] inline auto operation_name(const PipelineOpcode opcode) noexcept -> std::string_view {
     switch (opcode) {
     case PipelineOpcode::get:
         return "get";
@@ -453,11 +444,11 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
     return "unknown";
 }
 
-[[nodiscard]] auto is_supported(const PipelineOpcode opcode) noexcept -> bool {
+[[nodiscard]] inline auto is_supported(const PipelineOpcode opcode) noexcept -> bool {
     return opcode == PipelineOpcode::get || opcode == PipelineOpcode::put || opcode == PipelineOpcode::erase;
 }
 
-[[nodiscard]] auto wire_opcode(const PipelineOpcode opcode) noexcept -> server::RequestOpcode {
+[[nodiscard]] inline auto wire_opcode(const PipelineOpcode opcode) noexcept -> server::RequestOpcode {
     switch (opcode) {
     case PipelineOpcode::get:
         return server::RequestOpcode::get;
@@ -469,7 +460,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
     return server::RequestOpcode::get;
 }
 
-[[nodiscard]] auto receive_buffered_response(WorkerConnection& connection, const ClientConfig& config,
+[[nodiscard]] inline auto receive_buffered_response(WorkerConnection& connection, const ClientConfig& config,
                                              const Clock::time_point deadline,
                                              const std::size_t request_bytes_sent) -> ExchangeResult {
     for (;;) {
@@ -477,7 +468,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
         if (available >= sizeof(std::uint32_t)) {
             const std::span<const std::byte> pending{connection.input.data() + connection.input_offset,
                                                      available};
-            const auto frame_size = static_cast<std::size_t>(load_u32(pending));
+            const auto frame_size = static_cast<std::size_t>(le::get_u32(pending, 0));
             if (frame_size < server::kResponseHeaderBytes || frame_size > config.maximum_frame_bytes) {
                 return ExchangeFailure{
                     {ErrorCode::corrupted_data, "server response size is outside client limits"},

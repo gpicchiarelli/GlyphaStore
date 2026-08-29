@@ -289,6 +289,7 @@ class ShardPairRuntime final {
 
   private:
     friend struct WriterAsyncBatchEnv;
+    // WriterSyncDrainEnv names private nested Lane/SyncMutation in its fields.
     friend struct WriterSyncDrainEnv;
 
     struct Lane;

@@ -1,8 +1,6 @@
-#include "glyphastore/store/paired/shard_combining_executor.hpp"
 #include "glyphastore/store/paired/shard_pair_runtime.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
-#include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/completion_policy.hpp"
 #include "glyphastore/store/paired/fail_closed_state.hpp"
@@ -21,7 +19,6 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <stdexcept>
 #include <utility>
 #include <vector>
 

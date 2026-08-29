@@ -7,6 +7,7 @@
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <sys/file.h>

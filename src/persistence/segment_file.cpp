@@ -1,26 +1,18 @@
 #include "glyphastore/persistence/segment_file.hpp"
-#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
-#include "glyphastore/persistence/namespace_audit.hpp"
-#include "glyphastore/segment/record.hpp"
 #include "system_error.hpp"
+#include "segment_file_detail.hpp"
 
-#include <array>
-#include <atomic>
 #include <cerrno>
-#include <charconv>
 #include <cstdint>
 #include <fcntl.h>
 #include <limits>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <utility>
-
-#include "segment_file_detail.hpp"
 
 namespace glyphastore {
 
