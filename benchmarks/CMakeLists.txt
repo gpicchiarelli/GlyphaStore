@@ -58,6 +58,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     )
     add_executable(glyphastore_generation_shell_benchmark
         generation_shell_benchmark.cpp
+        ${CMAKE_SOURCE_DIR}/src/experimental/pair_read_generation_shell_access.cpp
     )
     target_link_libraries(
         glyphastore_generation_shell_benchmark
@@ -93,6 +94,7 @@ if(GLYPHASTORE_BUILD_BENCHMARKS)
     set_target_properties(glyphastore_memory_census_benchmark PROPERTIES FOLDER "Benchmarks")
     add_executable(glyphastore_generation_publication_benchmark
         generation_publication_benchmark.cpp
+        ${CMAKE_SOURCE_DIR}/src/experimental/pair_read_generation_shell_access.cpp
     )
     target_link_libraries(
         glyphastore_generation_publication_benchmark

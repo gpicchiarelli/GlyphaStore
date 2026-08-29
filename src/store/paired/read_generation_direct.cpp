@@ -1,5 +1,7 @@
 #include "glyphastore/store/paired/read_generation.hpp"
-#include "store/paired/read_generation_shell_bridge.hpp"
+#include "store/paired/read_generation_impl.hpp"
+
+#include <algorithm>
 
 namespace glyphastore::store::paired {
 
@@ -8,8 +10,8 @@ auto PairReadGeneration::publish_incremental_direct(const PairReadGeneration& pr
                                                     GenerationDirectStorage& storage)
     -> Result<const PairReadGeneration*> {
     const PairReadGeneration* direct_result{};
-    auto built = publish_incremental_construct(previous, {}, mutations, nullptr, {}, nullptr, &storage,
-                                               &direct_result);
+    auto built =
+        publish_incremental_construct(previous, {}, mutations, nullptr, &storage, &direct_result);
     if (!built) {
         return unexpected(std::move(built.error()));
     }
@@ -101,39 +103,3 @@ void PairReadGeneration::destroy_direct(const PairReadGeneration* generation,
 }
 
 } // namespace glyphastore::store::paired
-
-auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental(
-    std::shared_ptr<const store::paired::PairReadGeneration> previous,
-    const std::span<const store::paired::ReadMutation> mutations,
-    std::shared_ptr<PairReadGenerationShellStorage> storage, store::paired::PairReadMerge* merge)
-    -> Result<std::shared_ptr<const store::paired::PairReadGeneration>> {
-    return store::paired::PairReadGeneration::publish_incremental_in_shell(std::move(previous), mutations,
-                                                                           merge, std::move(storage));
-}
-
-auto glyphastore::experimental::PairReadGenerationShellAccess::empty_direct(
-    const WorkerRoutingState routing, PairReadGenerationDirectStorage& storage)
-    -> Result<const store::paired::PairReadGeneration*> {
-    return store::paired::PairReadGeneration::empty_direct(routing, storage);
-}
-
-auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental_borrowed(
-    std::shared_ptr<const store::paired::PairReadGeneration> previous,
-    const std::span<const store::paired::ReadMutation> mutations,
-    PairReadGenerationInlineShellStorage& storage)
-    -> Result<std::shared_ptr<const store::paired::PairReadGeneration>> {
-    return store::paired::PairReadGeneration::publish_incremental_in_borrowed_shell(std::move(previous),
-                                                                                    mutations, storage);
-}
-
-auto glyphastore::experimental::PairReadGenerationShellAccess::publish_incremental_direct(
-    const store::paired::PairReadGeneration& previous,
-    const std::span<const store::paired::ReadMutation> mutations, PairReadGenerationDirectStorage& storage)
-    -> Result<const store::paired::PairReadGeneration*> {
-    return store::paired::PairReadGeneration::publish_incremental_direct(previous, mutations, storage);
-}
-
-void glyphastore::experimental::PairReadGenerationShellAccess::destroy_direct(
-    const store::paired::PairReadGeneration* generation, PairReadGenerationDirectStorage& storage) noexcept {
-    store::paired::PairReadGeneration::destroy_direct(generation, storage);
-}

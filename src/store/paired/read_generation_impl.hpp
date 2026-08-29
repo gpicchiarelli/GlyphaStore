@@ -549,4 +549,23 @@ struct PairReadGenerationEnableShared final : PairReadGeneration {
                                                             visible_through);
 }
 
+// Writer-side incremental publication prep shared by Alt-A shared_ptr, direct
+// slot-pool, and experimental fixed-shell allocators (ADR 0036 lab only).
+struct IncrementalBuildResult final {
+    std::optional<DeltaState> next_delta{};
+    std::optional<DeltaState> next_post{};
+    std::uint64_t visible_through{};
+    std::shared_ptr<const PairReadGeneration> empty_reuse{};
+};
+
+struct IncrementalPublicationAccess final {
+    [[nodiscard]] static auto prepare(const PairReadGeneration& previous,
+                                      const std::shared_ptr<const PairReadGeneration>* previous_owner,
+                                      const std::span<const ReadMutation> mutations, PairReadMerge* merge)
+        -> Result<IncrementalBuildResult>;
+
+    static void commit_merge(PairReadMerge* merge, IncrementalBuildResult& prepared,
+                             std::shared_ptr<const PairReadGeneration> next) noexcept;
+};
+
 } // namespace glyphastore::store::paired

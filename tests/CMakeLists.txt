@@ -132,6 +132,7 @@ if(BUILD_TESTING)
     add_executable(glyphastore_tests
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_reactor.cpp
         ${CMAKE_SOURCE_DIR}/src/experimental/paired_shard.cpp
+        ${CMAKE_SOURCE_DIR}/src/experimental/pair_read_generation_shell_access.cpp
         ${CMAKE_SOURCE_DIR}/tests/test_main.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/compaction_intent_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/compaction_tests.cpp

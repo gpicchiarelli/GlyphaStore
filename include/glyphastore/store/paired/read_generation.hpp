@@ -17,8 +17,6 @@
 
 namespace glyphastore::experimental {
 struct PairReadGenerationShellAccess;
-class PairReadGenerationShellStorage;
-class PairReadGenerationInlineShellStorage;
 } // namespace glyphastore::experimental
 
 namespace glyphastore::store::paired {
@@ -71,6 +69,7 @@ class ImmutableReadIndex;
 class DeltaState;
 class PairReadMerge;
 class GenerationSlotPool;
+struct IncrementalPublicationAccess;
 
 // Immutable two-level read view published by one paired Writer and adopted by
 // its Reader. GET performs at most one delta lookup and one base lookup.
@@ -177,21 +176,11 @@ class PairReadGeneration {
                                   std::span<const DurableRuntimeCatalog::PublishedReadRecord> records,
                                   std::uint64_t epoch, std::uint64_t visible_floor,
                                   GenerationDirectStorage& storage) -> Result<const PairReadGeneration*>;
-    [[nodiscard]] static auto
-    publish_incremental_in_shell(std::shared_ptr<const PairReadGeneration> previous,
-                                 std::span<const ReadMutation> mutations, PairReadMerge* merge,
-                                 std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
-        -> Result<std::shared_ptr<const PairReadGeneration>>;
-    [[nodiscard]] static auto
-    publish_incremental_in_borrowed_shell(std::shared_ptr<const PairReadGeneration> previous,
-                                          std::span<const ReadMutation> mutations,
-                                          experimental::PairReadGenerationInlineShellStorage& storage)
-        -> Result<std::shared_ptr<const PairReadGeneration>>;
+    // Shared/direct publication only. ADR 0036 lab shell allocators live in
+    // experimental/pair_read_generation_shell_access.cpp via ShellAccess.
     [[nodiscard]] static auto publish_incremental_construct(
         const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
         std::span<const ReadMutation> mutations, PairReadMerge* merge,
-        std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
-        experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
         GenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
         -> Result<std::shared_ptr<const PairReadGeneration>>;
     [[nodiscard]] static auto publish_incremental_direct(const PairReadGeneration& previous,
@@ -214,6 +203,7 @@ class PairReadGeneration {
 
     // Allow the .cpp co-allocation helper to construct and bind embedded delta storage.
     friend struct PairReadGenerationEnableShared;
+    friend struct IncrementalPublicationAccess;
     friend struct experimental::PairReadGenerationShellAccess;
     friend class GenerationSlotPool;
 };
@@ -233,6 +223,7 @@ class PairReadMerge final {
     std::unique_ptr<State> state_;
 
     friend class PairReadGeneration;
+    friend struct IncrementalPublicationAccess;
 };
 
 } // namespace glyphastore::store::paired

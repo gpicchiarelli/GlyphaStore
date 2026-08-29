@@ -1,5 +1,10 @@
 #include "glyphastore/store/paired/read_generation.hpp"
-#include "store/paired/read_generation_shell_bridge.hpp"
+#include "store/paired/read_generation_impl.hpp"
+
+#include <algorithm>
+#include <limits>
+#include <optional>
+#include <utility>
 
 namespace glyphastore::store::paired {
 
@@ -111,65 +116,29 @@ auto PairReadGeneration::publish_incremental(std::shared_ptr<const PairReadGener
         return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
     }
     const auto* previous_view = previous.get();
-    return publish_incremental_construct(*previous_view, std::move(previous), mutations, merge, {}, nullptr,
-                                         nullptr, nullptr);
+    return publish_incremental_construct(*previous_view, std::move(previous), mutations, merge, nullptr,
+                                         nullptr);
 }
 
-auto PairReadGeneration::publish_incremental_in_shell(
-    std::shared_ptr<const PairReadGeneration> previous, const std::span<const ReadMutation> mutations,
-    PairReadMerge* merge, std::shared_ptr<experimental::PairReadGenerationShellStorage> storage)
-    -> Result<std::shared_ptr<const PairReadGeneration>> {
-    if (!previous) {
-        return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
-    }
-    const auto* previous_view = previous.get();
-    return publish_incremental_construct(*previous_view, std::move(previous), mutations, merge,
-                                         std::move(storage), nullptr, nullptr, nullptr);
-}
-
-auto PairReadGeneration::publish_incremental_in_borrowed_shell(
-    std::shared_ptr<const PairReadGeneration> previous, const std::span<const ReadMutation> mutations,
-    experimental::PairReadGenerationInlineShellStorage& storage)
-    -> Result<std::shared_ptr<const PairReadGeneration>> {
-    if (!previous) {
-        return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
-    }
-    const auto* previous_view = previous.get();
-    return publish_incremental_construct(*previous_view, std::move(previous), mutations, nullptr, {},
-                                         &storage, nullptr, nullptr);
-}
-
-auto PairReadGeneration::publish_incremental_construct(
-    const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
-    const std::span<const ReadMutation> mutations, PairReadMerge* merge,
-    std::shared_ptr<experimental::PairReadGenerationShellStorage> owned_storage,
-    experimental::PairReadGenerationInlineShellStorage* borrowed_storage,
-    GenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
-    -> Result<std::shared_ptr<const PairReadGeneration>> try {
-    const auto construction_modes = static_cast<unsigned>(owned_storage != nullptr) +
-                                    static_cast<unsigned>(borrowed_storage != nullptr) +
-                                    static_cast<unsigned>(direct_storage != nullptr);
-    if (construction_modes > 1U || (direct_storage != nullptr) != (direct_result != nullptr)) {
-        return fail(ErrorCode::invalid_argument, "read publication has invalid construction ownership");
-    }
-    if (direct_result != nullptr) {
-        *direct_result = nullptr;
-    }
+auto IncrementalPublicationAccess::prepare(const PairReadGeneration& previous,
+                                           const std::shared_ptr<const PairReadGeneration>* previous_owner,
+                                           const std::span<const ReadMutation> mutations,
+                                           PairReadMerge* merge) -> Result<IncrementalBuildResult> {
     if (mutations.size() > kMaximumPublicationBatch ||
-        (merge != nullptr &&
-         (!previous_owner || !merge->state_ || merge->state_->current.get() != &previous))) {
+        (merge != nullptr && (previous_owner == nullptr || !*previous_owner || !merge->state_ ||
+                              merge->state_->current.get() != &previous))) {
         return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
     }
     if (mutations.empty()) {
-        if (!previous_owner) {
+        if (previous_owner == nullptr || !*previous_owner) {
             return fail(ErrorCode::invalid_argument, "direct publication requires a non-empty mutation");
         }
-        return previous_owner;
+        return IncrementalBuildResult{.empty_reuse = *previous_owner};
     }
     if (previous.epoch_ >= GenerationPublicationToken::kMaximumEpoch) {
         return fail(ErrorCode::arithmetic_overflow, "read generation epoch exhausted");
     }
-    if (!can_publish_incremental(previous, merge, mutations.size())) {
+    if (!PairReadGeneration::can_publish_incremental(previous, merge, mutations.size())) {
         return fail(ErrorCode::resource_exhausted, "incremental read delta capacity exhausted");
     }
 
@@ -207,11 +176,43 @@ auto PairReadGeneration::publish_incremental_construct(
         visible_through = std::max(visible_through, mutation.record.sequence.value);
     }
 
-    auto next_delta = std::move(current_builder).freeze();
-    std::optional<DeltaState> next_post;
+    IncrementalBuildResult prepared;
+    prepared.next_delta.emplace(std::move(current_builder).freeze());
     if (post_builder) {
-        next_post.emplace(std::move(*post_builder).freeze());
+        prepared.next_post.emplace(std::move(*post_builder).freeze());
     }
+    prepared.visible_through = visible_through;
+    return prepared;
+}
+
+void IncrementalPublicationAccess::commit_merge(PairReadMerge* merge, IncrementalBuildResult& prepared,
+                                                std::shared_ptr<const PairReadGeneration> next) noexcept {
+    if (merge == nullptr) {
+        return;
+    }
+    merge->state_->post_delta = std::move(*prepared.next_post);
+    merge->state_->current = std::move(next);
+}
+
+auto PairReadGeneration::publish_incremental_construct(
+    const PairReadGeneration& previous, std::shared_ptr<const PairReadGeneration> previous_owner,
+    const std::span<const ReadMutation> mutations, PairReadMerge* merge,
+    GenerationDirectStorage* direct_storage, const PairReadGeneration** direct_result)
+    -> Result<std::shared_ptr<const PairReadGeneration>> try {
+    if ((direct_storage != nullptr) != (direct_result != nullptr)) {
+        return fail(ErrorCode::invalid_argument, "read publication has invalid construction ownership");
+    }
+    if (direct_result != nullptr) {
+        *direct_result = nullptr;
+    }
+    auto prepared = IncrementalPublicationAccess::prepare(previous, &previous_owner, mutations, merge);
+    if (!prepared) {
+        return unexpected(std::move(prepared.error()));
+    }
+    if (prepared->empty_reuse) {
+        return std::move(prepared->empty_reuse);
+    }
+
     std::shared_ptr<const PairReadGeneration> next;
     if (direct_storage != nullptr) {
         static_assert(sizeof(PairReadGenerationEnableShared) <= GenerationDirectStorage::kBytes);
@@ -220,8 +221,9 @@ auto PairReadGeneration::publish_incremental_construct(
                                                alignof(PairReadGenerationEnableShared));
         try {
             auto* constructed = std::construct_at(static_cast<PairReadGenerationEnableShared*>(location),
-                                                  previous.routing_, previous.base_, std::move(next_delta),
-                                                  previous.epoch_ + 1U, visible_through);
+                                                  previous.routing_, previous.base_,
+                                                  std::move(*prepared->next_delta), previous.epoch_ + 1U,
+                                                  prepared->visible_through);
             *direct_result = constructed;
             // Merge retains a non-owning view; the slot pool owns destruction.
             next = std::shared_ptr<const PairReadGeneration>(constructed, [](const PairReadGeneration*) {});
@@ -229,22 +231,11 @@ auto PairReadGeneration::publish_incremental_construct(
             direct_storage->release(location);
             throw;
         }
-    } else if (borrowed_storage != nullptr) {
-        next = make_shared_generation_in_borrowed_shell(previous.routing_, previous.base_,
-                                                        std::move(next_delta), previous.epoch_ + 1U,
-                                                        visible_through, *borrowed_storage);
-    } else if (owned_storage) {
-        next =
-            make_shared_generation_in_shell(previous.routing_, previous.base_, std::move(next_delta),
-                                            previous.epoch_ + 1U, visible_through, std::move(owned_storage));
     } else {
-        next = make_shared_generation(previous.routing_, previous.base_, std::move(next_delta),
-                                      previous.epoch_ + 1U, visible_through);
+        next = make_shared_generation(previous.routing_, previous.base_, std::move(*prepared->next_delta),
+                                      previous.epoch_ + 1U, prepared->visible_through);
     }
-    if (merge != nullptr) {
-        merge->state_->post_delta = std::move(*next_post);
-        merge->state_->current = next;
-    }
+    IncrementalPublicationAccess::commit_merge(merge, *prepared, next);
     return next;
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "incremental read publication allocation failed");

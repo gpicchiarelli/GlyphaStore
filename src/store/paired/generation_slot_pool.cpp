@@ -96,7 +96,7 @@ auto GenerationSlotPool::publish_incremental(Reservation& reservation,
     }
     const PairReadGeneration* direct_result{};
     auto built = PairReadGeneration::publish_incremental_construct(
-        *previous, std::move(previous_owner), mutations, merge, {}, nullptr, &slot.storage, &direct_result);
+        *previous, std::move(previous_owner), mutations, merge, &slot.storage, &direct_result);
     if (!built || direct_result == nullptr) {
         reservation.reset();
         return GenerationSlotPublishStatus::invalid_generation;
