@@ -329,8 +329,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 }
                 static_cast<void>(life.apply_durable_result(result));
                 const auto ack_after_published_visibility = [&]() -> Status {
-                    const auto* published =
-                        lane.generation.published_generation.load(std::memory_order_acquire);
+                    // Same DualPath loader as Reader adopt (ADR 0036 token + mirrored pointer).
+                    const auto* published = load_published_generation(lane.generation);
                     if (published == nullptr) {
                         return Status{
                             fail(ErrorCode::unavailable, "paired read generation missing after drain")};

@@ -277,6 +277,7 @@ gates:
   prove:
   - tests/integration/persistence_recovery_tests.cpp
   - tests/integration/persistence_recovery_compaction_tests.cpp
+  - tests/integration/persistence_recovery_compaction_fileio_tests.cpp
   - tests/unit/persistence_filesystem_tests.cpp
   - tests/unit/store_backup_tests.cpp
   - tests/integration/compaction_builder_tests.cpp

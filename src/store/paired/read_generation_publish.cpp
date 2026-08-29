@@ -1,5 +1,5 @@
 #include "glyphastore/store/paired/read_generation.hpp"
-#include "store/paired/read_generation_impl.hpp"
+#include "store/paired/read_generation_shell_bridge.hpp"
 
 namespace glyphastore::store::paired {
 

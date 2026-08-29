@@ -199,6 +199,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_litmus_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_fileio_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_crash_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_test_support.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_reactor_prototype_tests.cpp

@@ -360,8 +360,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                 std::vector<SyncMutation*> sticky_committed_nodes;
                 sticky_committed_nodes.reserve(8);
                 const auto ack_sticky_after_visibility = [&]() noexcept {
-                    const auto* published =
-                        lane.generation.published_generation.load(std::memory_order_acquire);
+                    // Same DualPath loader as Reader adopt (ADR 0036 token + mirrored pointer).
+                    const auto* published = load_published_generation(lane.generation);
                     if (published == nullptr) {
                         return;
                     }
@@ -807,8 +807,8 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
                         // After drain/publish: success ACK iff published generation matches the
                         // mutation (put hit / erase miss). Index-insert-fail stays error+miss.
                         const auto ack_after_published_visibility = [&]() -> Status {
-                            const auto* published =
-                                lane.generation.published_generation.load(std::memory_order_acquire);
+                            // Same DualPath loader as Reader adopt (ADR 0036 token + mirrored pointer).
+                            const auto* published = load_published_generation(lane.generation);
                             if (published == nullptr) {
                                 return Status{fail(ErrorCode::unavailable,
                                                    "paired read generation missing after drain")};
