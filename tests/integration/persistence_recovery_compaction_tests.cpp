@@ -2042,3 +2042,115 @@ GLYPHA_TEST("online compaction FileIoHooks intent write and sync faults reject c
         GLYPHA_REQUIRE(owned_text(*(*reopened)->get(second_key)) == "beta");
     }
 }
+
+// GS-PERSIST-FAULT-001 / Wave 3 L4: FileIoHooks faults on Manifest write/sync during
+// post-intent promotion leave recovery_required; reopen selects one clean authority.
+GLYPHA_TEST("online compaction FileIoHooks promotion manifest faults recover cleanly") {
+    struct Case {
+        enum class Mode { write, sync } mode;
+        int write_error{EIO};
+        glyphastore::ErrorCode expected{glyphastore::ErrorCode::io_error};
+        const char* label;
+    };
+    struct PromotionFault final {
+        Case::Mode mode{};
+        int write_error{EIO};
+        bool arm_write{};
+        bool arm_sync{};
+        bool fired{};
+
+        static auto before(void* context, const glyphastore::FilesystemOperation operation)
+            -> glyphastore::Status {
+            auto& self = *static_cast<PromotionFault*>(context);
+            if (self.mode == Case::Mode::write &&
+                operation == glyphastore::FilesystemOperation::write_manifest) {
+                self.arm_write = true;
+            } else if (self.mode == Case::Mode::sync &&
+                       operation == glyphastore::FilesystemOperation::sync_manifest) {
+                self.arm_sync = true;
+            }
+            return {};
+        }
+
+        static auto read_some_at(void*, const int descriptor, const std::span<std::byte> bytes,
+                                 const std::uint64_t offset) -> std::ptrdiff_t {
+            return static_cast<std::ptrdiff_t>(
+                ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+
+        static auto write_some_at(void* context, const int descriptor,
+                                  const std::span<const std::byte> bytes, const std::uint64_t offset)
+            -> std::ptrdiff_t {
+            auto& self = *static_cast<PromotionFault*>(context);
+            if (self.arm_write) {
+                self.arm_write = false;
+                self.fired = true;
+                errno = self.write_error;
+                return -1;
+            }
+            return static_cast<std::ptrdiff_t>(
+                ::pwrite(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
+        }
+
+        static auto sync_file(void* context, const int descriptor, const glyphastore::FileSyncMode) -> int {
+            auto& self = *static_cast<PromotionFault*>(context);
+            if (self.arm_sync) {
+                self.arm_sync = false;
+                self.fired = true;
+                errno = EIO;
+                return -1;
+            }
+            return ::fsync(descriptor);
+        }
+    };
+
+    const std::vector<Case> cases{
+        {.mode = Case::Mode::write,
+         .write_error = EIO,
+         .expected = glyphastore::ErrorCode::io_error,
+         .label = "promo-eio"},
+        {.mode = Case::Mode::write,
+         .write_error = ENOSPC,
+         .expected = glyphastore::ErrorCode::storage_exhausted,
+         .label = "promo-enospc"},
+        {.mode = Case::Mode::sync, .expected = glyphastore::ErrorCode::io_error, .label = "promo-sync-eio"},
+    };
+    for (const auto& fault : cases) {
+        RecoveryTemporaryDirectory temporary;
+        const auto store_id = recovery_store_id();
+        const auto first_key = std::string{fault.label} + "-a";
+        const auto second_key = std::string{fault.label} + "-b";
+        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key, "alpha",
+                                                                second_key, "beta");
+
+        PromotionFault injected{.mode = fault.mode, .write_error = fault.write_error};
+        auto directory = glyphastore::DataDirectory::open_and_lock(
+            temporary.path(),
+            glyphastore::FilesystemHooks{
+                .context = &injected,
+                .before = &PromotionFault::before,
+                .file_io = {.context = &injected,
+                            .read_some_at = &PromotionFault::read_some_at,
+                            .write_some_at = &PromotionFault::write_some_at,
+                            .sync_file = &PromotionFault::sync_file}});
+        GLYPHA_REQUIRE(directory.has_value());
+        auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
+        GLYPHA_REQUIRE(runtime.has_value());
+        const auto result = (*runtime)->compact_worker(0, 0);
+        GLYPHA_REQUIRE(injected.fired);
+        GLYPHA_REQUIRE(!result.compacted());
+        GLYPHA_REQUIRE(result.error.has_value());
+        GLYPHA_REQUIRE(result.error->code == fault.expected);
+        // Intent already durable: promotion FileIoHooks faults require recovery.
+        GLYPHA_REQUIRE(result.outcome == glyphastore::DurableCompactionOutcome::recovery_required);
+        GLYPHA_REQUIRE(!(*runtime)->healthy());
+        runtime->reset();
+
+        auto reopened = glyphastore::DurableRuntimeCatalog::open_existing(temporary.path());
+        GLYPHA_REQUIRE(reopened.has_value());
+        GLYPHA_REQUIRE((*reopened)->healthy());
+        GLYPHA_REQUIRE((*reopened)->namespace_audit().clean());
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(first_key)) == "alpha");
+        GLYPHA_REQUIRE(owned_text(*(*reopened)->get(second_key)) == "beta");
+    }
+}

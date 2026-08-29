@@ -295,8 +295,8 @@ gates:
   - Removing deterministic seams without replacement
   - e3_certified=yes without pinned campaign
   narrative: Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS
-    FileIoHooks coverage across mutation, compaction staging+intent, and backup; platform-durability
-    evidence paths are placeholders only; E3 honesty enforced in CI.
+    FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup;
+    platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
 - id: GATE-FUZZ-CI
   titolo: Fuzz targets run in CI with retained corpora
   sezione: verification

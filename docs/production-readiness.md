@@ -106,7 +106,7 @@ The volatile engine under `src/experimental/` is lab-only.
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`, `GS-PERSIST-AMP-001`
   Residual risk: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
-  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS FileIoHooks coverage across mutation, compaction staging+intent, and backup; platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
+  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup; platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
 
 - [x] **GATE-FUZZ-CI** — Fuzz targets run in CI with retained corpora
   State: `PROVATA_IN_CI` · Release target: `alpha`
