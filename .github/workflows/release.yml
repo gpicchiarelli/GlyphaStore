@@ -539,7 +539,7 @@ jobs:
             --directory dist/release-candidate --seal candidate-seal.json
           python engineering/tools/validate_bsd_packaging.py --release
       - name: Build, install, exercise, restart, and remove package on FreeBSD
-        uses: vmactions/freebsd-vm@83b151f58c6047089f4c80eb5ba2039d158ce093 # v1
+        uses: vmactions/freebsd-vm@f0552d3b69211736abd97f02ff3d4674c56b73b1 # v1
         env:
           CANDIDATE_SEAL_SHA256: ${{ needs.candidate.outputs.candidate-seal-sha256 }}
         with:
@@ -612,7 +612,7 @@ jobs:
             --directory dist/release-candidate --seal candidate-seal.json
           python engineering/tools/validate_bsd_packaging.py --release
       - name: Build, install, exercise, restart, and remove package on OpenBSD
-        uses: vmactions/openbsd-vm@c941015845c0f0c429676840963dc63b226d4f69 # v1
+        uses: vmactions/openbsd-vm@86cdc08415d9d0865267e686561e276c52d62530 # v1
         env:
           CANDIDATE_SEAL_SHA256: ${{ needs.candidate.outputs.candidate-seal-sha256 }}
         with:
@@ -749,7 +749,7 @@ jobs:
       - name: Install C++ analysis build tools
         if: matrix.language == 'c-cpp'
         run: python -m pip install --disable-pip-version-check cmake ninja
-      - uses: github/codeql-action/init@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -765,7 +765,7 @@ jobs:
         if: matrix.language == 'go'
         run: cd sdk/go && go build ./...
       - name: Analyze without implicit SARIF upload
-        uses: github/codeql-action/analyze@5595ccaf912efad79be6eef63a5619ff05969be3 # v4.37.6
+        uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: /language:${{ matrix.language }}
           output: codeql-results-${{ matrix.language }}
