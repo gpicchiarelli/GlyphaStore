@@ -1,6 +1,5 @@
 #include "allocation_fault_test_support.hpp"
 #include "allocation_fault_tests_decl.hpp"
-
 #include "glyphastore/index/index.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/global_manager.hpp"

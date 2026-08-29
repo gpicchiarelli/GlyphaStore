@@ -74,9 +74,10 @@ void reclaim_quiescent_generations(GenerationState& generation, ReclamationState
 [[nodiscard]] auto try_reserve_publication_slot(GenerationState& generation) noexcept
     -> std::optional<GenerationSlotPool::Reservation>;
 
-[[nodiscard]] auto replace_durable_snapshot_and_publish(
-    LanePublicationContext& context,
-    std::span<const DurableRuntimeCatalog::PublishedReadRecord> records) -> DualPathPublishOutcome;
+[[nodiscard]] auto
+replace_durable_snapshot_and_publish(LanePublicationContext& context,
+                                     std::span<const DurableRuntimeCatalog::PublishedReadRecord> records)
+    -> DualPathPublishOutcome;
 
 void note_catalog_snapshot_installed(LanePublicationContext& context,
                                      std::uint64_t catalog_revision) noexcept;
@@ -87,14 +88,13 @@ void note_catalog_snapshot_installed(LanePublicationContext& context,
 [[nodiscard]] auto publish_incremental_read_mutations(
     LanePublicationContext& context, std::span<const ReadMutation> mutations,
     std::optional<GenerationSlotPool::Reservation>& slot_reservation,
-    const std::function<void(std::size_t publication_count)>* prepare_publish_retry = nullptr)
-    -> bool;
+    const std::function<void(std::size_t publication_count)>* prepare_publish_retry = nullptr) -> bool;
 
 [[nodiscard]] inline auto load_published_generation(const GenerationState& generation) noexcept
     -> const PairReadGeneration* {
     if (generation.uses_slot_pool()) {
-        const auto token = GenerationPublicationToken{
-            .raw = generation.published_token.load(std::memory_order_acquire)};
+        const auto token =
+            GenerationPublicationToken{.raw = generation.published_token.load(std::memory_order_acquire)};
         const auto* decoded = generation.slot_pool->decode_published(token);
         if (decoded != nullptr) {
             return decoded;

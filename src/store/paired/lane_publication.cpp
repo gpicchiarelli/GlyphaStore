@@ -117,8 +117,8 @@ void reclaim_quiescent_generations(GenerationState& generation, ReclamationState
         } else {
             std::atomic_thread_fence(std::memory_order_seq_cst);
             quiescent_epoch = reclaim.active_read_leases.load(std::memory_order_acquire) == 0
-                                    ? generation.writer_epoch.load(std::memory_order_relaxed)
-                                    : std::uint64_t{0};
+                                  ? generation.writer_epoch.load(std::memory_order_relaxed)
+                                  : std::uint64_t{0};
         }
         if (quiescent_epoch == 0) {
             generation.retired_generation_count.store(pool->retired_count(), std::memory_order_relaxed);
@@ -144,12 +144,12 @@ void reclaim_quiescent_generations(GenerationState& generation, ReclamationState
     } else {
         std::atomic_thread_fence(std::memory_order_seq_cst);
         quiescent_epoch = reclaim.active_read_leases.load(std::memory_order_acquire) == 0
-                                ? generation.writer_epoch.load(std::memory_order_relaxed)
-                                : std::uint64_t{0};
+                              ? generation.writer_epoch.load(std::memory_order_relaxed)
+                              : std::uint64_t{0};
     }
     if (quiescent_epoch == 0) {
         generation.retired_generation_count.store(generation.retired_generations.size(),
-                                                 std::memory_order_relaxed);
+                                                  std::memory_order_relaxed);
         return;
     }
     std::erase_if(generation.retired_generations,
@@ -159,7 +159,7 @@ void reclaim_quiescent_generations(GenerationState& generation, ReclamationState
         generation.generations_retired.fetch_add(retired, std::memory_order_relaxed);
     }
     generation.retired_generation_count.store(generation.retired_generations.size(),
-                                             std::memory_order_relaxed);
+                                              std::memory_order_relaxed);
 }
 
 auto start_incremental_merge(GenerationState& generation, const std::size_t merge_maximum_post_entries)
@@ -172,8 +172,7 @@ auto start_incremental_merge(GenerationState& generation, const std::size_t merg
     const auto slot = pool->writer_slot();
     pool->pin(slot);
     auto cut = std::shared_ptr<const PairReadGeneration>(
-        pool->writer_generation(),
-        [pool, slot](const PairReadGeneration*) noexcept { pool->unpin(slot); });
+        pool->writer_generation(), [pool, slot](const PairReadGeneration*) noexcept { pool->unpin(slot); });
     return PairReadGeneration::start_incremental_merge(std::move(cut), merge_maximum_post_entries);
 }
 
@@ -226,16 +225,14 @@ auto replace_durable_snapshot_and_publish(
         }
         return {.status = DualPathPublishStatus::published};
     }
-    auto next =
-        PairReadGeneration::replace_durable_snapshot(context.generation.writer_generation, records);
+    auto next = PairReadGeneration::replace_durable_snapshot(context.generation.writer_generation, records);
     if (!next) {
         return {.status = DualPathPublishStatus::build_failed, .build_error = next.error().code};
     }
     install_writer_generation(context.generation.writer_generation, context.generation.retired_generations,
                               context.generation.retired_generation_count, context.generation.writer_epoch,
                               context.maximum_retired_generations, std::move(*next));
-    store_generation_memory_stats(context.generation,
-                                  context.generation.writer_generation->memory_stats());
+    store_generation_memory_stats(context.generation, context.generation.writer_generation->memory_stats());
     publish_read_generation(context.generation.published_generation,
                             context.generation.writer_generation.get());
     return {.status = DualPathPublishStatus::published};
@@ -272,8 +269,7 @@ auto finish_incremental_merge_and_publish(LanePublicationContext& context) -> Du
     install_writer_generation(context.generation.writer_generation, context.generation.retired_generations,
                               context.generation.retired_generation_count, context.generation.writer_epoch,
                               context.maximum_retired_generations, std::move(*next));
-    store_generation_memory_stats(context.generation,
-                                  context.generation.writer_generation->memory_stats());
+    store_generation_memory_stats(context.generation, context.generation.writer_generation->memory_stats());
     publish_read_generation(context.generation.published_generation,
                             context.generation.writer_generation.get());
     return {.status = DualPathPublishStatus::published};
@@ -301,8 +297,7 @@ auto publish_incremental_read_mutations(
     install_writer_generation(context.generation.writer_generation, context.generation.retired_generations,
                               context.generation.retired_generation_count, context.generation.writer_epoch,
                               context.maximum_retired_generations, std::move(*next));
-    store_generation_memory_stats(context.generation,
-                                  context.generation.writer_generation->memory_stats());
+    store_generation_memory_stats(context.generation, context.generation.writer_generation->memory_stats());
     publish_read_generation(context.generation.published_generation,
                             context.generation.writer_generation.get());
     return true;

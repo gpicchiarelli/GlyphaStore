@@ -1,12 +1,11 @@
 #pragma once
 
+#include "allocation_fault_harness.hpp"
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
 #include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/store/store.hpp"
 #include "store/store_internal.hpp"
-
-#include "allocation_fault_harness.hpp"
 
 #include <atomic>
 #include <cstddef>
@@ -150,7 +149,7 @@ inline void initialize_store(const std::filesystem::path& path, const bool seed)
 }
 
 inline void append_compaction_record(glyphastore::DurableSegmentFile& segment, const std::uint64_t sequence,
-                              const std::string_view key, const std::string_view value) {
+                                     const std::string_view key, const std::string_view value) {
     const auto encoded = glyphastore::encode_record({
         .sequence = glyphastore::SequenceNumber{sequence},
         .opcode = glyphastore::Opcode::put,
@@ -228,8 +227,8 @@ inline void initialize_compaction_store(const std::filesystem::path& path) {
 }
 
 [[nodiscard]] inline auto open_runtime(const std::filesystem::path& path,
-                                const glyphastore::DurableRuntimeOptions options,
-                                WriteBoundaryObserver* observer = nullptr)
+                                       const glyphastore::DurableRuntimeOptions options,
+                                       WriteBoundaryObserver* observer = nullptr)
     -> std::unique_ptr<glyphastore::DurableRuntimeCatalog> {
     glyphastore::FilesystemHooks hooks{};
     if (observer != nullptr) {

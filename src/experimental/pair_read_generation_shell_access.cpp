@@ -19,8 +19,8 @@ auto PairReadGenerationShellAccess::publish_incremental(
         return fail(ErrorCode::invalid_argument, "shell publication requires storage");
     }
     const auto& previous_view = *previous;
-    auto prepared = store::paired::IncrementalPublicationAccess::prepare(previous_view, &previous,
-                                                                         mutations, merge);
+    auto prepared =
+        store::paired::IncrementalPublicationAccess::prepare(previous_view, &previous, mutations, merge);
     if (!prepared) {
         return unexpected(std::move(prepared.error()));
     }
@@ -53,8 +53,8 @@ auto PairReadGenerationShellAccess::publish_incremental_borrowed(
         return fail(ErrorCode::invalid_argument, "invalid incremental read publication");
     }
     const auto& previous_view = *previous;
-    auto prepared = store::paired::IncrementalPublicationAccess::prepare(previous_view, &previous,
-                                                                         mutations, nullptr);
+    auto prepared =
+        store::paired::IncrementalPublicationAccess::prepare(previous_view, &previous, mutations, nullptr);
     if (!prepared) {
         return unexpected(std::move(prepared.error()));
     }

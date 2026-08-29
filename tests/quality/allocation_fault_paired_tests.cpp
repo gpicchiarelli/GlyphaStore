@@ -1,6 +1,5 @@
 #include "allocation_fault_test_support.hpp"
 #include "allocation_fault_tests_decl.hpp"
-
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/server.hpp"
 
@@ -428,8 +427,7 @@ void run_paired_durable_sync_multichunk_fail_closed() {
     constexpr std::size_t kMaximumFailAt = 256;
     bool closed{};
     for (std::size_t fail_at = 0; fail_at < kMaximumFailAt; ++fail_at) {
-        auto pattern =
-            (std::filesystem::temp_directory_path() / "glyphastore-mc-dur-XXXXXX").string();
+        auto pattern = (std::filesystem::temp_directory_path() / "glyphastore-mc-dur-XXXXXX").string();
         std::vector<char> writable(pattern.begin(), pattern.end());
         writable.push_back('\0');
         require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");

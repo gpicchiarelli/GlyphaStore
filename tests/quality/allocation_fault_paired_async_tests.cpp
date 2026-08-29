@@ -1,6 +1,5 @@
 #include "allocation_fault_test_support.hpp"
 #include "allocation_fault_tests_decl.hpp"
-
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/server/server.hpp"
 

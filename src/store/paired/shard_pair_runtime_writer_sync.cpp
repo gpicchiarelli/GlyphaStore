@@ -1,5 +1,3 @@
-#include "glyphastore/store/paired/shard_pair_runtime.hpp"
-
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/completion_policy.hpp"
@@ -10,6 +8,7 @@
 #include "glyphastore/store/paired/mutation_recovery.hpp"
 #include "glyphastore/store/paired/mutation_state.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/paired/volatile_sync_chunk.hpp"
 #include "store/paired/shard_pair_runtime_impl.hpp"
 #include "store/store_internal.hpp"
@@ -39,7 +38,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
         env.hooks.publish_fail_closed != nullptr ? *env.hooks.publish_fail_closed : kNoop;
     const std::function<void()>& sticky_pair_before_durable_mark =
         env.hooks.sticky_pair_before_durable_mark != nullptr ? *env.hooks.sticky_pair_before_durable_mark
-                                                            : kNoop;
+                                                             : kNoop;
     const std::function<void()>& reclaim_quiescent =
         env.hooks.reclaim_quiescent != nullptr ? *env.hooks.reclaim_quiescent : kNoop;
     const std::function<void()>& reclaim_proportional =
@@ -100,8 +99,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
             for (auto* node = rev; node != nullptr;) {
                 auto* const next = node->next;
                 // Never Store-entered — known not newly committed (not sticky reconcile).
-                node->status =
-                    Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                node->status = Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                 node->done.store(true, std::memory_order_release);
                 node->done.notify_one();
                 node = next;
@@ -118,16 +116,15 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
             turn_admission, [&] { reclaim_quiescent(); },
             [&] {
                 return decide_generation_admission(lane.generation.retired_debt(),
-                                                   ShardPairRuntime::kMaximumRetiredReadGenerations,
-                                                   true);
+                                                   ShardPairRuntime::kMaximumRetiredReadGenerations, true);
             });
         if (turn_admission != GenerationAdmissionDecision::admitted) {
             for (auto* node = rev; node != nullptr;) {
                 auto* const next = node->next;
-                lane.generation.generation_admission_backpressure_total.fetch_add(
-                    1U, std::memory_order_relaxed);
-                node->status = Status{
-                    fail(ErrorCode::resource_exhausted, generation_admission_message(turn_admission))};
+                lane.generation.generation_admission_backpressure_total.fetch_add(1U,
+                                                                                  std::memory_order_relaxed);
+                node->status =
+                    Status{fail(ErrorCode::resource_exhausted, generation_admission_message(turn_admission))};
                 node->done.store(true, std::memory_order_release);
                 node->done.notify_one();
                 node = next;
@@ -206,8 +203,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         sticky_pair_before_durable_mark();
                         for (std::size_t index = begin; index < nodes.size(); ++index) {
                             // Remaining siblings never entered mutate_durable_batch.
-                            nodes[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            nodes[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                         }
                         break;
                     }
@@ -286,9 +283,9 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                             publish_fail_closed();
                             for (auto* node : nodes) {
                                 if (node->status) {
-                                    node->status = Status{
-                                        fail(ErrorCode::unavailable,
-                                             "read publication failed after durable Writer batch")};
+                                    node->status =
+                                        Status{fail(ErrorCode::unavailable,
+                                                    "read publication failed after durable Writer batch")};
                                 }
                             }
                         } else {
@@ -329,8 +326,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     if (!node->status) {
                         // Keep mid-chunk fail-closed / rewritten not-committed / sticky
                         // unavailable. Only the pre-mutate placeholder may be upgraded.
-                        if (node->status.error().message.find(
-                                "paired durable batch item not processed") == std::string::npos) {
+                        if (node->status.error().message.find("paired durable batch item not processed") ==
+                            std::string::npos) {
                             continue;
                         }
                     }
@@ -353,8 +350,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         continue;
                     }
                     if (!node->status) {
-                        if (node->status.error().message.find(
-                                "paired durable batch item not processed") == std::string::npos) {
+                        if (node->status.error().message.find("paired durable batch item not processed") ==
+                            std::string::npos) {
                             continue;
                         }
                     }
@@ -423,8 +420,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     process_merge(chunk_size);
                     if (!healthy_.load(std::memory_order_acquire)) {
                         for (std::size_t index = 0; index < chunk_size; ++index) {
-                            chunk[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
@@ -434,8 +431,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     auto generation_admission = decide_generation_admission(
                         lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                         PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                    lane.merge.read_merge.get(),
-                                                                    chunk_size));
+                                                                    lane.merge.read_merge.get(), chunk_size));
                     generation_admission = runtime_detail::wait_generation_admission(
                         generation_admission,
                         [&] {
@@ -452,8 +448,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         });
                     if (!healthy_.load(std::memory_order_acquire)) {
                         for (std::size_t index = 0; index < chunk_size; ++index) {
-                            chunk[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
@@ -463,8 +459,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     if (generation_admission != GenerationAdmissionDecision::admitted) {
                         lane.generation.generation_admission_backpressure_total.fetch_add(
                             chunk_size, std::memory_order_relaxed);
-                        if (generation_admission ==
-                            GenerationAdmissionDecision::incremental_merge_required) {
+                        if (generation_admission == GenerationAdmissionDecision::incremental_merge_required) {
                             lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                         }
                         for (std::size_t index = 0; index < chunk_size; ++index) {
@@ -524,13 +519,26 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
-                    // put_batch >32 may span sync turns. An all-failed chunk (typical of
-                    // process_fail_at before Store mutation) must sticky-close so a later
-                    // turn cannot success-ACK. Mixed success/failure stays non-sticky.
+                    // Sticky only for indeterminate (unavailable) all-failed chunks or an
+                    // already-armed fail-closed. Pure known-not-committed all-failed
+                    // (rotation, compact gate, admission) must leave the pair healthy so
+                    // callers can retry. Mixed success/failure stays non-sticky.
                     if (chunk_failed && !chunk_succeeded) {
-                        publish_fail_closed();
-                        reject_remaining_fail_closed(rev);
-                        break;
+                        bool indeterminate = !healthy_.load(std::memory_order_acquire);
+                        if (!indeterminate) {
+                            for (std::size_t index = 0; index < chunk_size; ++index) {
+                                if (!chunk[index]->status &&
+                                    chunk[index]->status.error().code == ErrorCode::unavailable) {
+                                    indeterminate = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (indeterminate) {
+                            publish_fail_closed();
+                            reject_remaining_fail_closed(rev);
+                            break;
+                        }
                     }
                     if (!healthy_.load(std::memory_order_acquire)) {
                         reject_remaining_fail_closed(rev);
@@ -542,8 +550,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         if (chunk[index]->done.load(std::memory_order_acquire)) {
                             continue;
                         }
-                        chunk[index]->status = Status{
-                            fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                        chunk[index]->status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
@@ -601,13 +609,13 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                                                                     lane.merge.read_merge.get(), 1U));
                 });
             if (generation_admission != GenerationAdmissionDecision::admitted) {
-                lane.generation.generation_admission_backpressure_total.fetch_add(
-                    1U, std::memory_order_relaxed);
+                lane.generation.generation_admission_backpressure_total.fetch_add(1U,
+                                                                                  std::memory_order_relaxed);
                 if (generation_admission == GenerationAdmissionDecision::incremental_merge_required) {
                     lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                 }
-                node->status = Status{fail(ErrorCode::resource_exhausted,
-                                           generation_admission_message(generation_admission))};
+                node->status = Status{
+                    fail(ErrorCode::resource_exhausted, generation_admission_message(generation_admission))};
                 node->done.store(true, std::memory_order_release);
                 node->done.notify_one();
                 continue;
@@ -665,8 +673,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         // Same DualPath loader as Reader adopt (ADR 0036 token + mirrored pointer).
                         const auto* published = load_published_generation(lane.generation);
                         if (published == nullptr) {
-                            return Status{fail(ErrorCode::unavailable,
-                                               "paired read generation missing after drain")};
+                            return Status{
+                                fail(ErrorCode::unavailable, "paired read generation missing after drain")};
                         }
                         const auto view = published->prepare_durable(key);
                         if (node->kind == MutationKind::put) {
@@ -683,8 +691,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     if (!result.committed() || result.error) {
                         auto error = result.error ? *result.error
                                                   : Error{ErrorCode::io_error, "durable mutation failed"};
-                        if (result.committed() ||
-                            result.outcome == DurableMutationOutcome::indeterminate) {
+                        if (result.committed() || result.outcome == DurableMutationOutcome::indeterminate) {
                             error.code = ErrorCode::unavailable;
                             generation_published = drain_durable_snapshot();
                             shadow_mark_published(generation_published);
@@ -700,20 +707,20 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         }
                         shadow_resolve_status();
                     } else {
-                        ReadMutation publication{
-                            .key = key,
-                            .record = RecordRef{.sequence = *result.sequence},
-                            .opcode = node->kind == MutationKind::put ? Opcode::put : Opcode::erase};
+                        ReadMutation publication{.key = key,
+                                                 .record = RecordRef{.sequence = *result.sequence},
+                                                 .opcode = node->kind == MutationKind::put ? Opcode::put
+                                                                                           : Opcode::erase};
                         if (node->kind == MutationKind::put) {
                             auto captured = detail::StoreAccess::capture_durable_read(store_, shard, key);
                             if (!captured) {
                                 generation_published = drain_durable_snapshot();
                                 shadow_mark_published(generation_published);
                                 publish_fail_closed();
-                                status = generation_published
-                                             ? ack_after_published_visibility()
-                                             : Status{fail(ErrorCode::unavailable,
-                                                           "durable read capture failed")};
+                                status =
+                                    generation_published
+                                        ? ack_after_published_visibility()
+                                        : Status{fail(ErrorCode::unavailable, "durable read capture failed")};
                                 shadow_resolve_status();
                             } else {
                                 publication.record = captured->reference();
@@ -731,9 +738,9 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                                 }
                                 if (!status_resolved) {
                                     static_cast<void>(life.mark_publication_staged());
-                                    if (!publish_incremental_read_mutations(
-                                            publication_ctx, std::span{&publication, 1}, slot_reservation,
-                                            nullptr)) {
+                                    if (!publish_incremental_read_mutations(publication_ctx,
+                                                                            std::span{&publication, 1},
+                                                                            slot_reservation, nullptr)) {
                                         generation_published = drain_durable_snapshot();
                                         shadow_mark_published(generation_published);
                                         publish_fail_closed();
@@ -762,32 +769,31 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                             if (lane.generation.uses_slot_pool()) {
                                 slot_reservation = try_reserve_publication_slot(lane.generation);
                                 if (!slot_reservation) {
-                                    status = Status{fail(
-                                        ErrorCode::resource_exhausted,
-                                        generation_admission_message(
-                                            GenerationAdmissionDecision::reader_quiescence_required))};
+                                    status = Status{
+                                        fail(ErrorCode::resource_exhausted,
+                                             generation_admission_message(
+                                                 GenerationAdmissionDecision::reader_quiescence_required))};
                                     shadow_resolve_status();
                                 }
                             }
                             if (!status_resolved) {
                                 static_cast<void>(life.mark_publication_staged());
-                                if (!publish_incremental_read_mutations(
-                                        publication_ctx, std::span{&publication, 1}, slot_reservation,
-                                        nullptr)) {
+                                if (!publish_incremental_read_mutations(publication_ctx,
+                                                                        std::span{&publication, 1},
+                                                                        slot_reservation, nullptr)) {
                                     generation_published = drain_durable_snapshot();
                                     shadow_mark_published(generation_published);
                                     publish_fail_closed();
-                                    status = generation_published
-                                                 ? ack_after_published_visibility()
-                                                 : Status{fail(ErrorCode::unavailable,
-                                                               "read publication failed")};
+                                    status =
+                                        generation_published
+                                            ? ack_after_published_visibility()
+                                            : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                     shadow_resolve_status();
                                 } else {
                                     update_delta_stats();
                                     generation_published = true;
                                     shadow_mark_published(true);
-                                    if (glyphastore::fault::consume_fail(
-                                            glyphastore::fault::Site::publish)) {
+                                    if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
                                         throw std::bad_alloc{};
                                     }
                                     reclaim_proportional();
@@ -841,8 +847,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     shadow_resolve_status();
                     break;
                 case SyncDurableExceptionStatusKind::resource_exhausted_never_entered:
-                    status =
-                        Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                    status = Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                     shadow_resolve_status();
                     break;
                 }

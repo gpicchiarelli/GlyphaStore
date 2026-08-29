@@ -37,7 +37,9 @@ void handle_volatile_sync_exception(
     const std::array<VolatileSyncMutationView*, kMaximumPublicationBatch>& published_nodes,
     const std::size_t publication_count, const std::function<void()>* publish_fail_closed,
     const char* writer_failure_message) {
-    if (store_mutated && !generation_published) {
+    // Sticky on any Store-entered catch — including post-publish Site::publish faults
+    // (ACK stays success when generation_published; pair must still fail-closed).
+    if (store_mutated) {
         invoke_hook(publish_fail_closed);
     }
     for (auto& view : views) {
@@ -144,10 +146,12 @@ void apply_volatile_sync_publication_chunk(
     bool generation_published = false;
 
     try {
-        if (!apply_store_mutations(store, shard, mode, healthy, views, publications, published_nodes,
-                                   publication_count, publish_fail_closed)) {
-            return;
-        }
+        // dedicated_writer may return false mid-chunk after Site::mutate sticky: earlier
+        // siblings are already Store-staged in publications[], later siblings are stamped
+        // resource_exhausted. Still publish staged mutations — never leave default success
+        // without Index visibility (GET would miss an ACK'd key).
+        static_cast<void>(apply_store_mutations(store, shard, mode, healthy, views, publications,
+                                                published_nodes, publication_count, publish_fail_closed));
         store_mutated = publication_count != 0;
         if (publication_count == 0) {
             if (slot_reservation) {
@@ -158,8 +162,8 @@ void apply_volatile_sync_publication_chunk(
         bool published_ok = false;
         {
             GS_PHASE_PUT(publish);
-            const auto* retry = mode == VolatileSyncChunkMode::dedicated_writer ? prepare_publish_retry
-                                                                                : nullptr;
+            const auto* retry =
+                mode == VolatileSyncChunkMode::dedicated_writer ? prepare_publish_retry : nullptr;
             published_ok = publish_incremental_read_mutations(
                 publication, std::span{publications.data(), publication_count}, slot_reservation, retry);
         }
@@ -175,6 +179,8 @@ void apply_volatile_sync_publication_chunk(
         for (std::size_t index = 0; index < publication_count; ++index) {
             published_nodes[index]->status = Status{};
         }
+        // Mid-chunk sticky: published nodes ACK'd above; never-entered siblings keep
+        // the resource_exhausted stamp from apply_store_mutations.
         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::publish)) {
             throw std::bad_alloc{};
         }

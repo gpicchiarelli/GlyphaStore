@@ -3,6 +3,7 @@
 // Internal types and helpers for ShardPairRuntime translation units.
 // Not installed; behavior-neutral extraction (Phase C decomposition).
 
+#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/paired/bounded_spsc_queue.hpp"
 #include "glyphastore/store/paired/fail_closed_state.hpp"
@@ -10,7 +11,6 @@
 #include "glyphastore/store/paired/lane_state.hpp"
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
-#include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 #include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "store/store_internal.hpp"
@@ -73,8 +73,7 @@ template <typename Refresh, typename Decide>
     return std::shared_ptr<const PairReadGeneration>(generation, [](const PairReadGeneration*) {});
 }
 
-template <typename T>
-inline void atomic_max(std::atomic<T>& destination, const T value) noexcept {
+template <typename T> inline void atomic_max(std::atomic<T>& destination, const T value) noexcept {
     static_assert(std::is_unsigned_v<T>);
     auto observed = destination.load(std::memory_order_relaxed);
     while (observed < value && !destination.compare_exchange_weak(observed, value, std::memory_order_relaxed,
