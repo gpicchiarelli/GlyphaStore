@@ -269,4 +269,24 @@ struct WriterAsyncBatchEnv final {
     WriterAsyncBatchHooks hooks;
 };
 
+struct WriterSyncDrainHooks final {
+    std::function<void()> publish_fail_closed;
+    std::function<void()> sticky_pair_before_durable_mark;
+    std::function<void()> reclaim_quiescent;
+    std::function<void()> reclaim_proportional;
+    std::function<bool()> drain_durable_snapshot;
+    std::function<void(std::size_t)> process_merge;
+    std::function<void()> update_delta_stats;
+};
+
+struct WriterSyncDrainEnv final {
+    ShardPairRuntime::Lane& lane;
+    std::size_t shard{};
+    std::optional<DurableGroupConfig> batch_config;
+    ShardPairRuntime::SyncMutation*& carried_sync;
+    bool& merge_retry_blocked;
+    LanePublicationContext& publication_ctx;
+    WriterSyncDrainHooks hooks;
+};
+
 } // namespace glyphastore::store::paired

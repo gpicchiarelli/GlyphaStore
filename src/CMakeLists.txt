@@ -74,6 +74,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_loop.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_async.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_sync.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_sync_lane.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store_access.cpp

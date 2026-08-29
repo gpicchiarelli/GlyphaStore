@@ -24,6 +24,7 @@ class Store;
 namespace glyphastore::store::paired {
 
 struct WriterAsyncBatchEnv;
+struct WriterSyncDrainEnv;
 
 enum class MutationKind : std::uint8_t { put, erase };
 
@@ -288,6 +289,7 @@ class ShardPairRuntime final {
 
   private:
     friend struct WriterAsyncBatchEnv;
+    friend struct WriterSyncDrainEnv;
 
     struct Lane;
     struct SyncMutation;
@@ -298,6 +300,9 @@ class ShardPairRuntime final {
 
     void run(std::size_t shard) noexcept;
     void run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept;
+    // Drain one dedicated-Writer sync turn (≤32 records, Writer-local continuation).
+    // Returns true when at least one sync node was taken under the execution token.
+    [[nodiscard]] auto run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -> bool;
     // Drain already-queued sync mutations for `shard` (FIFO after LIFO admission,
     // ≤32 publication chunks). Caller must hold the execution token (combiner or
     // dedicated Writer). ACK polarity matches the historical run() sync path.
