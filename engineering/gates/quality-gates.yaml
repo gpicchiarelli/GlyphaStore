@@ -125,7 +125,7 @@ gates:
   narrative: Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining
     Phases A–C), B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no
     cancel of admitted Store work) are normative. Phase C daemon mutation windows (≤32) and GET
-    visibility barrier landed in reactor_dispatch + mutation_window; unit proof
+    visibility barrier landed in reactor_dispatch / reactor_execute / mutation_window; unit proof
     mutation_window_tests; ADR 0037 marks Phase C landed.
 - id: GATE-DURABLE-ACK
   titolo: Acknowledgement semantics for durable mutations
@@ -277,6 +277,7 @@ gates:
   prove:
   - tests/integration/persistence_recovery_tests.cpp
   - tests/integration/persistence_recovery_compaction_tests.cpp
+  - tests/integration/persistence_recovery_compaction_fileio_tests.cpp
   - tests/unit/persistence_filesystem_tests.cpp
   - tests/unit/store_backup_tests.cpp
   - tests/integration/compaction_builder_tests.cpp

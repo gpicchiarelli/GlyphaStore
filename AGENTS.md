@@ -25,7 +25,8 @@ Design text or code presence alone never closes a gate.
 - Official runtime: paired Reader–Writer shard pairs (ADR 0031/0032); no silent dual-runtime.
 - Partition ownership, immutable read generations, bounded lanes, fail-closed recovery.
 - No unbounded client-controlled work; no raw owning `new`/`delete` in production paths.
-- No persisted struct casts; explicit little-endian codecs; checked size/offset/capacity arithmetic.
+- No persisted struct casts; explicit little-endian codecs (`include/glyphastore/core/little_endian.hpp`);
+  checked size/offset/capacity arithmetic.
 - macOS, Linux, FreeBSD, and OpenBSD remain in documented scope; durability claims are
   platform-row specific (see platform durability evidence matrix).
 

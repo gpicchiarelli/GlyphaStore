@@ -169,7 +169,8 @@ void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept
             for (const auto index : clean_durable_commit_indices) {
                 env.completions[index].error.reset();
             }
-            const auto* published = env.lane.generation.published_generation.load(std::memory_order_acquire);
+            // Same DualPath loader as Reader adopt (ADR 0036 token + mirrored pointer).
+            const auto* published = load_published_generation(env.lane.generation);
             if (published == nullptr) {
                 return;
             }

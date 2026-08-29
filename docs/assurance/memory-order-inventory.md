@@ -1,7 +1,7 @@
 Status: descriptive
 Applies to: repository version `0.1.x` (Phase B1)
 Owner: maintainers
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-29
 
 # Atomics and memory-order inventory
 
@@ -14,7 +14,7 @@ Requirement: `GS-CONCUR-MEM-001`.
 | Variable | W / R | Orders | HB / role | Proof |
 | --- | --- | --- | --- | --- |
 | `Lane::published_generation` | Writer / Readers | release / acquire (Alt A); **relaxed** when dual-published with token | Publish ⇒ observe generation | linearizability tests, TLA+ |
-| `Lane::published_token` | Writer / Readers | release / acquire | ADR 0036 opt-in `{epoch,slot}` token; dual-published with pointer mirror while Wave 1 lands. Pointer mirror is **relaxed**; token release is the sole publish edge | generation_slot_pool_production_tests |
+| `Lane::published_token` | Writer / Readers | release / acquire | ADR 0036 opt-in `{epoch,slot}` token; dual-published with pointer mirror while Wave 1 lands. Pointer mirror is **relaxed**; token release is the sole publish edge. Writer ACK-after-visibility and Reader adopt both use `load_published_generation` (DualPath) | generation_slot_pool_production_tests; paired durable-sync ACK litmus |
 | `Lane::published_catalog_revision` | Writer / Readers | release / acquire | Durable refresh coherence | durable paired paths |
 | `Lane::reader_safe_epoch` | Reader / Writer reclaim | acq_rel CAS (skip when unchanged) | Min leased epoch before free. Wave 2: Readers load-relaxed then CAS only when the frontier moves — avoids redundant release RMW on steady-state GET/adopt | generation lease tests; adopt path |
 | `Lane::active_read_leases` | Readers / Writer | relaxed + seq_cst fence before adopt | Closes UAF window | ASan CI |

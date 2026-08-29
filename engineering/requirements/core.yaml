@@ -80,6 +80,9 @@ requirements:
   - tests/CMakeLists.txt
   - benchmarks/CMakeLists.txt
   - fuzz/CMakeLists.txt
+  - include/glyphastore/core/little_endian.hpp
+  - engineering/tools/validate_structure_debt.py
+  - engineering/tools/validate_cmake_deps.py
   prove:
   - engineering/tools/validate_cmake_deps.py
   - engineering/tools/validate_structure_debt.py
@@ -90,6 +93,7 @@ requirements:
   evidenze:
   - workflow: assurance.yml
   rischio_residuo:
-  - Further per-component OBJECT library splits remain optional; oversized sources are waiver-tracked
+  - Further per-component OBJECT library splits remain optional; the 1600-line structure gate is green
+    with empty active size waivers (WAV-001/002/003 revoked for audit trail only)
   gates:
   - GATE-CMAKE-INSTALL

@@ -28,6 +28,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/compaction_builder.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/compaction_intent.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/filesystem.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/filesystem_directory.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/manifest.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/namespace_audit.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/durable_flush_coordinator.cpp
@@ -38,12 +39,15 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/persistence/recovery/recovery_scanner.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/resource_limits.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_batch.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_detail.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_read_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_rotate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_mutate_ops.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_maintenance.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/runtime_catalog_compact.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file_io.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_verify.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_backup.cpp
     ${CMAKE_SOURCE_DIR}/src/persistence/store_migrate.cpp
@@ -54,6 +58,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/segment/segment.cpp
     ${CMAKE_SOURCE_DIR}/src/segment/segment_header.cpp
     ${CMAKE_SOURCE_DIR}/src/store/maintenance.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/maintenance_evaluate.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_slot_pool.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/mutation_state.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/completion_policy.cpp
@@ -70,6 +75,7 @@ set(GLYPHASTORE_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_loop.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_async.cpp
+    ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_writer_sync.cpp
     ${CMAKE_SOURCE_DIR}/src/store/paired/shard_pair_runtime_sync_lane.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store.cpp
     ${CMAKE_SOURCE_DIR}/src/store/store_access.cpp
@@ -83,7 +89,10 @@ add_library(glyphastore_core ${GLYPHASTORE_CORE_SOURCES})
 add_library(GlyphaStore::core ALIAS glyphastore_core)
 set_target_properties(glyphastore_core PROPERTIES EXPORT_NAME core)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_source_files_properties(${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
+    set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file.cpp
+    ${CMAKE_SOURCE_DIR}/src/persistence/segment_file_io.cpp
+    PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
 endif()
 
 function(glyphastore_configure_core_target target)
@@ -258,6 +267,7 @@ set_target_properties(glyphastore_tls_layer PROPERTIES FOLDER "Libraries")
 
 add_library(glyphastore_client
     ${CMAKE_SOURCE_DIR}/src/client/client.cpp
+    ${CMAKE_SOURCE_DIR}/src/client/client_error.cpp
 )
 add_library(GlyphaStore::client ALIAS glyphastore_client)
 set_target_properties(glyphastore_client PROPERTIES EXPORT_NAME client)
@@ -289,6 +299,8 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/connection_handoff.cpp
     ${CMAKE_SOURCE_DIR}/src/server/crash_test_hooks.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_config.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/daemon_config_materialize.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/daemon_config_dump.cpp
     ${CMAKE_SOURCE_DIR}/src/server/daemon_log.cpp
     ${CMAKE_SOURCE_DIR}/src/server/disk_read_executor.cpp
     ${CMAKE_SOURCE_DIR}/src/server/pair_writer.cpp
@@ -296,6 +308,8 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/peercred.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_dispatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/reactor_execute.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/reactor_io.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/server/security_audit.cpp
     ${CMAKE_SOURCE_DIR}/src/server/server.cpp

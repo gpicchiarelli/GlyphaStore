@@ -1,4 +1,5 @@
 #include "glyphastore/persistence/compaction_intent.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/persistence/compaction.hpp"
 #include "glyphastore/segment/crc32c.hpp"
@@ -14,47 +15,12 @@ namespace {
 inline constexpr std::size_t kChecksumOffset = 56;
 inline constexpr std::size_t kChecksumBytes = 4;
 
-constexpr auto to_u8(const std::byte value) noexcept -> std::uint8_t {
-    return std::to_integer<std::uint8_t>(value);
-}
-
-void put_u16(const std::span<std::byte> out, const std::size_t at, const std::uint16_t value) {
-    out[at] = static_cast<std::byte>(value & 0xFFU);
-    out[at + 1U] = static_cast<std::byte>((value >> 8U) & 0xFFU);
-}
-
-void put_u32(const std::span<std::byte> out, const std::size_t at, const std::uint32_t value) {
-    for (std::size_t index = 0; index < 4; ++index) {
-        out[at + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xFFU);
-    }
-}
-
-void put_u64(const std::span<std::byte> out, const std::size_t at, const std::uint64_t value) {
-    for (std::size_t index = 0; index < 8; ++index) {
-        out[at + index] = static_cast<std::byte>((value >> (index * 8U)) & 0xFFU);
-    }
-}
-
-auto get_u16(const std::span<const std::byte> in, const std::size_t at) -> std::uint16_t {
-    return static_cast<std::uint16_t>(to_u8(in[at])) |
-           static_cast<std::uint16_t>(static_cast<std::uint16_t>(to_u8(in[at + 1U])) << 8U);
-}
-
-auto get_u32(const std::span<const std::byte> in, const std::size_t at) -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t index = 0; index < 4; ++index) {
-        value |= static_cast<std::uint32_t>(to_u8(in[at + index])) << (index * 8U);
-    }
-    return value;
-}
-
-auto get_u64(const std::span<const std::byte> in, const std::size_t at) -> std::uint64_t {
-    std::uint64_t value{};
-    for (std::size_t index = 0; index < 8; ++index) {
-        value |= static_cast<std::uint64_t>(to_u8(in[at + index])) << (index * 8U);
-    }
-    return value;
-}
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
+using le::get_u16;
+using le::get_u32;
+using le::get_u64;
 
 auto all_zero(const std::span<const std::byte> bytes) -> bool {
     return std::ranges::all_of(bytes, [](const std::byte value) { return value == std::byte{0}; });

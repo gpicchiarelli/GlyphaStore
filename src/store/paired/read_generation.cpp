@@ -1,6 +1,5 @@
 #include "glyphastore/store/paired/read_generation.hpp"
 
-#include "experimental/pair_read_generation_shell.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
 #include "glyphastore/store/paired/generation_slot_pool.hpp"

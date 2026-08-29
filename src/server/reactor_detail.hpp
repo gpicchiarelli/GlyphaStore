@@ -1,6 +1,7 @@
 #pragma once
 
 #include "glyphastore/core/error.hpp"
+#include "glyphastore/server/connection_lifecycle.hpp"
 #include "glyphastore/server/protocol.hpp"
 
 #include <chrono>
@@ -100,6 +101,26 @@ inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = 16U * 1024U;
                                    16 + kMaxUint64Digits + 1 + // source_segments=
                                    21 + kMaxUint64Digits + 1;  // destination_segments=
     return kFixed + destination_bytes;
+}
+
+[[nodiscard]] inline auto drain_snapshot_of(const bool peer_read_closed, const bool close_after_flush,
+                                            const bool request_in_flight, const bool pending_output,
+                                            const bool residual_input) noexcept -> ConnectionDrainSnapshot {
+    return ConnectionDrainSnapshot{
+        .peer_read_closed = peer_read_closed,
+        .close_after_flush = close_after_flush,
+        .request_in_flight = request_in_flight,
+        .has_pending_output = pending_output,
+        .residual_input = residual_input,
+        .forced_close = false,
+    };
+}
+
+[[nodiscard]] inline auto connection_action_for(const bool peer_read_closed, const bool close_after_flush,
+                                                const bool request_in_flight, const bool pending_output,
+                                                const bool residual_input) noexcept -> ConnectionAction {
+    return decide_connection_action(drain_snapshot_of(peer_read_closed, close_after_flush, request_in_flight,
+                                                      pending_output, residual_input));
 }
 
 } // namespace glyphastore::server::reactor_detail

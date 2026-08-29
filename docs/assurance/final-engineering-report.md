@@ -1,7 +1,7 @@
 Status: descriptive summary of the assurance engineering program
 Applies to: release claim honesty for GlyphaStore 0.1.x
 Owner: maintainers
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-29
 
 # Final engineering report (assurance program)
 
@@ -18,7 +18,7 @@ certification and must not be read as production readiness.
 | --- | --- |
 | A | `GS-*` requirements, hazard register, multi-state gates, `validate_assurance.py`, generated readiness view |
 | B | Linearizability/fault/memory-order work, error taxonomy, `legacy_mutex` policy (merged earlier) |
-| C | CMake `add_subdirectory` split, dependency matrix, structure-debt thresholds; **WAV-001 revoked** after source/test splits |
+| C | CMake `add_subdirectory` split, dependency matrix, structure-debt thresholds; **WAV-001/002/003 revoked** after source/test and follow-up TU splits |
 | D | N↔N-1 matrix, SHA-pinned Actions (120 uses / 24 workflows), claim schema/packaging on tags |
 | E | Performance/soak/overload budget catalog linked to `GATE-PERFORMANCE` / `GATE-SOAK` / `GATE-OPS-RUNBOOKS` |
 

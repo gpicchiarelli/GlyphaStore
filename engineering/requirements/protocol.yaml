@@ -58,6 +58,8 @@ requirements:
   implementazione:
   - include/glyphastore/client/client.hpp
   - src/client/client.cpp
+  - src/client/client_error.cpp
+  - src/client/client_detail.hpp
   - sdk
   prove:
   - tests/fixtures/error_taxonomy_v1.json

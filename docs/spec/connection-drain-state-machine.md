@@ -86,5 +86,7 @@ succeeded. Rules that must stay true:
 ## 6. Golden lock tests
 
 - `tests/integration/server_reactor_security_tests.cpp` — half-close drain, partial timeout drain, rate-limit OVERLOADED survives trailing decode failure
-- `tests/integration/server_reactor_durable_tests.cpp` — BIND OK flush before decode failure, handoff saturation OVERLOADED, shutdown drain
+- `tests/integration/server_reactor_durable_lifecycle_tests.cpp` /
+  `server_reactor_durable_wire_tests.cpp` — BIND OK flush before decode failure, handoff
+  saturation OVERLOADED, shutdown drain
 - `tests/unit/connection_handoff_tests.cpp` — mesh bound + `stop_accepting`
