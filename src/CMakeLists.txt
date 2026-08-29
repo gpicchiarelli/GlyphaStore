@@ -306,6 +306,7 @@ add_library(glyphastore_server_core
     ${CMAKE_SOURCE_DIR}/src/server/peercred.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_dispatch.cpp
+    ${CMAKE_SOURCE_DIR}/src/server/reactor_execute.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_io.cpp
     ${CMAKE_SOURCE_DIR}/src/server/reactor_factory.cpp
     ${CMAKE_SOURCE_DIR}/src/server/security_audit.cpp
