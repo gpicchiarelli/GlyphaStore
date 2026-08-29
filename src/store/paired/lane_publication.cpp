@@ -282,15 +282,16 @@ auto finish_incremental_merge_and_publish(LanePublicationContext& context) -> Du
 auto publish_incremental_read_mutations(
     LanePublicationContext& context, const std::span<const ReadMutation> mutations,
     std::optional<GenerationSlotPool::Reservation>& slot_reservation,
-    const std::function<void(std::size_t publication_count)>& prepare_publish_retry) -> bool {
+    const std::function<void(std::size_t publication_count)>* prepare_publish_retry) -> bool {
     if (slot_reservation) {
         slot_reservation->mark_store_linearized();
         return publish_slot_incremental(context, *slot_reservation, mutations);
     }
     auto next = PairReadGeneration::publish_incremental(context.generation.writer_generation, mutations,
                                                         context.merge.read_merge.get());
-    if (!next && next.error().code == ErrorCode::resource_exhausted && prepare_publish_retry) {
-        prepare_publish_retry(mutations.size());
+    if (!next && next.error().code == ErrorCode::resource_exhausted && prepare_publish_retry != nullptr &&
+        *prepare_publish_retry) {
+        (*prepare_publish_retry)(mutations.size());
         next = PairReadGeneration::publish_incremental(context.generation.writer_generation, mutations,
                                                        context.merge.read_merge.get());
     }
@@ -308,7 +309,7 @@ auto publish_incremental_read_mutations(
 }
 
 [[nodiscard]] auto try_drain_durable_snapshot(LanePublicationContext& context, const bool allow_fail_closed,
-                                              const std::function<void()>& after_drain) noexcept -> bool {
+                                              const std::function<void()>* after_drain) noexcept -> bool {
     try {
         if (glyphastore::fault::consume_fail(glyphastore::fault::Site::drain_snapshot)) {
             return false;
@@ -323,8 +324,8 @@ auto publish_incremental_read_mutations(
             return false;
         }
         note_catalog_snapshot_installed(context, snapshot->catalog_revision);
-        if (after_drain) {
-            after_drain();
+        if (after_drain != nullptr && *after_drain) {
+            (*after_drain)();
         }
         return true;
     } catch (...) {

@@ -39,6 +39,7 @@ void run_all_tests() {
     run_volatile_vacuum_publication_allocation_failures();
     run_index_tombstone_rebuild_allocation_failures();
     run_paired_volatile_multichunk_fail_closed();
+    run_paired_durable_sync_multichunk_fail_closed();
     run_paired_volatile_sync_midchunk_fail_closed_resource_exhausted();
     run_paired_volatile_sync_midchunk_catch_preserves_resource_exhausted();
     run_paired_sync_durable_group_catch_preserves_resource_exhausted();

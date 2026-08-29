@@ -158,11 +158,8 @@ void apply_volatile_sync_publication_chunk(
         bool published_ok = false;
         {
             GS_PHASE_PUT(publish);
-            static const std::function<void(std::size_t)> kNoopPrepare{};
-            const auto& retry = mode == VolatileSyncChunkMode::dedicated_writer &&
-                                        prepare_publish_retry != nullptr
-                                    ? *prepare_publish_retry
-                                    : kNoopPrepare;
+            const auto* retry = mode == VolatileSyncChunkMode::dedicated_writer ? prepare_publish_retry
+                                                                                : nullptr;
             published_ok = publish_incremental_read_mutations(
                 publication, std::span{publications.data(), publication_count}, slot_reservation, retry);
         }

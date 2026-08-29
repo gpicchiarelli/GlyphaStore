@@ -99,11 +99,12 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
     // Drain durable Index authority into the published generation before sticky
     // close (allow_fail_closed: durable may already be unhealthy). Sync single-op
     // and batch catch use this so committed keys are not left unpublished.
+    const std::function<void()> after_durable_drain = [&]() noexcept {
+        merge_retry_blocked = false;
+        reclaim_quiescent();
+    };
     const std::function<bool()> drain_durable_snapshot = [&]() noexcept -> bool {
-        return try_drain_durable_snapshot(publication_ctx, true, [&]() {
-            merge_retry_blocked = false;
-            reclaim_quiescent();
-        });
+        return try_drain_durable_snapshot(publication_ctx, true, &after_durable_drain);
     };
     // Publication produces one retired generation per successful incremental
     // publish. Reclaiming on every single-mutation publish dominated volatile

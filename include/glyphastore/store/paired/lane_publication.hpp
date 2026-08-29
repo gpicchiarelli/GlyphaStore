@@ -47,7 +47,7 @@ void store_merge_progress(MergeState& destination) noexcept;
                                        const PairReadGeneration* generation) -> bool;
 
 [[nodiscard]] auto try_drain_durable_snapshot(LanePublicationContext& context, const bool allow_fail_closed,
-                                              const std::function<void()>& after_drain) noexcept -> bool;
+                                              const std::function<void()>* after_drain) noexcept -> bool;
 
 // ADR 0036 dual-path containment (default Alternative A; opt-in slot pool behind flag).
 // Call sites must not branch on uses_slot_pool() for these operations; polarity of
@@ -87,7 +87,7 @@ void note_catalog_snapshot_installed(LanePublicationContext& context,
 [[nodiscard]] auto publish_incremental_read_mutations(
     LanePublicationContext& context, std::span<const ReadMutation> mutations,
     std::optional<GenerationSlotPool::Reservation>& slot_reservation,
-    const std::function<void(std::size_t publication_count)>& prepare_publish_retry = {})
+    const std::function<void(std::size_t publication_count)>* prepare_publish_retry = nullptr)
     -> bool;
 
 [[nodiscard]] inline auto load_published_generation(const GenerationState& generation) noexcept

@@ -1,6 +1,7 @@
 #include "glyphastore/server/protocol.hpp"
 
 #include "glyphastore/core/checked_math.hpp"
+#include "glyphastore/core/little_endian.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -11,50 +12,32 @@ namespace {
 
 [[nodiscard]] auto load_u16(const std::span<const std::byte> input, const std::size_t offset) noexcept
     -> std::uint16_t {
-    return static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(input[offset])) |
-           static_cast<std::uint16_t>(
-               static_cast<std::uint16_t>(std::to_integer<std::uint8_t>(input[offset + 1U])) << 8U);
+    return le::get_u16(input, offset);
 }
 
 [[nodiscard]] auto load_u32(const std::span<const std::byte> input, const std::size_t offset) noexcept
     -> std::uint32_t {
-    std::uint32_t value{};
-    for (std::size_t byte = 0; byte < 4; ++byte) {
-        value |= static_cast<std::uint32_t>(std::to_integer<std::uint8_t>(input[offset + byte]))
-                 << (byte * 8U);
-    }
-    return value;
+    return le::get_u32(input, offset);
 }
 
 [[nodiscard]] auto load_u64(const std::span<const std::byte> input, const std::size_t offset) noexcept
     -> std::uint64_t {
-    std::uint64_t value{};
-    for (std::size_t byte = 0; byte < 8; ++byte) {
-        value |= static_cast<std::uint64_t>(std::to_integer<std::uint8_t>(input[offset + byte]))
-                 << (byte * 8U);
-    }
-    return value;
+    return le::get_u64(input, offset);
 }
 
 void store_u16(const std::span<std::byte> output, const std::size_t offset,
                const std::uint16_t value) noexcept {
-    for (std::size_t byte = 0; byte < 2; ++byte) {
-        output[offset + byte] = static_cast<std::byte>((value >> (byte * 8U)) & 0xFFU);
-    }
+    le::put_u16(output, offset, value);
 }
 
 void store_u32(const std::span<std::byte> output, const std::size_t offset,
                const std::uint32_t value) noexcept {
-    for (std::size_t byte = 0; byte < 4; ++byte) {
-        output[offset + byte] = static_cast<std::byte>((value >> (byte * 8U)) & 0xFFU);
-    }
+    le::put_u32(output, offset, value);
 }
 
 void store_u64(const std::span<std::byte> output, const std::size_t offset,
                const std::uint64_t value) noexcept {
-    for (std::size_t byte = 0; byte < 8; ++byte) {
-        output[offset + byte] = static_cast<std::byte>((value >> (byte * 8U)) & 0xFFU);
-    }
+    le::put_u64(output, offset, value);
 }
 
 [[nodiscard]] auto request_opcode(const std::uint8_t encoded) -> Result<RequestOpcode> {

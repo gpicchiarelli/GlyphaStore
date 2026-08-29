@@ -420,6 +420,96 @@ void run_paired_volatile_multichunk_fail_closed() {
     require(closed, "paired volatile multichunk fail-closed never tripped");
 }
 
+void run_paired_durable_sync_multichunk_fail_closed() {
+    // put_batch of >32 same-shard keys on durable_sync spans Writer sync turns
+    // (≤32). After the first turn sticky-fail-closes under process allocation
+    // injection, later turns must not success-ACK.
+    constexpr std::size_t kBatch = 40;
+    constexpr std::size_t kMaximumFailAt = 256;
+    bool closed{};
+    for (std::size_t fail_at = 0; fail_at < kMaximumFailAt; ++fail_at) {
+        auto pattern =
+            (std::filesystem::temp_directory_path() / "glyphastore-mc-dur-XXXXXX").string();
+        std::vector<char> writable(pattern.begin(), pattern.end());
+        writable.push_back('\0');
+        require(::mkdtemp(writable.data()) != nullptr, "mkdtemp failed");
+        const std::filesystem::path root{writable.data()};
+        const auto store_path = root / "store";
+
+        auto opened = glyphastore::Store::open({
+            .worker_config = {.explicit_count = 1},
+            .concurrency = glyphastore::StoreConcurrencyMode::paired,
+            .paired = {.async_lane_capacity = 8,
+                       .async_lane_payload_bytes = 1U * 1024U * 1024U,
+                       .reader_epoch_lease = true},
+            .storage_mode = glyphastore::StorageMode::durable_sync,
+            .data_directory = store_path,
+            .durable_open_mode = glyphastore::DurableOpenMode::create_new,
+            .maintenance = {.mode = glyphastore::MaintenanceMode::disabled},
+        });
+        require(opened.has_value(), "failed to open paired durable_sync Store");
+        auto& store = **opened;
+        auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+        require(runtime != nullptr, "missing paired runtime");
+        require(store.put("seed", bytes("ok")).has_value(), "seed put failed");
+
+        std::vector<std::string> keys;
+        std::vector<std::string> values;
+        std::vector<glyphastore::Store::PutItem> items;
+        keys.reserve(kBatch);
+        values.reserve(kBatch);
+        items.reserve(kBatch);
+        for (std::size_t index = 0; index < kBatch; ++index) {
+            keys.push_back("mc-d-" + std::to_string(index));
+            values.push_back("v-" + std::to_string(index));
+            items.push_back(glyphastore::Store::PutItem{.key = keys.back(), .value = bytes(values.back())});
+        }
+
+        allocation_fault::arm_process(fail_at);
+        const auto statuses = store.put_batch(items);
+        allocation_fault::disarm_process();
+        require(statuses.size() == kBatch, "put_batch status size mismatch");
+
+        if (runtime->healthy()) {
+            static_cast<void>(store.close());
+            std::error_code ignored;
+            std::filesystem::remove_all(root, ignored);
+            continue;
+        }
+
+        closed = true;
+        bool saw_failure = false;
+        for (std::size_t index = 0; index < statuses.size(); ++index) {
+            if (!statuses[index].has_value()) {
+                saw_failure = true;
+                continue;
+            }
+            require(!saw_failure, "durable put_batch succeeded after an earlier sticky failure");
+        }
+        require(saw_failure, "durable fail-closed without any failed batch status");
+
+        for (std::size_t index = 0; index < statuses.size(); ++index) {
+            if (statuses[index].has_value()) {
+                continue;
+            }
+            const auto got = store.get(keys[index]);
+            require(!got.has_value(), "failed durable batch key became GET-visible after sticky");
+        }
+
+        const auto late = store.put("mc-d-late", bytes("no"));
+        require(!late.has_value(), "late put accepted after durable sticky fail-closed");
+        require(late.error().code == glyphastore::ErrorCode::unavailable,
+                "late put was not unavailable after durable sticky fail-closed");
+        require(late.error().message.find("fail-closed") != std::string::npos,
+                "late put did not hit pair fail-closed reject");
+        static_cast<void>(store.close());
+        std::error_code ignored;
+        std::filesystem::remove_all(root, ignored);
+        break;
+    }
+    require(closed, "paired durable_sync multichunk fail-closed never tripped");
+}
+
 void run_paired_volatile_sync_midchunk_fail_closed_resource_exhausted() {
 #if !defined(GLYPHASTORE_FAULT_INJECTION)
     return;

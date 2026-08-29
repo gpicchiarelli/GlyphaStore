@@ -51,7 +51,8 @@ without linked proofs and existing evidence paths.
 ## Safety gates
 
 - No raw owning pointers or manual `new`/`delete` in production code.
-- No persisted struct casts; use explicit little-endian codecs.
+- No persisted struct casts; use explicit little-endian codecs
+  (`include/glyphastore/core/little_endian.hpp`).
 - No unchecked length, offset, capacity, or allocation arithmetic.
 - No record parser without malformed-input tests and fuzz coverage.
 - No reclaim while a reader may still address a segment.

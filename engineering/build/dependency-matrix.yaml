@@ -60,6 +60,10 @@ include_rules:
     description: Wire codec must stay independent of Store
     from_glob: src/server/protocol.cpp
     forbid_include_prefix: glyphastore/store/
+  - id: no-official-includes-experimental
+    description: Official production trees must not include experimental/ lab headers
+    from_glob: "src/{store,server,persistence,client,core,segment,index,worker,vacuum}/**"
+    forbid_include_prefix: experimental/
 
 # Structural layout expected after Phase C.
 required_cmake_files:

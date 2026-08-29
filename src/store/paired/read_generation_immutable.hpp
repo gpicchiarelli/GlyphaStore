@@ -1,7 +1,7 @@
 #pragma once
 
 // ImmutableReadIndex: published generation base index.
-// Structure-debt extraction from read_generation_index.
+// Structure-debt extraction from read_generation_impl.
 
 #include "store/paired/read_generation_internals.hpp"
 

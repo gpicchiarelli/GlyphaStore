@@ -143,7 +143,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
         return;
     }
     const auto drain_durable_snapshot = [&]() noexcept -> bool {
-        return try_drain_durable_snapshot(publication_ctx, true, reclaim_proportional);
+        return try_drain_durable_snapshot(publication_ctx, true, &reclaim_proportional);
     };
 
     for (;;) {

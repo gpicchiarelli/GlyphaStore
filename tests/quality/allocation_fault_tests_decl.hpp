@@ -16,6 +16,7 @@ void run_paired_async_durable_coalesced_fail_closed();
 void run_paired_async_durable_sibling_publish_after_capture_fail();
 void run_paired_durable_batch_stops_after_indeterminate_ttl();
 void run_paired_volatile_multichunk_fail_closed();
+void run_paired_durable_sync_multichunk_fail_closed();
 void run_paired_volatile_sync_midchunk_fail_closed_resource_exhausted();
 void run_paired_volatile_sync_midchunk_catch_preserves_resource_exhausted();
 void run_paired_sync_durable_group_catch_preserves_resource_exhausted();

@@ -1,7 +1,7 @@
 #pragma once
 
 // generation_internals: delta arena, record helpers, compact records.
-// Structure-debt extraction from read_generation_impl / read_generation_index.
+// Structure-debt extraction from read_generation_impl.
 
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
