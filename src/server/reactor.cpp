@@ -296,14 +296,15 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
             // EAGAIN/EINTR are already empty optionals from TcpListener::accept.
             return {};
         }
-        if (!accepted->has_value()) {
+        auto accepted_socket = std::move(accepted).value();
+        if (!accepted_socket) {
             return {};
         }
         if (abuse_ && !abuse_->try_admit_accept(now)) {
             // Drop the peer without adopting; SocketHandle closes on destroy.
             continue;
         }
-        ConnectionHandoff handoff{.socket = std::move(accepted->value()), .last_activity = now};
+        ConnectionHandoff handoff{.socket = std::move(accepted_socket).value(), .last_activity = now};
         if (tls_endpoint) {
             if (!tls_) {
                 continue;
@@ -354,13 +355,14 @@ auto Reactor::accept_unix_ready() -> Status {
             // Same isolation as TCP accept: one peer/setup glitch must not stop the process.
             return {};
         }
-        if (!accepted->has_value()) {
+        auto accepted_socket = std::move(accepted).value();
+        if (!accepted_socket) {
             return {};
         }
         if (abuse_ && !abuse_->try_admit_accept(now)) {
             continue;
         }
-        ConnectionHandoff handoff{.socket = std::move(accepted->value()), .last_activity = now};
+        ConnectionHandoff handoff{.socket = std::move(accepted_socket).value(), .last_activity = now};
         if (config_.unix_peercred) {
             auto credentials = peer_credentials(handoff.socket.descriptor());
             if (!credentials) {

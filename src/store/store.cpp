@@ -261,12 +261,13 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
             if (!prepared) {
                 return unexpected(prepared.error());
             }
-            if (prepared->value) {
-                return std::move(prepared->value).value();
+            auto value = std::move(prepared->value);
+            if (value) {
+                return std::move(value).value();
             }
-            if (prepared->cold) {
-                return detail::StoreAccess::complete_get_owned(*this, shard,
-                                                               std::move(prepared->cold).value());
+            auto cold = std::move(prepared->cold);
+            if (cold) {
+                return detail::StoreAccess::complete_get_owned(*this, shard, std::move(cold).value());
             }
             return fail(ErrorCode::internal_error, "paired durable GET produced no result");
         }
@@ -635,8 +636,9 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
             if (!result) {
                 return unexpected(result.error());
             }
-            if (result.value()) {
-                return store_detail::public_compaction_result(worker_index, result.value().value());
+            auto compacted = std::move(result).value();
+            if (compacted) {
+                return store_detail::public_compaction_result(worker_index, std::move(compacted).value());
             }
         }
         return CompactionResult{};

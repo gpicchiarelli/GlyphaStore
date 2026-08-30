@@ -1,12 +1,13 @@
 ## [Unreleased]
 
 - CI quality follow-up: remove all 24 fail-closed unchecked-`optional` diagnostics across 10
-  production sources; make both continuous-Reader paired litmus tests distinguish visibility and
-  linearizability failures from the documented 64-generation backpressure bound, using one shared
-  explicit Reader-quiescence handshake before retrying the same mutation; replace the Erlang fake
-  server's racy read/modify/write held-client list with per-process ETS registrations and a
-  release-before-collect handshake. No persistence, wire, ACK, routing, or public
-  mutation-visibility contract changes.
+  production sources, with checked local extraction that remains data-flow-visible across the
+  clang-tidy versions used locally and in CI; make both continuous-Reader paired litmus tests
+  distinguish visibility and linearizability failures from the documented 64-generation
+  backpressure bound, using one shared explicit Reader-quiescence handshake before retrying the
+  same mutation; replace the Erlang fake server's racy read/modify/write held-client list with
+  per-process ETS registrations and a release-before-collect handshake. No persistence, wire,
+  ACK, routing, or public mutation-visibility contract changes.
 
 - Quality closure: normalize all C++ sources to the pinned clang-format 21.1.8 gate; add a
   non-mutating `dev.sh verify` entry point; validate UTF-8 and exact-case repository-local links in

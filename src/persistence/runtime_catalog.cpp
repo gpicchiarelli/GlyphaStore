@@ -507,7 +507,10 @@ auto DurableRuntimeCatalog::flush_dirty_segments() -> Status {
         if (!healthy_.load(std::memory_order_acquire)) {
             return {};
         }
-        if (!worker->cached_file || !worker->cached_writable || !worker->cached_file.value().is_dirty()) {
+        if (!worker->cached_file || !worker->cached_writable) {
+            continue;
+        }
+        if (!worker->cached_file.value().is_dirty()) {
             continue;
         }
         std::shared_lock catalog_lock{catalog_mutex_};

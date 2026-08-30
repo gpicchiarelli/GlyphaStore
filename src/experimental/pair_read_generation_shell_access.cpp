@@ -27,13 +27,14 @@ auto PairReadGenerationShellAccess::publish_incremental(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    if (!prepared->next_delta) {
+    auto next_delta = std::move(prepared->next_delta);
+    if (!next_delta) {
         return fail(ErrorCode::internal_error, "shell publication produced no next delta");
     }
-    auto next_delta = std::move(prepared->next_delta).value();
-    auto next = store::paired::make_shared_generation_in_shell(
-        previous_view.routing_, previous_view.base_, std::move(next_delta), previous_view.epoch_ + 1U,
-        prepared->visible_through, std::move(storage));
+    auto delta = std::move(next_delta).value();
+    auto next = store::paired::make_shared_generation_in_shell(previous_view.routing_, previous_view.base_,
+                                                               std::move(delta), previous_view.epoch_ + 1U,
+                                                               prepared->visible_through, std::move(storage));
     store::paired::IncrementalPublicationAccess::commit_merge(merge, *prepared, next);
     return next;
 } catch (const std::bad_alloc&) {
@@ -65,12 +66,13 @@ auto PairReadGenerationShellAccess::publish_incremental_borrowed(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    if (!prepared->next_delta) {
+    auto next_delta = std::move(prepared->next_delta);
+    if (!next_delta) {
         return fail(ErrorCode::internal_error, "borrowed shell publication produced no next delta");
     }
-    auto next_delta = std::move(prepared->next_delta).value();
+    auto delta = std::move(next_delta).value();
     return store::paired::make_shared_generation_in_borrowed_shell(
-        previous_view.routing_, previous_view.base_, std::move(next_delta), previous_view.epoch_ + 1U,
+        previous_view.routing_, previous_view.base_, std::move(delta), previous_view.epoch_ + 1U,
         prepared->visible_through, storage);
 } catch (const std::bad_alloc&) {
     return fail(ErrorCode::resource_exhausted, "incremental read publication allocation failed");

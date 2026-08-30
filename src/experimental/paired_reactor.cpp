@@ -506,7 +506,8 @@ struct PairedReactorPrototype::Impl final {
             if (!accepted) {
                 return unexpected(accepted.error());
             }
-            if (!accepted->has_value()) {
+            auto accepted_socket = std::move(accepted).value();
+            if (!accepted_socket) {
                 return {};
             }
             if (free_slots.empty()) {
@@ -515,7 +516,7 @@ struct PairedReactorPrototype::Impl final {
             const auto slot = free_slots.back();
             free_slots.pop_back();
             auto& current = connections[slot];
-            current.socket = std::move(accepted->value());
+            current.socket = std::move(accepted_socket).value();
             if (config.accepted_socket_send_buffer_bytes != 0) {
                 const auto bytes = static_cast<int>(config.accepted_socket_send_buffer_bytes);
                 if (::setsockopt(current.socket.descriptor(), SOL_SOCKET, SO_SNDBUF, &bytes, sizeof(bytes)) !=

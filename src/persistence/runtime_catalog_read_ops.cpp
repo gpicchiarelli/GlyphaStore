@@ -49,13 +49,15 @@ auto DurableRuntimeCatalog::get(const HashedKey& key, const std::uint64_t now_ns
     if (!prepared) {
         return unexpected(prepared.error());
     }
-    if (prepared->value) {
-        return std::move(prepared->value).value();
+    auto value = std::move(prepared->value);
+    if (value) {
+        return std::move(value).value();
     }
-    if (!prepared->cold) {
+    auto cold = std::move(prepared->cold);
+    if (!cold) {
         return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
     }
-    return complete_get(std::move(prepared->cold).value());
+    return complete_get(std::move(cold).value());
 }
 
 auto DurableRuntimeCatalog::prepare_get(const HashedKey& key, const std::uint64_t now_ns)
@@ -481,13 +483,15 @@ auto DurableRuntimeCatalog::complete_get(PinnedRead read, const detail::ColdRead
             if (!prepared) {
                 return unexpected(prepared.error());
             }
-            if (prepared->value) {
-                return std::move(prepared->value).value();
+            auto value = std::move(prepared->value);
+            if (value) {
+                return std::move(value).value();
             }
-            if (!prepared->cold) {
+            auto cold = std::move(prepared->cold);
+            if (!cold) {
                 return fail(ErrorCode::internal_error, "durable GET retry produced no result");
             }
-            read = std::move(prepared->cold).value();
+            read = std::move(cold).value();
             continue;
         }
         if (!visited) {

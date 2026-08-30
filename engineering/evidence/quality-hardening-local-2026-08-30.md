@@ -27,16 +27,16 @@ platform durability row, accept ADR 0036, or raise the architectural-prototype c
 | Check | Local result |
 | --- | --- |
 | Assurance validation | 33 requirements, 33 hazards, 28 gates, 3 waivers; 0 warnings |
-| Documentation validation | 254 Markdown files; 1,033 repository-local links |
+| Documentation validation | 257 Markdown files; 1,035 repository-local links |
 | Python/tooling tests | 104 passed |
-| Pinned clang-format dry run | all tracked C++ sources passed |
+| Pinned clang-format dry run | all `.cpp`/`.hpp` files in the CI-gated source roots passed |
 | High-signal clang-tidy gate | 109 production sources; 4 fail-closed checks; passed |
 | Broad clang-tidy build | completed; lower-confidence test/benchmark/toolchain diagnostics remain visible |
 | `unix-strict` build | 235 build steps; passed with compiler warnings as errors |
 | `unix-strict` tests | 54/54 passed; 351.02 s |
 | macOS ASan+UBSan tests | 54/54 passed; 464.72 s |
 | macOS TSan main suite after repair | 696/696 passed; no TSan report |
-| Post-CI macOS Debug CTest | 54/54 passed; 323.81 s |
+| Post-CI macOS Debug CTest | 54/54 passed after final analyzer-portable extraction; 327.97 s |
 | Paired continuous-Reader adverse-scheduling repetition | 500/500 each for linearization and overwrite-storm litmus tests |
 
 The first full TSan main-suite run exposed three reports with one root cause: the dedicated
@@ -51,9 +51,12 @@ The first pushed campaign exposed two additional classes of quality debt without
 architectural-prototype claim ceiling:
 
 - the Ubuntu clang-tidy package diagnosed 24 unchecked `std::optional` accesses across 10
-  production sources that clang-tidy 21.1.6 had not reported locally. Every site now uses an
-  explicit checked `value()` extraction after its fail-closed guard. The full 109-source gate
-  passes locally with clang-tidy 22.1.8;
+  production sources that clang-tidy 21.1.6 had not reported locally. The first repair used an
+  explicit `value()` extraction after each fail-closed member guard, but the older CI analyzer did
+  not propagate that guard through the enclosing result/member access and retained 19 diagnostics.
+  The final form first transfers each member `optional` into local state, then guards and extracts
+  that same local object. The full 109-source gate passes locally with clang-tidy 22.1.8; a focused
+  clang-tidy 18.1.8 scan emits no unchecked-optional diagnostics;
 - two macOS paired litmus tests failed in successive CI campaigns because their Writers treated
   the documented bounded generation-admission `resource_exhausted` result as a visibility or
   linearizability failure while a Reader held a nearly continuous sequence of counted leases. A
@@ -83,6 +86,9 @@ the isolated 195.72 kops/s / 35.21 ms cell as evidence of a deterministic code r
 - CI, Linux, FreeBSD, and OpenBSD results remain external to this local record.
 - The broad all-target clang-tidy profile is diagnostic, not warning-free. Only the documented
   high-signal production pass is fail-closed.
+- A complete clang-tidy 18.1.8 pass cannot be treated as local evidence on this host because that
+  older frontend cannot parse the current macOS 26/Xcode libc++ headers. The Ubuntu CI row remains
+  the authoritative proof for its packaged analyzer.
 - External URL availability and Markdown fragment semantics remain covered by the separate
   scheduled link workflow, not the deterministic local-link validator.
 - Erlang/OTP is not installed on this macOS host, so the repaired Erlang suite awaits CI execution;

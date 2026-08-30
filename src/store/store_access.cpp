@@ -76,11 +76,11 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
         if (prepared->value) {
             return PreparedGet{.value = std::move(prepared->value)};
         }
-        if (!prepared->cold) {
+        auto cold = std::move(prepared->cold);
+        if (!cold) {
             return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
         }
-        return PreparedGet{.cold =
-                               PreparedColdRead{PreparedColdRead::State{std::move(prepared->cold).value()}}};
+        return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(cold).value()}}};
     }
     auto& worker = store.impl_->volatile_runtime->workers.worker(worker_index);
     std::optional<Worker::ExclusiveIndexQuiesce> index_quiesce;
@@ -190,11 +190,11 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     if (prepared->value) {
         return PreparedGet{.value = std::move(prepared->value)};
     }
-    if (!prepared->borrowed_cold) {
+    auto borrowed_cold = std::move(prepared->borrowed_cold);
+    if (!borrowed_cold) {
         return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
     }
-    return PreparedGet{
-        .cold = PreparedColdRead{PreparedColdRead::State{std::move(prepared->borrowed_cold).value()}}};
+    return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(borrowed_cold).value()}}};
 } catch (const std::bad_alloc&) {
     return store_detail::resource_exhausted();
 } catch (...) {

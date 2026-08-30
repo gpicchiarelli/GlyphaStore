@@ -84,51 +84,55 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
             store_, executor_id_, std::move(*published), cached_now_ns);
         if (!record) {
             response.status = reactor_detail::response_status(record.error());
-        } else if (record->value) {
-            owned_response = std::move(record->value).value();
-            response.value = owned_response.view();
-            owns_response_value = true;
         } else {
-            if (disk_reads_outstanding_ >= config_.disk_read_queue_capacity) {
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            const auto value_budget = config_.maximum_output_bytes - kResponseHeaderBytes;
-            if (!record->cold) {
-                response.status = ResponseStatus::internal_error;
-                break;
-            }
-            const auto generation_epoch = local_read_generation_->epoch();
-            if (!acquire_cold_read_lease(generation_epoch)) {
-                response.status = ResponseStatus::overloaded;
-                break;
-            }
-            const auto& cancellation_epoch = read_cancellation_epochs_[token.slot];
-            DiskReadTask task{.connection = token,
-                              .request_id = request.request_id,
-                              .generation_epoch = generation_epoch,
-                              .worker_index = executor_id_,
-                              .read = std::move(record->cold).value(),
-                              .cancellation =
-                                  {
-                                      .epoch = &cancellation_epoch,
-                                      .expected = cancellation_epoch.load(std::memory_order_relaxed),
-                                  },
-                              .maximum_value_bytes = value_budget,
-                              .completions = &disk_read_completions_,
-                              .wakeup = &wakeup_};
-            ++disk_reads_outstanding_;
-            if (!disk_reads_.try_submit(std::move(task))) {
-                --disk_reads_outstanding_;
-                if (!release_cold_read_lease(generation_epoch)) {
-                    return fail(ErrorCode::corrupted_data, "cold-read lease accounting underflow");
+            auto value = std::move(record->value);
+            if (value) {
+                owned_response = std::move(value).value();
+                response.value = owned_response.view();
+                owns_response_value = true;
+            } else {
+                if (disk_reads_outstanding_ >= config_.disk_read_queue_capacity) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
                 }
-                response.status = ResponseStatus::overloaded;
-                break;
+                const auto value_budget = config_.maximum_output_bytes - kResponseHeaderBytes;
+                auto cold = std::move(record->cold);
+                if (!cold) {
+                    response.status = ResponseStatus::internal_error;
+                    break;
+                }
+                const auto generation_epoch = local_read_generation_->epoch();
+                if (!acquire_cold_read_lease(generation_epoch)) {
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                const auto& cancellation_epoch = read_cancellation_epochs_[token.slot];
+                DiskReadTask task{.connection = token,
+                                  .request_id = request.request_id,
+                                  .generation_epoch = generation_epoch,
+                                  .worker_index = executor_id_,
+                                  .read = std::move(cold).value(),
+                                  .cancellation =
+                                      {
+                                          .epoch = &cancellation_epoch,
+                                          .expected = cancellation_epoch.load(std::memory_order_relaxed),
+                                      },
+                                  .maximum_value_bytes = value_budget,
+                                  .completions = &disk_read_completions_,
+                                  .wakeup = &wakeup_};
+                ++disk_reads_outstanding_;
+                if (!disk_reads_.try_submit(std::move(task))) {
+                    --disk_reads_outstanding_;
+                    if (!release_cold_read_lease(generation_epoch)) {
+                        return fail(ErrorCode::corrupted_data, "cold-read lease accounting underflow");
+                    }
+                    response.status = ResponseStatus::overloaded;
+                    break;
+                }
+                current->request_in_flight = true;
+                current->cold_read_in_flight = true;
+                return {};
             }
-            current->request_in_flight = true;
-            current->cold_read_in_flight = true;
-            return {};
         }
         break;
     }

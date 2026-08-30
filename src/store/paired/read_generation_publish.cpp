@@ -217,10 +217,11 @@ auto PairReadGeneration::publish_incremental_construct(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    if (!prepared->next_delta) {
+    auto next_delta = std::move(prepared->next_delta);
+    if (!next_delta) {
         return fail(ErrorCode::internal_error, "incremental publication produced no next delta");
     }
-    auto next_delta = std::move(prepared->next_delta).value();
+    auto delta = std::move(next_delta).value();
 
     std::shared_ptr<const PairReadGeneration> next;
     if (direct_storage != nullptr) {
@@ -230,7 +231,7 @@ auto PairReadGeneration::publish_incremental_construct(
                                                alignof(PairReadGenerationEnableShared));
         try {
             auto* constructed = std::construct_at(static_cast<PairReadGenerationEnableShared*>(location),
-                                                  previous.routing_, previous.base_, std::move(next_delta),
+                                                  previous.routing_, previous.base_, std::move(delta),
                                                   previous.epoch_ + 1U, prepared->visible_through);
             *direct_result = constructed;
             // Merge retains a non-owning view; the slot pool owns destruction.
@@ -240,7 +241,7 @@ auto PairReadGeneration::publish_incremental_construct(
             throw;
         }
     } else {
-        next = make_shared_generation(previous.routing_, previous.base_, std::move(next_delta),
+        next = make_shared_generation(previous.routing_, previous.base_, std::move(delta),
                                       previous.epoch_ + 1U, prepared->visible_through);
     }
     IncrementalPublicationAccess::commit_merge(merge, *prepared, next);
