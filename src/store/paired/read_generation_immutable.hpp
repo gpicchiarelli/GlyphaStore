@@ -300,17 +300,19 @@ class ImmutableReadIndex final {
         if (key.empty()) {
             return nullptr;
         }
-        constexpr std::size_t kKeyBlockBytes = 64U * 1024U;
+        constexpr std::size_t kKeyBlockBytes = std::size_t{64} * 1024U;
         if (key_blocks_.empty() || key.size() > key_blocks_.back().capacity - key_blocks_.back().used) {
             const auto capacity = std::max(kKeyBlockBytes, key.size());
-            key_blocks_.push_back({.bytes = std::make_unique<char[]>(capacity), .capacity = capacity});
+            auto bytes = std::make_unique<char[]>(capacity);
+            KeyBlock block{.bytes = std::move(bytes), .capacity = capacity};
+            key_blocks_.push_back(std::move(block));
             allocated_key_storage_bytes_ = saturating_add(allocated_key_storage_bytes_, capacity);
         }
         auto& block = key_blocks_.back();
         auto* destination = block.bytes.get() + block.used;
         std::ranges::copy(key, destination);
         block.used += key.size();
-        key_bytes_ += key.size();
+        key_bytes_ = saturating_add(key_bytes_, key.size());
         return destination;
     }
 

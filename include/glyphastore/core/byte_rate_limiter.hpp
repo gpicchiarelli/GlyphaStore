@@ -33,7 +33,7 @@ class BoundedByteRateLimiter final {
         // The 1 MiB ceiling keeps a single request bounded even for very fast
         // devices; tiny configured rates retain a one-byte progress quantum.
         constexpr std::uint64_t kRefillsPerSecond = 100U;
-        constexpr std::uint64_t kMaximumBurstBytes = 1U * 1024U * 1024U;
+        constexpr std::uint64_t kMaximumBurstBytes = std::uint64_t{1} * 1024U * 1024U;
         const auto quotient = bytes_per_second / kRefillsPerSecond;
         const auto rounded = quotient + (bytes_per_second % kRefillsPerSecond != 0U ? 1U : 0U);
         return std::min(kMaximumBurstBytes, std::max<std::uint64_t>(1U, rounded));

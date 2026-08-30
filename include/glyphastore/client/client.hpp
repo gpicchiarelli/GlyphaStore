@@ -32,9 +32,9 @@ struct ClientConfig {
     std::uint16_t port{7379};
     std::uint32_t connect_timeout_ms{3'000};
     std::uint32_t request_timeout_ms{5'000};
-    std::size_t maximum_frame_bytes{2U * 1024U * 1024U};
+    std::size_t maximum_frame_bytes{std::size_t{2} * 1024U * 1024U};
     std::size_t maximum_pipeline_requests{256};
-    std::size_t maximum_pipeline_bytes{1024U * 1024U};
+    std::size_t maximum_pipeline_bytes{std::size_t{1024} * 1024U};
     TlsOptions tls{};
 };
 

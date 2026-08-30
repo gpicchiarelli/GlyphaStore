@@ -12,7 +12,7 @@ namespace glyphastore::server {
 inline constexpr std::uint16_t kProtocolVersion = 2;
 inline constexpr std::size_t kRequestHeaderBytes = 40;
 inline constexpr std::size_t kResponseHeaderBytes = 40;
-inline constexpr std::size_t kMaxFrameBytes = 2U * 1024U * 1024U;
+inline constexpr std::size_t kMaxFrameBytes = std::size_t{2} * 1024U * 1024U;
 inline constexpr std::uint32_t kNoWorker = 0xFFFF'FFFFU;
 
 enum class RequestOpcode : std::uint8_t {

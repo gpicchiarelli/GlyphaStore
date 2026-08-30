@@ -187,7 +187,13 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     if (current == nullptr) {
         return;
     }
-    static_cast<void>(poller_.remove(current->socket.descriptor()));
+    bool poller_removed = false;
+    try {
+        poller_removed = poller_.remove(current->socket.descriptor()).has_value();
+    } catch (...) {
+        poller_removed = false;
+    }
+    static_cast<void>(poller_removed);
     if (current->cold_read_in_flight) {
         read_cancellation_epochs_[token.slot].fetch_add(1U, std::memory_order_release);
     }
@@ -217,12 +223,10 @@ void Reactor::close_connection(const ConnectionToken token) noexcept {
     current->in_flight_since = {};
     current->connection_rate_window_start_ns = 0;
     current->connection_rate_used = 0;
-    ++current->generation;
-    if (current->generation == 0) {
-        current->generation = 1;
+    if (advance_connection_generation(current->generation)) {
+        free_slots_.push_back(token.slot);
     }
-    free_slots_.push_back(token.slot);
-    --active_connections_;
+    active_connections_.fetch_sub(1U, std::memory_order_relaxed);
 }
 
 void Reactor::stop_accepting() noexcept {
@@ -485,7 +489,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
         }
         return {};
     }
-    ++active_connections_;
+    active_connections_.fetch_add(1U, std::memory_order_relaxed);
     ++adopted_connections_;
     // write_ready flushes BIND OK then processes residual input only after the
     // decided bytes fully drain (EAGAIN-safe). Do not call process_frames while
@@ -510,7 +514,7 @@ auto Reactor::adopt_connection(ConnectionHandoff handoff) -> Status {
 }
 
 void Reactor::reject_orphaned_handoff(ConnectionHandoff handoff,
-                                      const std::optional<std::uint64_t> request_id_override) noexcept {
+                                      const std::optional<std::uint64_t> request_id_override) noexcept try {
     if (!handoff.socket.valid()) {
         return;
     }
@@ -548,6 +552,8 @@ void Reactor::reject_orphaned_handoff(ConnectionHandoff handoff,
         }
         offset += static_cast<std::size_t>(sent);
     }
+} catch (...) {
+    return;
 }
 
 auto Reactor::queue_response(const ConnectionToken token, const ResponseView& response) -> Status {

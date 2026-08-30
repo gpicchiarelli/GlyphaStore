@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from engineering.tools.run_clang_tidy_gate import production_sources, run_gate
+from engineering.tools.run_clang_tidy_gate import clang_tidy_environment, production_sources, run_gate
 
 
 class ClangTidyGateTests(unittest.TestCase):
@@ -65,6 +65,16 @@ class ClangTidyGateTests(unittest.TestCase):
             self.assertEqual(1, len(report.failures))
             self.assertEqual(Path("src/bad.cpp"), report.failures[0].source)
             self.assertIn("high-signal failure", report.failures[0].output)
+
+    def test_macos_environment_discovers_sdk_root(self) -> None:
+        completed = subprocess.CompletedProcess(["xcrun"], 0, "/sdk\n", "")
+        with (
+            patch("engineering.tools.run_clang_tidy_gate.platform.system", return_value="Darwin"),
+            patch("engineering.tools.run_clang_tidy_gate.os.environ", {}),
+            patch("engineering.tools.run_clang_tidy_gate.shutil.which", return_value="/usr/bin/xcrun"),
+            patch("engineering.tools.run_clang_tidy_gate.subprocess.run", return_value=completed),
+        ):
+            self.assertEqual("/sdk", clang_tidy_environment().get("SDKROOT"))
 
 
 if __name__ == "__main__":

@@ -26,17 +26,17 @@ struct RecordInput {
 };
 
 struct RecordView {
-    SequenceNumber sequence;
-    Opcode opcode;
-    ValueType type;
-    std::uint32_t flags;
-    std::uint64_t key_hash;
-    std::uint64_t expire_at_ns;
+    SequenceNumber sequence{};
+    Opcode opcode{Opcode::put};
+    ValueType type{ValueType::bytes};
+    std::uint32_t flags{};
+    std::uint64_t key_hash{};
+    std::uint64_t expire_at_ns{};
     // key and value span encoded bytes inside a Segment buffer. The spans remain
     // valid only while the owning Store or Segment that produced this view lives.
-    std::span<const std::byte> key;
-    std::span<const std::byte> value;
-    std::uint32_t encoded_size;
+    std::span<const std::byte> key{};
+    std::span<const std::byte> value{};
+    std::uint32_t encoded_size{};
 
     [[nodiscard]] auto key_string() const -> std::string_view;
     [[nodiscard]] auto expired(std::uint64_t now_ns) const noexcept -> bool;

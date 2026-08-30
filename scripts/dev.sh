@@ -164,14 +164,19 @@ case "${1:-help}" in
         "$python" "$root/engineering/tools/validate_durability_claims.py"
         "$python" "$root/engineering/tools/validate_perf_budgets.py"
         "$python" "$root/engineering/tools/validate_bsd_packaging.py"
+        "$python" "$root/engineering/tools/audit_memory_orders.py"
         "$python" -m unittest discover -s "$root/scripts/tests"
+        ;;
+    correctness)
+        "$root/scripts/run-correctness.sh"
         ;;
     clean)
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|fuzz-run|xcode-build|format|verify|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|correctness|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|fuzz-run|xcode-build|format|verify|clean} [benchmark args]"
         echo "PGO: pgo-generate builds instrumented benchmarks; pgo-train runs volatile + durable workloads; pgo-use rebuilds optimized benchmarks."
         echo "Fuzz: fuzz-build configures macos-fuzz; fuzz-run executes targets (GLYPHASTORE_FUZZ_SECONDS, GLYPHASTORE_FUZZ_BUILD_DIR)."
+        echo "Correctness: complete local matrix with strict builds, hardening, sanitizers, static analysis, and explicit optional-tool gaps."
         ;;
 esac

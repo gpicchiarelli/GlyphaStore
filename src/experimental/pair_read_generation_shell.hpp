@@ -179,7 +179,9 @@ template <typename T> class PairReadGenerationShellAllocator final {
         : storage_(other.storage_) {}
 
     [[nodiscard]] auto allocate(const std::size_t count) -> T* {
-        if (count != 1U || count > static_cast<std::size_t>(-1) / sizeof(T)) {
+        // This fixed shell allocator represents exactly one T; accepting any
+        // other count would violate the backing-storage contract.
+        if (count != 1U) {
             throw std::bad_alloc{};
         }
         return static_cast<T*>(storage_->allocate(sizeof(T), alignof(T)));
@@ -213,7 +215,9 @@ template <typename T> class PairReadGenerationBorrowedShellAllocator final {
         : storage_(other.storage_) {}
 
     [[nodiscard]] auto allocate(const std::size_t count) -> T* {
-        if (count != 1U || count > static_cast<std::size_t>(-1) / sizeof(T)) {
+        // This fixed shell allocator represents exactly one T; accepting any
+        // other count would violate the backing-storage contract.
+        if (count != 1U) {
             throw std::bad_alloc{};
         }
         return static_cast<T*>(storage_->allocate(sizeof(T), alignof(T)));

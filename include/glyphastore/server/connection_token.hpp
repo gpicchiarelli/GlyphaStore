@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 
 namespace glyphastore::server {
 
@@ -16,5 +17,22 @@ struct ConnectionToken {
                 .generation = static_cast<std::uint32_t>(encoded >> 32U)};
     }
 };
+
+// A generation value is published to pollers and asynchronous completion
+// queues, so wrapping it would make a sufficiently old token valid again.
+// Permanently retire the individual slot at exhaustion instead of reusing an
+// identity that concurrent observers may still hold.
+[[nodiscard]] inline constexpr auto advance_connection_generation(std::uint32_t& generation) noexcept
+    -> bool {
+    if (generation == 0U) {
+        return false;
+    }
+    if (generation == std::numeric_limits<std::uint32_t>::max()) {
+        generation = 0U;
+        return false;
+    }
+    ++generation;
+    return true;
+}
 
 } // namespace glyphastore::server

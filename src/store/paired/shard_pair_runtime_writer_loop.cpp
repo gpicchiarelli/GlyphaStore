@@ -31,7 +31,7 @@
 
 namespace glyphastore::store::paired {
 
-void ShardPairRuntime::run(const std::size_t shard) noexcept {
+void ShardPairRuntime::run(const std::size_t shard) noexcept try {
     auto& lane = *lanes_[shard];
     struct ExitGuard final {
         ShardPairRuntime& executor;
@@ -418,6 +418,9 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         async_env.hooks.update_delta_stats = &update_delta_stats;
         run_writer_async_batch(async_env);
     }
+} catch (...) {
+    FailClosedState{store_, healthy_, expire_remaining_}.arm(fail_closed_wakes_,
+                                                             FailClosedScope::pair_and_store);
 }
 
 } // namespace glyphastore::store::paired

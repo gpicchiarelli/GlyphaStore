@@ -20,7 +20,7 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
     if (current == nullptr) {
         return {};
     }
-    std::array<std::byte, 16U * 1024U> buffer{};
+    std::array<std::byte, std::size_t{16} * 1024U> buffer{};
     while (true) {
         std::size_t received_size = 0;
         if (current->tls) {
@@ -198,7 +198,7 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
                     // record before SSL_write can proceed. Do not rely solely on an
                     // edge-triggered readable notification (especially after half-close
                     // previously armed write-only interest).
-                    std::array<std::byte, 16U * 1024U> tls_scratch{};
+                    std::array<std::byte, std::size_t{16} * 1024U> tls_scratch{};
                     auto received = current->tls->read(tls_scratch.data(), tls_scratch.size());
                     if (received && received->kind == TlsIoKind::ok && received->bytes > 0) {
                         const auto buffered = current->input.size() - current->input_offset;

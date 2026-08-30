@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -79,8 +80,16 @@ class AuthzPolicy final {
     void bind(std::string principal, Capability capabilities, std::string key_prefix = {});
 
   private:
+    struct TransparentStringHash final {
+        using is_transparent = void;
+
+        [[nodiscard]] auto operator()(const std::string_view value) const noexcept -> std::size_t {
+            return std::hash<std::string_view>{}(value);
+        }
+    };
+
     bool enabled_{};
-    std::unordered_map<std::string, AuthzGrant> principals_{};
+    std::unordered_map<std::string, AuthzGrant, TransparentStringHash, std::equal_to<>> principals_{};
 };
 
 [[nodiscard]] auto required_capability(RequestOpcode opcode) noexcept -> Capability;

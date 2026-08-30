@@ -26,7 +26,7 @@ corpus_root="${GLYPHASTORE_FUZZ_CORPUS_ROOT:-$root/fuzz/corpus}"
 artifact_dir="${GLYPHASTORE_FUZZ_ARTIFACT_DIR:-$build_dir/fuzz-artifacts}"
 selected="${GLYPHASTORE_FUZZ_TARGET:-}"
 
-all_targets=(record_decoder segment_scanner index_rebuild protocol_decoder)
+all_targets=(record_decoder segment_scanner index_rebuild protocol_decoder store_state_machine)
 
 if [[ -n "$selected" ]]; then
   targets=("$selected")

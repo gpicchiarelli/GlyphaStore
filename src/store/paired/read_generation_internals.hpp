@@ -471,7 +471,7 @@ class DeltaArena final {
             std::ranges::copy(source.key, external_key);
             destination->key.external_key = external_key;
             key_blocks_.back().used += source.key.size();
-            key_bytes_ += source.key.size();
+            key_bytes_ = saturating_add(key_bytes_, source.key.size());
         }
         ++record_count_;
         return destination;
@@ -486,7 +486,8 @@ class DeltaArena final {
     }
 
     [[nodiscard]] auto allocated_record_bytes() const noexcept -> std::size_t {
-        return record_blocks_.size() * kDeltaArenaBlockRecords * sizeof(DeltaRecord);
+        return saturating_multiply(saturating_multiply(record_blocks_.size(), kDeltaArenaBlockRecords),
+                                   sizeof(DeltaRecord));
     }
 
     [[nodiscard]] auto key_bytes() const noexcept -> std::size_t {
@@ -502,17 +503,19 @@ class DeltaArena final {
         if (!record_blocks_.empty() && record_blocks_.back().used != kDeltaArenaBlockRecords) {
             return;
         }
-        record_blocks_.push_back({
-            .records = std::make_unique_for_overwrite<DeltaRecord[]>(kDeltaArenaBlockRecords),
-        });
+        auto records = std::make_unique_for_overwrite<DeltaRecord[]>(kDeltaArenaBlockRecords);
+        DeltaRecordBlock block{.records = std::move(records)};
+        record_blocks_.push_back(std::move(block));
     }
 
     [[nodiscard]] auto reserve_key(const std::size_t size) -> char* {
-        constexpr std::size_t kKeyBlockBytes = 4U * 1024U;
+        constexpr std::size_t kKeyBlockBytes = std::size_t{4} * 1024U;
         if (key_blocks_.empty() || size > key_blocks_.back().capacity - key_blocks_.back().used) {
             const auto capacity = std::max(kKeyBlockBytes, size);
-            key_blocks_.push_back({.bytes = std::make_unique<char[]>(capacity), .capacity = capacity});
-            allocated_key_bytes_ += capacity;
+            auto bytes = std::make_unique<char[]>(capacity);
+            DeltaKeyBlock block{.bytes = std::move(bytes), .capacity = capacity};
+            key_blocks_.push_back(std::move(block));
+            allocated_key_bytes_ = saturating_add(allocated_key_bytes_, capacity);
         }
         return key_blocks_.back().bytes.get() + key_blocks_.back().used;
     }

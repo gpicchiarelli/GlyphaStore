@@ -141,7 +141,10 @@ int main(const int argc, char** argv) try {
 
     // Writing to a closed peer must surface as EPIPE, not process death (TLS/handshake
     // denial paths included). BSD raises SIGPIPE by default unless ignored.
-    std::signal(SIGPIPE, SIG_IGN);
+    if (std::signal(SIGPIPE, SIG_IGN) == SIG_ERR) {
+        std::cerr << program << ": error: failed to ignore SIGPIPE\n";
+        return 2;
+    }
 
     // ADR 0026: apply Index mix seed before any Store/Index construction.
     glyphastore::set_index_hash_seed(arguments->index_hash_seed);

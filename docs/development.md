@@ -16,6 +16,12 @@ appropriate to the change, and any focused benchmark. `verify` checks all tracke
 links in addition to assurance, formatting, shell syntax, packaging policy, and tooling tests.
 Build directories and generated Xcode projects are never committed.
 
+For a full local correctness campaign, run `./scripts/dev.sh correctness`. It executes the complete
+Debug, strict, standard-library-hardening, ASan+UBSan, and TSan matrices plus both production-only
+clang-tidy layers. GCC, `scan-build`, standalone leak detection, and libFuzzer are recorded as
+`OPTIONAL_UNAVAILABLE` when the host cannot provide them; an available tool that fails remains a
+hard failure. The machine-readable summary is written under `build/correctness/`.
+
 ## Automated benchmark reports
 
 `.github/workflows/benchmarks.yml` runs the fixed Release benchmark suite after pushes to `main`,

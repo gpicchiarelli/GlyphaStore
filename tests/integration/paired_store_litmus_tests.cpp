@@ -1388,6 +1388,75 @@ GLYPHA_TEST("ADR 0036 production slot V5 shutdown finalization rejects a live Re
     static_cast<void>(store.close());
 }
 
+GLYPHA_TEST("paired shutdown reclamation torture leaves every bounded resource terminal") {
+    constexpr std::uint64_t kFirstSeed = 0x5A17'0000ULL;
+    constexpr std::size_t kSeedCount = 24U;
+    const auto require_seed = [](const bool condition, const std::uint64_t seed,
+                                 const std::string_view invariant) {
+        if (!condition) {
+            throw std::runtime_error{"shutdown torture seed=" + std::to_string(seed) +
+                                     " invariant=" + std::string{invariant}};
+        }
+    };
+
+    for (std::size_t iteration = 0; iteration < kSeedCount; ++iteration) {
+        const auto seed = kFirstSeed + iteration;
+        const bool slot_pool = (seed & 1U) != 0U;
+        const bool dedicated_writer = (seed & 2U) != 0U;
+        auto opened =
+            glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                      .paired = {.async_lane_capacity = dedicated_writer ? 8U : 0U,
+                                                 .async_lane_payload_bytes = dedicated_writer ? 65'536U : 0U,
+                                                 .merge_delta_entries = 2U,
+                                                 .merge_maximum_post_entries = 4U,
+                                                 .merge_quantum_slots = 1U,
+                                                 .reader_epoch_lease = false,
+                                                 .generation_slot_pool = slot_pool}});
+        require_seed(opened.has_value(), seed, "open");
+        auto& store = **opened;
+        auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+        require_seed(runtime != nullptr, seed, "paired runtime exists");
+
+        // Unique-key growth, same-key replacement, erasure, merge churn, and a
+        // close immediately following the final accepted mutation.
+        for (std::size_t operation = 0; operation < 12U; ++operation) {
+            const auto key = "shutdown-" + std::to_string(operation);
+            const auto value = "seed-" + std::to_string(seed) + "-" + std::to_string(operation);
+            require_seed(store.put(key, bytes(value)).has_value(), seed, "put");
+            require_seed(store.get(key).has_value(), seed, "get after put");
+            if ((operation % 3U) == 0U) {
+                require_seed(store.erase(key).has_value(), seed, "erase");
+                require_seed(!store.get(key).has_value(), seed, "get after erase");
+            }
+        }
+        require_seed(store.put("shutdown-tail", bytes("tail")).has_value(), seed, "tail put");
+
+        if ((seed & 4U) != 0U) {
+            glyphastore::store::paired::ShardPairRuntime::ReadLease lease{*runtime, 0};
+            require_seed(static_cast<bool>(lease), seed, "live Reader lease");
+            require_seed(runtime->stop_and_drain().has_value(), seed, "stop and drain with lease");
+            const auto blocked = runtime->finalize_reader_shutdown();
+            require_seed(!blocked.has_value() && blocked.error().code == glyphastore::ErrorCode::unavailable,
+                         seed, "live lease blocks final reclaim");
+        } else {
+            require_seed(runtime->stop_and_drain().has_value(), seed, "stop and drain");
+        }
+
+        require_seed(runtime->finalize_reader_shutdown().has_value(), seed, "finalize Reader shutdown");
+        const auto stats = runtime->stats();
+        require_seed(stats.size() == 1U, seed, "one shard stats row");
+        const auto& lane = stats.front();
+        require_seed(lane.reader_shutdown_finalized, seed, "Reader terminal state");
+        require_seed(lane.retired_generation_count == 0U, seed, "retired generations reclaimed");
+        require_seed(!lane.read_merge_active, seed, "merge abandoned or complete");
+        require_seed(lane.queue_depth == 0U && lane.queued_bytes == 0U, seed, "mutation queue drained");
+        require_seed(lane.payload_slots_in_use == 0U && lane.payload_arena_bytes_in_use == 0U &&
+                         lane.payload_admission_bytes_in_use == 0U,
+                     seed, "payload ownership returned");
+        require_seed(store.close().has_value(), seed, "Store close");
+    }
+}
+
 GLYPHA_TEST("ADR 0036 production slot V10 put_batch preserves same-key FIFO within one batch") {
     auto opened = glyphastore::Store::open(
         {.worker_config = {.explicit_count = 1}, .paired = {.generation_slot_pool = true}});

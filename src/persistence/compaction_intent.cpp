@@ -57,7 +57,8 @@ auto encoded_compaction_intent_size(const DurableCompactionIntent& intent) -> Re
         return fail(ErrorCode::arithmetic_overflow, "compaction intent encoded size overflows size_t");
     }
     const auto total = kCompactionIntentHeaderBytes + *old_size + *next_size;
-    if (total > kMaximumCompactionIntentBytes || total > std::numeric_limits<std::uint32_t>::max()) {
+    static_assert(kMaximumCompactionIntentBytes <= std::numeric_limits<std::uint32_t>::max());
+    if (total > kMaximumCompactionIntentBytes) {
         return fail(ErrorCode::arithmetic_overflow, "compaction intent exceeds its format size field");
     }
     return total;

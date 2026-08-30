@@ -4,12 +4,26 @@
 #include <atomic>
 #include <bit>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 
 namespace glyphastore::store::paired {
+namespace spsc_detail {
+
+inline constexpr auto kMaximumCapacity = std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 2U);
+
+[[nodiscard]] inline auto normalized_capacity(const std::size_t requested) -> std::size_t {
+    if (requested > kMaximumCapacity) {
+        throw std::invalid_argument{"SPSC queue capacity exceeds its modular cursor bound"};
+    }
+    return std::bit_ceil(std::max(std::size_t{2}, requested));
+}
+
+} // namespace spsc_detail
 
 // Runtime-sized, preallocated SPSC ring. Exactly one producer owns head and
 // exactly one consumer owns tail. The acquire/release edge transfers ownership
@@ -20,7 +34,7 @@ template <typename T> class BoundedSpscQueue final {
 
   public:
     explicit BoundedSpscQueue(const std::size_t requested_capacity)
-        : capacity_(std::bit_ceil(std::max(std::size_t{2}, requested_capacity))), mask_(capacity_ - 1U),
+        : capacity_(spsc_detail::normalized_capacity(requested_capacity)), mask_(capacity_ - 1U),
           cells_(std::make_unique<std::optional<T>[]>(capacity_)) {}
 
     BoundedSpscQueue(const BoundedSpscQueue&) = delete;
@@ -53,7 +67,7 @@ template <typename T> class BoundedSpscQueue final {
                 return std::nullopt;
             }
         }
-        auto value = std::optional<T>{std::move(*cells_[tail & mask_])};
+        auto value = std::move(cells_[tail & mask_]);
         cells_[tail & mask_].reset();
         consumer_.tail.store(tail + 1U, std::memory_order_release);
         return value;

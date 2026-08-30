@@ -435,7 +435,7 @@ auto DurableRuntimeCatalog::sync_worker_file(RuntimeWorker& worker, std::unique_
         return fail(ErrorCode::corrupted_data, "dirty Segment has no exact generation pin");
     }
     const auto generation_pin = generation_pins_[*pin_index];
-    std::optional<DurableSegmentFile> io_file{std::move(*worker.cached_file)};
+    auto io_file = std::move(worker.cached_file);
     worker.cached_file.reset();
     worker.cached_writable = false;
     worker.mutation_io_active = true;

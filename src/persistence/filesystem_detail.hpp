@@ -158,8 +158,9 @@ inline auto read_private_manifest_file(int directory, const char* name, std::str
 inline auto read_private_compaction_intent_file(const int directory, const std::size_t max_manifest_bytes,
                                                 const FileIoHooks io_hooks)
     -> Result<DurableCompactionIntent> {
-    if (max_manifest_bytes > kMaximumManifestBytes ||
-        max_manifest_bytes > (std::numeric_limits<std::size_t>::max() - kCompactionIntentHeaderBytes) / 2U) {
+    static_assert(kMaximumManifestBytes <=
+                  (std::numeric_limits<std::size_t>::max() - kCompactionIntentHeaderBytes) / 2U);
+    if (max_manifest_bytes > kMaximumManifestBytes) {
         return fail(ErrorCode::invalid_argument,
                     "compaction intent manifest byte budget is outside supported bounds");
     }

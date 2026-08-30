@@ -24,6 +24,7 @@
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
+#include <system_error>
 #include <unistd.h>
 #include <utility>
 #include <variant>
@@ -85,8 +86,13 @@ struct ExchangeFailure {
 
 using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
 
+[[nodiscard]] inline auto error_message(const int error_number) -> std::string {
+    return std::error_code{error_number, std::generic_category()}.message();
+}
+
 [[nodiscard]] inline auto system_error(const ErrorCode code, const std::string_view operation) -> Error {
-    return {code, std::string{operation} + ": " + std::strerror(errno)};
+    const auto error_number = errno;
+    return {code, std::string{operation} + ": " + error_message(error_number)};
 }
 
 [[nodiscard]] inline auto wait_for(const int descriptor, const short events, const Clock::time_point deadline)
@@ -168,7 +174,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
             continue;
         }
         if (socket_error != 0) {
-            last_error = {ErrorCode::unavailable, std::string{"connect: "} + std::strerror(socket_error)};
+            last_error = {ErrorCode::unavailable, std::string{"connect: "} + error_message(socket_error)};
             continue;
         }
         return socket;
@@ -178,7 +184,7 @@ using ExchangeResult = std::variant<OwnedResponse, ExchangeFailure>;
 
 struct WorkerConnection {
     explicit WorkerConnection(const std::uint32_t index) : worker(index) {
-        input.reserve(64U * 1024U);
+        input.reserve(std::size_t{64} * 1024U);
     }
 
     void reset() noexcept {
@@ -503,7 +509,7 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
                                        static_cast<std::ptrdiff_t>(connection.input_offset));
             connection.input_offset = 0;
         }
-        std::array<std::byte, 64U * 1024U> chunk;
+        std::array<std::byte, std::size_t{64} * 1024U> chunk;
         if (connection.tls) {
             auto read = connection.tls->read(chunk.data(), chunk.size());
             if (!read) {

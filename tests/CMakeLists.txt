@@ -179,6 +179,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/unit/client_tls_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/durable_flush_coordinator_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/latency_histogram_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/unit/result_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/record_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/resource_limits_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/unit/server_protocol_tests.cpp
@@ -200,6 +201,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/integration/paired_store_litmus_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_enumeration_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_compaction_fileio_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_crash_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/persistence_recovery_test_support.cpp
@@ -212,6 +214,7 @@ if(BUILD_TESTING)
         ${CMAKE_SOURCE_DIR}/tests/integration/server_reactor_security_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/integration/store_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/property/history_property_tests.cpp
+        ${CMAKE_SOURCE_DIR}/tests/property/store_state_machine_tests.cpp
         ${CMAKE_SOURCE_DIR}/tests/concurrency/linearizability_tests.cpp
     )
     target_link_libraries(glyphastore_tests
@@ -297,7 +300,7 @@ if(BUILD_TESTING)
 
     add_executable(glyphastore_crash_daemon ${CMAKE_SOURCE_DIR}/tests/crash/crash_daemon.cpp)
     target_link_libraries(glyphastore_crash_daemon
-        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
+        PRIVATE GlyphaStore::client GlyphaStore::server glyphastore_project_options
     )
     glyphastore_set_warnings(glyphastore_crash_daemon)
     glyphastore_enable_hardening(glyphastore_crash_daemon)
@@ -336,7 +339,7 @@ if(BUILD_TESTING)
 
     add_executable(glyphastore_crash_backup_wire ${CMAKE_SOURCE_DIR}/tests/crash/crash_backup_wire.cpp)
     target_link_libraries(glyphastore_crash_backup_wire
-        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
+        PRIVATE GlyphaStore::client GlyphaStore::server glyphastore_project_options
     )
     target_include_directories(glyphastore_crash_backup_wire PRIVATE "${CMAKE_SOURCE_DIR}/tests")
     glyphastore_set_warnings(glyphastore_crash_backup_wire)
@@ -348,7 +351,7 @@ if(BUILD_TESTING)
 
     add_executable(glyphastore_crash_backup_daemon ${CMAKE_SOURCE_DIR}/tests/crash/crash_backup_daemon.cpp)
     target_link_libraries(glyphastore_crash_backup_daemon
-        PRIVATE GlyphaStore::client GlyphaStore::core GlyphaStore::server glyphastore_project_options
+        PRIVATE GlyphaStore::client GlyphaStore::server glyphastore_project_options
     )
     target_include_directories(glyphastore_crash_backup_daemon PRIVATE "${CMAKE_SOURCE_DIR}/tests")
     glyphastore_set_warnings(glyphastore_crash_backup_daemon)

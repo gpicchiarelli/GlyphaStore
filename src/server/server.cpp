@@ -80,6 +80,14 @@ namespace {
     return out;
 }
 
+void assign_probe_failure(std::string& out, const std::string_view message) noexcept {
+    try {
+        out.assign(message);
+    } catch (...) {
+        out.clear();
+    }
+}
+
 [[nodiscard]] auto probe_server_backup(void* context, const std::string_view destination,
                                        std::string& out) noexcept -> bool {
     try {
@@ -99,10 +107,10 @@ namespace {
         }
         return true;
     } catch (const std::exception& exception) {
-        out = exception.what();
+        assign_probe_failure(out, exception.what());
         return false;
     } catch (...) {
-        out = "backup failed";
+        assign_probe_failure(out, "backup failed");
         return false;
     }
 }
@@ -162,7 +170,7 @@ auto Server::tls_port() const noexcept -> std::uint16_t {
     return reactors_.empty() ? 0 : reactors_.front()->tls_port();
 }
 
-auto Server::unix_socket_path() const noexcept -> std::string {
+auto Server::unix_socket_path() const -> std::string {
     if (reactors_.empty()) {
         return {};
     }
@@ -222,7 +230,7 @@ auto Server::stats_report() const -> Result<std::string> {
     snapshot.tls_ocsp_fail_closed = config_.tls.ocsp_fail_closed;
     snapshot.authz_enabled = config_.authz.enabled();
     snapshot.authz_principals = config_.authz.size();
-    constexpr std::size_t kStatsBudgetBytes = 256U * 1024U;
+    constexpr std::size_t kStatsBudgetBytes = std::size_t{256} * 1024U;
     return ServerStatsReporter::render(snapshot, kStatsBudgetBytes);
 }
 

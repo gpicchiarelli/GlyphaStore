@@ -25,6 +25,7 @@
 namespace glyphastore::experimental {
 namespace {
 
+using server::advance_connection_generation;
 using server::ConnectionToken;
 using server::IoFlags;
 using server::IoInterest;
@@ -108,7 +109,7 @@ struct PairedReactorPrototype::Impl final {
             free_slots.push_back(static_cast<std::uint32_t>(index - 1U));
         }
         for (auto& connection : connections) {
-            connection.input.reserve(std::min(config.maximum_input_bytes, std::size_t{16U * 1024U}));
+            connection.input.reserve(std::min(config.maximum_input_bytes, std::size_t{16} * 1024U));
             connection.output.resize(config.output_frames_per_connection);
         }
     }
@@ -162,7 +163,13 @@ struct PairedReactorPrototype::Impl final {
         if (current == nullptr) {
             return;
         }
-        static_cast<void>(poller.remove(current->socket.descriptor()));
+        bool poller_removed = false;
+        try {
+            poller_removed = poller.remove(current->socket.descriptor()).has_value();
+        } catch (...) {
+            poller_removed = false;
+        }
+        static_cast<void>(poller_removed);
         current->socket.reset();
         current->input.clear();
         current->input_offset = 0;
@@ -173,11 +180,9 @@ struct PairedReactorPrototype::Impl final {
         current->mutation_blocked = false;
         current->peer_read_closed = false;
         current->write_armed = false;
-        ++current->generation;
-        if (current->generation == 0) {
-            current->generation = 1;
+        if (advance_connection_generation(current->generation)) {
+            free_slots.push_back(token.slot);
         }
-        free_slots.push_back(token.slot);
         --active_connections;
         ++closed_connections;
     }
@@ -458,7 +463,7 @@ struct PairedReactorPrototype::Impl final {
         if (current == nullptr) {
             return {};
         }
-        std::array<std::byte, 16U * 1024U> buffer{};
+        std::array<std::byte, std::size_t{16} * 1024U> buffer{};
         while (current->output_count == 0 && !current->request_in_flight && !current->mutation_blocked) {
             const auto received = ::recv(current->socket.descriptor(), buffer.data(), buffer.size(), 0);
             if (received > 0) {

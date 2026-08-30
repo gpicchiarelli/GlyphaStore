@@ -158,9 +158,10 @@ void MaintenanceController::evaluate_once() {
     }
 
     if (!under_pressure && observation.durable) {
-        const auto scheduling_bp = observation.candidate_scheduling_dead_byte_ratio_bp
-                                       ? *observation.candidate_scheduling_dead_byte_ratio_bp
-                                       : observation.candidate_dead_byte_ratio_bp;
+        auto scheduling_bp = observation.candidate_scheduling_dead_byte_ratio_bp;
+        if (!scheduling_bp) {
+            scheduling_bp = observation.candidate_dead_byte_ratio_bp;
+        }
         if (scheduling_bp && *scheduling_bp < config.dead_byte_ratio_bp_normal) {
             const std::lock_guard lock{mutex_};
             latency_guard_active_ = false;

@@ -46,6 +46,9 @@ Store::~Store() {
     try {
         static_cast<void>(close());
     } catch (...) {
+        // Destructors cannot surface shutdown errors; explicit return documents
+        // the best-effort boundary while close() remains available to callers.
+        return;
     }
 }
 

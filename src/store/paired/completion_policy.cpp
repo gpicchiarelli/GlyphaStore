@@ -6,7 +6,7 @@ namespace glyphastore::store::paired {
 
 auto status_from_completion(const CompletionDecision& decision,
                             const std::string_view known_not_committed_message,
-                            const std::string_view indeterminate_message) noexcept -> Status {
+                            const std::string_view indeterminate_message) -> Status {
     switch (decision.kind) {
     case CompletionDecision::Kind::success:
         return Status{};

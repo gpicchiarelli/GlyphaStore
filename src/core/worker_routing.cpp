@@ -5,6 +5,8 @@
 
 #include <atomic>
 #include <cstring>
+#include <exception>
+#include <limits>
 
 #if defined(__APPLE__) || defined(__linux__)
 #include <sys/random.h>
@@ -18,6 +20,8 @@ namespace {
 std::atomic<std::uint32_t> g_worker_routing_algorithm{
     static_cast<std::uint32_t>(RoutingAlgorithm::fnv1a64_v1)};
 std::atomic<std::uint64_t> g_worker_hash_seed{kDefaultWorkerHashSeed};
+std::atomic_uint64_t g_worker_routing_revision{};
+std::atomic_flag g_worker_routing_writer = ATOMIC_FLAG_INIT;
 
 [[nodiscard]] auto fill_entropy(void* buffer, const std::size_t length) noexcept -> bool {
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__)
@@ -80,16 +84,38 @@ void set_worker_routing(const RoutingAlgorithm algorithm, const std::uint64_t se
 }
 
 void set_worker_routing(const WorkerRoutingState state) noexcept {
-    g_worker_routing_algorithm.store(static_cast<std::uint32_t>(state.algorithm), std::memory_order_relaxed);
-    g_worker_hash_seed.store(state.seed, std::memory_order_relaxed);
+    while (g_worker_routing_writer.test_and_set(std::memory_order_acquire)) {
+        g_worker_routing_writer.wait(true, std::memory_order_relaxed);
+    }
+    const auto revision = g_worker_routing_revision.load(std::memory_order_seq_cst);
+    if ((revision & 1U) != 0U || revision > std::numeric_limits<std::uint64_t>::max() - 2U) [[unlikely]] {
+        std::terminate();
+    }
+    g_worker_routing_revision.store(revision + 1U, std::memory_order_seq_cst);
+    g_worker_routing_algorithm.store(static_cast<std::uint32_t>(state.algorithm), std::memory_order_seq_cst);
+    g_worker_hash_seed.store(state.seed, std::memory_order_seq_cst);
+    g_worker_routing_revision.store(revision + 2U, std::memory_order_seq_cst);
+    g_worker_routing_revision.notify_all();
+    g_worker_routing_writer.clear(std::memory_order_release);
+    g_worker_routing_writer.notify_one();
 }
 
 auto get_worker_routing() noexcept -> WorkerRoutingState {
-    return WorkerRoutingState{
-        .algorithm =
-            static_cast<RoutingAlgorithm>(g_worker_routing_algorithm.load(std::memory_order_relaxed)),
-        .seed = g_worker_hash_seed.load(std::memory_order_relaxed),
-    };
+    for (;;) {
+        const auto before = g_worker_routing_revision.load(std::memory_order_seq_cst);
+        if ((before & 1U) != 0U) {
+            g_worker_routing_revision.wait(before, std::memory_order_acquire);
+            continue;
+        }
+        const WorkerRoutingState state{
+            .algorithm =
+                static_cast<RoutingAlgorithm>(g_worker_routing_algorithm.load(std::memory_order_seq_cst)),
+            .seed = g_worker_hash_seed.load(std::memory_order_seq_cst),
+        };
+        if (g_worker_routing_revision.load(std::memory_order_seq_cst) == before) {
+            return state;
+        }
+    }
 }
 
 auto generate_worker_hash_seed() noexcept -> std::uint64_t {

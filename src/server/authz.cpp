@@ -187,7 +187,7 @@ auto AuthzPolicy::capabilities_for(const std::string_view principal) const noexc
     if (!enabled_ || principal.empty()) {
         return Capability::none;
     }
-    const auto found = principals_.find(std::string{principal});
+    const auto found = principals_.find(principal);
     if (found == principals_.end()) {
         return Capability::none;
     }
@@ -198,7 +198,7 @@ auto AuthzPolicy::grant_for(const std::string_view principal) const -> AuthzGran
     if (!enabled_ || principal.empty()) {
         return {};
     }
-    const auto found = principals_.find(std::string{principal});
+    const auto found = principals_.find(principal);
     if (found == principals_.end()) {
         return {};
     }

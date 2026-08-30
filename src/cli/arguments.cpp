@@ -175,7 +175,11 @@ auto ParsedArguments::value(const std::size_t id) const noexcept -> std::optiona
 
 auto executable_name(const std::string_view argument_zero) noexcept -> std::string_view {
     const auto slash = argument_zero.find_last_of("/\\");
-    return slash == std::string_view::npos ? argument_zero : argument_zero.substr(slash + 1U);
+    auto name = argument_zero;
+    if (slash != std::string_view::npos) {
+        name.remove_prefix(slash + 1U);
+    }
+    return name;
 }
 
 auto parse_arguments(const int argc, char* const argv[], const std::span<const OptionSpec> specs)

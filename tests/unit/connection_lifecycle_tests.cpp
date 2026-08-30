@@ -1,6 +1,11 @@
 #include "glyphastore/server/connection_lifecycle.hpp"
+#include "glyphastore/server/connection_token.hpp"
 #include "test.hpp"
 
+#include <cstdint>
+#include <limits>
+
+using glyphastore::server::advance_connection_generation;
 using glyphastore::server::connection_lifecycle_of;
 using glyphastore::server::ConnectionAction;
 using glyphastore::server::ConnectionDrainSnapshot;
@@ -33,4 +38,15 @@ GLYPHA_TEST("connection_lifecycle decide close_now only when drained") {
     DecidedOutput decided{.contiguous_bytes = 4, .lease_header_remaining = 1};
     GLYPHA_REQUIRE(!decided.empty());
     GLYPHA_REQUIRE(decided.total_bytes() == 5);
+}
+
+GLYPHA_TEST("connection token generation retires a slot instead of wrapping into an ABA identity") {
+    std::uint32_t generation = std::numeric_limits<std::uint32_t>::max() - 1U;
+    GLYPHA_REQUIRE(advance_connection_generation(generation));
+    GLYPHA_REQUIRE(generation == std::numeric_limits<std::uint32_t>::max());
+
+    GLYPHA_REQUIRE(!advance_connection_generation(generation));
+    GLYPHA_REQUIRE(generation == 0U);
+    GLYPHA_REQUIRE(!advance_connection_generation(generation));
+    GLYPHA_REQUIRE(generation == 0U);
 }

@@ -1,5 +1,7 @@
 #include "glyphastore/store/paired/mutation_state.hpp"
 
+#include <utility>
+
 namespace glyphastore::store::paired {
 namespace {
 
@@ -141,7 +143,16 @@ auto MutationLifecycle::apply_durable_result(const DurableMutationResult& result
     }
     durable_.mutate_entered = true;
     durable_.knowledge = commit_knowledge_from(result.outcome);
-    durable_.error = result.error;
+    if (result.error) {
+        // This lifecycle is a control-flow shadow; only presence and code are
+        // authoritative here. Avoid copying diagnostic strings in a noexcept
+        // transition used from allocation-failure recovery.
+        Error shadow_error{};
+        shadow_error.code = result.error->code;
+        durable_.error.emplace(std::move(shadow_error));
+    } else {
+        durable_.error.reset();
+    }
     switch (durable_.knowledge) {
     case CommitKnowledge::committed:
         stage_ = MutationStage::authority_committed;
@@ -210,7 +221,9 @@ auto MutationLifecycle::mark_exception_after_durable_start() noexcept -> bool {
     }
     durable_.mutate_entered = true;
     durable_.knowledge = CommitKnowledge::indeterminate;
-    durable_.error = Error{ErrorCode::unavailable, "exception after durable mutate entered"};
+    Error shadow_error{};
+    shadow_error.code = ErrorCode::unavailable;
+    durable_.error.emplace(std::move(shadow_error));
     publication_.state = PublicationState::required;
     stage_ = MutationStage::indeterminate;
     return true;

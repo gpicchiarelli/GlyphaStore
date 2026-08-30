@@ -258,6 +258,27 @@ struct OneShotFilesystemFailure {
     }
 };
 
+// Systematic fail-the-Nth logical filesystem seam. Unlike the targeted matrix
+// above, this enumerates the operation's actual execution trace and stops only
+// after an iteration reaches no further seam.
+struct NthFilesystemFailure {
+    std::size_t target_occurrence{1};
+    std::size_t occurrences{};
+    std::optional<glyphastore::FilesystemOperation> fired_operation{};
+
+    static auto before(void* opaque, const glyphastore::FilesystemOperation operation)
+        -> glyphastore::Status {
+        auto& state = *static_cast<NthFilesystemFailure*>(opaque);
+        ++state.occurrences;
+        if (!state.fired_operation && state.occurrences == state.target_occurrence) {
+            state.fired_operation = operation;
+            return glyphastore::fail(glyphastore::ErrorCode::io_error,
+                                     "injected Nth durable runtime filesystem failure");
+        }
+        return {};
+    }
+};
+
 struct SyncThreadObserver {
     std::mutex mutex;
     std::thread::id sync_thread;
@@ -365,6 +386,7 @@ using persistence_recovery_test_support::create_private_file;
 using persistence_recovery_test_support::create_segment;
 using persistence_recovery_test_support::kExpectGetPathTiming;
 using persistence_recovery_test_support::key_for_worker;
+using persistence_recovery_test_support::NthFilesystemFailure;
 using persistence_recovery_test_support::OneShotFilesystemFailure;
 using persistence_recovery_test_support::owned_text;
 using persistence_recovery_test_support::RecordWriteObserver;

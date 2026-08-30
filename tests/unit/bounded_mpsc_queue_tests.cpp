@@ -5,7 +5,9 @@
 #include <atomic>
 #include <chrono>
 #include <cstddef>
+#include <limits>
 #include <optional>
+#include <stdexcept>
 #include <thread>
 #include <vector>
 
@@ -22,6 +24,26 @@ GLYPHA_TEST("bounded MPSC queue reports capacity without losing values") {
     GLYPHA_REQUIRE(*first == 10);
     GLYPHA_REQUIRE(*second == 20);
     GLYPHA_REQUIRE(!queue.try_pop().has_value());
+}
+
+GLYPHA_TEST("bounded MPSC modular sequence ordering is defined across size_t wrap") {
+    using glyphastore::server::mpsc_detail::sequence_precedes_position;
+    constexpr auto kMax = std::numeric_limits<std::size_t>::max();
+    GLYPHA_REQUIRE(sequence_precedes_position(kMax, 0U));
+    GLYPHA_REQUIRE(sequence_precedes_position(kMax - 3U, 2U));
+    GLYPHA_REQUIRE(!sequence_precedes_position(0U, kMax));
+    GLYPHA_REQUIRE(!sequence_precedes_position(3U, kMax));
+    GLYPHA_REQUIRE(!sequence_precedes_position(42U, 42U));
+
+    bool rejected{};
+    try {
+        glyphastore::server::BoundedMpscQueue<std::size_t> impossible{
+            glyphastore::server::mpsc_detail::kMaximumCapacity + 1U};
+        static_cast<void>(impossible);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    GLYPHA_REQUIRE(rejected);
 }
 
 GLYPHA_TEST("bounded MPSC queue serializes concurrent producers") {
@@ -83,6 +105,18 @@ GLYPHA_TEST("bounded SPSC queue preserves FIFO order across concurrent wraparoun
     }
     producer.join();
     GLYPHA_REQUIRE(queue.empty());
+}
+
+GLYPHA_TEST("bounded SPSC queue rejects a capacity that makes modular cursors ambiguous") {
+    bool rejected{};
+    try {
+        glyphastore::server::BoundedSpscQueue<std::size_t> impossible{
+            glyphastore::store::paired::spsc_detail::kMaximumCapacity + 1U};
+        static_cast<void>(impossible);
+    } catch (const std::invalid_argument&) {
+        rejected = true;
+    }
+    GLYPHA_REQUIRE(rejected);
 }
 
 GLYPHA_TEST("bounded SPSC queue applies backpressure when full under hot producer") {

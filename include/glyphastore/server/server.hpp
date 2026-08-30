@@ -52,7 +52,7 @@ class Server final {
     [[nodiscard]] auto port() const noexcept -> std::uint16_t;
     [[nodiscard]] auto cleartext_port() const noexcept -> std::uint16_t;
     [[nodiscard]] auto tls_port() const noexcept -> std::uint16_t;
-    [[nodiscard]] auto unix_socket_path() const noexcept -> std::string;
+    [[nodiscard]] auto unix_socket_path() const -> std::string;
     [[nodiscard]] auto executor_count() const noexcept -> std::size_t {
         return reactors_.size();
     }

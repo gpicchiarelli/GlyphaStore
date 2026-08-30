@@ -1,6 +1,7 @@
 #include "experimental/paired_shard.hpp"
 
 #include "experimental/spsc_ring.hpp"
+#include "glyphastore/core/integer_math.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/index/swiss_control_group.hpp"
 
@@ -23,6 +24,22 @@ namespace glyphastore::experimental {
 namespace {
 
 using Clock = std::chrono::steady_clock;
+
+[[nodiscard]] constexpr auto storage_payload_bytes(const std::size_t count,
+                                                   const std::size_t item_bytes) noexcept -> std::uint64_t {
+    if constexpr (sizeof(std::size_t) > sizeof(std::uint64_t)) {
+        if (count > static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max()) ||
+            item_bytes > static_cast<std::size_t>(std::numeric_limits<std::uint64_t>::max())) {
+            return std::numeric_limits<std::uint64_t>::max();
+        }
+    }
+    const auto count_u64 = static_cast<std::uint64_t>(count);
+    const auto item_u64 = static_cast<std::uint64_t>(item_bytes);
+    return count_u64 != 0U && item_u64 > std::numeric_limits<std::uint64_t>::max() / count_u64
+               ? std::numeric_limits<std::uint64_t>::max()
+               : count_u64 * item_u64;
+}
+
 void update_high_watermark(std::atomic_size_t& maximum, const std::size_t candidate) noexcept {
     auto current = maximum.load(std::memory_order_relaxed);
     while (current < candidate &&
@@ -120,9 +137,11 @@ class ImmutableReadIndex final {
     }
 
     [[nodiscard]] auto storage_bytes() const noexcept -> std::uint64_t {
-        return static_cast<std::uint64_t>(control_.capacity() * sizeof(std::uint8_t) +
-                                          hashes_.capacity() * sizeof(std::uint64_t) +
-                                          records_.capacity() * sizeof(RecordHandle));
+        auto result = storage_payload_bytes(control_.capacity(), sizeof(std::uint8_t));
+        result = glyphastore::saturating_add(
+            result, storage_payload_bytes(hashes_.capacity(), sizeof(std::uint64_t)));
+        return glyphastore::saturating_add(result,
+                                           storage_payload_bytes(records_.capacity(), sizeof(RecordHandle)));
     }
 
   private:
@@ -253,13 +272,16 @@ struct DeltaState final {
     }
 
     [[nodiscard]] auto storage_bytes() const noexcept -> std::uint64_t {
-        auto result = static_cast<std::uint64_t>(flat_pages.capacity() * sizeof(flat_pages.front()) +
-                                                 page_views.capacity() * sizeof(page_views.front()) +
-                                                 directory.capacity() * sizeof(directory.front()));
+        auto result = storage_payload_bytes(flat_pages.capacity(), sizeof(std::shared_ptr<const DeltaPage>));
+        result = glyphastore::saturating_add(
+            result, storage_payload_bytes(page_views.capacity(), sizeof(const DeltaPage*)));
+        result = glyphastore::saturating_add(
+            result,
+            storage_payload_bytes(directory.capacity(), sizeof(std::shared_ptr<const DeltaDirectoryBlock>)));
         if (!hierarchical()) {
             for (const auto& page : flat_pages) {
                 if (page) {
-                    result += sizeof(DeltaPage);
+                    result = glyphastore::saturating_add(result, sizeof(DeltaPage));
                 }
             }
             return result;
@@ -268,10 +290,10 @@ struct DeltaState final {
             if (!block) {
                 continue;
             }
-            result += sizeof(DeltaDirectoryBlock);
+            result = glyphastore::saturating_add(result, sizeof(DeltaDirectoryBlock));
             for (const auto& page : block->pages) {
                 if (page) {
-                    result += sizeof(DeltaPage);
+                    result = glyphastore::saturating_add(result, sizeof(DeltaPage));
                 }
             }
         }

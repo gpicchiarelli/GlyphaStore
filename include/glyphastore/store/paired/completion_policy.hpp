@@ -29,6 +29,6 @@ namespace glyphastore::store::paired {
 // Build a Status from a completion decision. Success → empty Status.
 [[nodiscard]] auto status_from_completion(const CompletionDecision& decision,
                                           std::string_view known_not_committed_message,
-                                          std::string_view indeterminate_message) noexcept -> Status;
+                                          std::string_view indeterminate_message) -> Status;
 
 } // namespace glyphastore::store::paired

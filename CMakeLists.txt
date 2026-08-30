@@ -35,6 +35,7 @@ include(ProjectOptions)
 include(CompilerWarnings)
 include(Sanitizers)
 include(Hardening)
+include(StandardLibraryHardening)
 include(XcodeSupport)
 include(FindGlyphaStoreTls)
 

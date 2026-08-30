@@ -19,6 +19,8 @@
 #include "store/paired/shard_pair_runtime_impl.hpp"
 #include "store/store_internal.hpp"
 
+#include <type_traits>
+
 namespace glyphastore::store::paired {
 
 ShardPairRuntime::ShardPairRuntime(Store& store, PairedConcurrencyConfig config,
@@ -577,8 +579,13 @@ void ShardPairRuntime::abandon_queued_mutations() noexcept {
                                     .payload_slot = task->payload_slot,
                                     .writer_epoch =
                                         lane.generation.writer_epoch.load(std::memory_order_relaxed)};
-            outcome.error.emplace(ErrorCode::resource_exhausted,
-                                  "mutation abandoned after shutdown drain deadline");
+            // This is a noexcept shutdown path and may itself run under memory
+            // pressure. A code-only Error default-constructs without allocating;
+            // building a diagnostic string here could otherwise terminate before
+            // the accepted mutation receives its definitive rejection.
+            static_assert(std::is_nothrow_default_constructible_v<Error>);
+            outcome.error.emplace();
+            outcome.error->code = ErrorCode::resource_exhausted;
             if (!runtime_detail::deliver_outcome(task->sink, std::move(outcome))) {
                 std::terminate();
             }

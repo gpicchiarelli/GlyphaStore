@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import platform
 import shutil
 import subprocess
 
@@ -50,11 +51,28 @@ def production_sources(root: Path, build_directory: Path) -> list[Path]:
     return sorted(sources)
 
 
+def clang_tidy_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    if platform.system() != "Darwin" or environment.get("SDKROOT"):
+        return environment
+    xcrun = shutil.which("xcrun")
+    if xcrun is None:
+        return environment
+    completed = subprocess.run(
+        [xcrun, "--show-sdk-path"], text=True, capture_output=True, check=False
+    )
+    sdk_root = completed.stdout.strip()
+    if completed.returncode == 0 and sdk_root:
+        environment["SDKROOT"] = sdk_root
+    return environment
+
+
 def run_gate(root: Path, build_directory: Path, clang_tidy: str, jobs: int) -> ClangTidyReport:
     root = root.resolve()
     build_directory = build_directory.resolve()
     sources = production_sources(root, build_directory)
     checks = "-*," + ",".join(HIGH_SIGNAL_CHECKS)
+    environment = clang_tidy_environment()
 
     def inspect(source: Path) -> ClangTidyFailure | None:
         completed = subprocess.run(
@@ -70,6 +88,7 @@ def run_gate(root: Path, build_directory: Path, clang_tidy: str, jobs: int) -> C
             cwd=root,
             text=True,
             capture_output=True,
+            env=environment,
         )
         if completed.returncode == 0:
             return None

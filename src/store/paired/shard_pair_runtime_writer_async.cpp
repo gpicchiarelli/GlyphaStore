@@ -31,17 +31,24 @@ namespace glyphastore::store::paired {
 void ShardPairRuntime::run_writer_async_batch(WriterAsyncBatchEnv& env) noexcept {
     auto& lane = env.lane;
     const std::size_t shard = env.shard;
-    static const std::function<void()> kNoop{};
-    static const std::function<bool()> kNoopBool{[] { return false; }};
-    static const std::function<void(std::size_t)> kNoopSize{};
-    const std::function<void()>& publish_fail_closed =
-        env.hooks.publish_fail_closed != nullptr ? *env.hooks.publish_fail_closed : kNoop;
-    const std::function<void()>& reclaim_quiescent =
-        env.hooks.reclaim_quiescent != nullptr ? *env.hooks.reclaim_quiescent : kNoop;
-    const std::function<void(std::size_t)>& process_merge =
-        env.hooks.process_merge != nullptr ? *env.hooks.process_merge : kNoopSize;
-    const std::function<bool()>& drain_durable_snapshot =
-        env.hooks.drain_durable_snapshot != nullptr ? *env.hooks.drain_durable_snapshot : kNoopBool;
+    const auto publish_fail_closed = [&]() noexcept {
+        if (env.hooks.publish_fail_closed != nullptr) {
+            (*env.hooks.publish_fail_closed)();
+        }
+    };
+    const auto reclaim_quiescent = [&]() noexcept {
+        if (env.hooks.reclaim_quiescent != nullptr) {
+            (*env.hooks.reclaim_quiescent)();
+        }
+    };
+    const auto process_merge = [&](const std::size_t records) noexcept {
+        if (env.hooks.process_merge != nullptr) {
+            (*env.hooks.process_merge)(records);
+        }
+    };
+    const auto drain_durable_snapshot = [&]() noexcept -> bool {
+        return env.hooks.drain_durable_snapshot != nullptr && (*env.hooks.drain_durable_snapshot)();
+    };
     const auto payload_for = [&lane](const runtime_detail::AsyncMutationTask& task) noexcept {
         auto payload = lane.payloads.view(task.payload_slot);
         if (!payload) {

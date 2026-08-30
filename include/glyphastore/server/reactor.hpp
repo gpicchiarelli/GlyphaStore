@@ -50,8 +50,8 @@ struct ReactorConfig {
     std::size_t maximum_connections{4096};
     std::size_t worker_count{1};
     std::size_t event_batch_size{256};
-    std::size_t maximum_input_bytes{4U * 1024U * 1024U};
-    std::size_t maximum_output_bytes{4U * 1024U * 1024U};
+    std::size_t maximum_input_bytes{std::size_t{4} * 1024U * 1024U};
+    std::size_t maximum_output_bytes{std::size_t{4} * 1024U * 1024U};
     // Zero leaves the platform default. A non-zero bound is primarily useful
     // for deterministic short-write tests and controlled deployment tuning.
     std::size_t accepted_socket_send_buffer_bytes{};
@@ -65,7 +65,7 @@ struct ReactorConfig {
     // Per-pair mutation and completion-ring capacity. Every PUT/ERASE crosses
     // the Reader -> Writer SPSC lane, for volatile and durable Stores alike.
     std::size_t durable_mutation_queue_capacity{256};
-    std::size_t durable_mutation_queue_bytes{16U * 1024U * 1024U};
+    std::size_t durable_mutation_queue_bytes{std::size_t{16} * 1024U * 1024U};
     // Zero disables expiry. Once Store execution begins the mutation always
     // runs to a classified completion and is never cancelled by this limit.
     std::uint32_t durable_mutation_queue_wait_ms{};

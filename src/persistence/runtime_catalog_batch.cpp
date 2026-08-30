@@ -112,7 +112,7 @@ auto DurableRuntimeCatalog::flush_worker_batch(RuntimeWorker& worker,
     const auto pending_records = worker.cached_file->pending_record_count();
     const auto pending_bytes = worker.cached_file->pending_bytes();
     atomic_saturating_add(worker.batch_metrics.flush_attempts, 1U);
-    std::optional<DurableSegmentFile> io_file{std::move(*worker.cached_file)};
+    auto io_file = std::move(worker.cached_file);
     worker.cached_file.reset();
     worker.cached_writable = false;
     worker.mutation_io_active = true;

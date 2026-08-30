@@ -17,7 +17,7 @@ namespace glyphastore::server::reactor_detail {
 // than copying a cache-resident small value into the existing output buffer.
 // Keep the common small-response path contiguous and reserve the owning lease
 // for payloads large enough to amortize scatter/gather.
-inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
+inline constexpr std::size_t kMinimumScatterValueBytes = std::size_t{4} * 1024U;
 
 // A hot owner-bound GET can retain exactly one owning lease while buffered
 // pipeline input waits for the socket drain. That removes a full value copy,
@@ -27,9 +27,9 @@ inline constexpr std::size_t kMinimumScatterValueBytes = 4U * 1024U;
 // pipelined variant, so use a deliberately conservative portable threshold
 // until their controlled-hardware evidence can lower it independently.
 #if defined(__APPLE__)
-inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = 8U * 1024U;
+inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = std::size_t{8} * 1024U;
 #else
-inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = 16U * 1024U;
+inline constexpr std::size_t kMinimumPipelinedScatterValueBytes = std::size_t{16} * 1024U;
 #endif
 
 [[nodiscard]] inline auto bytes(const std::string_view value) noexcept -> std::span<const std::byte> {

@@ -33,6 +33,7 @@ enum class OutcomeKind : std::uint8_t {
     ok_void,
     ok_value,
     not_found,
+    rejected,
     unavailable,
     other_error,
 };
@@ -100,6 +101,8 @@ struct CheckResult final {
         return "ok_value";
     case OutcomeKind::not_found:
         return "not_found";
+    case OutcomeKind::rejected:
+        return "rejected";
     case OutcomeKind::unavailable:
         return "unavailable";
     case OutcomeKind::other_error:
@@ -131,8 +134,6 @@ struct CheckResult final {
 [[nodiscard]] inline auto apply(ModelState& state, const Operation& op) -> bool {
     if (!op.completed)
         return false;
-    if (op.outcome == OutcomeKind::other_error)
-        return true;
     if (state.closed)
         return op.outcome == OutcomeKind::unavailable;
 
@@ -152,6 +153,8 @@ struct CheckResult final {
     case OpKind::put:
     case OpKind::put_ttl:
     case OpKind::raw_put: {
+        if (op.outcome == OutcomeKind::rejected)
+            return true;
         if (op.outcome == OutcomeKind::unavailable)
             return false;
         if (op.outcome != OutcomeKind::ok_void)
@@ -165,24 +168,22 @@ struct CheckResult final {
     }
     case OpKind::erase:
     case OpKind::raw_erase: {
+        if (op.outcome == OutcomeKind::rejected)
+            return true;
         if (op.outcome == OutcomeKind::unavailable)
             return false;
-        if (op.outcome != OutcomeKind::ok_void)
-            return false;
-        state.map.erase(op.key);
-        return true;
+        const auto erased = state.map.erase(op.key);
+        return erased == 0U ? op.outcome == OutcomeKind::not_found : op.outcome == OutcomeKind::ok_void;
     }
     case OpKind::compact: {
-        if (op.outcome == OutcomeKind::unavailable)
-            return false;
-        return op.outcome == OutcomeKind::ok_void;
+        return op.outcome == OutcomeKind::ok_void || op.outcome == OutcomeKind::rejected;
     }
     case OpKind::close: {
         if (op.outcome == OutcomeKind::ok_void || op.outcome == OutcomeKind::unavailable) {
             state.closed = true;
             return true;
         }
-        return op.outcome == OutcomeKind::other_error;
+        return false;
     }
     }
     return false;
@@ -298,13 +299,16 @@ inline auto check_history(const std::vector<Operation>& history, const std::size
 
 [[nodiscard]] inline auto history_has_matching_write(const std::vector<Operation>& history,
                                                      const Operation& get_op) -> bool {
-    if (get_op.outcome != OutcomeKind::ok_value)
+    const bool successful_erase = (get_op.kind == OpKind::erase || get_op.kind == OpKind::raw_erase) &&
+                                  get_op.outcome == OutcomeKind::ok_void;
+    if (get_op.outcome != OutcomeKind::ok_value && !successful_erase)
         return true;
     for (const auto& op : history) {
         if (op.id == get_op.id || !op.completed)
             continue;
         if ((op.kind == OpKind::put || op.kind == OpKind::put_ttl || op.kind == OpKind::raw_put) &&
-            op.key == get_op.key && op.value == get_op.result_value && op.outcome == OutcomeKind::ok_void)
+            op.key == get_op.key && (successful_erase || op.value == get_op.result_value) &&
+            op.outcome == OutcomeKind::ok_void)
             return true;
     }
     return false;
@@ -323,7 +327,8 @@ inline auto minimize_failing(std::vector<Operation> history) -> std::vector<Oper
                     trial.push_back(current[j]);
             bool explains_gets = true;
             for (const auto& op : trial) {
-                if ((op.kind == OpKind::get || op.kind == OpKind::raw_get) &&
+                if ((op.kind == OpKind::get || op.kind == OpKind::raw_get || op.kind == OpKind::erase ||
+                     op.kind == OpKind::raw_erase) &&
                     !history_has_matching_write(trial, op)) {
                     explains_gets = false;
                     break;

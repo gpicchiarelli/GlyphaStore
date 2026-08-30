@@ -48,6 +48,15 @@
       "cacheVariables": { "GLYPHASTORE_ENABLE_TSAN": "ON" }
     },
     {
+      "name": "macos-correctness",
+      "inherits": "macos-debug",
+      "displayName": "macOS diagnostic standard-library hardening",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_STDLIB_HARDENING": "ON",
+        "GLYPHASTORE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "macos-release-lto",
       "inherits": "macos-release",
       "displayName": "macOS Release + LTO",
@@ -145,6 +154,15 @@
       "cacheVariables": { "GLYPHASTORE_ENABLE_TSAN": "ON" }
     },
     {
+      "name": "unix-correctness",
+      "inherits": "unix-debug",
+      "displayName": "Unix diagnostic standard-library hardening",
+      "cacheVariables": {
+        "GLYPHASTORE_ENABLE_STDLIB_HARDENING": "ON",
+        "GLYPHASTORE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
       "name": "unix-clang-tidy",
       "inherits": "unix-debug",
       "displayName": "Unix Clang-Tidy",
@@ -191,6 +209,7 @@
     { "name": "macos-release", "configurePreset": "macos-release" },
     { "name": "macos-asan", "configurePreset": "macos-asan" },
     { "name": "macos-tsan", "configurePreset": "macos-tsan" },
+    { "name": "macos-correctness", "configurePreset": "macos-correctness" },
     { "name": "macos-release-lto", "configurePreset": "macos-release-lto" },
     { "name": "macos-pgo-generate", "configurePreset": "macos-pgo-generate" },
     { "name": "macos-pgo-use", "configurePreset": "macos-pgo-use" },
@@ -203,6 +222,7 @@
     { "name": "unix-strict", "configurePreset": "unix-strict" },
     { "name": "unix-asan", "configurePreset": "unix-asan" },
     { "name": "unix-tsan", "configurePreset": "unix-tsan" },
+    { "name": "unix-correctness", "configurePreset": "unix-correctness" },
     { "name": "unix-clang-tidy", "configurePreset": "unix-clang-tidy" },
     { "name": "unix-release-lto", "configurePreset": "unix-release-lto" },
     { "name": "unix-pgo-generate", "configurePreset": "unix-pgo-generate" },
@@ -213,12 +233,14 @@
     { "name": "macos-debug", "configurePreset": "macos-debug", "output": { "outputOnFailure": true } },
     { "name": "macos-asan", "configurePreset": "macos-asan", "output": { "outputOnFailure": true } },
     { "name": "macos-tsan", "configurePreset": "macos-tsan", "output": { "outputOnFailure": true } },
+    { "name": "macos-correctness", "configurePreset": "macos-correctness", "output": { "outputOnFailure": true } },
     { "name": "macos-release-lto", "configurePreset": "macos-release-lto", "output": { "outputOnFailure": true } },
     { "name": "xcode-debug", "configurePreset": "xcode", "configuration": "Debug", "output": { "outputOnFailure": true } },
     { "name": "unix-debug", "configurePreset": "unix-debug", "output": { "outputOnFailure": true } },
     { "name": "unix-strict", "configurePreset": "unix-strict", "output": { "outputOnFailure": true } },
     { "name": "unix-asan", "configurePreset": "unix-asan", "output": { "outputOnFailure": true } },
     { "name": "unix-tsan", "configurePreset": "unix-tsan", "output": { "outputOnFailure": true } },
+    { "name": "unix-correctness", "configurePreset": "unix-correctness", "output": { "outputOnFailure": true } },
     { "name": "unix-release", "configurePreset": "unix-release", "output": { "outputOnFailure": true } },
     { "name": "unix-release-lto", "configurePreset": "unix-release-lto", "output": { "outputOnFailure": true } }
   ]

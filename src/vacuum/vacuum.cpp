@@ -19,8 +19,8 @@ auto make_catalog(std::span<const SegmentPtr> segments) -> std::unordered_map<Se
 
 auto VacuumPlanner::candidates(std::span<const SegmentPtr> segments) const -> std::vector<SegmentId> {
     struct Candidate {
-        SegmentId id;
-        double ratio;
+        SegmentId id{};
+        double ratio{};
     };
     std::vector<Candidate> ranked;
     for (const auto& segment : segments) {

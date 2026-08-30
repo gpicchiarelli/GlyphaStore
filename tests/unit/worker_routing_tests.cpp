@@ -4,12 +4,16 @@
 #include "glyphastore/store/store.hpp"
 #include "test.hpp"
 
+#include <array>
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
+#include <vector>
 
 namespace {
 
@@ -58,6 +62,45 @@ GLYPHA_TEST("worker routing seed is stable within a process") {
     const auto second = glyphastore::hash_key_routing("tenant-a/orders/1");
     GLYPHA_REQUIRE(first == second);
     GLYPHA_REQUIRE(first != glyphastore::hash_key("tenant-a/orders/1"));
+}
+
+GLYPHA_TEST("worker routing publishes algorithm and seed as one coherent revision") {
+    constexpr glyphastore::WorkerRoutingState kFNV{};
+    constexpr glyphastore::WorkerRoutingState kSip{glyphastore::RoutingAlgorithm::siphash24_v1,
+                                                   0xA55A'1234'9876'FEDCULL};
+    RoutingGuard guard{kFNV};
+    std::atomic_bool start{};
+    std::atomic_bool done{};
+    std::atomic_bool torn{};
+
+    std::thread writer{[&] {
+        while (!start.load(std::memory_order_acquire)) {
+        }
+        for (std::size_t iteration = 0; iteration < 100'000U; ++iteration) {
+            glyphastore::set_worker_routing((iteration & 1U) == 0U ? kSip : kFNV);
+        }
+        done.store(true, std::memory_order_release);
+    }};
+    std::array<std::thread, 4> readers;
+    for (auto& reader : readers) {
+        reader = std::thread{[&] {
+            while (!start.load(std::memory_order_acquire)) {
+            }
+            while (!done.load(std::memory_order_acquire)) {
+                const auto observed = glyphastore::get_worker_routing();
+                if (observed != kFNV && observed != kSip) {
+                    torn.store(true, std::memory_order_relaxed);
+                    return;
+                }
+            }
+        }};
+    }
+    start.store(true, std::memory_order_release);
+    writer.join();
+    for (auto& reader : readers) {
+        reader.join();
+    }
+    GLYPHA_REQUIRE(!torn.load(std::memory_order_relaxed));
 }
 
 GLYPHA_TEST("different worker routing seeds select different owners") {

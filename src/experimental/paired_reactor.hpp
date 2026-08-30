@@ -13,13 +13,13 @@ namespace glyphastore::experimental {
 struct PairedReactorPrototypeConfig final {
     std::size_t maximum_connections{64};
     std::size_t event_batch_size{128};
-    std::size_t maximum_input_bytes{4U * 1024U * 1024U};
-    std::size_t maximum_output_bytes{4U * 1024U * 1024U};
+    std::size_t maximum_input_bytes{std::size_t{4} * 1024U * 1024U};
+    std::size_t maximum_output_bytes{std::size_t{4} * 1024U * 1024U};
     std::size_t output_frames_per_connection{128};
     // Zero preserves the platform default. A small explicit value is useful
     // for deterministic slow-consumer and generation-pin validation.
     std::size_t accepted_socket_send_buffer_bytes{};
-    std::size_t maximum_value_bytes{256U * 1024U};
+    std::size_t maximum_value_bytes{std::size_t{256} * 1024U};
     std::size_t merge_delta_entries{4'096};
     PrototypeWriterBatchConfig writer_batch{};
 };

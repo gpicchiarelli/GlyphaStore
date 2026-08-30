@@ -5,11 +5,33 @@
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 namespace glyphastore::server {
+namespace mpsc_detail {
+
+inline constexpr auto kMaximumCapacity = std::size_t{1} << (std::numeric_limits<std::size_t>::digits - 2U);
+
+[[nodiscard]] inline auto normalized_capacity(const std::size_t requested) -> std::size_t {
+    if (requested > kMaximumCapacity) {
+        throw std::invalid_argument{"MPSC queue capacity exceeds its modular sequence bound"};
+    }
+    return std::bit_ceil(std::max(std::size_t{2}, requested));
+}
+
+// Unsigned modular ordering. A sequence behind position has a distance in the
+// upper half of size_t; keeping capacity below half range makes the relation
+// unambiguous without implementation-defined casts or signed overflow.
+[[nodiscard]] inline constexpr auto sequence_precedes_position(const std::size_t sequence,
+                                                               const std::size_t position) noexcept -> bool {
+    return sequence - position > std::numeric_limits<std::size_t>::max() / 2U;
+}
+
+} // namespace mpsc_detail
 
 // Bounded multi-producer/single-consumer ring. Producers reserve cells with an
 // atomic sequence; the sole consumer owns dequeue_position_. No allocation is
@@ -17,7 +39,7 @@ namespace glyphastore::server {
 template <typename T> class BoundedMpscQueue final {
   public:
     explicit BoundedMpscQueue(const std::size_t requested_capacity)
-        : capacity_(std::bit_ceil(std::max(std::size_t{2}, requested_capacity))), mask_(capacity_ - 1U),
+        : capacity_(mpsc_detail::normalized_capacity(requested_capacity)), mask_(capacity_ - 1U),
           cells_(std::make_unique<Cell[]>(capacity_)) {
         for (std::size_t index = 0; index < capacity_; ++index) {
             cells_[index].sequence.store(index, std::memory_order_relaxed);
@@ -39,16 +61,15 @@ template <typename T> class BoundedMpscQueue final {
         while (true) {
             cell = &cells_[position & mask_];
             const auto sequence = cell->sequence.load(std::memory_order_acquire);
-            const auto difference =
-                static_cast<std::intptr_t>(sequence) - static_cast<std::intptr_t>(position);
-            if (difference == 0) {
+            const auto difference = sequence - position;
+            if (difference == 0U) {
                 if (enqueue_position_.compare_exchange_weak(position, position + 1U,
                                                             std::memory_order_relaxed)) {
                     break;
                 }
                 continue;
             }
-            if (difference < 0) {
+            if (mpsc_detail::sequence_precedes_position(sequence, position)) {
                 return false;
             }
             position = enqueue_position_.load(std::memory_order_relaxed);
@@ -61,12 +82,10 @@ template <typename T> class BoundedMpscQueue final {
     [[nodiscard]] auto try_pop() -> std::optional<T> {
         auto& cell = cells_[dequeue_position_ & mask_];
         const auto sequence = cell.sequence.load(std::memory_order_acquire);
-        const auto difference =
-            static_cast<std::intptr_t>(sequence) - static_cast<std::intptr_t>(dequeue_position_ + 1U);
-        if (difference != 0) {
+        if (sequence != dequeue_position_ + 1U) {
             return std::nullopt;
         }
-        auto value = std::optional<T>{std::move(*cell.value)};
+        auto value = std::move(cell.value);
         cell.value.reset();
         cell.sequence.store(dequeue_position_ + capacity_, std::memory_order_release);
         ++dequeue_position_;

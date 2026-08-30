@@ -126,7 +126,7 @@ class VolatileShardPairPrototype final {
     static constexpr std::size_t kMaximumKeyBytes = 256;
 
     [[nodiscard]] static auto
-    create(std::size_t maximum_value_bytes = 256U * 1024U, std::size_t merge_delta_entries = 128,
+    create(std::size_t maximum_value_bytes = std::size_t{256} * 1024U, std::size_t merge_delta_entries = 128,
            PrototypeWriterBatchConfig batch_config = {}, PrototypeCompletionNotifier completion_notifier = {})
         -> Result<std::unique_ptr<VolatileShardPairPrototype>>;
     ~VolatileShardPairPrototype();

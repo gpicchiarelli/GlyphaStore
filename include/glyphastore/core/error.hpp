@@ -114,9 +114,15 @@ template <> class [[nodiscard]] Result<void> final {
         return has_value();
     }
     [[nodiscard]] auto error() & -> Error& {
+        if (!error_) {
+            throw std::bad_optional_access{};
+        }
         return *error_;
     }
     [[nodiscard]] auto error() const& -> const Error& {
+        if (!error_) {
+            throw std::bad_optional_access{};
+        }
         return *error_;
     }
 

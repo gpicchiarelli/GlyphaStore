@@ -56,6 +56,7 @@ void Server::request_stop() noexcept {
         }
     } catch (...) {
         // Keep stop_requested set; unbounded drain is safer than failing stop.
+        return;
     }
 }
 

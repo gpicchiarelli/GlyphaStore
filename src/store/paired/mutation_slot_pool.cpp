@@ -1,6 +1,7 @@
 #include "glyphastore/store/paired/mutation_slot_pool.hpp"
 
 #include <cstring>
+#include <exception>
 #include <limits>
 #include <stdexcept>
 
@@ -34,6 +35,19 @@ auto MutationSlotPool::payload_bytes_in_use() const noexcept -> std::size_t {
 auto MutationSlotPool::try_acquire(const std::span<const std::byte> key,
                                    const std::span<const std::byte> value,
                                    const std::size_t admission_bytes) noexcept -> AcquireResult {
+    // Ring cursors and FIFO sequence numbers are logical identities. Reset
+    // them only at complete quiescence so a process with unbounded lifetime
+    // never wraps a live identity into an apparent ABA match.
+    if (free_slots_.size() == slot_capacity_) {
+        if (head_cursor_ != tail_cursor_ || next_sequence_ != release_sequence_ ||
+            admission_bytes_in_use_ != 0U) [[unlikely]] {
+            std::terminate();
+        }
+        head_cursor_ = 0U;
+        tail_cursor_ = 0U;
+        next_sequence_ = 0U;
+        release_sequence_ = 0U;
+    }
     if (key.size() > std::numeric_limits<std::size_t>::max() - value.size()) {
         return {.failure = AcquireFailure::payload_too_large};
     }
@@ -47,6 +61,11 @@ auto MutationSlotPool::try_acquire(const std::span<const std::byte> key,
     }
     if (admission_bytes > byte_capacity_ - admission_bytes_in_use_ ||
         payload_bytes > byte_capacity_ - payload_bytes_in_use()) {
+        return {.failure = AcquireFailure::byte_exhausted};
+    }
+    if (payload_bytes > std::numeric_limits<std::uint64_t>::max() - head_cursor_ ||
+        next_sequence_ == std::numeric_limits<std::uint64_t>::max()) {
+        // Existing FIFO owners must drain before the quiescent reset above.
         return {.failure = AcquireFailure::byte_exhausted};
     }
 
@@ -92,6 +111,9 @@ auto MutationSlotPool::rollback(const Lease lease) noexcept -> bool {
     --next_sequence_;
     admission_bytes_in_use_ -= slot.admission_bytes;
     slot = {};
+    if (free_slots_.size() >= free_slots_.capacity()) [[unlikely]] {
+        std::terminate();
+    }
     free_slots_.push_back(lease.slot);
     return true;
 }
@@ -109,6 +131,9 @@ auto MutationSlotPool::release(const SlotId slot_id) noexcept -> bool {
     ++release_sequence_;
     admission_bytes_in_use_ -= slot.admission_bytes;
     slot = {};
+    if (free_slots_.size() >= free_slots_.capacity()) [[unlikely]] {
+        std::terminate();
+    }
     free_slots_.push_back(slot_id);
     return true;
 }

@@ -31,27 +31,26 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
     auto& carried_sync = env.carried_sync;
     auto& merge_retry_blocked = env.merge_retry_blocked;
     auto& publication_ctx = env.publication_ctx;
-    static const std::function<void()> kNoop{};
-    static const std::function<bool()> kNoopBool{[] { return false; }};
-    static const std::function<void(std::size_t)> kNoopSize{};
-    const std::function<void()>& publish_fail_closed =
-        env.hooks.publish_fail_closed != nullptr ? *env.hooks.publish_fail_closed : kNoop;
-    const std::function<void()>& sticky_pair_before_durable_mark =
-        env.hooks.sticky_pair_before_durable_mark != nullptr ? *env.hooks.sticky_pair_before_durable_mark
-                                                             : kNoop;
-    const std::function<void()>& reclaim_quiescent =
-        env.hooks.reclaim_quiescent != nullptr ? *env.hooks.reclaim_quiescent : kNoop;
-    const std::function<void()>& reclaim_proportional =
-        env.hooks.reclaim_proportional != nullptr ? *env.hooks.reclaim_proportional : kNoop;
-    const std::function<bool()>& drain_durable_snapshot =
-        env.hooks.drain_durable_snapshot != nullptr ? *env.hooks.drain_durable_snapshot : kNoopBool;
-    const std::function<void(std::size_t)>& process_merge =
-        env.hooks.process_merge != nullptr ? *env.hooks.process_merge : kNoopSize;
-    const std::function<void()>& update_delta_stats =
-        env.hooks.update_delta_stats != nullptr ? *env.hooks.update_delta_stats : kNoop;
-    const std::function<void(std::size_t)>& prepare_publish_retry =
-        env.hooks.prepare_publish_retry != nullptr ? *env.hooks.prepare_publish_retry : kNoopSize;
-
+    const auto invoke_void = [](const std::function<void()>* function) noexcept {
+        if (function != nullptr) {
+            (*function)();
+        }
+    };
+    const auto publish_fail_closed = [&]() noexcept { invoke_void(env.hooks.publish_fail_closed); };
+    const auto sticky_pair_before_durable_mark = [&]() noexcept {
+        invoke_void(env.hooks.sticky_pair_before_durable_mark);
+    };
+    const auto reclaim_quiescent = [&]() noexcept { invoke_void(env.hooks.reclaim_quiescent); };
+    const auto reclaim_proportional = [&]() noexcept { invoke_void(env.hooks.reclaim_proportional); };
+    const auto drain_durable_snapshot = [&]() noexcept -> bool {
+        return env.hooks.drain_durable_snapshot != nullptr && (*env.hooks.drain_durable_snapshot)();
+    };
+    const auto process_merge = [&](const std::size_t records) noexcept {
+        if (env.hooks.process_merge != nullptr) {
+            (*env.hooks.process_merge)(records);
+        }
+    };
+    const auto update_delta_stats = [&]() noexcept { invoke_void(env.hooks.update_delta_stats); };
     bool drained_sync_turn = false;
     for (;;) {
         SyncMutation* rev = nullptr;
@@ -504,7 +503,8 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     apply_volatile_sync_publication_chunk(
                         store_, shard, publication_ctx, std::span{view_storage.data(), chunk_size},
                         slot_reservation, VolatileSyncChunkMode::dedicated_writer, healthy_,
-                        &publish_fail_closed, &reclaim_proportional, &prepare_publish_retry);
+                        env.hooks.publish_fail_closed, env.hooks.reclaim_proportional,
+                        env.hooks.prepare_publish_retry);
                     bool chunk_failed = false;
                     bool chunk_succeeded = false;
                     for (std::size_t index = 0; index < chunk_size; ++index) {

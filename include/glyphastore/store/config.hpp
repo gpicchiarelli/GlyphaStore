@@ -164,7 +164,7 @@ inline constexpr std::size_t kDefaultPairedMergeDeltaEntries = 8'192;
 inline constexpr std::size_t kDefaultPairedMergeMaximumPostEntries = 32'736;
 inline constexpr std::size_t kDefaultPairedMergeQuantumSlots = 4'096;
 inline constexpr std::uint32_t kDefaultPairedWriterBatchMaxRecords = 32;
-inline constexpr std::size_t kDefaultPairedWriterBatchMaxBytes = 256U * 1024U;
+inline constexpr std::size_t kDefaultPairedWriterBatchMaxBytes = std::size_t{256} * 1024U;
 
 // Paired runtime tuning. Embedded callers only need the merge quanta: the
 // synchronous put/erase handoff borrows caller memory and needs no payload

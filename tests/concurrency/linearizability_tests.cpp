@@ -45,11 +45,16 @@ auto map_status(const glyphastore::Status& status) -> OutcomeKind {
         return OutcomeKind::ok_void;
     if (status.error().code == glyphastore::ErrorCode::unavailable)
         return OutcomeKind::unavailable;
+    if (status.error().code == glyphastore::ErrorCode::not_found)
+        return OutcomeKind::not_found;
+    if (status.error().code == glyphastore::ErrorCode::sequence_conflict ||
+        status.error().code == glyphastore::ErrorCode::resource_exhausted)
+        return OutcomeKind::rejected;
     return OutcomeKind::other_error;
 }
 
-void run_seeded_history(const std::uint64_t seed, const std::size_t thread_count,
-                        const std::size_t ops_per_thread) {
+[[nodiscard]] auto run_seeded_history(const std::uint64_t seed, const std::size_t thread_count,
+                                      const std::size_t ops_per_thread) -> bool {
     // Keep adverse scheduling light enough that the history checker stays within budget.
     glyphastore::fault::configure(seed ^ 0x9E3779B97F4A7C15ULL, 12, 20);
 
@@ -67,35 +72,46 @@ void run_seeded_history(const std::uint64_t seed, const std::size_t thread_count
             for (std::size_t i = 0; i < ops_per_thread; ++i) {
                 const auto key = "k" + std::to_string(rng() % 4U);
                 const auto roll = rng() % 100U;
-                if (roll < 42U) {
+                if (roll < 40U) {
                     const auto value = "v" + std::to_string(rng() % 12U);
                     const auto id = recorder.begin(OpKind::put, key, value);
                     recorder.complete(id, map_status(store.put(key, bytes(value))));
-                } else if (roll < 70U) {
+                } else if (roll < 68U) {
                     const auto id = recorder.begin(OpKind::get, key);
                     const auto [outcome, result] = map_get_outcome(store.get(key));
                     recorder.complete(id, outcome, result);
-                } else if (roll < 85U) {
+                } else if (roll < 82U) {
                     const auto id = recorder.begin(OpKind::erase, key);
                     recorder.complete(id, map_status(store.erase(key)));
-                } else if (roll < 92U) {
+                } else if (roll < 89U) {
                     const auto value = "t" + std::to_string(rng() % 8U);
                     const auto id = recorder.begin(OpKind::put_ttl, key, value, 0, 0);
                     recorder.complete(id, map_status(store.put(key, bytes(value), 0)));
-                } else if (roll < 96U) {
+                } else if (roll < 94U) {
                     const auto raw_key = std::string{"\x01"} + key;
                     const auto value = "r" + std::to_string(rng() % 6U);
                     const auto id = recorder.begin(OpKind::raw_put, raw_key, value);
                     recorder.complete(id, map_status(store.put(bytes(raw_key), bytes(value))));
-                } else if (roll < 98U) {
+                } else if (roll < 97U) {
                     const auto raw_key = std::string{"\x01"} + key;
                     const auto id = recorder.begin(OpKind::raw_get, raw_key);
                     const auto [outcome, result] = map_get_outcome(store.get(bytes(raw_key)));
                     recorder.complete(id, outcome, result);
-                } else {
+                } else if (roll < 99U) {
                     const auto raw_key = std::string{"\x01"} + key;
                     const auto id = recorder.begin(OpKind::raw_erase, raw_key);
                     recorder.complete(id, map_status(store.erase(bytes(raw_key))));
+                } else {
+                    const auto id = recorder.begin(OpKind::compact);
+                    const auto compacted = store.compact();
+                    auto outcome = OutcomeKind::ok_void;
+                    if (!compacted) {
+                        outcome = compacted.error().code == glyphastore::ErrorCode::sequence_conflict ||
+                                          compacted.error().code == glyphastore::ErrorCode::resource_exhausted
+                                      ? OutcomeKind::rejected
+                                      : OutcomeKind::other_error;
+                    }
+                    recorder.complete(id, outcome);
                 }
             }
         });
@@ -109,11 +125,16 @@ void run_seeded_history(const std::uint64_t seed, const std::size_t thread_count
     const auto result = check_and_minimize(recorder.snapshot());
     if (result.inconclusive) {
         // Bounded checker: do not treat state-budget exhaustion as a product defect.
-        return;
+        return false;
     }
     if (!result.linearizable) {
-        throw std::runtime_error("seed=" + std::to_string(seed) + " " + result.message);
+        std::string trace = "seed=" + std::to_string(seed) + " " + result.message + "full history:\n";
+        for (const auto& operation : recorder.snapshot()) {
+            trace += "  " + glyphastore::test::lin::format_operation(operation) + "\n";
+        }
+        throw std::runtime_error{std::move(trace)};
     }
+    return true;
 }
 
 auto make_op(const std::size_t id, const OpKind kind, std::string key, std::string value,
@@ -163,11 +184,51 @@ GLYPHA_TEST("linearizability checker models TTL expiry on get") {
     GLYPHA_REQUIRE(check_history(history).linearizable);
 }
 
+GLYPHA_TEST("linearizability checker rejects unmodeled errors") {
+    const std::vector<Operation> history{
+        make_op(0, OpKind::put, "a", "1", OutcomeKind::other_error, 0, 1),
+    };
+    GLYPHA_REQUIRE(!check_history(history).linearizable);
+}
+
+GLYPHA_TEST("linearizability checker models missing and successful erase distinctly") {
+    const std::vector<Operation> missing{
+        make_op(0, OpKind::erase, "a", {}, OutcomeKind::not_found, 0, 1),
+    };
+    GLYPHA_REQUIRE(check_history(missing).linearizable);
+
+    const std::vector<Operation> impossible_success{
+        make_op(0, OpKind::erase, "a", {}, OutcomeKind::ok_void, 0, 1),
+    };
+    GLYPHA_REQUIRE(!check_history(impossible_success).linearizable);
+}
+
+GLYPHA_TEST("linearizability minimizer preserves any value-producing write for successful erase") {
+    const std::vector<Operation> history{
+        make_op(0, OpKind::put, "a", "non-empty", OutcomeKind::ok_void, 0, 1),
+        make_op(1, OpKind::erase, "a", {}, OutcomeKind::ok_void, 2, 3),
+    };
+    GLYPHA_REQUIRE(glyphastore::test::lin::history_has_matching_write(history, history[1]));
+}
+
+GLYPHA_TEST("linearizability checker models explicit pre-Store rejection as no-op") {
+    const std::vector<Operation> history{
+        make_op(0, OpKind::put, "a", "1", OutcomeKind::rejected, 0, 1),
+        make_op(1, OpKind::get, "a", {}, OutcomeKind::not_found, 2, 3),
+    };
+    GLYPHA_REQUIRE(check_history(history).linearizable);
+}
+
 GLYPHA_TEST("paired Store concurrent histories stay linearizable (seeded)") {
     // GS-CONCUR-LIN-001
-    constexpr std::uint64_t seeds[] = {1, 2, 7, 42, 99};
-    for (const auto seed : seeds)
-        run_seeded_history(seed, 3, 12);
+    constexpr std::uint64_t seed_count = 64;
+    std::uint64_t conclusive{};
+    for (std::uint64_t seed = 1; seed <= seed_count; ++seed) {
+        conclusive += run_seeded_history(seed, 3, 8) ? 1U : 0U;
+    }
+    // An inconclusive bounded search is evidence neither for nor against the
+    // runtime. Keep histories small enough that this campaign is fully decided.
+    GLYPHA_REQUIRE(conclusive == seed_count);
 }
 
 GLYPHA_TEST("paired Store TTL put-get stays linearizable under fixed clock") {

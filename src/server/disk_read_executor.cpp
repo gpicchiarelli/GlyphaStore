@@ -4,9 +4,19 @@
 
 #include <exception>
 #include <thread>
+#include <type_traits>
 #include <utility>
 
 namespace glyphastore::server {
+namespace {
+
+void set_error_code_without_allocation(std::optional<Error>& destination, const ErrorCode code) noexcept {
+    static_assert(std::is_nothrow_default_constructible_v<Error>);
+    destination.emplace();
+    destination->code = code;
+}
+
+} // namespace
 
 struct DiskReadExecutor::Lane final {
     explicit Lane(const std::size_t capacity)
@@ -19,6 +29,9 @@ struct DiskReadExecutor::Lane final {
 
     [[nodiscard]] auto acquire_slot() noexcept -> std::optional<std::size_t> {
         while (auto recycled_slot = recycled.try_pop()) {
+            if (free_slots.size() >= free_slots.capacity()) [[unlikely]] {
+                std::terminate();
+            }
             free_slots.push_back(*recycled_slot);
         }
         if (free_slots.empty()) {
@@ -207,9 +220,9 @@ void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
                 completion.value.emplace(std::move(*result));
             }
         } catch (const std::bad_alloc&) {
-            completion.error.emplace(ErrorCode::resource_exhausted, "cold-read allocation failed");
+            set_error_code_without_allocation(completion.error, ErrorCode::resource_exhausted);
         } catch (...) {
-            completion.error.emplace(ErrorCode::internal_error, "cold-read executor failure");
+            set_error_code_without_allocation(completion.error, ErrorCode::internal_error);
         }
 
         // Admission is capped by the destination Reactor queue capacity, so a

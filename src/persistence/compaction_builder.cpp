@@ -344,7 +344,11 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                           : opened.error());
                 }
                 open_source.emplace(std::move(*opened));
-                open_source_index = *source_index;
+                open_source_index = source_index;
+            }
+            if (!open_source) {
+                return failure(
+                    Error{ErrorCode::internal_error, "durable compaction source handle was not installed"});
             }
             const auto key_hash = hash_key_routing(entry.key, routing);
             VerifiedRecordContext context{.key = entry.key,
@@ -353,7 +357,7 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                           .worker_id = worker_id,
                                           .now_ns = now_ns};
             if (auto visited =
-                    open_source->visit_record(entry.record, scratch, &context, &verify_indexed_put);
+                    open_source.value().visit_record(entry.record, scratch, &context, &verify_indexed_put);
                 !visited) {
                 return failure(visited.error());
             }
@@ -502,6 +506,10 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                 staged_guard.mark_created();
                 output.emplace(std::move(*created));
             }
+            if (!output) {
+                return failure(
+                    Error{ErrorCode::internal_error, "durable compaction output handle was not installed"});
+            }
 
             const auto source_index = find_source_index(sources, source.record.segment_id);
             if (!source_index) {
@@ -518,7 +526,11 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                           : opened.error());
                 }
                 open_source.emplace(std::move(*opened));
-                open_source_index = *source_index;
+                open_source_index = source_index;
+            }
+            if (!open_source) {
+                return failure(
+                    Error{ErrorCode::internal_error, "durable compaction source handle was not installed"});
             }
             VerifiedRecordContext context{.key = source.key,
                                           .key_hash = hash_key_routing(source.key, routing),
@@ -526,19 +538,19 @@ auto build_durable_worker_compaction(DataDirectory& directory, const Manifest& c
                                           .worker_id = worker_id,
                                           .now_ns = now_ns};
             if (auto visited =
-                    open_source->visit_record(source.record, scratch, &context, &verify_indexed_put);
+                    open_source.value().visit_record(source.record, scratch, &context, &verify_indexed_put);
                 !visited) {
                 return failure(visited.error());
             }
             if (context.expired || crc32c(scratch) != record.encoded_crc ||
-                output->selected_commit().commit.committed_end != record.output.offset.value) {
+                output.value().selected_commit().commit.committed_end != record.output.offset.value) {
                 return failure(Error{ErrorCode::corrupted_data,
                                      "durable compaction source or output layout changed during copy"});
             }
             // Grants are acquired immediately before each bounded physical
             // write. The old Manifest remains the sole authority while this
             // sleeps, so pacing cannot lengthen an ambiguous recovery window.
-            const auto appended = output->append_record(scratch, write_pacing);
+            const auto appended = output.value().append_record(scratch, write_pacing);
             if (!appended.committed()) {
                 return failure(appended.error.value_or(
                     Error{ErrorCode::io_error, "durable compaction Record copy failed"}));

@@ -321,8 +321,12 @@ auto DurableSegmentFile::promote_staged(DataDirectory& directory,
 void DurableSegmentFile::discard_staged(DataDirectory& directory,
                                         const std::span<const SegmentHeaderIdentity> identities) noexcept {
     for (const auto& identity : identities) {
-        const auto name = '.' + segment_filename(identity) + ".tmp";
-        static_cast<void>(::unlinkat(directory.directory_.get(), name.c_str(), 0));
+        try {
+            const auto name = '.' + segment_filename(identity) + ".tmp";
+            static_cast<void>(::unlinkat(directory.directory_.get(), name.c_str(), 0));
+        } catch (...) {
+            continue;
+        }
     }
 }
 

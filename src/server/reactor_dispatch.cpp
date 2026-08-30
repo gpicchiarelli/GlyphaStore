@@ -481,12 +481,10 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
             current->in_flight_since = {};
             current->connection_rate_window_start_ns = 0;
             current->connection_rate_used = 0;
-            ++current->generation;
-            if (current->generation == 0) {
-                current->generation = 1;
+            if (advance_connection_generation(current->generation)) {
+                free_slots_.push_back(token.slot);
             }
-            free_slots_.push_back(token.slot);
-            --active_connections_;
+            active_connections_.fetch_sub(1U, std::memory_order_relaxed);
             return {};
         }
         const ResponseView overloaded{.status = ResponseStatus::overloaded,
@@ -508,12 +506,10 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
         close_connection(token);
         return {};
     }
-    ++current->generation;
-    if (current->generation == 0) {
-        current->generation = 1;
+    if (advance_connection_generation(current->generation)) {
+        free_slots_.push_back(token.slot);
     }
-    free_slots_.push_back(token.slot);
-    --active_connections_;
+    active_connections_.fetch_sub(1U, std::memory_order_relaxed);
     return {};
 }
 

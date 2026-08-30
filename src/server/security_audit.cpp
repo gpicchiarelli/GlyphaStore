@@ -99,6 +99,7 @@ void SecurityAudit::write_event(const std::string_view event, const std::string_
         std::cerr << line;
     } catch (...) {
         // Audit must never throw into the reactor accept/request path.
+        return;
     }
 }
 

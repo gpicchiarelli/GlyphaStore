@@ -414,8 +414,8 @@ class HotRecordTable final {
 
 [[nodiscard]] inline auto hot_record_slot_bytes() noexcept -> std::uint64_t {
     // Control + hash + SSO string + entry. Conservative upper bound used for budgets.
-    constexpr auto per_slot = static_cast<std::uint64_t>(sizeof(std::uint8_t) + sizeof(std::uint64_t) +
-                                                         sizeof(std::string) + sizeof(HotRecordEntry));
+    constexpr auto per_slot = std::uint64_t{sizeof(std::uint8_t)} + std::uint64_t{sizeof(std::uint64_t)} +
+                              std::uint64_t{sizeof(std::string)} + std::uint64_t{sizeof(HotRecordEntry)};
     return per_slot;
 }
 

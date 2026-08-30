@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Serialized full local benchmark campaign runner.
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="${1:-$ROOT/benchmarks/results/local-macos-2026-08-29-full-1ff35c3}"
 COMMANDS="$OUT/commands.txt"
 LOG="$OUT/campaign.log"

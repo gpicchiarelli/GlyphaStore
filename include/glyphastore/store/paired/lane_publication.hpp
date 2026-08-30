@@ -27,7 +27,7 @@ struct LanePublicationContext final {
     GenerationState& generation;
     MergeState& merge;
     Store& store;
-    std::size_t shard;
+    std::size_t shard{};
     std::size_t maximum_retired_generations{};
 };
 

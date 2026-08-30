@@ -1,13 +1,22 @@
 Status: descriptive
 Applies to: repository version `0.1.x` (Phase B1)
 Owner: maintainers
-Last reviewed: 2026-08-29
+Last reviewed: 2026-08-30
 
 # Atomics and memory-order inventory
 
 Inventory of shared atomics that participate in correctness. Normative rules:
 [`docs/spec/concurrency-memory-model.md`](../spec/concurrency-memory-model.md).
 Requirement: `GS-CONCUR-MEM-001`.
+
+The machine-checked companion
+[`engineering/evidence/memory-order-inventory-2026-08-30.json`](../../engineering/evidence/memory-order-inventory-2026-08-30.json)
+records all 1,190 explicit `std::memory_order_*` occurrences in production headers/sources with exact
+file, line, object expression, operation, writer/readers, protected data, required happens-before,
+invariant, and positive `relaxed` justification. It is regenerated and checked by
+`engineering/tools/audit_memory_orders.py`; a new source occurrence, an unsupported order, an ambiguous
+domain, or stale evidence fails closed. This is coverage of the audit inventory, not a formal proof that
+each argument is correct.
 
 ## 1. Paired ReadGeneration publication
 
@@ -40,14 +49,25 @@ Requirement: `GS-CONCUR-MEM-001`.
 | SPSC `head`/`tail` | release publish; acquire consume | Cell ownership; full → backpressure (no overwrite) | unit tests + TSan; Wave 2 hot-producer / slow-consumer litmus |
 | MPSC cell `sequence` | release / acquire | Connection handoff | bounded_mpsc tests |
 
-## 4. Telemetry-only (relaxed by policy)
+Both queue families keep capacity below half the unsigned cursor range. MPSC ordering uses unsigned modular
+distance (never signed subtraction), and both constructors reject a capacity for which wrap ordering would be
+ambiguous. Boundary tests exercise the relation directly around `SIZE_MAX`.
+
+## 4. Coherent process configuration
+
+| Variable | W / R | Orders | Role | Proof |
+| --- | --- | --- | --- | --- |
+| Worker routing revision + algorithm/seed | serialized writers / readers | seq_cst payload/revision; acquire/release writer flag | Readers return one complete, non-wrapping configuration revision; no torn algorithm/seed pair | concurrent 100,000-update regression |
+| Index seed | daemon startup / Index constructors | relaxed | One self-contained scalar, configured before worker publication; no associated payload | index seed tests |
+
+## 5. Telemetry-only (relaxed by policy)
 
 Latency histograms, high-water marks, admit/reject counters, merge stats, `LaneMetrics`
 (Writer-updated; starts on its own `alignas(128)` line so dense RMWs do not false-share with
 `active_read_leases`). Must not publish object contents; promoting a counter to a correctness
 edge requires updating this inventory and the concurrency spec.
 
-## 5. GET allocation contract (Wave 2)
+## 6. GET allocation contract (Wave 2)
 
 Paired volatile `Store::get` / `get_copy` for values ≤ `OwnedBytes::kInlineBytes` (64):
 
@@ -56,10 +76,14 @@ Paired volatile `Store::get` / `get_copy` for values ≤ `OwnedBytes::kInlineByt
 - Proof: `glyphastore_allocation_fault_tests` `run_paired_volatile_get_inline_zero_heap`
   (evidence class **local** / CI when the suite runs). Durable cold GET and >64 B copies may allocate.
 
-## 6. Residual gaps
+## 7. Reuse and residual gaps
 
-- No machine-checked proof every `relaxed` use is telemetry-only.
+- The line-level inventory mechanically classifies every explicit order, including every `relaxed` occurrence;
+  the semantic justifications remain manually reviewed arguments rather than model-checked C++ proofs.
 - Multi-shard linearizability relies on routing independence.
 - Durable Manifest publication uses mutex/CV domains (see concurrency spec).
 - durable_sync combiner still publishes per committed mutation (multi-op generation coalesce deferred; RAW polarity unchanged).
 - ADR 0036 default remains Alternative A until V11/V12 + ADR accept.
+- Counter exhaustion and reuse reasoning is detailed in the
+  [ABA/generation/token audit](aba-generation-token-audit.md); exhaustive operational wrap campaigns remain
+  infeasible on this host.
