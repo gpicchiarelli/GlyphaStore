@@ -296,7 +296,7 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
             // EAGAIN/EINTR are already empty optionals from TcpListener::accept.
             return {};
         }
-        auto accepted_socket = std::move(accepted).value();
+        auto& accepted_socket = accepted.value();
         if (!accepted_socket) {
             return {};
         }
@@ -355,7 +355,7 @@ auto Reactor::accept_unix_ready() -> Status {
             // Same isolation as TCP accept: one peer/setup glitch must not stop the process.
             return {};
         }
-        auto accepted_socket = std::move(accepted).value();
+        auto& accepted_socket = accepted.value();
         if (!accepted_socket) {
             return {};
         }

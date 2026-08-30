@@ -36,7 +36,7 @@ platform durability row, accept ADR 0036, or raise the architectural-prototype c
 | `unix-strict` tests | 54/54 passed; 351.02 s |
 | macOS ASan+UBSan tests | 54/54 passed; 464.72 s |
 | macOS TSan main suite after repair | 696/696 passed; no TSan report |
-| Post-CI macOS Debug CTest | 54/54 passed after final analyzer-portable extraction; 327.97 s |
+| Post-CI macOS Debug CTest | 54/54 passed after final analyzer-portable extraction; 326.72 s |
 | Paired continuous-Reader adverse-scheduling repetition | 500/500 each for linearization and overwrite-storm litmus tests |
 
 The first full TSan main-suite run exposed three reports with one root cause: the dedicated
@@ -54,9 +54,10 @@ architectural-prototype claim ceiling:
   production sources that clang-tidy 21.1.6 had not reported locally. The first repair used an
   explicit `value()` extraction after each fail-closed member guard, but the older CI analyzer did
   not propagate that guard through the enclosing result/member access and retained 19 diagnostics.
-  The final form first transfers each member `optional` into local state, then guards and extracts
-  that same local object. The full 109-source gate passes locally with clang-tidy 22.1.8; a focused
-  clang-tidy 18.1.8 scan emits no unchecked-optional diagnostics;
+  The final form first binds each member `optional` to a local reference, then guards and extracts
+  through that same alias, avoiding an additional move in hot paths. The full 109-source gate
+  passes locally with clang-tidy 22.1.8; a focused clang-tidy 18.1.8 data-flow probe accepts this
+  local-reference pattern while reproducing the diagnostic on the original nested access;
 - two macOS paired litmus tests failed in successive CI campaigns because their Writers treated
   the documented bounded generation-admission `resource_exhausted` result as a visibility or
   linearizability failure while a Reader held a nearly continuous sequence of counted leases. A

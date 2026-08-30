@@ -27,7 +27,7 @@ auto PairReadGenerationShellAccess::publish_incremental(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    auto next_delta = std::move(prepared->next_delta);
+    auto& next_delta = prepared->next_delta;
     if (!next_delta) {
         return fail(ErrorCode::internal_error, "shell publication produced no next delta");
     }
@@ -66,7 +66,7 @@ auto PairReadGenerationShellAccess::publish_incremental_borrowed(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    auto next_delta = std::move(prepared->next_delta);
+    auto& next_delta = prepared->next_delta;
     if (!next_delta) {
         return fail(ErrorCode::internal_error, "borrowed shell publication produced no next delta");
     }

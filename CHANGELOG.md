@@ -1,7 +1,7 @@
 ## [Unreleased]
 
 - CI quality follow-up: remove all 24 fail-closed unchecked-`optional` diagnostics across 10
-  production sources, with checked local extraction that remains data-flow-visible across the
+  production sources, with checked local-reference extraction that remains data-flow-visible across the
   clang-tidy versions used locally and in CI; make both continuous-Reader paired litmus tests
   distinguish visibility and linearizability failures from the documented 64-generation
   backpressure bound, using one shared explicit Reader-quiescence handshake before retrying the

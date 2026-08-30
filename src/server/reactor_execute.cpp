@@ -85,7 +85,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (!record) {
             response.status = reactor_detail::response_status(record.error());
         } else {
-            auto value = std::move(record->value);
+            auto& value = record->value;
             if (value) {
                 owned_response = std::move(value).value();
                 response.value = owned_response.view();
@@ -96,7 +96,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                     break;
                 }
                 const auto value_budget = config_.maximum_output_bytes - kResponseHeaderBytes;
-                auto cold = std::move(record->cold);
+                auto& cold = record->cold;
                 if (!cold) {
                     response.status = ResponseStatus::internal_error;
                     break;

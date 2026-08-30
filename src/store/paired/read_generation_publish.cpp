@@ -217,7 +217,7 @@ auto PairReadGeneration::publish_incremental_construct(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
-    auto next_delta = std::move(prepared->next_delta);
+    auto& next_delta = prepared->next_delta;
     if (!next_delta) {
         return fail(ErrorCode::internal_error, "incremental publication produced no next delta");
     }

@@ -76,7 +76,7 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
         if (prepared->value) {
             return PreparedGet{.value = std::move(prepared->value)};
         }
-        auto cold = std::move(prepared->cold);
+        auto& cold = prepared->cold;
         if (!cold) {
             return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
         }
@@ -190,7 +190,7 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     if (prepared->value) {
         return PreparedGet{.value = std::move(prepared->value)};
     }
-    auto borrowed_cold = std::move(prepared->borrowed_cold);
+    auto& borrowed_cold = prepared->borrowed_cold;
     if (!borrowed_cold) {
         return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
     }

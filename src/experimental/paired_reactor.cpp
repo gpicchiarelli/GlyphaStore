@@ -506,7 +506,7 @@ struct PairedReactorPrototype::Impl final {
             if (!accepted) {
                 return unexpected(accepted.error());
             }
-            auto accepted_socket = std::move(accepted).value();
+            auto& accepted_socket = accepted.value();
             if (!accepted_socket) {
                 return {};
             }

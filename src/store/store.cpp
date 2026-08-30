@@ -261,11 +261,11 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
             if (!prepared) {
                 return unexpected(prepared.error());
             }
-            auto value = std::move(prepared->value);
+            auto& value = prepared->value;
             if (value) {
                 return std::move(value).value();
             }
-            auto cold = std::move(prepared->cold);
+            auto& cold = prepared->cold;
             if (cold) {
                 return detail::StoreAccess::complete_get_owned(*this, shard, std::move(cold).value());
             }
@@ -636,7 +636,7 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
             if (!result) {
                 return unexpected(result.error());
             }
-            auto compacted = std::move(result).value();
+            auto& compacted = result.value();
             if (compacted) {
                 return store_detail::public_compaction_result(worker_index, std::move(compacted).value());
             }
