@@ -16,6 +16,11 @@
 - [`quality-hardening-local-2026-08-30.md`](quality-hardening-local-2026-08-30.md) records the local
   documentation, formatting, static-analysis, strict, ASan+UBSan, and TSan hardening campaign. It
   is neither CI nor release evidence.
+- [`correctness-assurance-local-2026-08-30.md`](correctness-assurance-local-2026-08-30.md) records
+  the local adversarial correctness campaign, confirmed defect repairs, analyzer triage, and
+  capability gaps. Its machine-readable broad clang-tidy result is retained in
+  [`correctness-clang-tidy-2026-08-30.json`](correctness-clang-tidy-2026-08-30.json). Neither file
+  is CI or release evidence.
 
 - [`platform-durability/`](platform-durability/) reserves per-row evidence path placeholders
   (APFS/ext4/XFS/UFS/ZFS/FFS). Rows are **not** E3/E4 certified; see each subdirectory README.
