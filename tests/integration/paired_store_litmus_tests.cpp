@@ -2,6 +2,7 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
 #include "glyphastore/store/store.hpp"
+#include "paired_reader_quiescence.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
@@ -39,21 +40,12 @@ GLYPHA_TEST("paired Store concurrent GET observes live generation under overwrit
     GLYPHA_REQUIRE(store.put(key, bytes("seed")).has_value());
 
     std::atomic_bool stop{false};
-    std::atomic_bool quiescence_requested{false};
-    std::atomic_bool reader_quiescent{false};
+    glyphastore::test::PairedReaderQuiescence quiescence;
     std::atomic_int reader_failure{};
     int writer_failure{};
     std::thread reader{[&] {
         while (!stop.load(std::memory_order_acquire)) {
-            if (quiescence_requested.load(std::memory_order_acquire)) {
-                reader_quiescent.store(true, std::memory_order_release);
-                while (quiescence_requested.load(std::memory_order_acquire) &&
-                       !stop.load(std::memory_order_acquire)) {
-                    std::this_thread::yield();
-                }
-                reader_quiescent.store(false, std::memory_order_release);
-                continue;
-            }
+            quiescence.reader_checkpoint(stop);
             const auto got = store.get(key);
             if (!got.has_value()) {
                 reader_failure.store(static_cast<int>(got.error().code) + 1, std::memory_order_relaxed);
@@ -73,19 +65,13 @@ GLYPHA_TEST("paired Store concurrent GET observes live generation under overwrit
             // the overwrite storm never exposes a quiescent instant, honor that
             // backpressure and retry the same mutation only after one explicit
             // quiescent hand-off.
-            quiescence_requested.store(true, std::memory_order_release);
             const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-            while (!reader_quiescent.load(std::memory_order_acquire) &&
-                   std::chrono::steady_clock::now() < deadline) {
-                std::this_thread::yield();
-            }
-            if (!reader_quiescent.load(std::memory_order_acquire)) {
+            if (!quiescence.request_until(deadline)) {
                 writer_failure = -1;
-                quiescence_requested.store(false, std::memory_order_release);
                 break;
             }
             put = store.put(key, bytes(value));
-            quiescence_requested.store(false, std::memory_order_release);
+            quiescence.release();
         }
         if (!put) {
             writer_failure = static_cast<int>(put.error().code) + 1;

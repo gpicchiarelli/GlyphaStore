@@ -37,7 +37,7 @@ platform durability row, accept ADR 0036, or raise the architectural-prototype c
 | macOS ASan+UBSan tests | 54/54 passed; 464.72 s |
 | macOS TSan main suite after repair | 696/696 passed; no TSan report |
 | Post-CI macOS Debug CTest | 54/54 passed; 323.81 s |
-| Paired overwrite-storm adverse-scheduling repetition | 500/500 passed after the test-contract repair |
+| Paired continuous-Reader adverse-scheduling repetition | 500/500 each for linearization and overwrite-storm litmus tests |
 
 The first full TSan main-suite run exposed three reports with one root cause: the dedicated
 volatile Writer read a caller-stack `SyncMutation::status` after publishing `done`. The Writer now
@@ -54,11 +54,13 @@ architectural-prototype claim ceiling:
   production sources that clang-tidy 21.1.6 had not reported locally. Every site now uses an
   explicit checked `value()` extraction after its fail-closed guard. The full 109-source gate
   passes locally with clang-tidy 22.1.8;
-- the macOS overwrite-storm litmus failed because its Writer treated the documented bounded
-  generation-admission `resource_exhausted` result as a visibility failure while the Reader held a
-  nearly continuous sequence of counted leases. The test now creates an explicit quiescent
-  hand-off and retries the same mutation; GET errors and empty values remain independent hard
-  failures. Five hundred adverse-scheduling repetitions and the complete Debug CTest matrix pass;
+- two macOS paired litmus tests failed in successive CI campaigns because their Writers treated
+  the documented bounded generation-admission `resource_exhausted` result as a visibility or
+  linearizability failure while a Reader held a nearly continuous sequence of counted leases. A
+  shared test-only handshake now creates an explicit quiescent hand-off and retries the same
+  mutation; GET errors, empty values, and any non-backpressure mutation error remain independent
+  hard failures. Both tests pass 500 adverse-scheduling repetitions each; the first repair also
+  passed the complete Debug CTest matrix;
 - the packaged Erlang concurrency suite exposed a lost update in the fake server's ETS `held`
   list when two connection processes registered concurrently. Per-process ETS keys remove the
   read/modify/write race, while publishing `release_all` before collecting keys and rechecking it

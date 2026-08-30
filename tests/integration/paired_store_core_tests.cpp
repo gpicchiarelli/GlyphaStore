@@ -2,6 +2,7 @@
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
 #include "glyphastore/store/store.hpp"
+#include "paired_reader_quiescence.hpp"
 #include "store/store_internal.hpp"
 #include "test.hpp"
 
@@ -55,23 +56,38 @@ GLYPHA_TEST("paired Store concurrent GET and PUT on one key stay linearized") {
     auto& store = **opened;
     GLYPHA_REQUIRE(store.put("shared", bytes("0")).has_value());
 
-    std::atomic_bool failed{false};
+    std::atomic_bool stop{false};
+    glyphastore::test::PairedReaderQuiescence quiescence;
+    std::atomic_int reader_failure{};
+    std::atomic_int writer_failure{};
     std::atomic_uint64_t writes{0};
     std::thread writer([&] {
         for (std::uint64_t value = 1; value <= 200; ++value) {
-            if (!store.put("shared", bytes(std::to_string(value))).has_value()) {
-                failed.store(true);
-                return;
+            const auto encoded = std::to_string(value);
+            auto put = store.put("shared", bytes(encoded));
+            if (!put && put.error().code == glyphastore::ErrorCode::resource_exhausted) {
+                const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+                if (!quiescence.request_until(deadline)) {
+                    writer_failure.store(-1, std::memory_order_relaxed);
+                    break;
+                }
+                put = store.put("shared", bytes(encoded));
+                quiescence.release();
+            }
+            if (!put) {
+                writer_failure.store(static_cast<int>(put.error().code) + 1, std::memory_order_relaxed);
+                break;
             }
             writes.fetch_add(1, std::memory_order_relaxed);
         }
+        stop.store(true, std::memory_order_release);
     });
     std::thread reader([&] {
-        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
-        while (std::chrono::steady_clock::now() < deadline) {
+        while (!stop.load(std::memory_order_acquire)) {
+            quiescence.reader_checkpoint(stop);
             auto value = store.get("shared");
             if (!value.has_value()) {
-                failed.store(true);
+                reader_failure.store(static_cast<int>(value.error().code) + 1, std::memory_order_relaxed);
                 return;
             }
             std::this_thread::yield();
@@ -79,7 +95,8 @@ GLYPHA_TEST("paired Store concurrent GET and PUT on one key stay linearized") {
     });
     writer.join();
     reader.join();
-    GLYPHA_REQUIRE(!failed.load());
+    GLYPHA_REQUIRE(reader_failure.load(std::memory_order_relaxed) == 0);
+    GLYPHA_REQUIRE(writer_failure.load(std::memory_order_relaxed) == 0);
     GLYPHA_REQUIRE(writes.load() == 200);
     const auto final_value = store.get("shared");
     GLYPHA_REQUIRE(final_value.has_value());
