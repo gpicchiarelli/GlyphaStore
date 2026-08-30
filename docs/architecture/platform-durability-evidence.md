@@ -170,8 +170,10 @@ certified for sudden power loss on production hardware.
   so all I/O fails during the down interval), using
   the semantics in the [Linux kernel dm-flakey documentation](https://cdn.kernel.org/doc/html/latest/admin-guide/device-mapper/dm-flakey.html).
 - The harness confirms that the fault table was armed, holds a bounded 250 ms window, and confirms
-  mapper removal. It does **not** claim that a particular dirty write reached the mapper during that
-  window; absence of a block-level I/O trace remains a stated limitation of this rehearsal row.
+  mapper removal. After that window it lazy-unmounts the faulted filesystem, terminates the already
+  stopped worker to release its open files, and only accepts reset confirmation after the mapper is
+  gone. It does **not** claim that a particular dirty write reached the mapper during that window;
+  absence of a block-level I/O trace remains a stated limitation of this rehearsal row.
 - Confirm mapper removal separately from “reload succeeded.” A timeout, lost console, or failed
   remove is **INCONCLUSIVE**, not PASS.
 - dm-flakey on loopback-over-ext4-on-hosted-disk still inherits the host’s durability; treat it as

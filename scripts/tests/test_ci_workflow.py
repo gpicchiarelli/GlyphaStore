@@ -176,6 +176,15 @@ class CiWorkflowTests(unittest.TestCase):
             script,
         )
         self.assertNotIn("flakey $loop_device 0 0 0", script)
+        flakey_reset = script.split("arm_reset_linux_flakey() {", 1)[1].split(
+            "\n}", 1
+        )[0]
+        self.assertLess(
+            flakey_reset.index('umount -l "$mount_point"'),
+            flakey_reset.index('dmsetup remove --force "$mapper_name"'),
+        )
+        self.assertIn("terminate_worker_hard", flakey_reset)
+        self.assertIn('-path "$work_root" -prune', script)
         self.assertIn("CheckpointAction::pause", harness)
         self.assertIn("::raise(SIGSTOP)", checkpoint)
         for mode in ("drop-writes", "error-writes", "all-io-error"):
@@ -232,12 +241,18 @@ class CiWorkflowTests(unittest.TestCase):
             (artifact / "manifest.sha256").write_text(
                 "\n".join(manifest_lines) + "\n", encoding="utf-8"
             )
-            accepted = subprocess.run(
-                ["bash", str(validator), "--dir", str(artifact), "--kind", "harness"],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
+            unreadable_work = artifact / "work" / "mnt" / "lost+found"
+            unreadable_work.mkdir(parents=True)
+            unreadable_work.chmod(0)
+            try:
+                accepted = subprocess.run(
+                    ["bash", str(validator), "--dir", str(artifact), "--kind", "harness"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            finally:
+                unreadable_work.chmod(0o700)
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
             results.write_text(

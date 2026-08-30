@@ -273,19 +273,25 @@ disk_id=""
 mounted="no"
 reset_confirmed_global="no"
 
+terminate_worker_hard() {
+  local pid="${worker_pid:-}"
+  if [[ -n "$pid" ]]; then
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  fi
+  worker_pid=""
+}
+
 cleanup() {
   local rc=$?
-  if [[ -n "${worker_pid:-}" ]] && kill -0 "$worker_pid" 2>/dev/null; then
-    kill -KILL "$worker_pid" 2>/dev/null || true
-    wait "$worker_pid" 2>/dev/null || true
-  fi
+  terminate_worker_hard
   if [[ "$platform" == "linux-ext4" ]]; then
-    if [[ -n "$mapper_name" ]] && [[ -e "/dev/mapper/$mapper_name" ]]; then
-      sudo dmsetup remove --force "$mapper_name" >/dev/null 2>&1 || true
-    fi
     if [[ "$mounted" == "yes" ]]; then
       sudo umount -l "$mount_point" >/dev/null 2>&1 || true
       mounted="no"
+    fi
+    if [[ -n "$mapper_name" ]] && [[ -e "/dev/mapper/$mapper_name" ]]; then
+      sudo dmsetup remove --force "$mapper_name" >/dev/null 2>&1 || true
     fi
     if [[ -n "$loop_device" ]] && losetup "$loop_device" >/dev/null 2>&1; then
       sudo losetup -d "$loop_device" >/dev/null 2>&1 || true
@@ -470,7 +476,7 @@ arm_reset_linux_abrupt() {
 }
 
 arm_reset_linux_flakey() {
-  local sectors removed_name fault_table attempt
+  local sectors removed_name fault_table attempt remove_requested
   sectors="$(sudo blockdev --getsz "$loop_device")"
   removed_name="$mapper_name"
   case "$dm_fault_mode" in
@@ -489,8 +495,9 @@ arm_reset_linux_flakey() {
       return 1
       ;;
   esac
-  # Arm a bounded down interval while the worker is confirmed stopped, then
-  # force-remove the mapper without a graceful application flush path.
+  # Arm a bounded down interval while the worker is confirmed stopped. A lazy
+  # unmount avoids a graceful flush; only then can the stopped worker release
+  # its open files so mapper removal can be confirmed rather than inferred.
   record_command "dmsetup suspend --noflush <mapper>"
   record_command "dmsetup reload <mapper> --table '<redacted> flakey <loop> 0 0 60 [$dm_fault_mode]'"
   sudo dmsetup suspend --noflush "$mapper_name" || return 1
@@ -500,9 +507,21 @@ arm_reset_linux_flakey() {
   printf 'dm_fault_mode=%s\n' "$dm_fault_mode"
   printf 'dm_fault_window_ms=%s\n' "$dm_fault_window_ms"
   sleep 0.25
-  sudo dmsetup remove --force "$mapper_name" || return 1
+  record_command "umount -l <mount>"
   sudo umount -l "$mount_point" >/dev/null 2>&1 || return 1
   mounted="no"
+  record_command "kill -KILL <stopped-worker>"
+  terminate_worker_hard
+  record_command "dmsetup remove --force <mapper>"
+  remove_requested="no"
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    if sudo dmsetup remove --force "$mapper_name"; then
+      remove_requested="yes"
+      break
+    fi
+    sleep 0.05
+  done
+  [[ "$remove_requested" == "yes" ]] || return 1
   for ((attempt = 0; attempt < 100; ++attempt)); do
     [[ -e "/dev/mapper/$removed_name" ]] || break
     sleep 0.05
@@ -697,9 +716,7 @@ while [[ "$iteration" -le "$repeat" ]]; do
     done
 
     if [[ ! -e "$marker" ]]; then
-      kill -KILL "$worker_pid" 2>/dev/null || true
-      wait "$worker_pid" 2>/dev/null || true
-      worker_pid=""
+      terminate_worker_hard
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" "n/a" \
         "checkpoint-timeout" "INCONCLUSIVE" >>"$results"
@@ -725,9 +742,7 @@ while [[ "$iteration" -le "$repeat" ]]; do
       sleep 0.05
     done
     if [[ "$worker_stop_confirmed" != "yes" ]]; then
-      kill -KILL "$worker_pid" 2>/dev/null || true
-      wait "$worker_pid" 2>/dev/null || true
-      worker_pid=""
+      terminate_worker_hard
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
         "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" "n/a" \
         "worker-stop-unconfirmed" "INCONCLUSIVE" >>"$results"
@@ -743,9 +758,7 @@ while [[ "$iteration" -le "$repeat" ]]; do
       reset_confirmed="yes"
       reset_confirmed_global="yes"
     fi
-    kill -KILL "$worker_pid" 2>/dev/null || true
-    wait "$worker_pid" 2>/dev/null || true
-    worker_pid=""
+    terminate_worker_hard
 
     if [[ "$reset_confirmed" != "yes" ]]; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
@@ -878,7 +891,7 @@ while IFS= read -r artifact; do
   fi
   digest="${digest_line%% *}"
   printf '%s  %s\n' "$digest" "${artifact#"$output_dir/"}" >>"$manifest"
-done < <(find "$output_dir" -type f | LC_ALL=C sort)
+done < <(find "$output_dir" -path "$work_root" -prune -o -type f -print | LC_ALL=C sort)
 if [[ "$checksum_available" == "no" ]]; then
   printf 'unavailable  no SHA-256 utility found\n' >"$manifest"
 fi

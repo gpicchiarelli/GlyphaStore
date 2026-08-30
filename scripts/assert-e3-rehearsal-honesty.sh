@@ -115,7 +115,7 @@ verify_manifest() {
     err "SHA-256 manifest reports checksum tooling unavailable"
     return
   fi
-  if [[ -n "$(find "$directory" -type l -print -quit)" ]]; then
+  if [[ -n "$(find "$directory" -path "$directory/work" -prune -o -type l -print -quit)" ]]; then
     err "artifact tree contains a symbolic link"
     return
   fi
@@ -132,7 +132,7 @@ verify_manifest() {
   done <"$manifest_path"
   actual_inventory="$(
     cd "$directory" &&
-      find . -type f ! -path './manifest.sha256' ! -path './work/*' -print |
+      find . -path './work' -prune -o -type f ! -path './manifest.sha256' -print |
       sed 's#^\./##' | LC_ALL=C sort
   )"
   listed_inventory="$(sed -n 's/^[[:xdigit:]]\{64\}  //p' "$manifest_path" | LC_ALL=C sort)"
