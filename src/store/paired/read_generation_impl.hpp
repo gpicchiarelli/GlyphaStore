@@ -3,10 +3,10 @@
 // Internal types for PairReadGeneration translation units.
 // Not installed; behavior-neutral extraction (Phase C decomposition).
 
-#include "store/paired/read_generation_internals.hpp"
-#include "store/paired/read_generation_immutable.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
+#include "store/paired/read_generation_immutable.hpp"
+#include "store/paired/read_generation_internals.hpp"
 
 #include <deque>
 #include <iterator>
@@ -540,9 +540,9 @@ struct PairReadGenerationEnableShared final : PairReadGeneration {
     DeltaState delta_storage_;
 };
 
-[[nodiscard]] inline auto make_shared_generation(WorkerRoutingState routing,
-                                          std::shared_ptr<const ImmutableReadIndex> base, DeltaState delta,
-                                          const std::uint64_t epoch, const std::uint64_t visible_through)
+[[nodiscard]] inline auto
+make_shared_generation(WorkerRoutingState routing, std::shared_ptr<const ImmutableReadIndex> base,
+                       DeltaState delta, const std::uint64_t epoch, const std::uint64_t visible_through)
     -> std::shared_ptr<const PairReadGeneration> {
     // Co-allocate generation shell + embedded DeltaState in one control block.
     GS_PHASE_PUT(generation_shell_allocate);

@@ -10,11 +10,10 @@
 
 namespace glyphastore {
 using maintenance_detail::aggressive_pressure;
-using maintenance_detail::elapsed_ns;
 using maintenance_detail::ceil_percentage;
 using maintenance_detail::clamp_interval_ms;
+using maintenance_detail::elapsed_ns;
 using maintenance_detail::free_space_blocks_rotation;
-
 
 auto classify_maintenance_pressure(const MaintenanceObservation& observation,
                                    const MaintenanceConfig& config) noexcept -> MaintenancePressureLevel {
@@ -124,22 +123,18 @@ void MaintenanceController::start() {
         state_ = MaintenanceState::idle;
     }
     auto thread = std::thread([this] { run(); });
-    bool stopped_during_start = false;
     {
         const std::lock_guard lock{mutex_};
         if (stop_requested_) {
             state_ = MaintenanceState::stopped;
-            stopped_during_start = true;
         } else {
             worker_ = std::move(thread);
+            wake_.notify_one();
+            return;
         }
     }
-    if (stopped_during_start) {
-        wake_.notify_all();
-        thread.join();
-        return;
-    }
-    wake_.notify_one();
+    wake_.notify_all();
+    thread.join();
 }
 
 void MaintenanceController::request_stop() noexcept {

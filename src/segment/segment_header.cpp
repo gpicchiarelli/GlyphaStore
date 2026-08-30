@@ -1,6 +1,6 @@
 #include "glyphastore/segment/segment_header.hpp"
-#include "glyphastore/core/little_endian.hpp"
 
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/record.hpp"
 
@@ -15,12 +15,12 @@ inline constexpr std::size_t kImmutableChecksumOffset = 52;
 inline constexpr std::size_t kCommitChecksumOffset = 48;
 inline constexpr std::size_t kChecksumBytes = 4;
 
-using le::put_u16;
-using le::put_u32;
-using le::put_u64;
 using le::get_u16;
 using le::get_u32;
 using le::get_u64;
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
 
 auto all_zero(std::span<const std::byte> bytes) -> bool {
     return std::ranges::all_of(bytes, [](std::byte value) { return value == std::byte{0}; });
@@ -144,10 +144,12 @@ auto encode_segment_header(const std::span<std::byte> out, const SegmentHeader& 
     if (auto valid = validate_identity(header.identity); !valid) {
         return unexpected(valid.error());
     }
-    if (header.commits[0] && header.commits[1] &&
-        header.commits[0]->commit_generation == header.commits[1]->commit_generation &&
-        *header.commits[0] != *header.commits[1]) {
-        return fail(ErrorCode::invalid_argument, "equal commit generations contain different metadata");
+    if (header.commits[0] && header.commits[1]) {
+        const auto first = header.commits[0].value_or(SegmentCommit{});
+        const auto second = header.commits[1].value_or(SegmentCommit{});
+        if (first.commit_generation == second.commit_generation && first != second) {
+            return fail(ErrorCode::invalid_argument, "equal commit generations contain different metadata");
+        }
     }
 
     std::array<std::byte, kSegmentHeaderReservedBytes> encoded{};
@@ -170,9 +172,9 @@ auto encode_segment_header(const std::span<std::byte> out, const SegmentHeader& 
             continue;
         }
         const auto offset = kSegmentCommitSlotsOffset + index * kSegmentCommitSlotBytes;
+        const auto commit = header.commits[index].value_or(SegmentCommit{});
         if (auto status = encode_segment_commit_slot(
-                std::span<std::byte>{encoded}.subspan(offset, kSegmentCommitSlotBytes),
-                *header.commits[index]);
+                std::span<std::byte>{encoded}.subspan(offset, kSegmentCommitSlotBytes), commit);
             !status) {
             return unexpected(status.error());
         }

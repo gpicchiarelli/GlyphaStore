@@ -1,7 +1,6 @@
-#include "glyphastore/store/maintenance.hpp"
-
 #include "glyphastore/core/integer_math.hpp"
 #include "glyphastore/core/types.hpp"
+#include "glyphastore/store/maintenance.hpp"
 #include "maintenance_detail.hpp"
 
 #include <algorithm>

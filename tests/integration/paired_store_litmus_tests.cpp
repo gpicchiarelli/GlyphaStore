@@ -191,6 +191,103 @@ GLYPHA_TEST("paired dedicated Writer merge pays bounded debt before exhausting a
     GLYPHA_REQUIRE(store.close().has_value());
 }
 
+GLYPHA_TEST("ADR 0036 production slot V7 embedded merge publishes post-cut under slot pressure") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .paired = {.merge_delta_entries = 2,
+                                                       .merge_maximum_post_entries = 2,
+                                                       .merge_quantum_slots = 1,
+                                                       .generation_slot_pool = true}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    std::size_t pinned_retired{};
+    {
+        glyphastore::store::paired::ShardPairRuntime::ReadLease pinned_reader{*runtime, 0};
+        GLYPHA_REQUIRE(static_cast<bool>(pinned_reader));
+        GLYPHA_REQUIRE(store.put("slot-merge-cut-a", bytes("a")).has_value());
+        GLYPHA_REQUIRE(store.put("slot-merge-cut-b", bytes("b")).has_value());
+
+        const std::array<glyphastore::Store::PutItem, 2> post_items{
+            glyphastore::Store::PutItem{.key = "slot-merge-post-a", .value = bytes("c")},
+            glyphastore::Store::PutItem{.key = "slot-merge-post-b", .value = bytes("d")},
+        };
+        const auto statuses = store.put_batch(post_items);
+        GLYPHA_REQUIRE(statuses.size() == post_items.size());
+        GLYPHA_REQUIRE(statuses[0].has_value());
+        GLYPHA_REQUIRE(statuses[1].has_value());
+
+        const auto stats = runtime->stats()[0];
+        GLYPHA_REQUIRE(stats.read_merge_starts >= 1U);
+        GLYPHA_REQUIRE(stats.read_merge_completions >= 1U);
+        GLYPHA_REQUIRE(stats.read_merge_remaining_slots == 0U);
+        GLYPHA_REQUIRE(stats.read_merge_post_capacity_remaining == 0U);
+        GLYPHA_REQUIRE(stats.maximum_read_merge_quantum_slots > 1U);
+        GLYPHA_REQUIRE(stats.generation_admission_backpressure_total == 0U);
+        GLYPHA_REQUIRE(stats.retired_generation_count >= 3U);
+        pinned_retired = stats.retired_generation_count;
+        GLYPHA_REQUIRE(store.get("slot-merge-cut-a").has_value());
+        GLYPHA_REQUIRE(store.get("slot-merge-post-b").has_value());
+    }
+
+    const auto after_quiescence = store.put("slot-merge-after-quiescence", bytes("e"));
+    GLYPHA_REQUIRE(after_quiescence.has_value());
+    const auto resumed_retired = runtime->stats()[0].retired_generation_count;
+    GLYPHA_REQUIRE(resumed_retired < pinned_retired);
+    GLYPHA_REQUIRE(runtime->stats()[0].read_merge_active);
+    GLYPHA_REQUIRE(store.get("slot-merge-after-quiescence").has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
+GLYPHA_TEST("ADR 0036 production slot V7 dedicated Writer merge publishes post-cut under slot pressure") {
+    auto opened = glyphastore::Store::open({.worker_config = {.explicit_count = 1},
+                                            .paired = {.async_lane_capacity = 8,
+                                                       .async_lane_payload_bytes = 64U * 1024U,
+                                                       .merge_delta_entries = 2,
+                                                       .merge_maximum_post_entries = 2,
+                                                       .merge_quantum_slots = 1,
+                                                       .reader_epoch_lease = true,
+                                                       .generation_slot_pool = true}});
+    GLYPHA_REQUIRE(opened.has_value());
+    auto& store = **opened;
+    auto* runtime = glyphastore::detail::StoreAccess::shard_pair_runtime(store);
+    GLYPHA_REQUIRE(runtime != nullptr);
+
+    GLYPHA_REQUIRE(runtime->adopt_read_generation(0) != nullptr);
+    GLYPHA_REQUIRE(store.put("slot-writer-merge-cut-a", bytes("a")).has_value());
+    GLYPHA_REQUIRE(store.put("slot-writer-merge-cut-b", bytes("b")).has_value());
+
+    const std::array<glyphastore::Store::PutItem, 2> post_items{
+        glyphastore::Store::PutItem{.key = "slot-writer-merge-post-a", .value = bytes("c")},
+        glyphastore::Store::PutItem{.key = "slot-writer-merge-post-b", .value = bytes("d")},
+    };
+    const auto statuses = store.put_batch(post_items);
+    GLYPHA_REQUIRE(statuses.size() == post_items.size());
+    GLYPHA_REQUIRE(statuses[0].has_value());
+    GLYPHA_REQUIRE(statuses[1].has_value());
+    GLYPHA_REQUIRE(store.put("slot-writer-merge-post-c", bytes("e")).has_value());
+
+    const auto stats = runtime->stats()[0];
+    GLYPHA_REQUIRE(stats.read_merge_starts >= 1U);
+    GLYPHA_REQUIRE(stats.read_merge_completions >= 1U);
+    GLYPHA_REQUIRE(stats.read_merge_backpressure == 0U);
+    GLYPHA_REQUIRE(!stats.read_merge_active || stats.read_merge_remaining_slots > 0U);
+    GLYPHA_REQUIRE(stats.generation_admission_backpressure_total == 0U);
+    GLYPHA_REQUIRE(stats.writer_epoch > stats.reader_safe_epoch);
+    GLYPHA_REQUIRE(store.get("slot-writer-merge-cut-a").has_value());
+    GLYPHA_REQUIRE(store.get("slot-writer-merge-post-b").has_value());
+    GLYPHA_REQUIRE(store.get("slot-writer-merge-post-c").has_value());
+
+    GLYPHA_REQUIRE(runtime->adopt_read_generation(0) != nullptr);
+    const auto adopted = runtime->stats()[0];
+    GLYPHA_REQUIRE(adopted.reader_safe_epoch == adopted.writer_epoch);
+    const auto after_quiescence = store.put("slot-writer-merge-after-quiescence", bytes("f"));
+    GLYPHA_REQUIRE(after_quiescence.has_value());
+    GLYPHA_REQUIRE(store.get("slot-writer-merge-after-quiescence").has_value());
+    GLYPHA_REQUIRE(store.close().has_value());
+}
+
 #if defined(GLYPHASTORE_FAULT_INJECTION)
 GLYPHA_TEST("paired durable Writer fail-closes when mutate throws after durable I/O begins") {
     // ADR 0036 V6 durable_sync seam: Site::publish throws after commit + read-generation

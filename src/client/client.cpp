@@ -1,7 +1,6 @@
 #include "glyphastore/client/client.hpp"
 
 #include "client_detail.hpp"
-
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/server/protocol.hpp"
@@ -22,23 +21,23 @@
 
 namespace glyphastore::client {
 
-using detail::Clock;
-using detail::ExchangeFailure;
-using detail::ExchangeResult;
-using detail::Metadata;
-using detail::OwnedResponse;
-using detail::WorkerConnection;
 using detail::as_bytes;
+using detail::Clock;
 using detail::connect_socket;
 using detail::enrich_error;
 using detail::exchange;
+using detail::ExchangeFailure;
+using detail::ExchangeResult;
 using detail::is_mutation;
 using detail::is_supported;
+using detail::Metadata;
 using detail::operation_name;
+using detail::OwnedResponse;
 using detail::receive_buffered_response;
 using detail::response_error;
 using detail::send_frame;
 using detail::wire_opcode;
+using detail::WorkerConnection;
 
 class Client::Impl final {
   public:

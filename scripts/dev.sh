@@ -123,6 +123,9 @@ case "${1:-help}" in
         ;;
     format)
         formatter="$(command -v clang-format || true)"
+        if [[ -z "$formatter" && -x "$root/.tools/venv/bin/clang-format" ]]; then
+            formatter="$root/.tools/venv/bin/clang-format"
+        fi
         if [[ -z "$formatter" ]]; then
             echo "clang-format not found; install LLVM with MacPorts or Homebrew." >&2
             exit 1
@@ -130,11 +133,44 @@ case "${1:-help}" in
         find "$root/include" "$root/src" "$root/tests" "$root/benchmarks" "$root/fuzz" \
             -type f \( -name '*.cpp' -o -name '*.hpp' \) -print0 | xargs -0 "$formatter" -i
         ;;
+    verify)
+        formatter="$(command -v clang-format || true)"
+        if [[ -z "$formatter" && -x "$root/.tools/venv/bin/clang-format" ]]; then
+            formatter="$root/.tools/venv/bin/clang-format"
+        fi
+        if [[ -z "$formatter" ]]; then
+            echo "clang-format not found; run ./scripts/bootstrap-macos.sh first." >&2
+            exit 1
+        fi
+        python="${PYTHON:-$root/.tools/venv/bin/python}"
+        if [[ ! -x "$python" ]]; then
+            python="$(command -v python3 || true)"
+        fi
+        if [[ -z "$python" ]]; then
+            echo "python3 not found; run ./scripts/bootstrap-macos.sh first." >&2
+            exit 1
+        fi
+        find "$root/include" "$root/src" "$root/tests" "$root/benchmarks" "$root/fuzz" \
+            -type f \( -name '*.cpp' -o -name '*.hpp' \) -print0 \
+            | xargs -0 "$formatter" --dry-run --Werror
+        find "$root/scripts" -type f -name '*.sh' -exec bash -n {} \;
+        "$python" "$root/engineering/tools/validate_assurance.py"
+        "$python" "$root/engineering/tools/validate_documentation.py"
+        "$python" "$root/engineering/tools/validate_cmake_deps.py"
+        "$python" "$root/engineering/tools/validate_structure_debt.py"
+        "$python" "$root/engineering/tools/validate_actions_pins.py"
+        "$python" "$root/engineering/tools/validate_compat_matrix.py"
+        "$python" "$root/engineering/tools/validate_claims.py"
+        "$python" "$root/engineering/tools/validate_durability_claims.py"
+        "$python" "$root/engineering/tools/validate_perf_budgets.py"
+        "$python" "$root/engineering/tools/validate_bsd_packaging.py"
+        "$python" -m unittest discover -s "$root/scripts/tests"
+        ;;
     clean)
         "$cmake" -E rm -rf "$root/build"
         ;;
     *)
-        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|fuzz-run|xcode-build|format|clean} [benchmark args]"
+        echo "usage: $0 {configure|build|test|asan|tsan|test-lto|benchmark|benchmark-durable|benchmark-compaction|benchmark-maintenance|benchmark-server|benchmark-lto|benchmark-pgo|pgo-generate|pgo-train|pgo-use|fuzz-build|fuzz-run|xcode-build|format|verify|clean} [benchmark args]"
         echo "PGO: pgo-generate builds instrumented benchmarks; pgo-train runs volatile + durable workloads; pgo-use rebuilds optimized benchmarks."
         echo "Fuzz: fuzz-build configures macos-fuzz; fuzz-run executes targets (GLYPHASTORE_FUZZ_SECONDS, GLYPHASTORE_FUZZ_BUILD_DIR)."
         ;;

@@ -169,7 +169,7 @@ struct SegmentFileCreationResult {
     std::optional<Error> error;
 
     [[nodiscard]] auto durable() const noexcept -> bool {
-        return outcome == SegmentFileCreationOutcome::durable;
+        return outcome == SegmentFileCreationOutcome::durable && file.has_value();
     }
 };
 

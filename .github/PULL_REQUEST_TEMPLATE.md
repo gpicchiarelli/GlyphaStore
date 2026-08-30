@@ -11,6 +11,7 @@
 
 ## Validation
 
+- [ ] Formatting and `./scripts/dev.sh verify`
 - [ ] Unit/integration tests
 - [ ] ASan + UBSan
 - [ ] TSan when concurrency is affected

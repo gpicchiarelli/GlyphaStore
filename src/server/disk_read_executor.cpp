@@ -182,7 +182,12 @@ void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
                 continue;
             }
         }
-        auto& task = *lane.slots[*slot];
+        const auto slot_index = slot.value();
+        auto& task_cell = lane.slots[slot_index];
+        if (!task_cell) {
+            std::terminate();
+        }
+        auto& task = task_cell.value();
 
         DiskReadCompletion completion{.connection = task.connection,
                                       .request_id = task.request_id,
@@ -214,8 +219,8 @@ void DiskReadExecutor::run(const std::size_t worker_index) noexcept {
         if (!completions->try_push(std::move(completion))) {
             std::terminate();
         }
-        lane.slots[*slot].reset();
-        if (!lane.recycled.try_push(*slot)) {
+        task_cell.reset();
+        if (!lane.recycled.try_push(slot_index)) {
             std::terminate();
         }
         static_cast<void>(wakeup->notify());

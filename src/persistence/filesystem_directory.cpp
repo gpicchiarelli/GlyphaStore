@@ -1,5 +1,5 @@
+#include "filesystem_detail.hpp"
 #include "glyphastore/persistence/filesystem.hpp"
-
 #include "glyphastore/persistence/namespace_audit.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
@@ -19,8 +19,6 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 #include <vector>
-
-#include "filesystem_detail.hpp"
 
 namespace glyphastore {
 
@@ -293,12 +291,12 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest, const std
     if (::unlinkat(directory_.get(), kBootstrapTemporaryFilename, 0) != 0 && errno != ENOENT) {
         return persistence_system_error("unlinkat(bootstrap temporary)");
     }
-    FileDescriptor intent{
+    FileDescriptor intent_file{
         interrupted_open_at(directory_.get(), kBootstrapTemporaryFilename,
                             O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
                             S_IRUSR | S_IWUSR),
         hooks_.file_io};
-    if (!intent.valid()) {
+    if (!intent_file.valid()) {
         return persistence_system_error("openat(bootstrap temporary)");
     }
     const auto cleanup = [this]() -> Status {
@@ -314,7 +312,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest, const std
         }
         return allowed;
     }
-    if (auto written = intent.write_all_at(*encoded, 0); !written) {
+    if (auto written = intent_file.write_all_at(*encoded, 0); !written) {
         if (auto cleaned = cleanup(); !cleaned) {
             health_->store(false, std::memory_order_release);
             return cleaned;
@@ -329,7 +327,7 @@ auto DataDirectory::publish_bootstrap_intent(const Manifest& manifest, const std
         }
         return allowed;
     }
-    if (auto synced = intent.sync(FileSyncMode::full); !synced) {
+    if (auto synced = intent_file.sync(FileSyncMode::full); !synced) {
         if (auto cleaned = cleanup(); !cleaned) {
             health_->store(false, std::memory_order_release);
             return cleaned;
@@ -396,7 +394,7 @@ auto DataDirectory::finish_bootstrap() -> Status {
     return {};
 }
 
-auto DataDirectory::publish_compaction_intent(const DurableCompactionIntent& compaction,
+auto DataDirectory::publish_compaction_intent(const DurableCompactionIntent& intent,
                                               const std::size_t max_manifest_bytes)
     -> CompactionIntentPublicationResult {
     if (!healthy()) {
@@ -410,9 +408,9 @@ auto DataDirectory::publish_compaction_intent(const DurableCompactionIntent& com
             Error{ErrorCode::invalid_argument,
                   "compaction intent manifest byte budget exceeds the supported format bound"});
     }
-    const auto old_size = encoded_manifest_size(compaction.old_manifest);
-    const auto next_size = encoded_manifest_size(compaction.next_manifest);
-    const auto encoded = encode_compaction_intent(compaction);
+    const auto old_size = encoded_manifest_size(intent.old_manifest);
+    const auto next_size = encoded_manifest_size(intent.next_manifest);
+    const auto encoded = encode_compaction_intent(intent);
     if (!old_size || !next_size || !encoded) {
         if (!old_size) {
             return compaction_publication_failure(CompactionIntentPublicationOutcome::not_published,
@@ -447,12 +445,12 @@ auto DataDirectory::publish_compaction_intent(const DurableCompactionIntent& com
             persistence_system_error("unlinkat(compaction temporary)").error);
     }
 
-    FileDescriptor intent{
+    FileDescriptor intent_file{
         interrupted_open_at(directory_.get(), kCompactionTemporaryFilename,
                             O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK,
                             S_IRUSR | S_IWUSR),
         hooks_.file_io};
-    if (!intent.valid()) {
+    if (!intent_file.valid()) {
         return compaction_publication_failure(CompactionIntentPublicationOutcome::not_published,
                                               persistence_system_error("openat(compaction temporary)").error);
     }
@@ -475,14 +473,14 @@ auto DataDirectory::publish_compaction_intent(const DurableCompactionIntent& com
     if (auto allowed = before(FilesystemOperation::write_compaction_intent); !allowed) {
         return fail_before_rename(allowed.error());
     }
-    if (auto written = intent.write_all_at(*encoded, 0); !written) {
+    if (auto written = intent_file.write_all_at(*encoded, 0); !written) {
         return fail_before_rename(written.error());
     }
     after(FilesystemOperation::write_compaction_intent);
     if (auto allowed = before(FilesystemOperation::sync_compaction_intent); !allowed) {
         return fail_before_rename(allowed.error());
     }
-    if (auto synced = intent.sync(FileSyncMode::full); !synced) {
+    if (auto synced = intent_file.sync(FileSyncMode::full); !synced) {
         return fail_before_rename(synced.error());
     }
     after(FilesystemOperation::sync_compaction_intent);
@@ -599,8 +597,6 @@ auto DataDirectory::retire_compaction_segments(const StoreId& store_id,
                     CompactionSegmentRetirementOutcome::indeterminate,
                     persistence_system_error("unlinkat(compaction Segment)").error);
             }
-        } else {
-            removed_identity = true;
         }
         removed_any = true;
         after(FilesystemOperation::remove_compaction_segment);

@@ -279,7 +279,8 @@ auto amp_reject_manifest() -> glyphastore::Manifest {
     };
 }
 
-auto fill_sealed_with_max_records(glyphastore::DataDirectory& directory, const glyphastore::Manifest& manifest,
+auto fill_sealed_with_max_records(glyphastore::DataDirectory& directory,
+                                  const glyphastore::Manifest& manifest,
                                   const glyphastore::ManifestSegmentEntry& entry,
                                   const std::uint64_t first_sequence, const std::size_t record_count,
                                   const std::string_view key_prefix) -> std::uint64_t {
@@ -1419,8 +1420,7 @@ GLYPHA_TEST("compaction write-amplification budget rejects before intent without
         GLYPHA_REQUIRE(directory->publish_manifest(old).durable());
         // Payload per Segment is ~64MiB-4KiB; ~33 max-size Records per sealed Segment
         // leaves enough live bytes for two outputs across three sealed sources.
-        auto next_sequence =
-            fill_sealed_with_max_records(*directory, old, old.segments[0], 1, 33, "amp-a-");
+        auto next_sequence = fill_sealed_with_max_records(*directory, old, old.segments[0], 1, 33, "amp-a-");
         next_sequence =
             fill_sealed_with_max_records(*directory, old, old.segments[1], next_sequence, 33, "amp-b-");
         next_sequence =

@@ -74,6 +74,21 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("group: sanitizers-${{ github.head_ref || github.ref_name }}", workflow)
         self.assertIn("cancel-in-progress: true", workflow)
 
+    def test_clang_tidy_fails_closed_on_high_signal_diagnostics(self) -> None:
+        workflow = (ROOT / ".github/workflows/static-analysis.yml").read_text(encoding="utf-8")
+        gate = (ROOT / "engineering/tools/run_clang_tidy_gate.py").read_text(encoding="utf-8")
+        for check in (
+            "bugprone-unchecked-optional-access",
+            "bugprone-use-after-move",
+            "clang-analyzer-deadcode.DeadStores",
+            "readability-inconsistent-declaration-parameter-name",
+        ):
+            self.assertIn(check, gate)
+        self.assertIn(
+            "python engineering/tools/run_clang_tidy_gate.py --build-dir build/unix-clang-tidy",
+            workflow,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

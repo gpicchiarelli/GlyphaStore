@@ -16,6 +16,7 @@ Generated from `engineering/gates/`. See also the derived
 | `GATE-CONCURRENCY-SPEC` | public_contract | `IMPLEMENTATA` | `alpha` | `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001` |
 | `GATE-CONFIG` | operations_security | `PROVATA_IN_CI` | `alpha` | `GS-OPS-CONFIG-001` |
 | `GATE-DISK-WIRE-VERSIONS` | public_contract | `PROVATA_IN_CI` | `alpha` | `GS-COMPAT-FIXTURE-001`, `GS-COMPAT-NN1-001`, `GS-PROTO-WIRE-001` |
+| `GATE-DOCUMENTATION-INTEGRITY` | verification | `IMPLEMENTATA` | `prototype` | `GS-CORE-DOCS-001` |
 | `GATE-DURABLE-ACK` | durability_recovery | `PROVATA_IN_CI` | `beta` | `GS-PERSIST-ACK-001` |
 | `GATE-FAIL-CLOSED-IO` | durability_recovery | `PROVATA_LOCALMENTE` | `beta` | `GS-RECOVERY-FAILCLOSED-001` |
 | `GATE-FAULT-INJECTION` | verification | `PROVATA_IN_CI` | `beta` | `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`, `GS-PERSIST-AMP-001` |
@@ -28,6 +29,7 @@ Generated from `engineering/gates/`. See also the derived
 | `GATE-RELEASE-MATRIX` | distribution_lifecycle | `IMPLEMENTATA` | `rc` | `GS-COMPAT-FIXTURE-001`, `GS-RELEASE-ARTIFACT-001` |
 | `GATE-REPRO-SBOM` | distribution_lifecycle | `IMPLEMENTATA` | `rc` | `GS-COMPAT-FIXTURE-001`, `GS-RELEASE-ARTIFACT-001` |
 | `GATE-SOAK` | verification | `PROVATA_IN_CI` | `beta` | `GS-OPS-CONFIG-001`, `GS-OPS-SOAK-001`, `GS-OPS-DEBT-001` |
+| `GATE-STATIC-ANALYSIS-HIGH-SIGNAL` | verification | `IMPLEMENTATA` | `prototype` | `GS-CORE-BUILD-001` |
 | `GATE-TELEMETRY` | operations_security | `PROVATA_IN_CI` | `alpha` | `GS-OPS-CONFIG-001` |
 | `GATE-TEST-SUITES` | verification | `PROVATA_IN_CI` | `alpha` | `GS-RECOVERY-DET-001`, `GS-COMPAT-FIXTURE-001` |
 | `GATE-THREAT-SUPPLY` | operations_security | `IMPLEMENTATA` | `beta` | `GS-SEC-PROFILE-001`, `GS-SUPPLY-ACTIONS-001` |

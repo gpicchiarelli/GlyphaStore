@@ -2,6 +2,7 @@
 #include "store/paired/read_generation_impl.hpp"
 
 #include <algorithm>
+#include <exception>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -74,15 +75,15 @@ auto PairReadGeneration::publish(std::shared_ptr<const PairReadGeneration> previ
     DeltaBuilder builder{*previous->delta_, current_delta_builder_scratch()};
     auto visible_through = previous->visible_through_;
     for (const auto& mutation : mutations) {
-        const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
+        const auto* durable = mutation.durable ? &mutation.durable.value() : nullptr;
+        const bool durable_put = mutation.opcode == Opcode::put && durable != nullptr;
         const bool volatile_pinned = same_segment(mutation.segment, mutation.record);
         if (mutation.opcode == Opcode::put && !durable_put && !volatile_pinned) {
             return fail(ErrorCode::invalid_reference,
                         "publication rejected a RecordRef without its exact Segment pin");
         }
-        if (durable_put && (mutation.durable->key_hash() != mutation.key.hash ||
-                            mutation.durable->key() != mutation.key.key ||
-                            mutation.durable->reference() != mutation.record)) {
+        if (durable_put && (durable->key_hash() != mutation.key.hash || durable->key() != mutation.key.key ||
+                            durable->reference() != mutation.record)) {
             return fail(ErrorCode::invalid_reference,
                         "durable publication record disagrees with its exact generation pin");
         }
@@ -149,29 +150,30 @@ auto IncrementalPublicationAccess::prepare(const PairReadGeneration& previous,
     DeltaBuilder current_builder{*previous.delta_, current_delta_builder_scratch(),
                                  post_builder ? post_builder->allocation_arena()
                                               : std::shared_ptr<DeltaArena>{}};
+    auto* post = post_builder ? &post_builder.value() : nullptr;
     auto visible_through = previous.visible_through_;
     for (const auto& mutation : mutations) {
-        const bool durable_put = mutation.opcode == Opcode::put && mutation.durable.has_value();
+        const auto* durable = mutation.durable ? &mutation.durable.value() : nullptr;
+        const bool durable_put = mutation.opcode == Opcode::put && durable != nullptr;
         const bool volatile_pinned = same_segment(mutation.segment, mutation.record);
         if (mutation.opcode == Opcode::put && !durable_put && !volatile_pinned) {
             return fail(ErrorCode::invalid_reference,
                         "publication rejected a RecordRef without its exact Segment pin");
         }
-        if (durable_put && (mutation.durable->key_hash() != mutation.key.hash ||
-                            mutation.durable->key() != mutation.key.key ||
-                            mutation.durable->reference() != mutation.record)) {
+        if (durable_put && (durable->key_hash() != mutation.key.hash || durable->key() != mutation.key.key ||
+                            durable->reference() != mutation.record)) {
             return fail(ErrorCode::invalid_reference,
                         "durable publication record disagrees with its exact generation pin");
         }
         const auto current_slot = current_builder.prepare(mutation.key.hash, mutation.key.key);
-        std::optional<DeltaBuilder::PreparedSlot> post_slot;
-        if (post_builder) {
-            post_slot.emplace(post_builder->prepare(mutation.key.hash, mutation.key.key));
+        DeltaBuilder::PreparedSlot post_slot{};
+        if (post != nullptr) {
+            post_slot = post->prepare(mutation.key.hash, mutation.key.key);
         }
         const auto* stored = current_builder.store(view_of(mutation));
         current_builder.commit(current_slot, stored);
-        if (post_slot) {
-            post_builder->commit(*post_slot, stored);
+        if (post != nullptr) {
+            post->commit(post_slot, stored);
         }
         visible_through = std::max(visible_through, mutation.record.sequence.value);
     }
@@ -189,6 +191,9 @@ void IncrementalPublicationAccess::commit_merge(PairReadMerge* merge, Incrementa
                                                 std::shared_ptr<const PairReadGeneration> next) noexcept {
     if (merge == nullptr) {
         return;
+    }
+    if (!prepared.next_post) {
+        std::terminate();
     }
     merge->state_->post_delta = std::move(*prepared.next_post);
     merge->state_->current = std::move(next);
@@ -212,6 +217,9 @@ auto PairReadGeneration::publish_incremental_construct(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
+    if (!prepared->next_delta) {
+        return fail(ErrorCode::internal_error, "incremental publication produced no next delta");
+    }
 
     std::shared_ptr<const PairReadGeneration> next;
     if (direct_storage != nullptr) {
@@ -220,10 +228,9 @@ auto PairReadGeneration::publish_incremental_construct(
         auto* location = direct_storage->claim(sizeof(PairReadGenerationEnableShared),
                                                alignof(PairReadGenerationEnableShared));
         try {
-            auto* constructed = std::construct_at(static_cast<PairReadGenerationEnableShared*>(location),
-                                                  previous.routing_, previous.base_,
-                                                  std::move(*prepared->next_delta), previous.epoch_ + 1U,
-                                                  prepared->visible_through);
+            auto* constructed = std::construct_at(
+                static_cast<PairReadGenerationEnableShared*>(location), previous.routing_, previous.base_,
+                std::move(*prepared->next_delta), previous.epoch_ + 1U, prepared->visible_through);
             *direct_result = constructed;
             // Merge retains a non-owning view; the slot pool owns destruction.
             next = std::shared_ptr<const PairReadGeneration>(constructed, [](const PairReadGeneration*) {});

@@ -1,5 +1,3 @@
-#include "glyphastore/store/paired/shard_pair_runtime.hpp"
-
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/core/key_hash.hpp"
@@ -12,6 +10,7 @@
 #include "glyphastore/store/paired/mutation_state.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
 #include "glyphastore/store/paired/shard_combining_executor.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/paired/volatile_sync_chunk.hpp"
 #include "store/paired/shard_pair_runtime_impl.hpp"
 #include "store/store_internal.hpp"
@@ -100,126 +99,126 @@ void ShardPairRuntime::run(const std::size_t shard) noexcept {
         update_delta_stats = [&]() noexcept {
             store_generation_memory_stats(lane.generation, lane.generation.writer_generation->memory_stats());
         };
-    reclaim_quiescent = [&]() noexcept {
-        try {
-            reclaim_quiescent_generations(lane.generation, lane.reclaim, config_.reader_epoch_lease);
-        } catch (...) {
-            publish_fail_closed();
-        }
-    };
-    // Drain durable Index authority into the published generation before sticky
-    // close (allow_fail_closed: durable may already be unhealthy). Sync single-op
-    // and batch catch use this so committed keys are not left unpublished.
-    after_durable_drain = [&]() noexcept {
-        merge_retry_blocked = false;
-        reclaim_quiescent();
-    };
-    drain_durable_snapshot = [&]() noexcept -> bool {
-        return try_drain_durable_snapshot(publication_ctx, true, &after_durable_drain);
-    };
-    // Publication produces one retired generation per successful incremental
-    // publish. Reclaiming on every single-mutation publish dominated volatile
-    // PUT ack time; reclaim proportionally when debt accumulates, and always
-    // before hard retire limits / merge pressure checks.
-    reclaim_proportional = [&]() noexcept {
-        if (lane.merge.read_merge) {
-            store_merge_progress(lane.merge);
-        }
-        constexpr std::size_t kReclaimPublishQuantum = 8;
-        if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
-            lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
-            reclaim_quiescent();
-        } else {
-            lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
-                                                           std::memory_order_relaxed);
-        }
-    };
-    process_merge = [&](const std::size_t publication_records) noexcept {
-        try {
-            if (!lane.merge.read_merge && !merge_retry_blocked &&
-                (lane.generation.writer_generation->delta_entries() >= config_.merge_delta_entries ||
-                 lane.generation.writer_generation->delta_record_versions() >=
-                     config_.merge_delta_entries)) {
-                auto started = start_merge_with_optional_pin();
-                if (!started) {
-                    lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
-                    if (started.error().code == ErrorCode::resource_exhausted) {
-                        merge_retry_blocked = true;
-                    } else {
-                        publish_fail_closed();
-                    }
-                    return;
-                }
-                lane.merge.read_merge = std::move(*started);
-                lane.merge.read_merge_active.store(true, std::memory_order_relaxed);
-                lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
-                store_merge_progress(lane.merge);
-                lane.merge.read_merge_starts.fetch_add(1U, std::memory_order_relaxed);
-            }
-            if (!lane.merge.read_merge) {
-                return;
-            }
-            if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
-                const auto advance_budget = PairReadGeneration::merge_advance_budget(
-                    *lane.merge.read_merge, publication_records,
-                    runtime_detail::merge_minimum_advance_slots(config_.merge_quantum_slots,
-                                                               publication_records));
-                auto advanced =
-                    PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, advance_budget);
-                if (!advanced) {
-                    lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
-                    if (advanced.error().code == ErrorCode::resource_exhausted) {
-                        lane.merge.read_merge.reset();
-                        lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
-                        lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
-                        store_merge_progress(lane.merge);
-                        merge_retry_blocked = true;
-                    } else {
-                        publish_fail_closed();
-                    }
-                    return;
-                }
-                runtime_detail::note_merge_advance(lane.merge, *advanced);
-            }
-            if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
-                return;
-            }
-            reclaim_quiescent();
-            if (decide_generation_admission(lane.generation.retired_debt(),
-                                            ShardPairRuntime::kMaximumRetiredReadGenerations,
-                                            true) != GenerationAdmissionDecision::admitted) {
-                return;
-            }
-            const auto outcome = finish_incremental_merge_and_publish(publication_ctx);
-            if (outcome.status == DualPathPublishStatus::deferred) {
-                return;
-            }
-            if (outcome.status == DualPathPublishStatus::build_failed) {
-                if (outcome.build_error == ErrorCode::resource_exhausted) {
-                    merge_retry_blocked = true;
-                } else {
-                    publish_fail_closed();
-                }
-                return;
-            }
-            if (outcome.status != DualPathPublishStatus::published) {
+        reclaim_quiescent = [&]() noexcept {
+            try {
+                reclaim_quiescent_generations(lane.generation, lane.reclaim, config_.reader_epoch_lease);
+            } catch (...) {
                 publish_fail_closed();
-                return;
             }
-            lane.merge.read_merge.reset();
-            lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
-            lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
-            store_merge_progress(lane.merge);
-            lane.merge.read_merge_completions.fetch_add(1U, std::memory_order_relaxed);
+        };
+        // Drain durable Index authority into the published generation before sticky
+        // close (allow_fail_closed: durable may already be unhealthy). Sync single-op
+        // and batch catch use this so committed keys are not left unpublished.
+        after_durable_drain = [&]() noexcept {
             merge_retry_blocked = false;
             reclaim_quiescent();
-        } catch (const std::bad_alloc&) {
-            publish_fail_closed();
-        } catch (...) {
-            publish_fail_closed();
-        }
-    };
-    // Stable once: avoid per-chunk std::function allocation under process_fail_at injection.
+        };
+        drain_durable_snapshot = [&]() noexcept -> bool {
+            return try_drain_durable_snapshot(publication_ctx, true, &after_durable_drain);
+        };
+        // Publication produces one retired generation per successful incremental
+        // publish. Reclaiming on every single-mutation publish dominated volatile
+        // PUT ack time; reclaim proportionally when debt accumulates, and always
+        // before hard retire limits / merge pressure checks.
+        reclaim_proportional = [&]() noexcept {
+            if (lane.merge.read_merge) {
+                store_merge_progress(lane.merge);
+            }
+            constexpr std::size_t kReclaimPublishQuantum = 8;
+            if (lane.generation.retired_debt() >= kReclaimPublishQuantum ||
+                lane.generation.retired_debt() + 1U >= ShardPairRuntime::kMaximumRetiredReadGenerations) {
+                reclaim_quiescent();
+            } else {
+                lane.generation.retired_generation_count.store(lane.generation.retired_generations.size(),
+                                                               std::memory_order_relaxed);
+            }
+        };
+        process_merge = [&](const std::size_t publication_records) noexcept {
+            try {
+                if (!lane.merge.read_merge && !merge_retry_blocked &&
+                    (lane.generation.writer_generation->delta_entries() >= config_.merge_delta_entries ||
+                     lane.generation.writer_generation->delta_record_versions() >=
+                         config_.merge_delta_entries)) {
+                    auto started = start_merge_with_optional_pin();
+                    if (!started) {
+                        lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+                        if (started.error().code == ErrorCode::resource_exhausted) {
+                            merge_retry_blocked = true;
+                        } else {
+                            publish_fail_closed();
+                        }
+                        return;
+                    }
+                    lane.merge.read_merge = std::move(*started);
+                    lane.merge.read_merge_active.store(true, std::memory_order_relaxed);
+                    lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+                    store_merge_progress(lane.merge);
+                    lane.merge.read_merge_starts.fetch_add(1U, std::memory_order_relaxed);
+                }
+                if (!lane.merge.read_merge) {
+                    return;
+                }
+                if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
+                    const auto advance_budget = PairReadGeneration::merge_advance_budget(
+                        *lane.merge.read_merge, publication_records,
+                        runtime_detail::merge_minimum_advance_slots(config_.merge_quantum_slots,
+                                                                    publication_records));
+                    auto advanced =
+                        PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, advance_budget);
+                    if (!advanced) {
+                        lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
+                        if (advanced.error().code == ErrorCode::resource_exhausted) {
+                            lane.merge.read_merge.reset();
+                            lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+                            lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+                            store_merge_progress(lane.merge);
+                            merge_retry_blocked = true;
+                        } else {
+                            publish_fail_closed();
+                        }
+                        return;
+                    }
+                    runtime_detail::note_merge_advance(lane.merge, *advanced);
+                }
+                if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
+                    return;
+                }
+                reclaim_quiescent();
+                if (decide_generation_admission(lane.generation.retired_debt(),
+                                                ShardPairRuntime::kMaximumRetiredReadGenerations,
+                                                true) != GenerationAdmissionDecision::admitted) {
+                    return;
+                }
+                const auto outcome = finish_incremental_merge_and_publish(publication_ctx);
+                if (outcome.status == DualPathPublishStatus::deferred) {
+                    return;
+                }
+                if (outcome.status == DualPathPublishStatus::build_failed) {
+                    if (outcome.build_error == ErrorCode::resource_exhausted) {
+                        merge_retry_blocked = true;
+                    } else {
+                        publish_fail_closed();
+                    }
+                    return;
+                }
+                if (outcome.status != DualPathPublishStatus::published) {
+                    publish_fail_closed();
+                    return;
+                }
+                lane.merge.read_merge.reset();
+                lane.merge.read_merge_active.store(false, std::memory_order_relaxed);
+                lane.merge.read_merge_post_entries.store(0U, std::memory_order_relaxed);
+                store_merge_progress(lane.merge);
+                lane.merge.read_merge_completions.fetch_add(1U, std::memory_order_relaxed);
+                merge_retry_blocked = false;
+                reclaim_quiescent();
+            } catch (const std::bad_alloc&) {
+                publish_fail_closed();
+            } catch (...) {
+                publish_fail_closed();
+            }
+        };
+        // Stable once: avoid per-chunk std::function allocation under process_fail_at injection.
         prepare_publish_retry = [&](const std::size_t published_count) {
             reclaim_quiescent();
             process_merge(published_count);

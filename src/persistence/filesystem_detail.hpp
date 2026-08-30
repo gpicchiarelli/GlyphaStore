@@ -1,7 +1,6 @@
 #pragma once
 
 #include "glyphastore/persistence/filesystem.hpp"
-
 #include "system_error.hpp"
 
 #include <cerrno>
@@ -99,7 +98,8 @@ inline auto unlink_temporary(int directory) -> Status {
     return persistence_system_error("unlinkat(manifest temporary)");
 }
 
-inline auto publication_failure(ManifestPublicationOutcome outcome, Error error) -> ManifestPublicationResult {
+inline auto publication_failure(ManifestPublicationOutcome outcome, Error error)
+    -> ManifestPublicationResult {
     return {.outcome = outcome, .error = std::move(error)};
 }
 
@@ -119,7 +119,8 @@ inline auto compaction_retirement_failure(CompactionSegmentRetirementOutcome out
 }
 
 inline auto read_private_manifest_file(int directory, const char* name, std::string_view description,
-                                const std::size_t max_bytes, const FileIoHooks io_hooks) -> Result<Manifest> {
+                                       const std::size_t max_bytes, const FileIoHooks io_hooks)
+    -> Result<Manifest> {
     FileDescriptor file{interrupted_open_at(directory, name, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK),
                         io_hooks};
     if (!file.valid()) {
@@ -155,7 +156,8 @@ inline auto read_private_manifest_file(int directory, const char* name, std::str
 }
 
 inline auto read_private_compaction_intent_file(const int directory, const std::size_t max_manifest_bytes,
-                                         const FileIoHooks io_hooks) -> Result<DurableCompactionIntent> {
+                                                const FileIoHooks io_hooks)
+    -> Result<DurableCompactionIntent> {
     if (max_manifest_bytes > kMaximumManifestBytes ||
         max_manifest_bytes > (std::numeric_limits<std::size_t>::max() - kCompactionIntentHeaderBytes) / 2U) {
         return fail(ErrorCode::invalid_argument,
@@ -195,6 +197,5 @@ inline auto read_private_compaction_intent_file(const int directory, const std::
     }
     return decode_compaction_intent(bytes);
 }
-
 
 } // namespace glyphastore::persistence_detail

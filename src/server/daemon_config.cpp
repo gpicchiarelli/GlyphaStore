@@ -1,8 +1,7 @@
 #include "glyphastore/server/daemon_config.hpp"
 
-#include "daemon_config_detail.hpp"
-
 #include "cli/arguments.hpp"
+#include "daemon_config_detail.hpp"
 
 #include <cctype>
 #include <fstream>
@@ -14,9 +13,9 @@
 
 namespace glyphastore::server {
 
-using daemon_config_detail::SettingMap;
 using daemon_config_detail::apply_layer;
 using daemon_config_detail::ascii_lower;
+using daemon_config_detail::config;
 using daemon_config_detail::default_getenv;
 using daemon_config_detail::deployment_profile_settings;
 using daemon_config_detail::dump_config;
@@ -24,13 +23,12 @@ using daemon_config_detail::help;
 using daemon_config_detail::ingest_setting;
 using daemon_config_detail::kOptionSpecs;
 using daemon_config_detail::materialize_from_settings;
+using daemon_config_detail::profile;
+using daemon_config_detail::SettingMap;
 using daemon_config_detail::settings_from_parsed;
 using daemon_config_detail::take_profile_name;
 using daemon_config_detail::trim;
 using daemon_config_detail::version;
-using daemon_config_detail::config;
-using daemon_config_detail::profile;
-
 
 auto daemon_option_specs() noexcept -> std::span<const cli::OptionSpec> {
     return kOptionSpecs;

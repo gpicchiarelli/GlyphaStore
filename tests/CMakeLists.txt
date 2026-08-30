@@ -262,6 +262,15 @@ if(BUILD_TESTING)
         glyphastore_enable_hardening(glyphastore_allocation_fault_tests)
         glyphastore_enable_ipo(glyphastore_allocation_fault_tests)
         set_target_properties(glyphastore_allocation_fault_tests PROPERTIES FOLDER "Quality")
+        if(GLYPHASTORE_ENABLE_CLANG_TIDY AND APPLE)
+            # clang-tidy 21 asks libc++ to resolve __builtin_operator_delete while this harness
+            # deliberately supplies every global delete overload. That combination is rejected as
+            # a non-usual deallocation function even though the same TU compiles and runs normally.
+            # Keep the executable in the build/test matrix; omit only clang-tidy on this test-only
+            # replacement-allocation target. Production sources remain covered by the fail-closed
+            # compile-database gate.
+            set_target_properties(glyphastore_allocation_fault_tests PROPERTIES CXX_CLANG_TIDY "")
+        endif()
         add_test(NAME glyphastore_allocation_fault_tests COMMAND glyphastore_allocation_fault_tests)
         set_tests_properties(glyphastore_allocation_fault_tests PROPERTIES
             TIMEOUT 180

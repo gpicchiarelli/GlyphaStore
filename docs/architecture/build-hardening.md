@@ -15,6 +15,17 @@ The `unix-strict` CI job does not infer protection from CMake cache checks. It i
 `readelf`. The job requires ISO rather than GNU language mode, optimization, warnings-as-errors,
 stack protection, fortification, PIE, `PT_GNU_RELRO`, and `BIND_NOW`/`DF_1_NOW` evidence.
 
+The static-analysis build runs the repository clang-tidy profile and the pinned clang-format
+version. A second pass derives the exact production source set from `compile_commands.json` and
+treats unchecked `optional` access, use-after-move, analyzer-confirmed dead stores, and mismatched
+declaration/definition parameter names as fail-closed diagnostics. The wider all-target bugprone,
+analyzer, performance, portability, and selected CERT families remain visible for triage; warnings
+known to be test-macro- or toolchain-sensitive are not silently presented as a zero-warning claim.
+On macOS only, the allocation-fault executable is excluded from clang-tidy because its deliberate
+global `operator new`/`operator delete` replacements conflict with clang-tidy 21's libc++ handling
+of `__builtin_operator_delete`. The target is still compiled and executed, and this exception does
+not reduce the production-source pass derived from the compile database.
+
 Primary references:
 
 - [CMake `CheckLinkerFlag`](https://cmake.org/cmake/help/latest/module/CheckLinkerFlag.html)

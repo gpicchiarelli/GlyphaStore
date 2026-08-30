@@ -1,6 +1,6 @@
 #include "glyphastore/persistence/compaction_intent.hpp"
-#include "glyphastore/core/little_endian.hpp"
 
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/persistence/compaction.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 
@@ -15,12 +15,12 @@ namespace {
 inline constexpr std::size_t kChecksumOffset = 56;
 inline constexpr std::size_t kChecksumBytes = 4;
 
-using le::put_u16;
-using le::put_u32;
-using le::put_u64;
 using le::get_u16;
 using le::get_u32;
 using le::get_u64;
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
 
 auto all_zero(const std::span<const std::byte> bytes) -> bool {
     return std::ranges::all_of(bytes, [](const std::byte value) { return value == std::byte{0}; });

@@ -27,6 +27,8 @@ jobs:
         run: cmake --preset unix-clang-tidy
       - name: Build with analysis
         run: cmake --build --preset unix-clang-tidy
+      - name: Fail closed on high-signal production diagnostics
+        run: python engineering/tools/run_clang_tidy_gate.py --build-dir build/unix-clang-tidy
       - name: Check formatting
         run: |
           find include src tests benchmarks fuzz -type f \( -name '*.cpp' -o -name '*.hpp' \) -print0 \

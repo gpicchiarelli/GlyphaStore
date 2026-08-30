@@ -1,5 +1,3 @@
-#include "glyphastore/persistence/runtime_catalog.hpp"
-
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/integer_math.hpp"
 #include "glyphastore/core/key_hash.hpp"
@@ -7,6 +5,7 @@
 #include "glyphastore/persistence/compaction.hpp"
 #include "glyphastore/persistence/durable_flush_coordinator.hpp"
 #include "glyphastore/persistence/resource_limits.hpp"
+#include "glyphastore/persistence/runtime_catalog.hpp"
 #include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "persistence/adaptive_batch_sizer.hpp"

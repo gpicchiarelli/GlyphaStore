@@ -274,28 +274,36 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 }
             }
             if (!io_result.error) {
-                const auto seal_started = std::chrono::steady_clock::now();
-                ScopeExit observe_seal{[&]() noexcept { seal_ns = steady_elapsed_ns(seal_started); }};
-                if (active_file->selected_commit().commit.state != PersistedSegmentState::sealed) {
-                    const auto sealed = active_file->seal();
-                    if (!sealed.committed()) {
-                        io_result = mutation_failure(
-                            sealed.outcome == SegmentCommitOutcome::indeterminate
-                                ? DurableMutationOutcome::indeterminate
-                                : DurableMutationOutcome::not_committed,
-                            sealed.error.value_or(Error{ErrorCode::io_error, "Segment seal failed"}));
-                        if (sealed.outcome == SegmentCommitOutcome::indeterminate) {
+                if (!active_file) {
+                    io_result = mutation_failure(
+                        DurableMutationOutcome::indeterminate,
+                        Error{ErrorCode::internal_error, "rotation has no active Segment handle"});
+                    exception_outcome = DurableMutationOutcome::indeterminate;
+                } else {
+                    auto& active = *active_file;
+                    const auto seal_started = std::chrono::steady_clock::now();
+                    ScopeExit observe_seal{[&]() noexcept { seal_ns = steady_elapsed_ns(seal_started); }};
+                    if (active.selected_commit().commit.state != PersistedSegmentState::sealed) {
+                        const auto sealed = active.seal();
+                        if (!sealed.committed()) {
+                            io_result = mutation_failure(
+                                sealed.outcome == SegmentCommitOutcome::indeterminate
+                                    ? DurableMutationOutcome::indeterminate
+                                    : DurableMutationOutcome::not_committed,
+                                sealed.error.value_or(Error{ErrorCode::io_error, "Segment seal failed"}));
+                            if (sealed.outcome == SegmentCommitOutcome::indeterminate) {
+                                exception_outcome = DurableMutationOutcome::indeterminate;
+                            }
+                        } else {
                             exception_outcome = DurableMutationOutcome::indeterminate;
                         }
                     } else {
+                        // Already sealed (e.g. partial prior rotation): later create/publish
+                        // failures must not demote to known-not-committed / OVERLOADED.
                         exception_outcome = DurableMutationOutcome::indeterminate;
                     }
-                } else {
-                    // Already sealed (e.g. partial prior rotation): later create/publish
-                    // failures must not demote to known-not-committed / OVERLOADED.
-                    exception_outcome = DurableMutationOutcome::indeterminate;
+                    sealed_selected = active.selected_commit();
                 }
-                sealed_selected = active_file->selected_commit();
             }
             if (!io_result.error) {
                 auto sealed_reader =
@@ -335,24 +343,31 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                 }
             }
             if (!io_result.error) {
-                replacement_selected = created.file->selected_commit();
-                auto replacement_reader = DurableSegmentFile::open(directory_, replacement_identity,
-                                                                   SegmentFileOpenMode::read_only);
-                if (!replacement_reader || replacement_reader->selected_commit() != replacement_selected) {
-                    // Durable create already succeeded — reader-open miss is sticky.
+                if (!created.file) {
                     io_result = mutation_failure(
-                        exception_outcome,
-                        replacement_reader
-                            ? Error{ErrorCode::corrupted_data,
-                                    "new active Segment changed before generation-pin preparation"}
-                            : replacement_reader.error());
+                        DurableMutationOutcome::indeterminate,
+                        Error{ErrorCode::internal_error, "durable replacement creation has no file handle"});
                 } else {
-                    replacement_generation =
-                        std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
-                            .identity = replacement_identity,
-                            .selected = replacement_selected,
-                            .file = std::move(*replacement_reader),
-                        });
+                    replacement_selected = created.file->selected_commit();
+                    auto replacement_reader = DurableSegmentFile::open(directory_, replacement_identity,
+                                                                       SegmentFileOpenMode::read_only);
+                    if (!replacement_reader ||
+                        replacement_reader->selected_commit() != replacement_selected) {
+                        // Durable create already succeeded — reader-open miss is sticky.
+                        io_result = mutation_failure(
+                            exception_outcome,
+                            replacement_reader
+                                ? Error{ErrorCode::corrupted_data,
+                                        "new active Segment changed before generation-pin preparation"}
+                                : replacement_reader.error());
+                    } else {
+                        replacement_generation =
+                            std::make_shared<const RuntimeSegmentGeneration>(RuntimeSegmentGeneration{
+                                .identity = replacement_identity,
+                                .selected = replacement_selected,
+                                .file = std::move(*replacement_reader),
+                            });
+                    }
                 }
             }
             if (!io_result.error) {
@@ -415,7 +430,7 @@ auto DurableRuntimeCatalog::rotate_active(RuntimeWorker& worker, std::unique_loc
                          });
     if (!healthy() || current_position == manifest_.segments.end() || *current_position != old_entry ||
         worker.active_segment != old_entry.segment_id || generation_pins_[old_index] != old_pin ||
-        worker.cached_file || !worker.mutation_io_active) {
+        worker.cached_file || !worker.mutation_io_active || !created.file) {
         healthy_.store(false, std::memory_order_release);
         clear_reservation();
         return mutation_failure(

@@ -266,6 +266,55 @@ gates:
   riapertura:
   - Merging suite boundaries without documentation
   narrative: Suites are distinct in tree; permanent tagged drops open.
+- id: GATE-DOCUMENTATION-INTEGRITY
+  titolo: Tracked documentation has valid repository-local references
+  sezione: verification
+  livello_rilascio: prototype
+  requisiti:
+  - GS-CORE-DOCS-001
+  prove:
+  - engineering/tools/validate_documentation.py
+  - scripts/tests/test_documentation_validation.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  evidenze:
+  - workflow: assurance.yml
+  - workflow: docs-links.yml
+  stato: IMPLEMENTATA
+  rischio_residuo: External URL availability and fragment validity remain scheduled Lychee checks;
+    the new deterministic gate covers repository-local targets on every assurance run
+  riapertura:
+  - Removing all-Markdown local-link validation without replacement
+  - Excluding an authoritative documentation tree from validation
+  narrative: The repository-local validator covers every tracked Markdown file, while Lychee retains
+    the network-dependent user-documentation check.
+- id: GATE-STATIC-ANALYSIS-HIGH-SIGNAL
+  titolo: Production sources pass fail-closed high-signal static analysis
+  sezione: verification
+  livello_rilascio: prototype
+  requisiti:
+  - GS-CORE-BUILD-001
+  prove:
+  - engineering/tools/run_clang_tidy_gate.py
+  - scripts/tests/test_clang_tidy_gate.py
+  - scripts/tests/test_ci_workflow.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  evidenze:
+  - workflow: static-analysis.yml
+  - path: engineering/evidence/quality-hardening-local-2026-08-30.md
+  stato: IMPLEMENTATA
+  rischio_residuo: The all-target profile intentionally remains diagnostic for lower-confidence,
+    test-macro-sensitive, and toolchain-sensitive findings; CI evidence for this new fail-closed pass
+    is not yet retained
+  riapertura:
+  - Removing any documented high-signal check without an accepted replacement
+  - Running the fail-closed pass over fewer production sources than the compile database contains
+  narrative: The gate derives production translation units from compile_commands.json and rejects
+    unchecked optional access, use-after-move, analyzer dead stores, and declaration/definition
+    parameter-name drift without claiming that the wider diagnostic profile is warning-free.
 - id: GATE-FAULT-INJECTION
   titolo: Fault injection for allocation filesystem clock socket thread failures
   sezione: verification

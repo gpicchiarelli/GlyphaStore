@@ -1,7 +1,7 @@
 #include "glyphastore/segment/record.hpp"
-#include "glyphastore/core/little_endian.hpp"
 
 #include "glyphastore/core/checked_math.hpp"
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 
 #include <algorithm>
@@ -11,12 +11,12 @@
 namespace glyphastore {
 namespace {
 
-using le::put_u16;
-using le::put_u32;
-using le::put_u64;
 using le::get_u16;
 using le::get_u32;
 using le::get_u64;
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
 
 [[nodiscard]] auto validate_record_input(const RecordInput& input) -> Status {
     const auto opcode_raw = static_cast<std::uint16_t>(input.opcode);

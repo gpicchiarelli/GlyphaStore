@@ -736,10 +736,10 @@ auto Reactor::run_once(const int timeout_ms) -> Status {
         // discard decided bytes left after a partial writable flush (EAGAIN).
         if (auto* current = connection(token); current != nullptr && has_flag(event.flags, IoFlags::hangup)) {
             current->peer_read_closed = true;
-            if (reactor_detail::connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                      current->request_in_flight, has_pending_output(*current),
-                                      current->input_offset < current->input.size()) ==
-                ConnectionAction::close_now) {
+            if (reactor_detail::connection_action_for(
+                    current->peer_read_closed, current->close_after_flush, current->request_in_flight,
+                    has_pending_output(*current),
+                    current->input_offset < current->input.size()) == ConnectionAction::close_now) {
                 close_connection(token);
             } else if (auto drained = write_ready(token); !drained) {
                 close_connection(token);

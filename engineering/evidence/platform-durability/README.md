@@ -14,5 +14,5 @@ filesystem, mount options, and guest/host boundary.
 | FreeBSD / ZFS | [`freebsd-zfs/`](freebsd-zfs/) | Architectural target; certification open |
 | OpenBSD / FFS | [`openbsd-ffs/`](openbsd-ffs/) | Portability signal; FFS certification open |
 
-Normative matrix: [`docs/architecture/platform-durability-evidence.md`](../../docs/architecture/platform-durability-evidence.md).
+Normative matrix: [`docs/architecture/platform-durability-evidence.md`](../../../docs/architecture/platform-durability-evidence.md).
 Harness rehearsal (`scripts/run-e3-block-reset.sh`) always emits `e3_certified=no`.

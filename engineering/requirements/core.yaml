@@ -62,13 +62,14 @@ requirements:
   - HAZ-020
   - HAZ-027
 - id: GS-CORE-BUILD-001
-  titolo: CMake component split with dependency matrix and structure debt gates
+  titolo: CMake component split with dependency, structure, and static-analysis gates
   categoria: core
   criticita: media
   stato: implementato
   descrizione: The build uses add_subdirectory for src/tools/tests/benchmarks/fuzz, keeps installed
-    GlyphaStore::core/server/client aliases, and enforces a documented dependency matrix plus
-    size/TODO waiver CI.
+    GlyphaStore::core/server/client aliases, and enforces a documented dependency matrix,
+    size/TODO waiver CI, pinned formatting, and a fail-closed high-signal static-analysis pass over
+    the production sources present in the compile database.
   autorita:
   - docs/assurance/engineering-baseline.md
   - engineering/build/dependency-matrix.yaml
@@ -83,17 +84,55 @@ requirements:
   - include/glyphastore/core/little_endian.hpp
   - engineering/tools/validate_structure_debt.py
   - engineering/tools/validate_cmake_deps.py
+  - engineering/tools/run_clang_tidy_gate.py
+  - .github/workflows/static-analysis.yml
   prove:
   - engineering/tools/validate_cmake_deps.py
   - engineering/tools/validate_structure_debt.py
+  - scripts/tests/test_clang_tidy_gate.py
+  - scripts/tests/test_ci_workflow.py
   piattaforme:
   - linux-x86_64
   - macos-arm64
   claim_massimo: architectural-prototype
   evidenze:
   - workflow: assurance.yml
+  - workflow: static-analysis.yml
+  - path: engineering/evidence/quality-hardening-local-2026-08-30.md
   rischio_residuo:
   - Further per-component OBJECT library splits remain optional; the 1600-line structure gate is green
     with empty active size waivers (WAV-001/002/003 revoked for audit trail only)
+  - The broader all-target clang-tidy profile remains diagnostic because some findings are
+    toolchain- or test-macro-sensitive; only the documented high-signal production checks are
+    fail-closed
   gates:
   - GATE-CMAKE-INSTALL
+  - GATE-STATIC-ANALYSIS-HIGH-SIGNAL
+- id: GS-CORE-DOCS-001
+  titolo: Tracked Markdown keeps resolvable repository-local references
+  categoria: core
+  criticita: media
+  stato: implementato
+  descrizione: Every tracked Markdown document is valid UTF-8 and every repository-local inline,
+    image, or reference-style link stays inside the repository, resolves with exact path case, and
+    names an existing target.
+  autorita:
+  - docs/README.md
+  - docs/development/test-strategy.md
+  implementazione:
+  - engineering/tools/validate_documentation.py
+  - .github/workflows/assurance.yml
+  prove:
+  - scripts/tests/test_documentation_validation.py
+  piattaforme:
+  - linux-x86_64
+  - macos-arm64
+  claim_massimo: architectural-prototype
+  evidenze:
+  - workflow: assurance.yml
+  - path: engineering/evidence/quality-hardening-local-2026-08-30.md
+  rischio_residuo:
+  - External URL availability and Markdown fragment semantics remain under the separate scheduled
+    Lychee workflow; historical evidence may intentionally retain expired external references
+  gates:
+  - GATE-DOCUMENTATION-INTEGRITY

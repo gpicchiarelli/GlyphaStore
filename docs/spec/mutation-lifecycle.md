@@ -1,7 +1,7 @@
 Status: descriptive of as-implemented paired Writer mutation lifecycle (behavior-neutral refactor baseline)
 Applies to: `ShardPairRuntime::run` and extracted Writer TUs (`writer_loop` / `writer_sync` / `writer_async` / `sync_lane`)
 Owner: store/concurrency maintainers
-Last reviewed: 2026-08-29
+Last reviewed: 2026-08-30
 Requirement: `GS-CONCUR-PAIR-001`
 
 # Mutation lifecycle (as implemented)
@@ -90,6 +90,11 @@ prevents either repeated sync admissions or one large caller batch from monopoli
 Both payload and completion rings share the same bounded lane capacity. Capacity exhaustion is a
 known-not-committed overload before Store entry.
 
+A synchronous `SyncMutation` node remains caller-owned and stack-backed. The Writer writes its
+status and derives every batch/fail-closed decision before publishing `done` with release ordering.
+That publication ends the Writer's borrow: it must not dereference the node again. The caller waits
+with acquire ordering and may destroy the node immediately after observing completion.
+
 ## 3. Linearization points
 
 | Point | When | Effect |
@@ -112,6 +117,12 @@ Sticky durable (committed+error or indeterminate):
 put_durable → try_drain_durable_snapshot → publish_fail_closed
   → ack_after_published_visibility? → done
 ```
+
+Terminal shutdown may discard an unfinished `PairReadMerge` only after mutation admission is
+stopped, every dedicated Writer is joined, and the complete lane set has no counted Reader lease.
+The merge is Writer-private maintenance state and is not published authority; its committed
+post-cut mutations already live in the current published generation. Discarding it releases the
+slot-pool merge-cut pin before terminal generation reclaim and does not change ACK or visibility.
 
 ## 4. Completion policy (characterization)
 

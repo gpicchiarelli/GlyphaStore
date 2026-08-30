@@ -118,8 +118,8 @@ struct SegmentCopyTotals {
 
     // Checkpoint/fault hooks are not thread-safe across parallel copy workers; serialize when armed.
     const bool hooks_armed = hooks.before != nullptr || hooks.after != nullptr ||
-                             hooks.file_io.read_some_at != nullptr || hooks.file_io.write_some_at != nullptr ||
-                             hooks.file_io.sync_file != nullptr;
+                             hooks.file_io.read_some_at != nullptr ||
+                             hooks.file_io.write_some_at != nullptr || hooks.file_io.sync_file != nullptr;
     const auto workers = hooks_armed ? std::size_t{1}
                                      : std::max<std::size_t>(1, std::min({max_parallelism, names.size(),
                                                                           kBackupSegmentCopyParallelism}));
@@ -159,8 +159,8 @@ struct SegmentCopyTotals {
             if (index >= names.size()) {
                 return;
             }
-            auto copied = copy_named_file(source_directory, destination_directory, names[index].c_str(),
-                                          hooks.file_io);
+            auto copied =
+                copy_named_file(source_directory, destination_directory, names[index].c_str(), hooks.file_io);
             if (!copied) {
                 failed.store(true, std::memory_order_relaxed);
                 const std::lock_guard lock{error_mutex};

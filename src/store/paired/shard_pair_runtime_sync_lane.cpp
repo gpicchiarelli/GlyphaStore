@@ -1,5 +1,3 @@
-#include "glyphastore/store/paired/shard_pair_runtime.hpp"
-
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/store/paired/completion_policy.hpp"
@@ -11,6 +9,7 @@
 #include "glyphastore/store/paired/mutation_state.hpp"
 #include "glyphastore/store/paired/publication_coordinator.hpp"
 #include "glyphastore/store/paired/shard_combining_executor.hpp"
+#include "glyphastore/store/paired/shard_pair_runtime.hpp"
 #include "glyphastore/store/paired/volatile_sync_chunk.hpp"
 #include "store/paired/shard_pair_runtime_impl.hpp"
 #include "store/store_internal.hpp"
@@ -64,8 +63,10 @@ void ShardPairRuntime::combiner_housekeeping(const std::size_t shard,
         if (!PairReadGeneration::merge_ready(*lane.merge.read_merge)) {
             const auto advance_budget = PairReadGeneration::merge_advance_budget(
                 *lane.merge.read_merge, publication_records,
-                runtime_detail::merge_minimum_advance_slots(config_.merge_quantum_slots, publication_records));
-            auto advanced = PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, advance_budget);
+                runtime_detail::merge_minimum_advance_slots(config_.merge_quantum_slots,
+                                                            publication_records));
+            auto advanced =
+                PairReadGeneration::advance_incremental_merge(*lane.merge.read_merge, advance_budget);
             if (!advanced) {
                 lane.merge.read_merge_failures.fetch_add(1U, std::memory_order_relaxed);
                 lane.merge.read_merge.reset();
@@ -200,15 +201,15 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     combiner_housekeeping(shard, chunk_size);
                     if (!healthy_.load(std::memory_order_acquire)) {
                         for (std::size_t index = 0; index < chunk_size; ++index) {
-                            chunk[index]->status = Status{
-                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            chunk[index]->status =
+                                Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             chunk[index]->done.store(true, std::memory_order_release);
                             chunk[index]->done.notify_one();
                         }
                         while (rev != nullptr) {
                             auto* const next = rev->next;
-                            rev->status = Status{
-                                fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
+                            rev->status =
+                                Status{fail(ErrorCode::resource_exhausted, "paired runtime is fail-closed")};
                             rev->done.store(true, std::memory_order_release);
                             rev->done.notify_one();
                             rev = next;
@@ -218,8 +219,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     auto generation_admission = decide_generation_admission(
                         lane.generation.retired_debt(), ShardPairRuntime::kMaximumRetiredReadGenerations,
                         PairReadGeneration::can_publish_incremental(*lane.generation.writer_generation,
-                                                                    lane.merge.read_merge.get(),
-                                                                    chunk_size));
+                                                                    lane.merge.read_merge.get(), chunk_size));
                     generation_admission = runtime_detail::wait_generation_admission(
                         generation_admission, [&] { combiner_housekeeping(shard, chunk_size); },
                         [&] {
@@ -233,8 +233,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     if (generation_admission != GenerationAdmissionDecision::admitted) {
                         lane.generation.generation_admission_backpressure_total.fetch_add(
                             chunk_size, std::memory_order_relaxed);
-                        if (generation_admission ==
-                            GenerationAdmissionDecision::incremental_merge_required) {
+                        if (generation_admission == GenerationAdmissionDecision::incremental_merge_required) {
                             lane.merge.read_merge_backpressure.fetch_add(1U, std::memory_order_relaxed);
                         }
                         for (std::size_t index = 0; index < chunk_size; ++index) {
@@ -265,8 +264,8 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                 } catch (const std::bad_alloc&) {
                     publish_fail_closed();
                     for (std::size_t index = 0; index < chunk_size; ++index) {
-                        chunk[index]->status = Status{
-                            fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
+                        chunk[index]->status =
+                            Status{fail(ErrorCode::resource_exhausted, "paired mutation allocation failed")};
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
@@ -439,9 +438,11 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                : Status{fail(ErrorCode::unavailable,
                                              "committed erase still visible after drain")};
                 };
-                if (!result.committed() || result.error) {
-                    auto error =
-                        result.error ? *result.error : Error{ErrorCode::io_error, "durable mutation failed"};
+                if (!result.committed() || result.error || !result.sequence) {
+                    auto error = result.error         ? *result.error
+                                 : result.committed() ? Error{ErrorCode::internal_error,
+                                                              "committed durable mutation has no sequence"}
+                                                      : Error{ErrorCode::io_error, "durable mutation failed"};
                     if (result.committed() || result.outcome == DurableMutationOutcome::indeterminate) {
                         error.code = ErrorCode::unavailable;
                         generation_published = drain_durable_snapshot();
@@ -459,7 +460,7 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                     shadow_resolve_status();
                 } else {
                     ReadMutation publication{.key = key,
-                                             .record = RecordRef{.sequence = *result.sequence},
+                                             .record = RecordRef{.sequence = result.sequence.value()},
                                              .opcode = node->kind == MutationKind::put ? Opcode::put
                                                                                        : Opcode::erase};
                     if (node->kind == MutationKind::put) {
@@ -480,18 +481,18 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                             if (lane.generation.uses_slot_pool()) {
                                 slot_reservation = try_reserve_publication_slot(lane.generation);
                                 if (!slot_reservation) {
-                                    status = Status{fail(
-                                        ErrorCode::resource_exhausted,
-                                        generation_admission_message(
-                                            GenerationAdmissionDecision::reader_quiescence_required))};
+                                    status = Status{
+                                        fail(ErrorCode::resource_exhausted,
+                                             generation_admission_message(
+                                                 GenerationAdmissionDecision::reader_quiescence_required))};
                                     shadow_resolve_status();
                                 }
                             }
                             if (!status_resolved) {
                                 static_cast<void>(life.mark_publication_staged());
-                                if (!publish_incremental_read_mutations(
-                                        publication_ctx, std::span{&publication, 1}, slot_reservation,
-                                        nullptr)) {
+                                if (!publish_incremental_read_mutations(publication_ctx,
+                                                                        std::span{&publication, 1},
+                                                                        slot_reservation, nullptr)) {
                                     generation_published = drain_durable_snapshot();
                                     shadow_mark_published(generation_published);
                                     publish_fail_closed();
@@ -519,10 +520,10 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                         if (lane.generation.uses_slot_pool()) {
                             slot_reservation = try_reserve_publication_slot(lane.generation);
                             if (!slot_reservation) {
-                                status = Status{fail(
-                                    ErrorCode::resource_exhausted,
-                                    generation_admission_message(
-                                        GenerationAdmissionDecision::reader_quiescence_required))};
+                                status = Status{
+                                    fail(ErrorCode::resource_exhausted,
+                                         generation_admission_message(
+                                             GenerationAdmissionDecision::reader_quiescence_required))};
                                 shadow_resolve_status();
                             }
                         }
@@ -533,9 +534,10 @@ void ShardPairRuntime::process_sync_lane(const std::size_t shard) noexcept {
                                 generation_published = drain_durable_snapshot();
                                 shadow_mark_published(generation_published);
                                 publish_fail_closed();
-                                status = generation_published
-                                             ? ack_after_published_visibility()
-                                             : Status{fail(ErrorCode::unavailable, "read publication failed")};
+                                status =
+                                    generation_published
+                                        ? ack_after_published_visibility()
+                                        : Status{fail(ErrorCode::unavailable, "read publication failed")};
                                 shadow_resolve_status();
                             } else {
                                 store_generation_memory_stats(

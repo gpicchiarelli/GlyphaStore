@@ -202,6 +202,10 @@ auto DurableRuntimeCatalog::compact_worker(const std::size_t worker_index, const
             return failure(built.error.value_or(
                 Error{ErrorCode::io_error, "durable compaction replacement build failed"}));
         }
+        if (!built.prepared) {
+            return failure(
+                Error{ErrorCode::internal_error, "successful compaction build has no prepared state"});
+        }
         recovery_required = true;
         auto prepared = std::move(*built.prepared);
         stats = prepared.stats;

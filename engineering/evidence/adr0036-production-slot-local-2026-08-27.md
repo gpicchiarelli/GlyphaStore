@@ -1,6 +1,7 @@
 # ADR 0036 Wave 1 production slot pool — local evidence
 
 - Date: 2026-08-27
+- Updated: 2026-08-30 (V7 production-flag litmus and terminal merge-pin shutdown fix)
 - Label: `local`
 - Host: developer workstation (macOS)
 - Status: Wave 1 opt-in path only; ADR remains **proposed**
@@ -15,11 +16,16 @@
 - Dedicated Writer async batch path reserves before Store and publishes via the pool
 - Unit: V1 reincarnation (≥10k), V6 fail-closed, V9 exhaustion, token width
 - Paired Store: V5 shutdown + V10 put_batch FIFO under the flag
+- V7: embedded combiner and dedicated Writer publish incremental merge/post-cut state while a
+  counted lease or daemon-style Reader frontier holds slot pressure
+- Terminal close: after admission stop, Writer join, and Reader-lease validation, unfinished
+  Writer-only merge state is discarded so its cut pin cannot block final slot reclaim
+- Focused V7 rows green locally in Debug, Release, ASan+UBSan, and TSan
 
 ## Still open
 
 - Durable-group Writer publish sites under the flag (partial; sync/async incremental dual-pathed)
-- V7/V8 production-flag integration soaks (merge pin + durable refresh APIs exist; long campaigns open)
+- V7 long/multi-OS campaigns and V8 production-flag durable refresh integration soaks
 - V11 / V12 worker-affine performance
 - Multi-OS CI matrix / soak under the flag
 - ADR acceptance
@@ -27,7 +33,12 @@
 ## Commands (local)
 
 ```bash
-cmake --build build -j
-ctest -R 'ADR 0036|generation_slot|paired Store put_batch' --output-on-failure
-python3 engineering/tools/validate_assurance.py --write-generated
+cmake --build --preset macos-debug --target glyphastore_tests
+build/macos-debug/glyphastore_tests 'ADR 0036 production slot V7'
+cmake --build --preset macos-release --target glyphastore_tests
+build/macos-release/glyphastore_tests 'ADR 0036 production slot V7'
+cmake --build --preset macos-asan --target glyphastore_tests
+build/macos-asan/glyphastore_tests 'ADR 0036 production slot V7'
+cmake --build --preset macos-tsan --target glyphastore_tests
+build/macos-tsan/glyphastore_tests 'ADR 0036 production slot V7'
 ```

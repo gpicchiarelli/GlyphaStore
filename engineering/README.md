@@ -21,6 +21,8 @@ boxes as production readiness.
 | `performance/` | Hosted vs hardware budgets + soak/overload linkage |
 | `claims/` / `evidence/` | Release claims and retained evidence pointers |
 | `tools/validate_assurance.py` | Validator + Markdown generator |
+| `tools/validate_documentation.py` | All tracked Markdown: UTF-8 and repository-local link integrity |
+| `tools/run_clang_tidy_gate.py` | Production compile database: fail-closed high-signal diagnostics |
 | `tools/validate_cmake_deps.py` | Phase C CMake layout + include rules |
 | `tools/validate_structure_debt.py` | Size/TODO thresholds with waivers |
 | `tools/validate_actions_pins.py` | SHA-pinned Actions |
@@ -39,6 +41,8 @@ boxes as production readiness.
 python3 -m pip install PyYAML jsonschema
 python3 engineering/tools/validate_assurance.py
 python3 engineering/tools/validate_assurance.py --write-generated
+python3 engineering/tools/validate_documentation.py
+python3 engineering/tools/run_clang_tidy_gate.py --build-dir build/unix-clang-tidy
 python3 engineering/tools/validate_cmake_deps.py
 python3 engineering/tools/validate_structure_debt.py
 python3 engineering/tools/validate_actions_pins.py

@@ -1,8 +1,7 @@
-#include "glyphastore/server/reactor.hpp"
-
 #include "glyphastore/core/fault_injection.hpp"
 #include "glyphastore/core/hot_path_phases.hpp"
 #include "glyphastore/server/connection_lifecycle.hpp"
+#include "glyphastore/server/reactor.hpp"
 #include "server/reactor_detail.hpp"
 #include "system_error.hpp"
 
@@ -40,10 +39,10 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
             }
             if (received->kind == TlsIoKind::closed) {
                 current->peer_read_closed = true;
-                if (reactor_detail::connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                          current->request_in_flight, has_pending_output(*current),
-                                          current->input_offset < current->input.size()) ==
-                    ConnectionAction::close_now) {
+                if (reactor_detail::connection_action_for(
+                        current->peer_read_closed, current->close_after_flush, current->request_in_flight,
+                        has_pending_output(*current),
+                        current->input_offset < current->input.size()) == ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
                 }
@@ -56,10 +55,10 @@ auto Reactor::read_ready(const ConnectionToken token) -> Status {
                 received_size = static_cast<std::size_t>(received);
             } else if (received == 0) {
                 current->peer_read_closed = true;
-                if (reactor_detail::connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                          current->request_in_flight, has_pending_output(*current),
-                                          current->input_offset < current->input.size()) ==
-                    ConnectionAction::close_now) {
+                if (reactor_detail::connection_action_for(
+                        current->peer_read_closed, current->close_after_flush, current->request_in_flight,
+                        has_pending_output(*current),
+                        current->input_offset < current->input.size()) == ConnectionAction::close_now) {
                     close_connection(token);
                     return {};
                 }
@@ -397,8 +396,8 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
 
         touch_activity(*current, std::chrono::steady_clock::now());
         if (reactor_detail::connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                  current->request_in_flight, has_pending_output(*current),
-                                  current->input_offset < current->input.size()) ==
+                                                  current->request_in_flight, has_pending_output(*current),
+                                                  current->input_offset < current->input.size()) ==
             ConnectionAction::close_now) {
             close_connection(token);
             return {};
@@ -431,8 +430,8 @@ auto Reactor::write_ready(const ConnectionToken token) -> Status {
         }
         if (current->peer_read_closed &&
             reactor_detail::connection_action_for(current->peer_read_closed, current->close_after_flush,
-                                  current->request_in_flight, has_pending_output(*current),
-                                  current->input_offset < current->input.size()) ==
+                                                  current->request_in_flight, has_pending_output(*current),
+                                                  current->input_offset < current->input.size()) ==
                 ConnectionAction::close_now) {
             close_connection(token);
             return {};

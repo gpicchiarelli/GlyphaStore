@@ -20,7 +20,7 @@ void ConnectionHandoffMesh::stop_accepting() noexcept {
     accepting_.store(false, std::memory_order_release);
 }
 
-auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, ConnectionHandoff&& connection)
+auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, ConnectionHandoff& connection)
     -> bool {
     if (!accepting_.load(std::memory_order_acquire)) {
         return false;
@@ -34,6 +34,11 @@ auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, Conne
         static_cast<void>(endpoint.wakeup->notify());
     }
     return true;
+}
+
+auto ConnectionHandoffMesh::try_handoff(const std::size_t target_executor, ConnectionHandoff&& connection)
+    -> bool {
+    return try_handoff(target_executor, connection);
 }
 
 auto ConnectionHandoffMesh::try_pop(const std::size_t executor) -> std::optional<ConnectionHandoff> {

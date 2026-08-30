@@ -901,4 +901,3 @@ GLYPHA_TEST("server shutdown drains in-flight durable response before closing co
     GLYPHA_REQUIRE(joined->has_value());
     static_cast<void>(::close(socket));
 }
-

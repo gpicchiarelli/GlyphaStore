@@ -434,7 +434,6 @@ struct PairedReactorPrototype::Impl final {
                 if (submitted == PrototypeSubmitStatus::queue_full) {
                     current->mutation_blocked = true;
                     ++mutation_backpressure;
-                    consume = false;
                     return update_interest(token);
                 }
                 response.status = submitted == PrototypeSubmitStatus::stopped

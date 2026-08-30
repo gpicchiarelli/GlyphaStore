@@ -197,7 +197,7 @@ struct WorkerConnection {
 };
 
 [[nodiscard]] inline auto send_frame(WorkerConnection& connection, const std::span<const std::byte> frame,
-                              const Clock::time_point deadline)
+                                     const Clock::time_point deadline)
     -> std::variant<std::size_t, ExchangeFailure> {
     std::size_t sent{};
     while (sent < frame.size()) {
@@ -249,7 +249,7 @@ struct WorkerConnection {
 }
 
 [[nodiscard]] inline auto receive_exact(WorkerConnection& connection, const std::span<std::byte> output,
-                                 const Clock::time_point deadline) -> Status {
+                                        const Clock::time_point deadline) -> Status {
     std::size_t received{};
     while (received < output.size()) {
         if (connection.tls) {
@@ -297,8 +297,8 @@ struct WorkerConnection {
 }
 
 [[nodiscard]] inline auto receive_response(WorkerConnection& connection, const ClientConfig& config,
-                                    const Clock::time_point deadline, const std::size_t request_bytes_sent)
-    -> ExchangeResult {
+                                           const Clock::time_point deadline,
+                                           const std::size_t request_bytes_sent) -> ExchangeResult {
     std::array<std::byte, sizeof(std::uint32_t)> size_bytes{};
     if (auto received = receive_exact(connection, size_bytes, deadline); !received) {
         return ExchangeFailure{received.error(), request_bytes_sent};
@@ -329,7 +329,8 @@ struct WorkerConnection {
 }
 
 [[nodiscard]] inline auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
-                            const ClientConfig& config, const Clock::time_point deadline) -> ExchangeResult {
+                                   const ClientConfig& config, const Clock::time_point deadline)
+    -> ExchangeResult {
     auto sent = send_frame(connection, request, deadline);
     if (const auto* failure = std::get_if<ExchangeFailure>(&sent)) {
         return *failure;
@@ -339,7 +340,7 @@ struct WorkerConnection {
 }
 
 [[nodiscard]] inline auto exchange(WorkerConnection& connection, const std::span<const std::byte> request,
-                            const ClientConfig& config) -> ExchangeResult {
+                                   const ClientConfig& config) -> ExchangeResult {
     const auto deadline = Clock::now() + std::chrono::milliseconds{config.request_timeout_ms};
     return exchange(connection, request, config, deadline);
 }
@@ -461,8 +462,8 @@ enrich_error(Error error, const std::string_view operation, const std::optional<
 }
 
 [[nodiscard]] inline auto receive_buffered_response(WorkerConnection& connection, const ClientConfig& config,
-                                             const Clock::time_point deadline,
-                                             const std::size_t request_bytes_sent) -> ExchangeResult {
+                                                    const Clock::time_point deadline,
+                                                    const std::size_t request_bytes_sent) -> ExchangeResult {
     for (;;) {
         const auto available = connection.input.size() - connection.input_offset;
         if (available >= sizeof(std::uint32_t)) {
@@ -554,6 +555,5 @@ struct Metadata {
     std::uint64_t routing_epoch{};
     WorkerRoutingState routing{};
 };
-
 
 } // namespace glyphastore::client::detail

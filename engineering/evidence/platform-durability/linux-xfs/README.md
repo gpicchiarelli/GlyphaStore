@@ -16,5 +16,5 @@ block-reset *rehearsal* harnesses does **not** populate or certify this row.
 | `e3-campaign/` | Abrupt reset / power-cut campaign (pinned hardware or named guest/host boundary) | empty |
 | `e4-release/` | Repeated release campaign with checksummed provenance | empty |
 
-See [platform durability evidence matrix](../../../docs/architecture/platform-durability-evidence.md)
+See [platform durability evidence matrix](../../../../docs/architecture/platform-durability-evidence.md)
 and `GS-PERSIST-FAULT-001`. Do not invent certification claims.

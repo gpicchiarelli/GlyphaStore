@@ -10,8 +10,7 @@ auto PairReadGeneration::publish_incremental_direct(const PairReadGeneration& pr
                                                     GenerationDirectStorage& storage)
     -> Result<const PairReadGeneration*> {
     const PairReadGeneration* direct_result{};
-    auto built =
-        publish_incremental_construct(previous, {}, mutations, nullptr, &storage, &direct_result);
+    auto built = publish_incremental_construct(previous, {}, mutations, nullptr, &storage, &direct_result);
     if (!built) {
         return unexpected(std::move(built.error()));
     }

@@ -1,5 +1,4 @@
 #include "daemon_config_detail.hpp"
-
 #include "glyphastore/server/authz.hpp"
 #include "glyphastore/server/tls.hpp"
 
@@ -9,9 +8,8 @@
 
 namespace glyphastore::server::daemon_config_detail {
 
-auto materialize_from_settings(SettingMap settings, const bool show_help,
-                                             const bool show_version, std::string deployment_profile)
-    -> Result<DaemonOptions> {
+auto materialize_from_settings(SettingMap settings, const bool show_help, const bool show_version,
+                               std::string deployment_profile) -> Result<DaemonOptions> {
     std::vector<std::string> storage;
     storage.reserve(settings.size() * 2U + 1U);
     storage.emplace_back("glyphastored");
@@ -583,6 +581,5 @@ auto materialize_from_settings(SettingMap settings, const bool show_help,
     }
     return options;
 }
-
 
 } // namespace glyphastore::server::daemon_config_detail

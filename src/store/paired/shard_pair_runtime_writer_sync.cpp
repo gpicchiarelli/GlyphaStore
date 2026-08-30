@@ -515,7 +515,22 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                             chunk_succeeded = true;
                         }
                     }
+                    bool all_failed_indeterminate = false;
+                    if (chunk_failed && !chunk_succeeded) {
+                        all_failed_indeterminate = !healthy_.load(std::memory_order_acquire);
+                        if (!all_failed_indeterminate) {
+                            for (std::size_t index = 0; index < chunk_size; ++index) {
+                                if (!chunk[index]->status &&
+                                    chunk[index]->status.error().code == ErrorCode::unavailable) {
+                                    all_failed_indeterminate = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     for (std::size_t index = 0; index < chunk_size; ++index) {
+                        // Completion releases the caller: do not dereference its stack-backed node
+                        // after this store. Derive every chunk decision above the notification.
                         chunk[index]->done.store(true, std::memory_order_release);
                         chunk[index]->done.notify_one();
                     }
@@ -523,22 +538,10 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                     // already-armed fail-closed. Pure known-not-committed all-failed
                     // (rotation, compact gate, admission) must leave the pair healthy so
                     // callers can retry. Mixed success/failure stays non-sticky.
-                    if (chunk_failed && !chunk_succeeded) {
-                        bool indeterminate = !healthy_.load(std::memory_order_acquire);
-                        if (!indeterminate) {
-                            for (std::size_t index = 0; index < chunk_size; ++index) {
-                                if (!chunk[index]->status &&
-                                    chunk[index]->status.error().code == ErrorCode::unavailable) {
-                                    indeterminate = true;
-                                    break;
-                                }
-                            }
-                        }
-                        if (indeterminate) {
-                            publish_fail_closed();
-                            reject_remaining_fail_closed(rev);
-                            break;
-                        }
+                    if (all_failed_indeterminate) {
+                        publish_fail_closed();
+                        reject_remaining_fail_closed(rev);
+                        break;
                     }
                     if (!healthy_.load(std::memory_order_acquire)) {
                         reject_remaining_fail_closed(rev);
@@ -688,9 +691,12 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                                    : Status{fail(ErrorCode::unavailable,
                                                  "committed erase still visible after drain")};
                     };
-                    if (!result.committed() || result.error) {
+                    if (!result.committed() || result.error || !result.sequence) {
                         auto error = result.error ? *result.error
-                                                  : Error{ErrorCode::io_error, "durable mutation failed"};
+                                     : result.committed()
+                                         ? Error{ErrorCode::internal_error,
+                                                 "committed durable mutation has no sequence"}
+                                         : Error{ErrorCode::io_error, "durable mutation failed"};
                         if (result.committed() || result.outcome == DurableMutationOutcome::indeterminate) {
                             error.code = ErrorCode::unavailable;
                             generation_published = drain_durable_snapshot();
@@ -708,7 +714,7 @@ auto ShardPairRuntime::run_writer_sync_drain(WriterSyncDrainEnv& env) noexcept -
                         shadow_resolve_status();
                     } else {
                         ReadMutation publication{.key = key,
-                                                 .record = RecordRef{.sequence = *result.sequence},
+                                                 .record = RecordRef{.sequence = result.sequence.value()},
                                                  .opcode = node->kind == MutationKind::put ? Opcode::put
                                                                                            : Opcode::erase};
                         if (node->kind == MutationKind::put) {

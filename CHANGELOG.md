@@ -1,5 +1,25 @@
 ## [Unreleased]
 
+- Quality closure: normalize all C++ sources to the pinned clang-format 21.1.8 gate; add a
+  non-mutating `dev.sh verify` entry point; validate UTF-8 and exact-case repository-local links in
+  every tracked Markdown document; repair the seven stale platform-durability evidence links; and
+  wire the new documentation requirement/gate into assurance without promoting it beyond
+  `IMPLEMENTATA` before CI evidence exists. Add a compile-database-driven, production-only
+  fail-closed clang-tidy gate for unchecked optional access, use-after-move, analyzer dead stores,
+  and declaration/definition parameter drift; harden the reported ownership, optional-state, and
+  dead-store sites while retaining the wider all-target scan as an explicitly diagnostic signal.
+  On macOS, exempt only the test-only global-allocation replacement harness from clang-tidy 21's
+  incompatible libc++ `__builtin_operator_delete` analysis; it remains compiled and executed. Fix
+  a TSan-confirmed dedicated-Writer race by deriving chunk failure state before releasing the
+  caller's stack-backed completion node.
+
+- ADR 0036 Wave 1 opt-in hardening: prove incremental merge + post-cut publication under
+  generation-slot pressure in embedded and dedicated Writer paths. Terminal Reader shutdown now
+  discards an unfinished Writer-only merge after mutation admission is stopped, Writers are joined,
+  and counted Reader leases are absent; this releases the merge-cut slot pin before final reclaim.
+  Focused Debug, Release, ASan+UBSan and TSan rows pass locally. ADR 0036 remains proposed;
+  `generation_slot_pool` remains false by default and V8/V11/V12/multi-OS evidence stays open.
+
 - Structure / ACK hygiene follow-up (architectural prototype unchanged): unify Writer
   ACK-after-visibility on DualPath `load_published_generation`; share
   `include/glyphastore/core/little_endian.hpp`; split oversized production TUs under the

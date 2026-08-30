@@ -1,12 +1,11 @@
 #pragma once
 
-#include "glyphastore/server/daemon_config.hpp"
-
 #include "cli/arguments.hpp"
 #include "glyphastore/core/types.hpp"
 #include "glyphastore/core/worker_routing.hpp"
 #include "glyphastore/index/index_hash_seed.hpp"
 #include "glyphastore/server/authz.hpp"
+#include "glyphastore/server/daemon_config.hpp"
 #include "glyphastore/server/peercred.hpp"
 #include "glyphastore/server/tls.hpp"
 
@@ -22,7 +21,6 @@
 #include <vector>
 
 namespace glyphastore::server::daemon_config_detail {
-
 
 enum OptionId : std::size_t {
     help,
@@ -438,12 +436,11 @@ inline void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
 }
 
-
 [[nodiscard]] auto materialize_from_settings(SettingMap settings, bool show_help, bool show_version,
                                              std::string deployment_profile) -> Result<DaemonOptions>;
 
 [[nodiscard]] inline auto normalize_setting_value(const cli::OptionSpec& spec, std::string value,
-                                           const std::string_view where) -> Result<std::string> {
+                                                  const std::string_view where) -> Result<std::string> {
     if (spec.arity == cli::OptionArity::none) {
         auto enabled = parse_bool_token(value, where);
         if (!enabled) {
@@ -458,7 +455,7 @@ inline void apply_layer(SettingMap& destination, const SettingMap& layer) {
 }
 
 [[nodiscard]] inline auto ingest_setting(SettingMap& settings, const std::string_view key, std::string value,
-                                  const std::string_view where) -> Status {
+                                         const std::string_view where) -> Status {
     if (key == "help" || key == "version" || key == "config" || key == "dump-config") {
         return fail(ErrorCode::invalid_argument,
                     std::string{where} + " cannot set '" + std::string{key} + "'");
@@ -479,6 +476,5 @@ inline void apply_layer(SettingMap& destination, const SettingMap& layer) {
     }
     return {};
 }
-
 
 } // namespace glyphastore::server::daemon_config_detail

@@ -434,7 +434,7 @@ auto Reactor::transfer_connection(const ConnectionToken token, const std::size_t
     // Slot stays occupied until enqueue succeeds. A full handoff queue must not
     // destroy the socket after BIND already buffered OK — restore, replace with
     // OVERLOADED, flush best-effort, then close (spec: close on enqueue failure).
-    if (!mesh_.try_handoff(target_worker, std::move(handoff))) {
+    if (!mesh_.try_handoff(target_worker, handoff)) {
         current->socket = std::move(handoff.socket);
         current->tls = std::move(handoff.tls);
         current->principal = std::move(handoff.principal);

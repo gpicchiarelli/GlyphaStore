@@ -1,6 +1,6 @@
 #include "glyphastore/persistence/manifest.hpp"
-#include "glyphastore/core/little_endian.hpp"
 
+#include "glyphastore/core/little_endian.hpp"
 #include "glyphastore/segment/crc32c.hpp"
 #include "glyphastore/segment/record.hpp"
 #include "glyphastore/store/config.hpp"
@@ -18,12 +18,12 @@ namespace {
 inline constexpr std::size_t kManifestChecksumOffset = 80;
 inline constexpr std::size_t kChecksumBytes = 4;
 
-using le::put_u16;
-using le::put_u32;
-using le::put_u64;
 using le::get_u16;
 using le::get_u32;
 using le::get_u64;
+using le::put_u16;
+using le::put_u32;
+using le::put_u64;
 
 auto all_zero(std::span<const std::byte> bytes) -> bool {
     return std::ranges::all_of(bytes, [](std::byte value) { return value == std::byte{0}; });
@@ -240,24 +240,28 @@ auto select_newest_manifest(const std::span<const Manifest> candidates) -> Resul
         return fail(ErrorCode::invalid_argument, "manifest selection requires at least one candidate");
     }
 
-    std::optional<SelectedManifest> selected;
-    for (std::size_t index = 0; index < candidates.size(); ++index) {
+    if (auto valid = validate_manifest(candidates.front(), ErrorCode::corrupted_data); !valid) {
+        return unexpected(valid.error());
+    }
+    SelectedManifest selected{.candidate_index = 0,
+                              .manifest_generation = candidates.front().manifest_generation};
+    for (std::size_t index = 1; index < candidates.size(); ++index) {
         const auto& candidate = candidates[index];
         if (auto valid = validate_manifest(candidate, ErrorCode::corrupted_data); !valid) {
             return unexpected(valid.error());
         }
-        if (!selected || candidate.manifest_generation > selected->manifest_generation) {
+        if (candidate.manifest_generation > selected.manifest_generation) {
             selected = SelectedManifest{.candidate_index = index,
                                         .manifest_generation = candidate.manifest_generation};
             continue;
         }
-        if (candidate.manifest_generation == selected->manifest_generation &&
-            candidate != candidates[selected->candidate_index]) {
+        if (candidate.manifest_generation == selected.manifest_generation &&
+            candidate != candidates[selected.candidate_index]) {
             return fail(ErrorCode::corrupted_data,
                         "equal manifest generations contain conflicting catalog metadata");
         }
     }
-    return *selected;
+    return selected;
 }
 
 } // namespace glyphastore

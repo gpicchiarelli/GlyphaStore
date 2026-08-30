@@ -102,6 +102,12 @@ The volatile engine under `src/experimental/` is lab-only.
 
 ### Verification
 
+- [ ] **GATE-DOCUMENTATION-INTEGRITY** — Tracked documentation has valid repository-local references
+  State: `IMPLEMENTATA` · Release target: `prototype`
+  Requirements: `GS-CORE-DOCS-001`
+  Residual risk: External URL availability and fragment validity remain scheduled Lychee checks; the new deterministic gate covers repository-local targets on every assurance run
+  The repository-local validator covers every tracked Markdown file, while Lychee retains the network-dependent user-documentation check.
+
 - [x] **GATE-FAULT-INJECTION** — Fault injection for allocation filesystem clock socket thread failures
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`, `GS-PERSIST-AMP-001`
@@ -126,6 +132,12 @@ The volatile engine under `src/experimental/` is lab-only.
   Residual risk: Controlled multi-hour hardware soak with mandatory rotation evidence open; adversarial soak profiles (hot-key / connection-churn / queue-saturation / adversarial-reclaim) are software stubs only
 
   Smoke/long soaks exist and are budget-linked; Wave 4 adversarial profile stubs exercise shape + SIGTERM drain; hardware soak remains release residual.
+
+- [ ] **GATE-STATIC-ANALYSIS-HIGH-SIGNAL** — Production sources pass fail-closed high-signal static analysis
+  State: `IMPLEMENTATA` · Release target: `prototype`
+  Requirements: `GS-CORE-BUILD-001`
+  Residual risk: The all-target profile intentionally remains diagnostic for lower-confidence, test-macro-sensitive, and toolchain-sensitive findings; CI evidence for this new fail-closed pass is not yet retained
+  The gate derives production translation units from compile_commands.json and rejects unchecked optional access, use-after-move, analyzer dead stores, and declaration/definition parameter-name drift without claiming that the wider diagnostic profile is warning-free.
 
 - [x] **GATE-TEST-SUITES** — Distinct unit integration property concurrency crash recovery suites
   State: `PROVATA_IN_CI` · Release target: `alpha`

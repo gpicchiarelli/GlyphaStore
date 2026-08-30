@@ -1,8 +1,7 @@
 #pragma once
 
-#include "glyphastore/persistence/segment_file.hpp"
-
 #include "filesystem_detail.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
 #include "system_error.hpp"
 
 #include <array>
@@ -118,6 +117,5 @@ inline auto fixed_hex(std::uint64_t value, std::size_t width) -> std::string {
     result.append(digits.data(), converted.ptr);
     return result;
 }
-
 
 } // namespace glyphastore::segment_file_detail

@@ -272,11 +272,14 @@ auto DurableRuntimeCatalog::mutate(const std::span<const std::byte> key,
             if (!prepared) {
                 return mutation_failure(DurableMutationOutcome::not_committed, prepared.error());
             }
-            prepared_hot_record = std::move(*prepared);
+            if (strict_batch) {
+                group_mutation.hot_record = std::move(*prepared);
+            } else {
+                prepared_hot_record = std::move(*prepared);
+            }
         }
         if (strict_batch) {
             group_mutation.key.assign(hashed.key);
-            group_mutation.hot_record = std::move(prepared_hot_record);
             group_mutation.opcode = opcode;
             group_mutation.key_hash = key_hash;
             group_mutation.expire_at_ns = expire_at_ns;

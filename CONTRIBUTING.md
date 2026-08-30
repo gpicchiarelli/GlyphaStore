@@ -23,7 +23,9 @@ new substantial source files:
 
 1. Bootstrap the local toolchain with `./scripts/bootstrap-macos.sh` on macOS.
 2. Create a focused branch.
-3. Run `./scripts/dev.sh format`, `./scripts/dev.sh test`, and the relevant sanitizer.
+3. Run `./scripts/dev.sh format`, `./scripts/dev.sh verify`, `./scripts/dev.sh test`, and the relevant
+   sanitizer. `verify` is non-mutating and closes formatting, shell syntax, documentation,
+   assurance, packaging-policy, and Python tooling checks.
 4. Add regression tests for every correctness or memory-safety fix.
 5. Update an ADR when changing a fixed architectural decision.
 6. If the change affects a promised behavior or gate, update `engineering/` and run

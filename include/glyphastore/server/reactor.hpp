@@ -265,8 +265,8 @@ class Reactor final {
     [[nodiscard]] auto process_frames(ConnectionToken token,
                                       std::uint32_t new_mutation_admission_budget = kMaximumMutationWindow)
         -> Status;
-    void prepare_input_append(Connection& connection, std::size_t additional_bytes);
-    void prepare_output_append(Connection& connection, std::size_t additional_bytes);
+    void prepare_input_append(Connection& current, std::size_t additional_bytes);
+    void prepare_output_append(Connection& current, std::size_t additional_bytes);
     [[nodiscard]] auto bind_connection(ConnectionToken token, const RequestView& request) -> Status;
     [[nodiscard]] auto transfer_connection(ConnectionToken token, std::size_t target_worker,
                                            std::uint64_t request_id) -> Status;

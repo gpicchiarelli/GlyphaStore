@@ -9,9 +9,8 @@
 
 namespace glyphastore::maintenance_detail {
 
-
-[[nodiscard]] inline auto clamp_interval_ms(const MaintenanceConfig& config, const bool use_min, const bool use_max)
-    -> std::uint32_t {
+[[nodiscard]] inline auto clamp_interval_ms(const MaintenanceConfig& config, const bool use_min,
+                                            const bool use_max) -> std::uint32_t {
     const auto min_ms = std::max<std::uint32_t>(config.min_eval_interval_ms, 1U);
     const auto max_ms = std::max(config.max_eval_interval_ms, min_ms);
     if (use_min) {
@@ -40,7 +39,8 @@ namespace glyphastore::maintenance_detail {
     return static_cast<std::uint64_t>(kSegmentSizeBytes);
 }
 
-[[nodiscard]] inline auto free_space_blocks_rotation(const MaintenanceObservation& observation) noexcept -> bool {
+[[nodiscard]] inline auto free_space_blocks_rotation(const MaintenanceObservation& observation) noexcept
+    -> bool {
     if (!observation.available_free_bytes.has_value()) {
         return false;
     }
@@ -59,6 +59,5 @@ namespace glyphastore::maintenance_detail {
     const auto remainder = total % 100U;
     return whole * percentage + (remainder * percentage + 99U) / 100U;
 }
-
 
 } // namespace glyphastore::maintenance_detail

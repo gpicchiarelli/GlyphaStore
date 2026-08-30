@@ -3,7 +3,7 @@
 Status: maintained quality policy
 Applies to: all supported builds
 Owner: maintainers
-Last reviewed: 2026-08-01
+Last reviewed: 2026-08-30
 
 ## 1. Principles
 
@@ -40,7 +40,12 @@ Protocol changes cover exact headers, partial frames, multiple pipelined frames,
 - ASan/UBSan: memory safety, alignment, overflow paths not already checked.
 - TSan: data races in Store, coordinator, and server tests.
 - Fuzzing: record, manifest, Segment header, intent, and protocol decoders.
-- Warnings-as-errors and formatting: every supported compiler profile.
+- Warnings-as-errors and formatting: every supported compiler profile. A compile-database pass over
+  production sources treats unchecked optional access, use-after-move, analyzer dead stores, and
+  declaration/definition parameter drift as hard failures. The broader all-target clang-tidy build
+  remains visible for triage without conflating known test-macro/toolchain noise with a closed gate.
+- Documentation: every tracked Markdown file is UTF-8 and its repository-local links resolve with
+  exact path case; network-dependent links remain a separate scheduled check.
 
 A sanitizer exclusion needs a documented toolchain defect or unsupported primitive and a compensating test.
 
@@ -80,6 +85,7 @@ Line coverage is diagnostic, not the acceptance metric. Review must map each nor
 
 ```sh
 ./scripts/dev.sh test
+./scripts/dev.sh verify
 ./scripts/dev.sh asan
 ./scripts/dev.sh tsan
 ./scripts/dev.sh fuzz-build

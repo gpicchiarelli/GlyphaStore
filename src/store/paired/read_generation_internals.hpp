@@ -32,7 +32,6 @@
 namespace glyphastore::store::paired {
 inline namespace generation_internals {
 
-
 inline constexpr std::size_t kDeltaPageSlots = 16;
 inline constexpr std::size_t kDeltaDirectoryBlockPages = 16;
 // Second COW level above directory blocks. A full 40 960-entry Delta uses 256
@@ -322,7 +321,8 @@ struct ReadRecordView final {
     });
 }
 
-[[nodiscard]] inline auto record_less(const ReadRecordHandle& left, const ReadRecordHandle& right) noexcept -> bool {
+[[nodiscard]] inline auto record_less(const ReadRecordHandle& left, const ReadRecordHandle& right) noexcept
+    -> bool {
     return left->hash < right->hash || (left->hash == right->hash && record_key(*left) < record_key(*right));
 }
 

@@ -1,8 +1,8 @@
 #include "glyphastore/persistence/segment_file.hpp"
 
 #include "glyphastore/core/fault_injection.hpp"
-#include "system_error.hpp"
 #include "segment_file_detail.hpp"
+#include "system_error.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -16,15 +16,13 @@
 
 namespace glyphastore {
 
-using segment_file_detail::interrupted_open;
-using segment_file_detail::interrupted_open_at;
-using segment_file_detail::validate_private_segment;
-using segment_file_detail::preallocate_segment;
-using segment_file_detail::unlink_named;
 using segment_file_detail::creation_failure;
 using segment_file_detail::fixed_hex;
-
-
+using segment_file_detail::interrupted_open;
+using segment_file_detail::interrupted_open_at;
+using segment_file_detail::preallocate_segment;
+using segment_file_detail::unlink_named;
+using segment_file_detail::validate_private_segment;
 
 auto segment_filename(const SegmentHeaderIdentity& identity) -> std::string {
     return "segment-" + fixed_hex(identity.segment_id.value, 16) + '-' +

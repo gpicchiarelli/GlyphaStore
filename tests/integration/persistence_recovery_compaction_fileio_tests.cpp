@@ -4,16 +4,17 @@
 #include <array>
 #include <atomic>
 #include <barrier>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
-#include <cerrno>
 #include <fcntl.h>
 #include <filesystem>
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,9 +22,7 @@
 #include <thread>
 #include <unistd.h>
 #include <utility>
-#include <span>
 #include <vector>
-
 
 // FileIoHooks / GS-PERSIST-FAULT-001 online compaction seams (split for structure budget).
 namespace {
@@ -145,9 +144,11 @@ struct CompactionSyncEintrIo {
     }
 };
 
-auto seed_two_sealed_compaction_fixture(const std::filesystem::path& path, const glyphastore::StoreId& store_id,
+auto seed_two_sealed_compaction_fixture(const std::filesystem::path& path,
+                                        const glyphastore::StoreId& store_id,
                                         const std::string_view first_key, const std::string_view first_value,
-                                        const std::string_view second_key, const std::string_view second_value)
+                                        const std::string_view second_key,
+                                        const std::string_view second_value)
     -> std::vector<glyphastore::ManifestSegmentEntry> {
     const std::vector entries{
         glyphastore::ManifestSegmentEntry{.segment_id = glyphastore::SegmentId{1},
@@ -188,10 +189,10 @@ GLYPHA_TEST("online compaction staging retries EINTR and short writes before int
 
     CompactionFragmentedWriteIo io{};
     auto directory = glyphastore::DataDirectory::open_and_lock(
-        temporary.path(),
-        glyphastore::FilesystemHooks{.file_io = {.context = &io,
-                                                 .read_some_at = &CompactionFragmentedWriteIo::read_some_at,
-                                                 .write_some_at = &CompactionFragmentedWriteIo::write_some_at}});
+        temporary.path(), glyphastore::FilesystemHooks{
+                              .file_io = {.context = &io,
+                                          .read_some_at = &CompactionFragmentedWriteIo::read_some_at,
+                                          .write_some_at = &CompactionFragmentedWriteIo::write_some_at}});
     GLYPHA_REQUIRE(directory.has_value());
     auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
     GLYPHA_REQUIRE(runtime.has_value());
@@ -424,9 +425,8 @@ GLYPHA_TEST("online compaction FileIoHooks intent write and sync faults reject c
                 ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
         }
 
-        static auto write_some_at(void* context, const int descriptor,
-                                  const std::span<const std::byte> bytes, const std::uint64_t offset)
-            -> std::ptrdiff_t {
+        static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                                  const std::uint64_t offset) -> std::ptrdiff_t {
             auto& self = *static_cast<IntentFault*>(context);
             if (self.arm_write) {
                 self.arm_write = false;
@@ -466,20 +466,19 @@ GLYPHA_TEST("online compaction FileIoHooks intent write and sync faults reject c
         const auto store_id = recovery_store_id();
         const auto first_key = std::string{fault.label} + "-a";
         const auto second_key = std::string{fault.label} + "-b";
-        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key, "alpha",
-                                                                second_key, "beta");
+        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key,
+                                                                "alpha", second_key, "beta");
         const auto old = recovery_manifest(store_id, 1, entries);
 
         IntentFault injected{.mode = fault.mode, .write_error = fault.write_error};
         auto directory = glyphastore::DataDirectory::open_and_lock(
             temporary.path(),
-            glyphastore::FilesystemHooks{
-                .context = &injected,
-                .before = &IntentFault::before,
-                .file_io = {.context = &injected,
-                            .read_some_at = &IntentFault::read_some_at,
-                            .write_some_at = &IntentFault::write_some_at,
-                            .sync_file = &IntentFault::sync_file}});
+            glyphastore::FilesystemHooks{.context = &injected,
+                                         .before = &IntentFault::before,
+                                         .file_io = {.context = &injected,
+                                                     .read_some_at = &IntentFault::read_some_at,
+                                                     .write_some_at = &IntentFault::write_some_at,
+                                                     .sync_file = &IntentFault::sync_file}});
         GLYPHA_REQUIRE(directory.has_value());
         auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
         GLYPHA_REQUIRE(runtime.has_value());
@@ -537,9 +536,8 @@ GLYPHA_TEST("online compaction FileIoHooks promotion manifest faults recover cle
                 ::pread(descriptor, bytes.data(), bytes.size(), static_cast<off_t>(offset)));
         }
 
-        static auto write_some_at(void* context, const int descriptor,
-                                  const std::span<const std::byte> bytes, const std::uint64_t offset)
-            -> std::ptrdiff_t {
+        static auto write_some_at(void* context, const int descriptor, const std::span<const std::byte> bytes,
+                                  const std::uint64_t offset) -> std::ptrdiff_t {
             auto& self = *static_cast<PromotionFault*>(context);
             if (self.arm_write) {
                 self.arm_write = false;
@@ -579,19 +577,18 @@ GLYPHA_TEST("online compaction FileIoHooks promotion manifest faults recover cle
         const auto store_id = recovery_store_id();
         const auto first_key = std::string{fault.label} + "-a";
         const auto second_key = std::string{fault.label} + "-b";
-        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key, "alpha",
-                                                                second_key, "beta");
+        const auto entries = seed_two_sealed_compaction_fixture(temporary.path(), store_id, first_key,
+                                                                "alpha", second_key, "beta");
 
         PromotionFault injected{.mode = fault.mode, .write_error = fault.write_error};
         auto directory = glyphastore::DataDirectory::open_and_lock(
             temporary.path(),
-            glyphastore::FilesystemHooks{
-                .context = &injected,
-                .before = &PromotionFault::before,
-                .file_io = {.context = &injected,
-                            .read_some_at = &PromotionFault::read_some_at,
-                            .write_some_at = &PromotionFault::write_some_at,
-                            .sync_file = &PromotionFault::sync_file}});
+            glyphastore::FilesystemHooks{.context = &injected,
+                                         .before = &PromotionFault::before,
+                                         .file_io = {.context = &injected,
+                                                     .read_some_at = &PromotionFault::read_some_at,
+                                                     .write_some_at = &PromotionFault::write_some_at,
+                                                     .sync_file = &PromotionFault::sync_file}});
         GLYPHA_REQUIRE(directory.has_value());
         auto runtime = glyphastore::DurableRuntimeCatalog::open_locked(std::move(*directory));
         GLYPHA_REQUIRE(runtime.has_value());

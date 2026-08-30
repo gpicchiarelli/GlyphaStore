@@ -27,6 +27,9 @@ auto PairReadGenerationShellAccess::publish_incremental(
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
     }
+    if (!prepared->next_delta) {
+        return fail(ErrorCode::internal_error, "shell publication produced no next delta");
+    }
     auto next = store::paired::make_shared_generation_in_shell(
         previous_view.routing_, previous_view.base_, std::move(*prepared->next_delta),
         previous_view.epoch_ + 1U, prepared->visible_through, std::move(storage));
@@ -60,6 +63,9 @@ auto PairReadGenerationShellAccess::publish_incremental_borrowed(
     }
     if (prepared->empty_reuse) {
         return std::move(prepared->empty_reuse);
+    }
+    if (!prepared->next_delta) {
+        return fail(ErrorCode::internal_error, "borrowed shell publication produced no next delta");
     }
     return store::paired::make_shared_generation_in_borrowed_shell(
         previous_view.routing_, previous_view.base_, std::move(*prepared->next_delta),

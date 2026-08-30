@@ -11,8 +11,10 @@ cmake --build --preset unix-debug
 ctest --preset unix-debug
 ```
 
-Before review, run formatting, unit/integration tests, the sanitizer appropriate to the change,
-and any focused benchmark. Build directories and generated Xcode projects are never committed.
+Before review, run formatting, `./scripts/dev.sh verify`, unit/integration tests, the sanitizer
+appropriate to the change, and any focused benchmark. `verify` checks all tracked Markdown local
+links in addition to assurance, formatting, shell syntax, packaging policy, and tooling tests.
+Build directories and generated Xcode projects are never committed.
 
 ## Automated benchmark reports
 

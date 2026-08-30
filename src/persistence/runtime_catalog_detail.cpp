@@ -310,6 +310,9 @@ auto complete_interrupted_rotation(DataDirectory& directory, const DurableResour
             return unexpected(
                 created.error.value_or(Error{ErrorCode::io_error, "rotation replacement creation failed"}));
         }
+        if (!created.file) {
+            return fail(ErrorCode::internal_error, "durable rotation replacement has no file handle");
+        }
         replacement.emplace(std::move(*created.file));
     }
 

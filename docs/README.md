@@ -155,3 +155,7 @@ A change must update documentation when it changes any of these:
 
 Every release should publish an immutable snapshot of these documents with the source tag. Benchmark
 artifacts and roadmaps may expire; specifications for readable disk and wire versions must not.
+
+Run `python3 engineering/tools/validate_documentation.py` after moving or renaming documentation.
+The deterministic check covers every tracked Markdown file and all repository-local links; the
+scheduled Lychee workflow separately checks network-dependent user-documentation links.

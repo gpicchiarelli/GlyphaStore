@@ -7,10 +7,10 @@
 
 namespace glyphastore {
 
-detail::PreparedColdRead::PreparedColdRead(State&& value) noexcept {
+detail::PreparedColdRead::PreparedColdRead(State&& state) noexcept {
     static_assert(sizeof(State) <= kStateBytes);
     static_assert(alignof(State) <= alignof(std::max_align_t));
-    std::construct_at(state(), std::move(value));
+    std::construct_at(this->state(), std::move(state));
     engaged_ = true;
 }
 

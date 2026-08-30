@@ -1,5 +1,4 @@
 #include "glyphastore/client/client.hpp"
-
 #include "glyphastore/server/protocol.hpp"
 
 #include <cstdint>

@@ -62,6 +62,9 @@ class ConnectionHandoffMesh final {
     [[nodiscard]] auto accepting() const noexcept -> bool {
         return accepting_.load(std::memory_order_acquire);
     }
+    // Success consumes connection; rejection leaves it untouched so the
+    // source Reactor can restore and close it through the wire contract.
+    [[nodiscard]] auto try_handoff(std::size_t target_executor, ConnectionHandoff& connection) -> bool;
     [[nodiscard]] auto try_handoff(std::size_t target_executor, ConnectionHandoff&& connection) -> bool;
     [[nodiscard]] auto try_pop(std::size_t executor) -> std::optional<ConnectionHandoff>;
     [[nodiscard]] auto has_pending(std::size_t executor) const noexcept -> bool;

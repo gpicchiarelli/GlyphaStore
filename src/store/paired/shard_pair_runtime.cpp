@@ -16,8 +16,8 @@
 #include "glyphastore/store/paired/publication_coordinator.hpp"
 #include "glyphastore/store/paired/shard_combining_executor.hpp"
 #include "glyphastore/store/paired/volatile_sync_chunk.hpp"
-#include "store/store_internal.hpp"
 #include "store/paired/shard_pair_runtime_impl.hpp"
+#include "store/store_internal.hpp"
 
 namespace glyphastore::store::paired {
 
@@ -99,7 +99,8 @@ auto ShardPairRuntime::create(Store& store, const PairedConcurrencyConfig& confi
             if (!pool) {
                 return unexpected(std::move(pool.error()));
             }
-            initial_generations.push_back(runtime_detail::non_owning_generation_view((*pool)->writer_generation()));
+            initial_generations.push_back(
+                runtime_detail::non_owning_generation_view((*pool)->writer_generation()));
             slot_pools.push_back(std::move(*pool));
             continue;
         }
@@ -251,15 +252,15 @@ auto ShardPairRuntime::try_submit(const AsyncMutationRequest& request) noexcept
         return std::nullopt;
     }
     runtime_detail::AsyncMutationTask task{.context = request.context,
-                           .request_id = request.request_id,
-                           .shard = request.shard,
-                           .kind = request.kind,
-                           .payload_slot = acquired.lease->slot,
-                           .key_hash = request.key_hash,
-                           .expire_at_ns = request.expire_at_ns,
-                           .admission_bytes = acquired.lease->admission_bytes,
-                           .admitted_at = std::chrono::steady_clock::now(),
-                           .sink = request.sink};
+                                           .request_id = request.request_id,
+                                           .shard = request.shard,
+                                           .kind = request.kind,
+                                           .payload_slot = acquired.lease->slot,
+                                           .key_hash = request.key_hash,
+                                           .expire_at_ns = request.expire_at_ns,
+                                           .admission_bytes = acquired.lease->admission_bytes,
+                                           .admitted_at = std::chrono::steady_clock::now(),
+                                           .sink = request.sink};
     const auto next_bytes =
         lane.async.queued_bytes.fetch_add(*admission_bytes, std::memory_order_relaxed) + *admission_bytes;
     GS_FAULT_SITE(enqueue);
@@ -527,6 +528,18 @@ auto ShardPairRuntime::finalize_reader_shutdown() -> Status {
         if (lane->reclaim.active_read_leases.load(std::memory_order_acquire) != 0U) {
             return fail(ErrorCode::unavailable, "paired Reader shutdown has an active read lease");
         }
+    }
+
+    // No Writer can resume after stop_and_drain() joins every dedicated thread,
+    // and no embedded Reader lease remains after the validation above. An
+    // unfinished incremental merge is Writer-private maintenance state, not
+    // published authority; discard it before terminal generation reclaim. The
+    // slot-pool merge cut owns a pin, so retaining it here would make an
+    // otherwise quiescent shutdown permanently incomplete.
+    for (auto& lane : lanes_) {
+        lane->merge.read_merge.reset();
+        lane->merge.merge_retry_blocked = false;
+        store_merge_progress(lane->merge);
     }
 
     for (auto& lane : lanes_) {

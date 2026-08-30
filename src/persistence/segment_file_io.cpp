@@ -1,10 +1,9 @@
-#include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/core/little_endian.hpp"
-
 #include "glyphastore/persistence/namespace_audit.hpp"
+#include "glyphastore/persistence/segment_file.hpp"
 #include "glyphastore/segment/record.hpp"
-#include "system_error.hpp"
 #include "segment_file_detail.hpp"
+#include "system_error.hpp"
 
 #include <array>
 #include <cerrno>
@@ -16,9 +15,8 @@
 
 namespace glyphastore {
 
-using segment_file_detail::commit_failure;
 using le::get_u32;
-
+using segment_file_detail::commit_failure;
 
 auto DurableSegmentFile::publish_commit(const SegmentCommit& commit, const SegmentCommitSync sync)
     -> SegmentCommitResult {
