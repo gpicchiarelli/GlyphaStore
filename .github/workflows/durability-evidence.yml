@@ -157,18 +157,24 @@ jobs:
               echo "E3 repeat must be in 1..100 on hosted CI" >&2
               exit 2
             }
-            echo "profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
-            echo "repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
-            echo "fault_modes=$REQUESTED_FAULT_MODE" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=$REQUESTED_PROFILE"
+              echo "repeat=$REQUESTED_REPEAT"
+              echo "fault_modes=$REQUESTED_FAULT_MODE"
+            } >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "schedule" ]]; then
             # Weekly: equal total case budget across three bounded block-fault modes.
-            echo "profile=campaign" >> "$GITHUB_OUTPUT"
-            echo "repeat=1" >> "$GITHUB_OUTPUT"
-            echo "fault_modes=drop-writes error-writes all-io-error" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=campaign"
+              echo "repeat=1"
+              echo "fault_modes=drop-writes error-writes all-io-error"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "profile=smoke" >> "$GITHUB_OUTPUT"
-            echo "repeat=1" >> "$GITHUB_OUTPUT"
-            echo "fault_modes=drop-writes" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=smoke"
+              echo "repeat=1"
+              echo "fault_modes=drop-writes"
+            } >> "$GITHUB_OUTPUT"
           fi
       - name: Run linux-ext4 block-reset harness
         env:
@@ -248,14 +254,14 @@ jobs:
             echo "seed must be a decimal uint64" >&2
             exit 2
           }
-          if [[ "${#seed}" -gt 20 ]] || {
-            [[ "${#seed}" -eq 20 ]] && [[ "$seed" > "18446744073709551615" ]]
-          }; then
+          if ! python -c 'import sys; raise SystemExit(int(sys.argv[1]) > (1 << 64) - 1)' "$seed"; then
             echo "seed exceeds uint64" >&2
             exit 2
           fi
-          echo "iterations=$iterations" >> "$GITHUB_OUTPUT"
-          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+          {
+            echo "iterations=$iterations"
+            echo "seed=$seed"
+          } >> "$GITHUB_OUTPUT"
       - name: Run reproducible randomized campaign
         run: |
           out="durability-evidence/e2-random-${{ github.run_id }}"
@@ -266,8 +272,11 @@ jobs:
             --run random-campaign \
             --campaign-seed "${{ steps.campaign.outputs.seed }}" \
             --iterations "${{ steps.campaign.outputs.iterations }}"
+          # shellcheck disable=SC2016 # intentional literal backticks in expected summary text
           grep -Fq 'Attained evidence level: `E2`' "$out/summary.md"
+          # shellcheck disable=SC2016
           grep -Fq 'Physical power loss exercised: `no`' "$out/summary.md"
+          # shellcheck disable=SC2016
           grep -Fq 'Release-certification eligible: `no`' "$out/summary.md"
       - name: Upload randomized E2 artifact
         if: always()
@@ -305,18 +314,24 @@ jobs:
           REQUESTED_REPEAT: ${{ inputs.e3_repeat }}
         run: |
           if [[ "$EVENT_NAME" == "schedule" ]]; then
-            echo "profile=campaign" >> "$GITHUB_OUTPUT"
-            echo "repeat=2" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=campaign"
+              echo "repeat=2"
+            } >> "$GITHUB_OUTPUT"
           elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             [[ "$REQUESTED_REPEAT" =~ ^[1-9][0-9]*$ && "$REQUESTED_REPEAT" -le 100 ]] || {
               echo "E3 repeat must be in 1..100 on hosted CI" >&2
               exit 2
             }
-            echo "profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
-            echo "repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=$REQUESTED_PROFILE"
+              echo "repeat=$REQUESTED_REPEAT"
+            } >> "$GITHUB_OUTPUT"
           else
-            echo "profile=smoke" >> "$GITHUB_OUTPUT"
-            echo "repeat=1" >> "$GITHUB_OUTPUT"
+            {
+              echo "profile=smoke"
+              echo "repeat=1"
+            } >> "$GITHUB_OUTPUT"
           fi
       - name: Run macos-apfs block-reset harness
         env:
@@ -385,14 +400,18 @@ jobs:
               echo "E3 repeat must be in 1..100 on hosted CI" >&2
               exit 2
             }
-            echo "e3_profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
-            echo "e3_repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
-            echo "dm_fault_mode=$REQUESTED_FAULT_MODE" >> "$GITHUB_OUTPUT"
+            {
+              echo "e3_profile=$REQUESTED_PROFILE"
+              echo "e3_repeat=$REQUESTED_REPEAT"
+              echo "dm_fault_mode=$REQUESTED_FAULT_MODE"
+            } >> "$GITHUB_OUTPUT"
           else
             # Weekly: smoke checkpoints through the orchestrator path (not promotion).
-            echo "e3_profile=smoke" >> "$GITHUB_OUTPUT"
-            echo "e3_repeat=1" >> "$GITHUB_OUTPUT"
-            echo "dm_fault_mode=drop-writes" >> "$GITHUB_OUTPUT"
+            {
+              echo "e3_profile=smoke"
+              echo "e3_repeat=1"
+              echo "dm_fault_mode=drop-writes"
+            } >> "$GITHUB_OUTPUT"
           fi
       - name: Run E0→E3 campaign orchestrator (rehearsal pin)
         env:

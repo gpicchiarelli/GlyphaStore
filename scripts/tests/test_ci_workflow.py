@@ -138,7 +138,7 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("iterations=256", workflow)
         self.assertIn('"$iterations" -le 512', workflow)
         self.assertIn('"$seed" =~ ^[0-9]+$', workflow)
-        self.assertIn('"$seed" > "18446744073709551615"', workflow)
+        self.assertIn("int(sys.argv[1]) > (1 << 64) - 1", workflow)
         self.assertIn("--run random-campaign", workflow)
         self.assertIn("--campaign-seed", workflow)
         self.assertIn("--iterations", workflow)
@@ -171,6 +171,11 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertNotIn('reset_confirmed="$(perform_reset', script)
         self.assertIn('work_root="$work_parent/glyphastore-e3-work-$$"', script)
         self.assertIn('dmsetup suspend --noflush "$mapper_name"', script)
+        self.assertIn(
+            'dmsetup create "$mapper_name" --table "0 $sectors linear $loop_device 0"',
+            script,
+        )
+        self.assertNotIn("flakey $loop_device 0 0 0", script)
         self.assertIn("CheckpointAction::pause", harness)
         self.assertIn("::raise(SIGSTOP)", checkpoint)
         for mode in ("drop-writes", "error-writes", "all-io-error"):

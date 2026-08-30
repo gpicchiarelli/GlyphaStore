@@ -163,8 +163,9 @@ certified for sudden power loss on production hardware.
 ### dm-flakey notes (Linux)
 
 - Requires root, `dmsetup`, and a loop (or real) block device underneath.
-- Keep the flakey table fully available while seeding and reaching the checkpoint. At the armed
-  reset, the mapper is suspended with `--noflush`, and `--dm-fault-mode` selects `drop-writes`
+- Keep a linear mapper fully available while seeding and reaching the checkpoint. At the armed
+  reset, the mapper is suspended with `--noflush`, reloaded as `dm-flakey`, and
+  `--dm-fault-mode` selects `drop-writes`
   (silently discard writes), `error-writes` (fail writes), or `all-io-error` (no optional feature,
   so all I/O fails during the down interval), using
   the semantics in the [Linux kernel dm-flakey documentation](https://cdn.kernel.org/doc/html/latest/admin-guide/device-mapper/dm-flakey.html).

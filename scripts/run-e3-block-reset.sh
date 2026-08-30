@@ -327,9 +327,10 @@ provision_linux_ext4() {
     sectors="$(sudo blockdev --getsz "$loop_device")" || return 1
     mapper_name="glypha-e3-$$"
     mapper_path="/dev/mapper/$mapper_name"
-    # Start fully available; the selected down-interval mode is armed only at reset.
-    record_command "dmsetup create <mapper> --table '0 <sectors> flakey <loop> 0 0 0'"
-    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0" || return 1
+    # Keep the setup path fully available. The selected flakey down-interval
+    # mode is installed only after the worker has reached the checkpoint.
+    record_command "dmsetup create <mapper> --table '0 <sectors> linear <loop> 0'"
+    sudo dmsetup create "$mapper_name" --table "0 $sectors linear $loop_device 0" || return 1
     attach_device="$mapper_path"
   fi
   record_command "mkfs.ext4 -F -L glyphae3 <device>"
@@ -377,7 +378,7 @@ remount_linux() {
     sectors="$(sudo blockdev --getsz "$loop_device")" || return 1
     mapper_name="glypha-e3-$$"
     mapper_path="/dev/mapper/$mapper_name"
-    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0" || return 1
+    sudo dmsetup create "$mapper_name" --table "0 $sectors linear $loop_device 0" || return 1
     attach_device="$mapper_path"
   fi
   sudo mount -t ext4 -o defaults "$attach_device" "$mount_point" || return 1
