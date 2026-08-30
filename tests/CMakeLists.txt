@@ -292,11 +292,16 @@ if(BUILD_TESTING)
     add_test(NAME glyphastore_crash_sync COMMAND glyphastore_crash_persistence --mode matrix)
     add_test(NAME glyphastore_crash_periodic COMMAND glyphastore_crash_persistence --mode periodic-matrix)
     add_test(NAME glyphastore_crash_group COMMAND glyphastore_crash_persistence --mode group-matrix)
+    add_test(NAME glyphastore_crash_random_smoke COMMAND glyphastore_crash_persistence
+        --mode random-campaign --campaign-seed 11636782997727379457 --iterations 2)
+    add_test(NAME glyphastore_crash_pause_smoke COMMAND glyphastore_crash_persistence --mode pause-smoke)
     # Sync matrix is large; TSan instrumentation of recovery/encode paths routinely
     # exceeds 10 minutes on hosted/macOS runners even when making forward progress.
     set_tests_properties(glyphastore_crash_sync PROPERTIES TIMEOUT 2400 LABELS "crash")
     set_tests_properties(glyphastore_crash_periodic glyphastore_crash_group PROPERTIES TIMEOUT 600
                          LABELS "crash")
+    set_tests_properties(glyphastore_crash_random_smoke PROPERTIES TIMEOUT 600 LABELS "crash")
+    set_tests_properties(glyphastore_crash_pause_smoke PROPERTIES TIMEOUT 120 LABELS "crash")
 
     add_executable(glyphastore_crash_daemon ${CMAKE_SOURCE_DIR}/tests/crash/crash_daemon.cpp)
     target_link_libraries(glyphastore_crash_daemon

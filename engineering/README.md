@@ -34,6 +34,7 @@ boxes as production readiness.
 | `tools/compare_release_rebuild.py` | Closed-set independent release archive and build-authority comparison |
 | `tools/validate_bsd_packaging.py` | Reference-port invariants and native release prerequisites |
 | `formal/shard_pair/` | Reduced TLA+ ShardPair model + TLC helper |
+| `formal/persistence/` | Abstract write/sync/commit-slot/Manifest/recovery TLA+ model |
 
 ## Validate
 

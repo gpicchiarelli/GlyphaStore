@@ -34,6 +34,7 @@ Init ==
 
 Enqueue(c) ==
   /\ ~shuttingDown /\ ~drained /\ client[c] = "idle" /\ queue < MaxQueue
+  /\ epoch + queue < MaxEpoch
   /\ queue' = queue + 1
   /\ client' = [client EXCEPT ![c] = "mutating"]
   /\ UNCHANGED <<epoch, published, shuttingDown, drained, adopted>>
@@ -82,7 +83,17 @@ Next ==
   \/ BeginShutdown
   \/ Drain
 
-Spec == Init /\ [][Next]_<<epoch, published, queue, shuttingDown, drained, client, adopted>>
+vars == <<epoch, published, queue, shuttingDown, drained, client, adopted>>
+
+Behavior == Init /\ [][Next]_vars
+
+\* Once shutdown starts, fair Writer/completion/drain scheduling must empty the
+\* bounded lane and reach the terminal drained state.
+Spec ==
+  /\ Behavior
+  /\ WF_vars(WriterStep)
+  /\ WF_vars(Drain)
+  /\ \A c \in 0..(MaxClients-1) : WF_vars(CompleteMutation(c))
 
 AdoptedLeqPublished == \A c \in 0..(MaxClients-1) : adopted[c] <= published
 DrainEmpty == drained => (queue = 0 /\ \A c \in 0..(MaxClients-1) : client[c] # "mutating")

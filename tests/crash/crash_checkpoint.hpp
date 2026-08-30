@@ -16,9 +16,12 @@
 
 namespace glyphastore::crash {
 
+enum class CheckpointAction { kill, pause };
+
 struct CheckpointState {
     std::filesystem::path checkpoint_dir;
     std::string kill_at;
+    CheckpointAction action{CheckpointAction::kill};
     bool signaled{false};
     std::array<std::size_t, static_cast<std::size_t>(FilesystemOperation::sync_backup_destination) + 1U>
         occurrences{};
@@ -34,11 +37,19 @@ struct CheckpointState {
         if (!state.kill_at.empty() && (state.kill_at == name || state.kill_at == occurrence_name) &&
             !state.signaled) {
             state.signaled = true;
-            // Die in-hook after the marker is durable. SIGSTOP left a
-            // multi-threaded window (marker visible → parent polls → stop
-            // delivered) where another thread could finish the next FS op
-            // (e.g. write_commit_slot / copy_backup_manifest). Self-SIGKILL
-            // never returns into publish_commit / backup continuation.
+            if (state.action == CheckpointAction::pause) {
+                // E3 block-reset harness only: stop inside the hook so the
+                // controller can confirm a quiesced worker before detaching or
+                // faulting the mapped device. The controller kills the worker
+                // before any SIGCONT, so no later filesystem operation runs.
+                if (::raise(SIGSTOP) != 0) {
+                    std::_Exit(1);
+                }
+                return;
+            }
+            // Default E2 behavior: die in-hook after the marker is visible.
+            // This avoids a multi-threaded marker-to-parent race in ordinary
+            // process-kill matrices.
             if (::raise(SIGKILL) != 0) {
                 std::_Exit(1);
             }

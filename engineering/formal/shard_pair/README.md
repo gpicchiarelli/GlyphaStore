@@ -11,9 +11,9 @@ export TLA2TOOLS_JAR=/path/to/tla2tools.jar
 ./engineering/formal/shard_pair/run-tlc.sh
 ```
 
-CI: `.github/workflows/formal-shard-pair.yml` (best-effort, bounded timeout).
+CI: `.github/workflows/formal-models.yml` (required bounded run; TLC errors and timeout fail closed).
 
 ## Residual gaps
 
 Durable I/O, compaction leases, multi-shard routing, and full Store API linearizability
-are out of model scope (see the C++ history checker for the latter).
+are out of this model's scope (see the separate persistence model and the C++ history checker).

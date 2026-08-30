@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "experimental/paired_reactor.hpp"
 #include "glyphastore/client/client.hpp"
 #include "glyphastore/server/server.hpp"
@@ -364,11 +365,12 @@ int main(int argc, char** argv) {
         seed(paired.front(), material);
         const auto pair_before = paired_server.reactor().pair_stats();
         std::vector<Measurement> measurements;
-        std::cout << "# paired Reactor TCP A/B git=" << GLYPHASTORE_GIT_SHA << " ops=" << options.operations
-                  << " keys=" << options.keys << " value_bytes=" << options.value_bytes
-                  << " pipeline=" << options.pipeline << " clients=" << options.clients
-                  << " put_percent=" << options.put_percent << " batch_wait_us=" << options.batch_wait_us
-                  << '\n';
+        std::cout << "# paired Reactor TCP A/B\n";
+        glyphastore::bench::print_common_metadata(std::cout, options.warmup, options.repeats);
+        std::cout << "# ops=" << options.operations << " keys=" << options.keys
+                  << " value_bytes=" << options.value_bytes << " pipeline=" << options.pipeline
+                  << " clients=" << options.clients << " put_percent=" << options.put_percent
+                  << " batch_wait_us=" << options.batch_wait_us << '\n';
         std::cout << "kind,implementation,repeat,ops_per_second,p50_batch_us,p99_batch_us,"
                      "p999_batch_us,checksum\n";
         for (std::size_t iteration = 0; iteration < options.warmup + options.repeats; ++iteration) {

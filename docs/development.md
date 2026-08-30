@@ -51,6 +51,10 @@ durable mutations; volatile server counters are never relabeled as durability me
 The workflow invokes the report parser in strict mode: empty suites, duplicate identities, missing
 metadata, count mismatches, invalid numbers, inconsistent statistical ordering, or disagreement
 between a TCP filename and its runtime coordinates fail the report.
+The same parser recognizes first-party specialized CSV/TSV outputs from compaction, maintenance,
+generation publication, paired shard/Reactor, and memory-census runs. These appear in a separate
+direction-aware diagnostics table and must carry the same common metadata and complete repeat set;
+they are not folded silently into the canonical ops/s regression threshold.
 The machine-readable `engineering/performance/hosted-benchmark-contract.json` enumerates all 21
 expected core, parallel, durable, TCP-scaling, and TCP-latency source files. Missing or unexpected
 files invalidate the report before baseline comparison. The same contract fixes one warmup and the

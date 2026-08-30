@@ -23,14 +23,31 @@ on:
           - smoke
           - campaign
       e3_repeat:
-        description: E3 per-checkpoint repetitions (harness / orchestrator)
+        description: E3 per-checkpoint repetitions, 1..100 (harness / orchestrator)
         required: false
         default: "1"
+      e3_dm_fault_mode:
+        description: Linux dm-flakey down-interval behavior
+        required: false
+        default: "drop-writes"
+        type: choice
+        options:
+          - drop-writes
+          - error-writes
+          - all-io-error
       run_campaign_orchestrator:
         description: Also run E0→E3 campaign orchestrator rehearsal
         required: false
         default: false
         type: boolean
+      random_campaign_iterations:
+        description: Hosted E2 random crash/reopen cases (1..512; local harness supports 10000)
+        required: false
+        default: "64"
+      random_campaign_seed:
+        description: Decimal uint64 seed (empty uses the GitHub run id)
+        required: false
+        default: ""
   schedule:
     # Weekly rehearsal; still not E3/E4 certification.
     - cron: "41 5 * * 1"
@@ -109,6 +126,7 @@ jobs:
     name: E3 harness (linux-ext4 loopback)
     runs-on: ubuntu-latest
     needs: e2-collector
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
@@ -126,38 +144,138 @@ jobs:
         run: |
           cmake --preset unix-debug
           cmake --build --preset unix-debug --target glyphastore_crash_persistence
-      - name: Resolve E3 profile and repeats
+      - name: Resolve bounded E3 profile
         id: e3
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PROFILE: ${{ inputs.e3_profile }}
+          REQUESTED_REPEAT: ${{ inputs.e3_repeat }}
+          REQUESTED_FAULT_MODE: ${{ inputs.e3_dm_fault_mode }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "profile=${{ inputs.e3_profile }}" >> "$GITHUB_OUTPUT"
-            echo "repeat=${{ inputs.e3_repeat }}" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "schedule" ]]; then
-            # Weekly: campaign checkpoint set, modest reps — still e3_certified=no.
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$REQUESTED_REPEAT" =~ ^[1-9][0-9]*$ && "$REQUESTED_REPEAT" -le 100 ]] || {
+              echo "E3 repeat must be in 1..100 on hosted CI" >&2
+              exit 2
+            }
+            echo "profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
+            echo "repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
+            echo "fault_modes=$REQUESTED_FAULT_MODE" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "schedule" ]]; then
+            # Weekly: equal total case budget across three bounded block-fault modes.
             echo "profile=campaign" >> "$GITHUB_OUTPUT"
-            echo "repeat=3" >> "$GITHUB_OUTPUT"
+            echo "repeat=1" >> "$GITHUB_OUTPUT"
+            echo "fault_modes=drop-writes error-writes all-io-error" >> "$GITHUB_OUTPUT"
           else
             echo "profile=smoke" >> "$GITHUB_OUTPUT"
             echo "repeat=1" >> "$GITHUB_OUTPUT"
+            echo "fault_modes=drop-writes" >> "$GITHUB_OUTPUT"
           fi
       - name: Run linux-ext4 block-reset harness
+        env:
+          E3_PROFILE: ${{ steps.e3.outputs.profile }}
+          E3_REPEAT: ${{ steps.e3.outputs.repeat }}
+          FAULT_MODES: ${{ steps.e3.outputs.fault_modes }}
         run: |
-          out="durability-evidence/e3-linux-ext4-${{ github.run_id }}"
-          ./scripts/run-e3-block-reset.sh \
-            --output "$out" \
-            --build-dir build/unix-debug \
-            --platform linux-ext4 \
-            --profile "${{ steps.e3.outputs.profile }}" \
-            --reset-mechanism auto \
-            --repeat "${{ steps.e3.outputs.repeat }}"
-          ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind harness
+          for mode in $FAULT_MODES; do
+            [[ "$mode" == "drop-writes" || "$mode" == "error-writes" || "$mode" == "all-io-error" ]] || {
+              echo "unexpected dm-flakey mode: $mode" >&2
+              exit 2
+            }
+            out="durability-evidence/e3-linux-ext4-${mode}-${{ github.run_id }}"
+            ./scripts/run-e3-block-reset.sh \
+              --output "$out" \
+              --build-dir build/unix-debug \
+              --platform linux-ext4 \
+              --profile "$E3_PROFILE" \
+              --reset-mechanism dm-flakey \
+              --dm-fault-mode "$mode" \
+              --repeat "$E3_REPEAT"
+            ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind harness
+          done
       - name: Upload E3 harness artifact
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: durability-e3-linux-ext4-${{ github.run_id }}
-          path: durability-evidence/e3-linux-ext4-${{ github.run_id }}
-          if-no-files-found: ignore
+          path: durability-evidence/e3-linux-ext4-*-${{ github.run_id }}
+          if-no-files-found: error
+          retention-days: 30
+
+  e2-random-crash-campaign:
+    name: E2 randomized crash/reopen campaign
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    needs: e2-collector
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.13"
+      - name: Install build tools
+        run: |
+          python -m pip install --disable-pip-version-check cmake ninja
+          sudo apt-get update
+          sudo apt-get install -y clang
+      - name: Configure and build crash campaign
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          cmake --preset unix-debug
+          cmake --build --preset unix-debug --target glyphastore_crash_persistence
+      - name: Resolve bounded campaign parameters
+        id: campaign
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_ITERATIONS: ${{ inputs.random_campaign_iterations }}
+          REQUESTED_SEED: ${{ inputs.random_campaign_seed }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
+            iterations=256
+            seed="$RUN_ID"
+          else
+            iterations="$REQUESTED_ITERATIONS"
+            seed="$REQUESTED_SEED"
+            if [[ -z "$seed" ]]; then seed="$RUN_ID"; fi
+          fi
+          [[ "$iterations" =~ ^[1-9][0-9]*$ && "$iterations" -le 512 ]] || {
+            echo "iterations must be in 1..512 on hosted CI" >&2
+            exit 2
+          }
+          [[ "$seed" =~ ^[0-9]+$ ]] || {
+            echo "seed must be a decimal uint64" >&2
+            exit 2
+          }
+          if [[ "${#seed}" -gt 20 ]] || {
+            [[ "${#seed}" -eq 20 ]] && [[ "$seed" > "18446744073709551615" ]]
+          }; then
+            echo "seed exceeds uint64" >&2
+            exit 2
+          fi
+          echo "iterations=$iterations" >> "$GITHUB_OUTPUT"
+          echo "seed=$seed" >> "$GITHUB_OUTPUT"
+      - name: Run reproducible randomized campaign
+        run: |
+          out="durability-evidence/e2-random-${{ github.run_id }}"
+          ./scripts/collect-durability-evidence.sh \
+            --output "$out" \
+            --build-dir build/unix-debug \
+            --probe-path "$PWD" \
+            --run random-campaign \
+            --campaign-seed "${{ steps.campaign.outputs.seed }}" \
+            --iterations "${{ steps.campaign.outputs.iterations }}"
+          grep -Fq 'Attained evidence level: `E2`' "$out/summary.md"
+          grep -Fq 'Physical power loss exercised: `no`' "$out/summary.md"
+          grep -Fq 'Release-certification eligible: `no`' "$out/summary.md"
+      - name: Upload randomized E2 artifact
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: durability-e2-random-${{ github.run_id }}
+          path: durability-evidence/e2-random-${{ github.run_id }}
+          if-no-files-found: error
           retention-days: 30
 
   e3-macos-apfs-smoke:
@@ -181,27 +299,38 @@ jobs:
           cmake --build --preset unix-debug --target glyphastore_crash_persistence
       - name: Resolve macOS E3 profile
         id: e3
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PROFILE: ${{ inputs.e3_profile }}
+          REQUESTED_REPEAT: ${{ inputs.e3_repeat }}
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+          if [[ "$EVENT_NAME" == "schedule" ]]; then
             echo "profile=campaign" >> "$GITHUB_OUTPUT"
             echo "repeat=2" >> "$GITHUB_OUTPUT"
-          elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "profile=${{ inputs.e3_profile }}" >> "$GITHUB_OUTPUT"
-            echo "repeat=${{ inputs.e3_repeat }}" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$REQUESTED_REPEAT" =~ ^[1-9][0-9]*$ && "$REQUESTED_REPEAT" -le 100 ]] || {
+              echo "E3 repeat must be in 1..100 on hosted CI" >&2
+              exit 2
+            }
+            echo "profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
+            echo "repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
           else
             echo "profile=smoke" >> "$GITHUB_OUTPUT"
             echo "repeat=1" >> "$GITHUB_OUTPUT"
           fi
       - name: Run macos-apfs block-reset harness
+        env:
+          E3_PROFILE: ${{ steps.e3.outputs.profile }}
+          E3_REPEAT: ${{ steps.e3.outputs.repeat }}
         run: |
           out="durability-evidence/e3-macos-apfs-${{ github.run_id }}"
           ./scripts/run-e3-block-reset.sh \
             --output "$out" \
             --build-dir build/unix-debug \
             --platform macos-apfs \
-            --profile "${{ steps.e3.outputs.profile }}" \
+            --profile "$E3_PROFILE" \
             --reset-mechanism abrupt-detach \
-            --repeat "${{ steps.e3.outputs.repeat }}"
+            --repeat "$E3_REPEAT"
           ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind harness
       - name: Upload E3 macOS harness artifact
         if: always()
@@ -245,16 +374,31 @@ jobs:
             glyphastored
       - name: Resolve orchestrator rehearsal knobs
         id: orch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REQUESTED_PROFILE: ${{ inputs.e3_profile }}
+          REQUESTED_REPEAT: ${{ inputs.e3_repeat }}
+          REQUESTED_FAULT_MODE: ${{ inputs.e3_dm_fault_mode }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            echo "e3_profile=${{ inputs.e3_profile }}" >> "$GITHUB_OUTPUT"
-            echo "e3_repeat=${{ inputs.e3_repeat }}" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            [[ "$REQUESTED_REPEAT" =~ ^[1-9][0-9]*$ && "$REQUESTED_REPEAT" -le 100 ]] || {
+              echo "E3 repeat must be in 1..100 on hosted CI" >&2
+              exit 2
+            }
+            echo "e3_profile=$REQUESTED_PROFILE" >> "$GITHUB_OUTPUT"
+            echo "e3_repeat=$REQUESTED_REPEAT" >> "$GITHUB_OUTPUT"
+            echo "dm_fault_mode=$REQUESTED_FAULT_MODE" >> "$GITHUB_OUTPUT"
           else
             # Weekly: smoke checkpoints through the orchestrator path (not promotion).
             echo "e3_profile=smoke" >> "$GITHUB_OUTPUT"
             echo "e3_repeat=1" >> "$GITHUB_OUTPUT"
+            echo "dm_fault_mode=drop-writes" >> "$GITHUB_OUTPUT"
           fi
       - name: Run E0→E3 campaign orchestrator (rehearsal pin)
+        env:
+          DM_FAULT_MODE: ${{ steps.orch.outputs.dm_fault_mode }}
+          E3_PROFILE: ${{ steps.orch.outputs.e3_profile }}
+          E3_REPEAT: ${{ steps.orch.outputs.e3_repeat }}
         run: |
           out="durability-evidence/e3-campaign-${{ github.run_id }}"
           ./scripts/run-e3-campaign.sh \
@@ -266,8 +410,9 @@ jobs:
             --guest-host-boundary loopback-image-on-hosted-ci \
             --platform linux-ext4 \
             --reset-mechanism auto \
-            --e3-profile "${{ steps.orch.outputs.e3_profile }}" \
-            --repeat "${{ steps.orch.outputs.e3_repeat }}" \
+            --dm-fault-mode "$DM_FAULT_MODE" \
+            --e3-profile "$E3_PROFILE" \
+            --repeat "$E3_REPEAT" \
             --e2-repeat 1 \
             --probe-path "$PWD"
           ./scripts/assert-e3-rehearsal-honesty.sh --dir "$out" --kind campaign

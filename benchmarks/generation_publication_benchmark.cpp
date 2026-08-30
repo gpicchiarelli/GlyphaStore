@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "experimental/generation_slot_pool.hpp"
 #include "experimental/pair_read_generation_shell.hpp"
 #include "glyphastore/server/thread_affinity.hpp"
@@ -341,6 +342,7 @@ int main(const int argc, char** argv) try {
         static_cast<void>(run_shared(material, options.affinity, options.reader_get));
         static_cast<void>(run_direct(material, options.affinity, options.reader_get));
     }
+    glyphastore::bench::print_common_metadata(std::cout, options.warmup, options.repeats);
     std::cout << "implementation\trepeat\tseconds\tpublications_per_second\tns_per_publication\t"
                  "sample_p50_ns\tsample_p99_ns\treader_get_p50_ns\treader_get_p99_ns\t"
                  "reader_adoptions\treader_epoch_skips\t"

@@ -13,6 +13,8 @@ output_dir=""
 build_dir=""
 platform="auto"
 reset_mechanism="auto"
+dm_fault_mode="drop-writes"
+dm_fault_mode_explicit="no"
 e3_profile="campaign"
 repeat=10
 e2_repeat=3
@@ -54,8 +56,10 @@ Options:
   --platform auto|linux-ext4|macos-apfs   E3 harness row (default: auto)
   --e3-profile smoke|campaign    Checkpoint set for E3 (default: campaign)
   --reset-mechanism auto|abrupt-detach|dm-flakey
-  --repeat N                     E3 per-checkpoint repetitions (default: 10)
-  --e2-repeat N                  E2 process-kill suite repetitions (default: 3)
+  --dm-fault-mode drop-writes|error-writes|all-io-error
+                                 Linux dm-flakey behavior (default: drop-writes)
+  --repeat N                     E3 per-checkpoint repetitions, 1..1000 (default: 10)
+  --e2-repeat N                  E2 process-kill suite repetitions, 1..1000 (default: 3)
   --probe-path PATH              Writable path on the FS under E2 test (default: repo)
   --image-size-mib N             Passed through to run-e3-block-reset.sh
   --work-root DIR                Scratch parent for the E3 harness
@@ -97,6 +101,12 @@ while [[ $# -gt 0 ]]; do
     --reset-mechanism)
       [[ $# -ge 2 ]] || { echo "error: --reset-mechanism requires a value" >&2; exit 2; }
       reset_mechanism="$2"
+      shift 2
+      ;;
+    --dm-fault-mode)
+      [[ $# -ge 2 ]] || { echo "error: --dm-fault-mode requires a value" >&2; exit 2; }
+      dm_fault_mode="$2"
+      dm_fault_mode_explicit="yes"
       shift 2
       ;;
     --repeat)
@@ -202,12 +212,16 @@ esac
 
 [[ -d "$build_dir" ]] || { echo "error: build directory does not exist: $build_dir" >&2; exit 2; }
 build_dir="$(cd "$build_dir" && pwd)"
-[[ "$repeat" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat must be a positive integer" >&2; exit 2; }
-[[ "$e2_repeat" =~ ^[1-9][0-9]*$ ]] || { echo "error: --e2-repeat must be a positive integer" >&2; exit 2; }
+[[ "$repeat" =~ ^[1-9][0-9]*$ && "$repeat" -le 1000 ]] ||
+  { echo "error: --repeat must be in 1..1000" >&2; exit 2; }
+[[ "$e2_repeat" =~ ^[1-9][0-9]*$ && "$e2_repeat" -le 1000 ]] ||
+  { echo "error: --e2-repeat must be in 1..1000" >&2; exit 2; }
 [[ "$platform" == "auto" || "$platform" == "linux-ext4" || "$platform" == "macos-apfs" ]] ||
   { echo "error: --platform accepts auto|linux-ext4|macos-apfs" >&2; exit 2; }
 [[ "$reset_mechanism" == "auto" || "$reset_mechanism" == "abrupt-detach" || "$reset_mechanism" == "dm-flakey" ]] ||
   { echo "error: --reset-mechanism accepts auto|abrupt-detach|dm-flakey" >&2; exit 2; }
+[[ "$dm_fault_mode" == "drop-writes" || "$dm_fault_mode" == "error-writes" || "$dm_fault_mode" == "all-io-error" ]] ||
+  { echo "error: --dm-fault-mode accepts drop-writes|error-writes|all-io-error" >&2; exit 2; }
 
 if [[ -e "$output_dir" ]]; then
   echo "error: output path already exists; refusing to overwrite: $output_dir" >&2
@@ -240,6 +254,14 @@ fi
 if [[ "$platform" == "macos-apfs" && "$fs_pin" != "apfs" ]]; then
   echo "error: macos-apfs platform requires --fs-pin apfs" >&2
   exit 2
+fi
+if [[ "$dm_fault_mode_explicit" == "yes" ]] &&
+   { [[ "$platform" != "linux-ext4" ]] || [[ "$reset_mechanism" == "abrupt-detach" ]]; }; then
+  echo "error: --dm-fault-mode requires a Linux dm-flakey row" >&2
+  exit 2
+fi
+if [[ "$platform" != "linux-ext4" || "$reset_mechanism" == "abrupt-detach" ]]; then
+  dm_fault_mode="not-applicable"
 fi
 
 sha256_file() {
@@ -310,7 +332,7 @@ if [[ "$skip_e0" == "yes" || "$skip_e1" == "yes" || "$skip_e2" == "yes" || "$ski
 fi
 
 {
-  printf 'schema=glyphastore-durability-e3-campaign-v1\n'
+  printf 'schema=glyphastore-durability-e3-campaign-v2\n'
   printf 'generated_utc=%s\n' "$utc_now"
   printf 'orchestrator=scripts/run-e3-campaign.sh\n'
   printf 'pin_label=%s\n' "$pin_label"
@@ -322,6 +344,7 @@ fi
   printf 'e3_repeat=%s\n' "$repeat"
   printf 'e2_repeat=%s\n' "$e2_repeat"
   printf 'reset_mechanism=%s\n' "$reset_mechanism"
+  printf 'dm_fault_mode_request=%s\n' "$dm_fault_mode"
   printf 'source_commit=%s\n' "$source_commit"
   printf 'source_dirty=%s\n' "$source_dirty"
   printf 'repository=%s\n' "$root"
@@ -344,6 +367,7 @@ fi
   printf -- '- guest_host_boundary: `%s`\n' "$guest_host_boundary"
   printf -- '- platform_row (harness): `%s`\n' "$platform"
   printf -- '- reset_mechanism: `%s`\n' "$reset_mechanism"
+  printf -- '- dm_fault_mode_request: `%s`\n' "$dm_fault_mode"
   printf -- '- mount_options_note: `%s`\n' "${mount_options_note:-<unset>}"
   printf -- '- cache_barrier_note: `%s`\n' "${cache_barrier_note:-<unset>}"
   printf -- '- host_uname: `%s`\n' "$(uname -a)"
@@ -454,6 +478,9 @@ else
     --reset-mechanism "$reset_mechanism"
     --repeat "$repeat"
   )
+  if [[ "$dm_fault_mode" != "not-applicable" && "$dm_fault_mode_explicit" == "yes" ]]; then
+    e3_cmd+=(--dm-fault-mode "$dm_fault_mode")
+  fi
   if [[ -n "$image_size_mib" ]]; then
     e3_cmd+=(--image-size-mib "$image_size_mib")
   fi
@@ -537,7 +564,8 @@ fi
   printf -- '- [ ] E0, E1, and E2 stages passed on this same pin (not skipped)\n'
   printf -- '- [ ] E3 campaign profile covered required checkpoints; repeat ≥ policy minimum\n'
   printf -- '- [ ] Zero FAIL and zero unexplained INCONCLUSIVE outcomes (or each INCONCLUSIVE explained and accepted)\n'
-  printf -- '- [ ] Every retained case has `reset_confirmed=yes` where claimed PASS\n'
+  printf -- '- [ ] Every retained PASS case has `worker_stop_confirmed=yes` and `reset_confirmed=yes`\n'
+  printf -- '- [ ] Exact dm fault mode / reset mechanism and any block-trace limitation were reviewed\n'
   printf -- '- [ ] SHA-256 manifest verifies; tarball retained with release evidence store\n'
   printf -- '- [ ] Row is not hosted-CI / disposable-image-only if claiming production NVMe/SATA\n'
   printf -- '- [ ] Release maintainer recorded artifact reference in release notes\n'
@@ -545,7 +573,20 @@ fi
   printf '\nUntil every box is checked by a human, keep **E3 certified: no**.\n'
 } >"$checklist"
 
-# Manifest over the campaign tree (before tarball).
+tarball_path=""
+if [[ "$skip_tarball" != "yes" ]]; then
+  parent="$(dirname "$output_dir")"
+  base="$(basename "$output_dir")"
+  tarball_path="$parent/${base}.tar.gz"
+  if [[ -e "$tarball_path" ]]; then
+    echo "error: tarball already exists; refusing to overwrite: $tarball_path" >&2
+    exit 2
+  fi
+  # Record before sealing commands.txt into the manifest.
+  record_command "tar -C $parent -czf $tarball_path $base"
+fi
+
+# Manifest over the immutable campaign tree (before tarball).
 manifest="$output_dir/manifest.sha256"
 : >"$manifest"
 checksum_available="yes"
@@ -562,16 +603,7 @@ if [[ "$checksum_available" == "no" ]]; then
   printf 'unavailable  no SHA-256 utility found\n' >"$manifest"
 fi
 
-tarball_path=""
-if [[ "$skip_tarball" != "yes" ]]; then
-  parent="$(dirname "$output_dir")"
-  base="$(basename "$output_dir")"
-  tarball_path="$parent/${base}.tar.gz"
-  if [[ -e "$tarball_path" ]]; then
-    echo "error: tarball already exists; refusing to overwrite: $tarball_path" >&2
-    exit 2
-  fi
-  record_command "tar -C $parent -czf $tarball_path $base"
+if [[ -n "$tarball_path" ]]; then
   tar -C "$parent" -czf "$tarball_path" "$base" || exit 2
   if digest_line="$(sha256_file "$tarball_path" 2>/dev/null)"; then
     printf '%s\n' "$digest_line" >"${tarball_path}.sha256"

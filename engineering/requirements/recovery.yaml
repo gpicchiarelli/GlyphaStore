@@ -17,6 +17,7 @@ requirements:
   - tests/crash/crash_persistence.cpp
   - tests/integration/persistence_recovery_tests.cpp
   - tests/crash/crash_daemon.cpp
+  - scripts/collect-durability-evidence.sh
   piattaforme:
   - linux-x86_64
   - macos-arm64
@@ -24,7 +25,9 @@ requirements:
   evidenze:
   - workflow: ci.yml
   - workflow: durability-evidence.yml
+    note: Deterministic matrices plus scheduled reproducible 256-case randomized crash/reopen artifact
   rischio_residuo:
+  - Random campaign samples nine compaction checkpoint classes, not arbitrary wall-clock or scheduler timing
   - Native-platform exhaustive matrices and disk-full coverage are open
   hazards:
   - HAZ-006

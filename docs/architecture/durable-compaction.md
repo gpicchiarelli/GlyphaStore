@@ -269,4 +269,8 @@ histories, each combining PUT, overwrite, ERASE, expired PUT, and restoration wh
 exactly 64 maximum-size live values. It SIGKILL-tests nine checkpoint classes per seed: durable
 intent, early/middle/final copy, second-output creation and seal, Manifest authority change,
 partial source retirement, and final cleanup. Native power-loss evidence remains before P0-08 can
-be certified across all supported platforms.
+be certified across all supported platforms. A separate bounded `random-campaign` samples a new
+history seed and checkpoint class per iteration from one recorded campaign seed, reopens against the
+same complete sequential oracle, and emits a TSV schedule/outcome report. The hosted weekly profile
+runs 256 cases; local or dedicated-runner campaigns may request up to 10,000. This broadens E2
+state-space sampling but is neither random-timing coverage nor E3/E4 certification.

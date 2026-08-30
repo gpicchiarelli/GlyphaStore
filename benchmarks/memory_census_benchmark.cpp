@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "glyphastore/store/store.hpp"
 #include "harness.hpp"
 #include "store/store_internal.hpp"
@@ -243,7 +244,7 @@ int main(const int argc, char** argv) try {
                                                    : 0U;
 
     std::cout << "# glyphastore paired memory census\n";
-    std::cout << "# git_sha=" << GLYPHASTORE_GIT_SHA << "\n";
+    glyphastore::bench::print_common_metadata(std::cout, 0, 1);
     std::cout << "# accounting=allocation-payload-lower-bound-plus-process-rss\n";
     std::cout << "entries=" << options.entries << " key_bytes=" << options.key_bytes
               << " value_bytes=" << options.value_bytes << " workers=" << options.workers

@@ -49,6 +49,7 @@ requirements:
     the persistence v1 and durability-recovery contracts.
   autorita:
   - docs/spec/persistence-v1.md
+  - docs/spec/recovery-state-matrix-v1.md
   - docs/architecture/durability-recovery.md
   - docs/architecture/durable-compaction.md
   - docs/adr/0039-pre-intent-staged-compaction-output.md
@@ -66,15 +67,21 @@ requirements:
   - tests/integration/compaction_builder_tests.cpp
   - tests/integration/persistence_recovery_compaction_tests.cpp
   - tests/crash/crash_persistence.cpp
+  - engineering/formal/persistence/PersistenceRecovery.tla
+  - engineering/formal/persistence/PersistenceRecovery.cfg
+  - engineering/formal/persistence/run-tlc.sh
   piattaforme:
   - linux-x86_64
   - macos-arm64
   claim_massimo: E2
   evidenze:
   - workflow: durability-evidence.yml
+  - workflow: formal-models.yml
+    note: Bounded abstract write/sync/slot/Manifest/recovery model; required and fail-closed
   rischio_residuo:
   - Filesystem/power-loss certification matrices remain open
   - The post-staging v1 publication/retirement transaction remains a whole-Worker lease
+  - The formal model abstracts byte codecs, real filesystem/device behavior, and multi-transaction composition
   hazards:
   - HAZ-014
   - HAZ-015
@@ -106,6 +113,8 @@ requirements:
   - tests/integration/persistence_recovery_compaction_tests.cpp
   - tests/integration/persistence_recovery_compaction_fileio_tests.cpp
   - tests/unit/store_backup_tests.cpp
+  - tests/crash/crash_persistence.cpp
+  - scripts/run-e3-block-reset.sh
   - scripts/assert-e3-rehearsal-honesty.sh
   piattaforme:
   - linux-x86_64
@@ -115,11 +124,14 @@ requirements:
   - workflow: assurance.yml
     note: validate_durability_claims.py rejects unpinned e3_certified=yes
   - workflow: durability-evidence.yml
-    note: E0 metadata / E2 process-kill; rehearsal keeps e3_certified=no
+    note: E0 metadata / E2 process-kill; paused-worker E3 rehearsal classifies three bounded
+      dm-flakey fault modes and keeps e3_certified=no
   - path: engineering/evidence/platform-durability/
     note: Per-row placeholders only; not E3/E4 certified
   rischio_residuo:
   - Native disk-full, quota, and delayed-writeback campaigns remain open
+  - dm-flakey rehearsal confirms worker stop, fault arming, and mapper removal, but does not yet
+    retain a per-request block trace proving that a particular dirty write crossed the mapper
   - No platform row is E3/E4 certified
   - Compaction FileIoHooks EINTR/short write + sync EINTR + ENOSPC/EDQUOT/EIO/EROFS write + sync EIO staging proofs, plus intent write/sync and post-intent Manifest write/sync FileIoHooks faults, are local/CI only (not device campaigns)
   - Backup FileIoHooks EINTR/short write + sync EINTR + ENOSPC/EDQUOT/EIO/EROFS write + sync EIO copy proofs are local/CI only (not device campaigns)

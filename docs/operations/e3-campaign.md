@@ -4,7 +4,7 @@ Status: descriptive
 Applies to: `scripts/run-e3-campaign.sh`, `scripts/run-e3-block-reset.sh`,
 `scripts/collect-durability-evidence.sh`  
 Owner: release and storage maintainers  
-Last reviewed: 2026-07-31
+Last reviewed: 2026-08-30
 
 Operator procedure to produce a **retained E3 campaign-prep artifact** on a declared hardware/VM
 and filesystem pin. A coding agent cannot certify E3 on real NVMe. This runbook exists so a
@@ -43,7 +43,8 @@ it, plus a reset that is confirmed below the process boundary (and ideally a phy
    - `glyphastore_crash_persistence`
    - daemon crash binaries required by the E2 collector
 3. Linux: root/`sudo` for loop, mount, fsck, optional `dm-flakey` (`e2fsprogs`, `lvm2`).
-4. macOS: ability to run `hdiutil` attach/detach for APFS sparsebundles.
+4. macOS: ability to run `hdiutil` attach/detach and `diskutil`; non-interactive `sudo` for the
+   offline `fsck_apfs -n` check in unattended runs (otherwise cases are `INCONCLUSIVE`).
 5. Disposable target: no unrelated data on the image/device under reset.
 
 Suggested builds:
@@ -72,7 +73,7 @@ Record a stable **redacted** identity. Do not store serials, MACs, or credential
 | `guest_host_boundary` | `loopback-image-on-host-nvme`, `hdiutil-sparsebundle-apfs`, `vm-virtio-blk-ext4-on-nvme`, `physical-nvme-partition-ext4` | Honesty gate |
 | Mount / mkfs | `defaults`, `barrier=1`, APFS volume role | Attach redacted `findmnt` / `diskutil` under `stages/pin-attachments/` |
 | Cache / barrier | virtio `cache=none` / `writeback`; controller write cache on/off | Required for promotion review |
-| Reset mechanism | `abrupt-detach`, `dm-flakey`, physical PDU cut | “Command issued” ≠ “power removed” |
+| Reset mechanism | `abrupt-detach`, `dm-flakey` plus exact fault mode, physical PDU cut | “Command issued” ≠ “power removed”; retain stop/reset confirmation |
 
 ## Sequence: E0 → E1 → E2 → E3
 
@@ -94,7 +95,7 @@ Do not skip stages on a promotion candidate. `--skip-e*` is diagnostic only and 
 |---|---|---|
 | E2 process-kill suite | `--e2-repeat 3` (orchestrator default) | ≥ 3 clean passes on the pinned probe path |
 | E3 per checkpoint | `--repeat 10` (orchestrator default) | ≥ 10 with zero unexplained outcomes for the claimed scope |
-| E3 checkpoint set | harness `campaign` profile (put smoke + bootstrap/rotate) | Narrow put-scope may use smoke set only if the claim text says so; general durable claim needs full matrix scope |
+| E3 checkpoint set | harness `campaign` profile (put smoke + bootstrap/rotate/compaction) | Narrow put-scope may use smoke set only if the claim text says so; general durable claim needs full matrix scope |
 
 Raise `--repeat` when timing jitter or flaky arming appears. Never discard FAIL/INCONCLUSIVE rows.
 
@@ -104,7 +105,7 @@ Per E3 case (checkpoint × repetition), use the matrix definitions:
 
 | Outcome | Meaning |
 |---|---|
-| **PASS** | Reset confirmed below process boundary; remount + non-repairing fsck; recovery oracle accepts |
+| **PASS** | Worker stop and reset confirmed below process boundary; remount + non-repairing fsck; recovery oracle accepts |
 | **FAIL** | Reset confirmed, but oracle disagrees or committed state that must survive is lost/corrupt |
 | **INCONCLUSIVE** | Checkpoint not reached, reset not confirmed, host/harness crash, lost console, fsck/remount infra failure |
 
@@ -133,7 +134,8 @@ sudo -v   # harness needs privileged loop/mount/fsck
   --fs-pin ext4 \
   --guest-host-boundary loopback-image-on-host-filesystem \
   --platform linux-ext4 \
-  --reset-mechanism auto \
+  --reset-mechanism dm-flakey \
+  --dm-fault-mode drop-writes \
   --probe-path "$PWD" \
   --repeat 10 \
   --e2-repeat 3
@@ -176,8 +178,9 @@ Options of note:
 | Flag | Default | Notes |
 |---|---|---|
 | `--e3-profile` | `campaign` | Use `smoke` only for CI / diagnostic rehearsal of the orchestrator path |
-| `--repeat` | `10` | Per-checkpoint E3 reps; CI weekly uses lower values on purpose |
-| `--e2-repeat` | `3` | Process-kill suite reps |
+| `--repeat` | `10` | Per-checkpoint E3 reps; local bound 1..1000, hosted dispatch bound 1..100 |
+| `--e2-repeat` | `3` | Process-kill suite reps; local bound 1..1000 |
+| `--dm-fault-mode` | `drop-writes` | Linux only: `drop-writes`, `error-writes`, or `all-io-error`; the artifact records the selected mode |
 
 ### CI rehearsal (not certification)
 
@@ -186,11 +189,12 @@ Options of note:
 | Trigger | What runs | Claim |
 |---|---|---|
 | PR / push `main` | E2 metadata + linux-ext4 **smoke** harness | Harness regression only |
-| Weekly schedule | E2 process-kill + linux-ext4 **campaign** profile (repeat 3) + macOS APFS campaign (repeat 2) + hosted-ci E0→E3 orchestrator (`--e3-profile smoke`, low reps) | Still `e3_certified=no`; `hardware_class=hosted-ci` cannot promote |
-| `workflow_dispatch` | Operator-chosen E2/E3 profile/repeat; optional orchestrator | Same honesty gates |
+| Weekly schedule | E2 process-kill + 256-case reproducible randomized crash/reopen campaign + linux-ext4 **campaign** profile once for each bounded dm-flakey mode + macOS APFS campaign (repeat 2) + hosted-ci E0→E3 orchestrator (`--e3-profile smoke`, low reps) | Still `e3_certified=no`; `hardware_class=hosted-ci` cannot promote |
+| `workflow_dispatch` | Operator-chosen E2/E3 profile, repeat, and Linux dm-flakey mode; optional orchestrator | Same honesty gates |
 
 After every harness/campaign write, scripts and CI call
-`scripts/assert-e3-rehearsal-honesty.sh`.
+`scripts/assert-e3-rehearsal-honesty.sh`. The validator checks the SHA-256 manifest and rejects a
+harness `PASS` row that lacks paused-worker, reset, filesystem-check, or recovery confirmation.
 
 ## Artifact layout
 
@@ -227,7 +231,8 @@ Copied into every artifact as `promotion-checklist.md`. Promotion is **human-onl
 - [ ] E0, E1, and E2 stages passed on this same pin (not skipped)
 - [ ] E3 campaign profile covered required checkpoints; repeat ≥ policy minimum
 - [ ] Zero FAIL and zero unexplained INCONCLUSIVE outcomes
-- [ ] Every retained PASS case has `reset_confirmed=yes`
+- [ ] Every retained PASS case has `worker_stop_confirmed=yes` and `reset_confirmed=yes`
+- [ ] Exact dm fault mode / reset mechanism and the absence or presence of a block-level trace reviewed
 - [ ] SHA-256 manifest verifies; tarball retained
 - [ ] Row is not hosted-CI / disposable-image-only if claiming production NVMe/SATA
 - [ ] Release maintainer recorded artifact reference in release notes

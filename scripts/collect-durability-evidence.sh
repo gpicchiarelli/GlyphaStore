@@ -9,6 +9,8 @@ build_dir=""
 probe_path="$root"
 run_mode="metadata"
 repeat=1
+campaign_seed=""
+campaign_iterations=""
 
 usage() {
   cat <<'EOF'
@@ -19,8 +21,11 @@ Options:
   --build-dir DIR       CMake build tree containing the crash tests
   --probe-path PATH     Writable directory on the filesystem under test (default: repository)
   --run process-kill    Run all embedded and daemon SIGKILL/reopen tests
+  --run random-campaign Run the reproducible randomized compaction SIGKILL/reopen campaign
+  --campaign-seed N     Decimal uint64 seed required by random-campaign
+  --iterations N        Random campaign cases, 1..10000
   --metadata-only       Collect provenance only (default)
-  --repeat N            Repeat the selected test suite N times (default: 1)
+  --repeat N            Repeat the selected test suite, 1..1000 (default: 1)
   -h, --help            Show this help
 
 This collector records at most E2 process-kill evidence. It never performs,
@@ -63,6 +68,16 @@ while [[ $# -gt 0 ]]; do
       repeat="$2"
       shift 2
       ;;
+    --campaign-seed)
+      [[ $# -ge 2 ]] || { echo "error: --campaign-seed requires a decimal uint64" >&2; exit 2; }
+      campaign_seed="$2"
+      shift 2
+      ;;
+    --iterations)
+      [[ $# -ge 2 ]] || { echo "error: --iterations requires a count" >&2; exit 2; }
+      campaign_iterations="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -76,10 +91,26 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -n "$output_dir" ]] || { echo "error: --output is required" >&2; exit 2; }
-[[ "$run_mode" == "metadata" || "$run_mode" == "process-kill" ]] ||
-  { echo "error: --run accepts only process-kill" >&2; exit 2; }
-[[ "$repeat" =~ ^[1-9][0-9]*$ ]] ||
-  { echo "error: --repeat must be a positive integer" >&2; exit 2; }
+[[ "$run_mode" == "metadata" || "$run_mode" == "process-kill" || "$run_mode" == "random-campaign" ]] ||
+  { echo "error: --run accepts process-kill|random-campaign" >&2; exit 2; }
+[[ "$repeat" =~ ^[1-9][0-9]*$ && "$repeat" -le 1000 ]] ||
+  { echo "error: --repeat must be in 1..1000" >&2; exit 2; }
+if [[ "$run_mode" == "random-campaign" ]]; then
+  [[ "$campaign_seed" =~ ^[0-9]+$ ]] ||
+    { echo "error: --campaign-seed must be a decimal uint64 for random-campaign" >&2; exit 2; }
+  if [[ "${#campaign_seed}" -gt 20 ]] ||
+     { [[ "${#campaign_seed}" -eq 20 ]] && [[ "$campaign_seed" > "18446744073709551615" ]]; }; then
+    echo "error: --campaign-seed exceeds uint64" >&2
+    exit 2
+  fi
+  [[ "$campaign_iterations" =~ ^[1-9][0-9]*$ ]] ||
+    { echo "error: --iterations must be in 1..10000 for random-campaign" >&2; exit 2; }
+  [[ "$campaign_iterations" -le 10000 ]] ||
+    { echo "error: --iterations must be in 1..10000 for random-campaign" >&2; exit 2; }
+else
+  [[ -z "$campaign_seed" && -z "$campaign_iterations" ]] ||
+    { echo "error: campaign options require --run random-campaign" >&2; exit 2; }
+fi
 [[ -e "$probe_path" ]] || { echo "error: probe path does not exist: $probe_path" >&2; exit 2; }
 [[ -d "$probe_path" ]] || { echo "error: probe path must be a directory: $probe_path" >&2; exit 2; }
 if [[ -e "$output_dir" ]]; then
@@ -113,8 +144,10 @@ elif command -v cmake >/dev/null 2>&1; then
   cmake_bin="$(command -v cmake)"
 fi
 test_inventory=""
+if [[ "$run_mode" != "metadata" ]]; then
+  [[ -n "$build_dir" ]] || { echo "error: --build-dir is required for executable evidence" >&2; exit 2; }
+fi
 if [[ "$run_mode" == "process-kill" ]]; then
-  [[ -n "$build_dir" ]] || { echo "error: --build-dir is required for process-kill evidence" >&2; exit 2; }
   [[ -n "$ctest_bin" && -x "$ctest_bin" ]] ||
     { echo "error: executable ctest not found (set CTEST)" >&2; exit 2; }
   [[ -f "$build_dir/CTestTestfile.cmake" ]] ||
@@ -128,6 +161,11 @@ if [[ "$run_mode" == "process-kill" ]]; then
     printf '%s\n' "$test_inventory" >&2
     exit 2
   }
+elif [[ "$run_mode" == "random-campaign" ]]; then
+  [[ -x "$build_dir/glyphastore_crash_persistence" ]] ||
+    { echo "error: missing executable $build_dir/glyphastore_crash_persistence" >&2; exit 2; }
+  [[ -w "$probe_path" ]] ||
+    { echo "error: probe path must be writable for random-campaign evidence: $probe_path" >&2; exit 2; }
 fi
 
 mkdir -p "$output_dir" || exit 2
@@ -176,8 +214,10 @@ append_command_output() {
   printf 'collector=scripts/collect-durability-evidence.sh\n'
   printf 'requested_suite=%s\n' "$run_mode"
   printf 'requested_repetitions=%s\n' "$repeat"
+  printf 'random_campaign_seed=%s\n' "${campaign_seed:-not-applicable}"
+  printf 'random_campaign_iterations=%s\n' "${campaign_iterations:-not-applicable}"
   printf 'power_loss_exercised=no\n'
-  printf 'maximum_possible_level=%s\n' "$([[ "$run_mode" == "process-kill" ]] && printf 'E2' || printf 'E0')"
+  printf 'maximum_possible_level=%s\n' "$([[ "$run_mode" == "metadata" ]] && printf 'E0' || printf 'E2')"
   printf 'source_commit=%s\n' "$source_commit"
   printf 'source_dirty=%s\n' "$source_dirty"
   printf 'repository=%s\n' "$root"
@@ -284,9 +324,11 @@ if [[ -n "$ctest_bin" ]]; then
   append_command_output "ctest" "$ctest_bin" --version
 fi
 
-if [[ "$run_mode" == "process-kill" ]]; then
-  printf '%s\n' "$test_inventory" >"$output_dir/test-inventory.txt"
-  record_command "<ctest> --test-dir <build-directory> -N -R '$crash_regex'"
+if [[ "$run_mode" != "metadata" ]]; then
+  if [[ "$run_mode" == "process-kill" ]]; then
+    printf '%s\n' "$test_inventory" >"$output_dir/test-inventory.txt"
+    record_command "<ctest> --test-dir <build-directory> -N -R '$crash_regex'"
+  fi
   {
     printf '\n[cmake_cache]\n'
     if [[ -r "$build_dir/CMakeCache.txt" ]]; then
@@ -343,6 +385,35 @@ if [[ "$run_mode" == "process-kill" ]]; then
     fi
     iteration=$((iteration + 1))
   done
+elif [[ "$run_mode" == "random-campaign" ]]; then
+  test_result="passed"
+  attained_level="E2"
+  iteration=1
+  while [[ "$iteration" -le "$repeat" ]]; do
+    log="$output_dir/random-campaign-${iteration}.log"
+    report="$output_dir/random-campaign-${iteration}.tsv"
+    record_command "TMPDIR=<probe-path> <crash-binary> --mode random-campaign --campaign-seed <seed> --iterations <count> --report <report>"
+    {
+      printf 'campaign_repeat=%s\n' "$iteration"
+      printf 'campaign_seed=%s\n' "$campaign_seed"
+      printf 'campaign_iterations=%s\n' "$campaign_iterations"
+      printf 'started_utc=%s\n\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+    } >"$log"
+    TMPDIR="$probe_path" "$build_dir/glyphastore_crash_persistence" \
+      --mode random-campaign \
+      --campaign-seed "$campaign_seed" \
+      --iterations "$campaign_iterations" \
+      --report "$report" 2>&1 | tee -a "$log"
+    run_exit="${PIPESTATUS[0]}"
+    printf '\nfinished_utc=%s\nexit_code=%s\n' \
+      "$(date -u '+%Y-%m-%dT%H:%M:%SZ')" "$run_exit" >>"$log"
+    if [[ "$run_exit" -ne 0 ]]; then
+      test_result="failed"
+      attained_level="FAILED"
+      test_exit=1
+    fi
+    iteration=$((iteration + 1))
+  done
 fi
 
 release_eligible="no"
@@ -358,6 +429,10 @@ fi
   printf -- '- Source worktree dirty: `%s`\n' "$source_dirty"
   printf -- '- Requested suite: `%s`\n' "$run_mode"
   printf -- '- Repetitions: `%s`\n' "$repeat"
+  if [[ "$run_mode" == "random-campaign" ]]; then
+    printf -- '- Random campaign seed: `%s`\n' "$campaign_seed"
+    printf -- '- Random campaign cases per repetition: `%s`\n' "$campaign_iterations"
+  fi
   printf -- '- Result: `%s`\n' "$test_result"
   printf -- '- Attained evidence level: `%s`\n' "$attained_level"
   printf -- '- Physical power loss exercised: `no`\n'
@@ -365,7 +440,7 @@ fi
   printf 'This artifact is not a power-loss certification: %s.\n\n' "$release_reason"
   printf 'See `provenance.txt` for the OS, hardware class, filesystem/mount, toolchain,\n'
   printf 'source state, and exact build/probe paths. See `commands.txt` and the process-kill\n'
-  printf 'logs (when present) for reproduction details.\n'
+  printf 'logs and structured campaign reports (when present) for reproduction details.\n'
 } >"$summary"
 
 manifest="$output_dir/manifest.sha256"

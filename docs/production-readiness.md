@@ -53,7 +53,7 @@ The volatile engine under `src/experimental/` is lab-only.
 - [ ] **GATE-CONCURRENCY-SPEC** — Error behavior, limits, time, and concurrency guarantees specified
   State: `IMPLEMENTATA` · Release target: `alpha`
   Requirements: `GS-CONCUR-PAIR-001`, `GS-CONCUR-COMBINE-001`, `GS-CONCUR-LIN-001`, `GS-CONCUR-FAULT-001`, `GS-CONCUR-MEM-001`, `GS-CONCUR-TLA-001`, `GS-CONCUR-LIVE-001`, `GS-CONCUR-LEGACY-001`, `GS-PROTO-WIRE-001`, `GS-PROTO-ERROR-001`, `GS-CORE-CLOSE-001`
-  Residual risk: TLC job best-effort; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design); durable_group/periodic flusher token sharing deferred; adversarial multi-hour combiner fairness evidence open
+  Residual risk: Formal model bounds and declared fairness do not prove real scheduler fairness; checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout (by design); durable_group/periodic flusher token sharing deferred; adversarial multi-hour combiner fairness evidence open
   Client semantics, error taxonomy, concurrency model (including ADR 0037 token combining Phases A–C), B1 checker/hooks/TLA+, legacy_mutex policy, and daemon request/idle timeout (no cancel of admitted Store work) are normative. Phase C daemon mutation windows (≤32) and GET visibility barrier landed in reactor_dispatch / reactor_execute / mutation_window; unit proof mutation_window_tests; ADR 0037 marks Phase C landed.
 
 - [x] **GATE-DISK-WIRE-VERSIONS** — Disk and wire formats versioned with fixtures and matrices
@@ -91,14 +91,14 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-RECOVERY-DETERMINISTIC** — Deterministic recovery after process termination
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-RECOVERY-DET-001`
-  Residual risk: Native exhaustive matrices open
-  Crash suites provide E2 signals; not physical power-loss proof.
+  Residual risk: Randomized coverage samples bounded compaction checkpoint classes; native exhaustive filesystem and arbitrary timing matrices remain open
+  Deterministic crash suites and a retained reproducible randomized campaign provide E2 signals; neither is physical power-loss proof.
 
 - [x] **GATE-WRITE-ORDER** — Write ordering synchronization and manifest publication
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-PERSIST-ORDER-001`, `GS-PERSIST-AMP-001`
-  Residual risk: Filesystem/power-loss certification matrices open; E3/E4 not certified
-  Platform-aware publication with fault and process-kill tests; write-amp and temporary-space budgets reject before compaction intent (GS-PERSIST-AMP-001).
+  Residual risk: The formal proof is an abstract bounded model; filesystem/power-loss certification matrices remain open and E3/E4 are not certified
+  Platform-aware publication with fault and process-kill tests plus a required bounded write/sync/slot/Manifest/recovery model; write-amp and temporary-space budgets reject before compaction intent (GS-PERSIST-AMP-001).
 
 ### Verification
 
@@ -111,8 +111,8 @@ The volatile engine under `src/experimental/` is lab-only.
 - [x] **GATE-FAULT-INJECTION** — Fault injection for allocation filesystem clock socket thread failures
   State: `PROVATA_IN_CI` · Release target: `beta`
   Requirements: `GS-RECOVERY-FAILCLOSED-001`, `GS-PERSIST-FAULT-001`, `GS-PERSIST-AMP-001`
-  Residual risk: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
-  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup; platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
+  Residual risk: Exhaustive socket/thread/clock/hardware power-cut and per-request block tracing remain open; E3 requires a retained pinned campaign
+  Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup. The E3 rehearsal confirms a paused worker before reset and distinguishes bounded dm-flakey drop-write/write-error/all-I/O-error modes; platform-durability evidence paths remain placeholders and E3 honesty is enforced in CI.
 
 - [x] **GATE-FUZZ-CI** — Fuzz targets run in CI with retained corpora
   State: `PROVATA_IN_CI` · Release target: `alpha`

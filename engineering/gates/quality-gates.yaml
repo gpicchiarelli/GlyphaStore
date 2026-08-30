@@ -111,11 +111,12 @@ gates:
   - macos-arm64
   evidenze:
   - workflow: ci.yml
-  - workflow: formal-shard-pair.yml
+  - workflow: formal-models.yml
   stato: IMPLEMENTATA
-  rischio_residuo: TLC job best-effort; checker history size bounded; admitted Store mutations remain
-    non-cancellable by disconnect/timeout (by design); durable_group/periodic flusher token sharing
-    deferred; adversarial multi-hour combiner fairness evidence open
+  rischio_residuo: Formal model bounds and declared fairness do not prove real scheduler fairness;
+    checker history size bounded; admitted Store mutations remain non-cancellable by disconnect/timeout
+    (by design); durable_group/periodic flusher token sharing deferred; adversarial multi-hour combiner
+    fairness evidence open
   riapertura:
   - Execution-token or combining semantics change without ADR 0037 amendment
   - ACK boundary / mutation visibility change without ADR + GATE-DURABLE-ACK evidence
@@ -165,17 +166,22 @@ gates:
   - tests/integration/persistence_recovery_tests.cpp
   - tests/integration/persistence_recovery_compaction_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
+  - engineering/formal/persistence/PersistenceRecovery.tla
+  - engineering/formal/persistence/PersistenceRecovery.cfg
   piattaforme:
   - linux-x86_64
   - macos-arm64
   evidenze:
   - workflow: durability-evidence.yml
+  - workflow: formal-models.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Filesystem/power-loss certification matrices open; E3/E4 not certified
+  rischio_residuo: The formal proof is an abstract bounded model; filesystem/power-loss certification
+    matrices remain open and E3/E4 are not certified
   riapertura:
   - Sync ordering change without ADR
-  narrative: Platform-aware publication with fault and process-kill tests; write-amp and
-    temporary-space budgets reject before compaction intent (GS-PERSIST-AMP-001).
+  narrative: Platform-aware publication with fault and process-kill tests plus a required bounded
+    write/sync/slot/Manifest/recovery model; write-amp and temporary-space budgets reject before
+    compaction intent (GS-PERSIST-AMP-001).
 - id: GATE-RECOVERY-DETERMINISTIC
   titolo: Deterministic recovery after process termination
   sezione: durability_recovery
@@ -191,11 +197,14 @@ gates:
   - macos-arm64
   evidenze:
   - workflow: ci.yml
+  - workflow: durability-evidence.yml
   stato: PROVATA_IN_CI
-  rischio_residuo: Native exhaustive matrices open
+  rischio_residuo: Randomized coverage samples bounded compaction checkpoint classes; native exhaustive
+    filesystem and arbitrary timing matrices remain open
   riapertura:
   - Recovery authority change
-  narrative: Crash suites provide E2 signals; not physical power-loss proof.
+  narrative: Deterministic crash suites and a retained reproducible randomized campaign provide E2
+    signals; neither is physical power-loss proof.
 - id: GATE-FAIL-CLOSED-IO
   titolo: Fail-closed on truncation corruption and I/O failures
   sezione: durability_recovery
@@ -330,6 +339,8 @@ gates:
   - tests/unit/persistence_filesystem_tests.cpp
   - tests/unit/store_backup_tests.cpp
   - tests/integration/compaction_builder_tests.cpp
+  - tests/crash/crash_persistence.cpp
+  - scripts/run-e3-block-reset.sh
   - engineering/tools/validate_durability_claims.py
   - engineering/evidence/platform-durability/
   piattaforme:
@@ -340,13 +351,16 @@ gates:
   - workflow: assurance.yml
   - path: engineering/evidence/platform-durability/
   stato: PROVATA_IN_CI
-  rischio_residuo: Exhaustive socket/thread/clock/hardware power-cut open; E3 requires pinned campaign
+  rischio_residuo: Exhaustive socket/thread/clock/hardware power-cut and per-request block tracing
+    remain open; E3 requires a retained pinned campaign
   riapertura:
   - Removing deterministic seams without replacement
   - e3_certified=yes without pinned campaign
   narrative: Allocation and FS publication seams exist with EINTR/short-I/O/ENOSPC/EIO/EROFS
-    FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup;
-    platform-durability evidence paths are placeholders only; E3 honesty enforced in CI.
+    FileIoHooks coverage across mutation, compaction staging+intent+promotion, and backup. The E3
+    rehearsal confirms a paused worker before reset and distinguishes bounded dm-flakey
+    drop-write/write-error/all-I/O-error modes; platform-durability evidence paths remain
+    placeholders and E3 honesty is enforced in CI.
 - id: GATE-FUZZ-CI
   titolo: Fuzz targets run in CI with retained corpora
   sezione: verification

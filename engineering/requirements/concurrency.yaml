@@ -222,8 +222,8 @@ requirements:
   categoria: concurrency
   criticita: media
   stato: implementato
-  descrizione: A bounded TLA+ model of one shard pair covers publish/adopt and shutdown drain; TLC runs
-    best-effort in CI with a wall-clock timeout.
+  descrizione: A bounded TLA+ model of one shard pair covers publish/adopt safety and fair shutdown
+    drain; TLC is a required fail-closed CI matrix row with a wall-clock bound.
   autorita:
   - docs/adr/0032-paired-concurrency-embedded-store.md
   - engineering/formal/shard_pair/README.md
@@ -236,9 +236,9 @@ requirements:
   - linux-x86_64
   claim_massimo: architectural-prototype
   evidenze:
-  - workflow: formal-shard-pair.yml
+  - workflow: formal-models.yml
   rischio_residuo:
-  - Model omits durable I/O, compaction leases, and multi-shard composition; TLC job is best-effort
+  - Model omits durable I/O, compaction leases, multi-shard composition, and scheduler behavior beyond declared fairness
   hazards:
   - HAZ-003
   - HAZ-027

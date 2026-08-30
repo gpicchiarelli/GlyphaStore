@@ -52,7 +52,8 @@ Profiles and CI wiring: [soak.md](soak.md). GitHub Actions:
 `.github/workflows/ops-runbooks.yml` runs the runbook exercise on every PR/push and a weekly
 30-minute soak; `.github/workflows/soak-extended.yml` is **workflow_dispatch / monthly 1h only**
 (not every PR). `.github/workflows/durability-evidence.yml` archives E2 collector metadata (and
-scheduled process-kill) plus linux-ext4 E3 harness smoke; those uploads are rehearsal artifacts,
+scheduled process-kill plus a 256-case reproducible randomized crash/reopen campaign) and the
+linux-ext4 E3 harness smoke; those uploads are rehearsal artifacts,
 not E3/E4 certification. For a maintainer-run pinned campaign (still `e3_certified=no` until human
 promotion), use [e3-campaign.md](e3-campaign.md) and `scripts/run-e3-campaign.sh`.
 

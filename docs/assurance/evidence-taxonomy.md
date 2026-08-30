@@ -15,7 +15,7 @@ align ([AGENTS.md](../../AGENTS.md)).
 | Label | Meaning | Typical surfaces | May support |
 | --- | --- | --- | --- |
 | `local` | Developer or lab machine; environment not release-controlled | macOS laptop benches, unpinned cores, ad-hoc scripts under `benchmarks/results/local-*` | Debugging, harness bring-up, **non-scaling** relative signals |
-| `CI` | Hosted or self-hosted workflow with pinned actions/scripts | `.github/workflows/*`, sanitizer/crash/fuzz smoke, formal TLC best-effort | Regression/correctness gates (`PROVATA_IN_CI` / local CI proofs) |
+| `CI` | Hosted or self-hosted workflow with pinned actions/scripts | `.github/workflows/*`, sanitizer/crash/fuzz smoke, required bounded formal TLC models | Regression/correctness gates (`PROVATA_IN_CI` / local CI proofs) |
 | `hardware` | Labeled hard-pinned performance or physical durability lab | Runner `glyphastore-linux-perf`, physical E3/E4 campaigns | Absolute throughput/p99 budgets, multi-core scaling claims, durability certification rows |
 | `release` | Tagged artifact + retained supply-chain / compatibility evidence | Signed release assets, SBOM/SLSA, N↔N−1 fixtures, install-consumer on a tag | Distribution/compat claims at the gate’s release level |
 

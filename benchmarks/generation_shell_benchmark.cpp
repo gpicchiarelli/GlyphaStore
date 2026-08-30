@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "experimental/pair_read_generation_shell.hpp"
 #include "glyphastore/store/paired/read_generation.hpp"
 
@@ -325,6 +326,7 @@ int main(const int argc, char** argv) try {
         static_cast<void>(run_direct_once(material));
         static_cast<void>(run_direct_pool_once(material));
     }
+    glyphastore::bench::print_common_metadata(std::cout, options.warmup, options.repeats);
     std::cout << "implementation\trepeat\tseconds\tops_per_second\tns_per_op\t"
                  "shell_allocations\tshell_reuses\tchecksum\n";
     for (std::size_t repeat = 0; repeat < options.repeats; ++repeat) {

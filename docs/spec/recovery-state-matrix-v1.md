@@ -193,6 +193,12 @@ The opt-in `random-matrix` repeats nine representative old/next-authority checkp
 four fixed seeds. Each 96-operation history combines PUT, overwrite, ERASE, expired PUT, and
 restoration, converges to exactly 64 maximum-size live values, and verifies the complete model after
 each of 36 process kills.
+The complementary `random-campaign` mode derives a fresh workload seed and one of those nine
+checkpoint classes for every iteration from a recorded decimal campaign seed using a repository-owned
+deterministic generator. It supports 1–10,000 local cases, writes a row per reopen to a non-overwritten
+TSV report, and keeps the full seed/boundary/outcome schedule reproducible. Hosted CI deliberately caps
+manual runs at 512 cases and schedules 256 cases weekly so timeout pressure cannot silently reduce the
+oracle matrix.
 
 ## 7. Ordinary recovery and rejection matrix
 
@@ -221,6 +227,7 @@ repair, and salvage are separate explicit operator workflows.
 | `glyphastore_crash_sync` | 89 distinct SIGKILL checkpoints across bootstrap, sync mutation, rotation, single-output online compaction, differential online 3-to-2 build/publication, and two-output rollback/retirement cleanup |
 | `glyphastore_crash_persistence --mode copy-matrix` | 63 opt-in multi-output SIGKILL checkpoints which, with the standard matrix, cover every one of 64 Record copies and 152 distinct checkpoints total |
 | `glyphastore_crash_persistence --mode random-matrix` | 36 opt-in recoveries across four reproducible 96-operation multi-output histories and nine authority/copy/cleanup checkpoint classes |
+| `glyphastore_crash_persistence --mode random-campaign` | bounded reproducible sampling of randomized 96-operation histories × nine checkpoint classes; every SIGKILL is followed by full-model reopen verification and a structured outcome row |
 | `glyphastore_crash_periodic` | Record write, Record sync, slot write, and slot sync for deferred durability |
 | `glyphastore_crash_group` | the same four boundaries for strict group commit |
 | `glyphastore_crash_daemon_sync` / `group` / `periodic` | acknowledged wire mutation survives real-daemon SIGKILL; periodic waits through its flush window |
@@ -228,10 +235,13 @@ repair, and salvage are separate explicit operator workflows.
 | [`persistence_recovery_tests.cpp`](../../tests/integration/persistence_recovery_tests.cpp) | lifecycle, routing, sequence, mutation/flush faults, exact rotation completion |
 | [`compaction_recovery_tests.cpp`](../../tests/integration/compaction_recovery_tests.cpp) | old/next authority selection, idempotent rollback/retirement, and cleanup of a partially created second replacement |
 | [`store_tests.cpp`](../../tests/integration/store_tests.cpp) | public bootstrap completion, periodic/group flush, close, and reopen |
+| [`PersistenceRecovery.tla`](../../engineering/formal/persistence/PersistenceRecovery.tla) | bounded abstract Record sync → commit-slot sync → Manifest publication → crash/recovery state space, including fail-closed committed corruption |
 
 These tests establish process-termination and deterministic injected-I/O evidence on development and
-CI filesystems. They do not certify controller power-loss behavior, storage-device write caches,
+CI filesystems. The TLA+ model establishes logical safety only under its stated abstract persistence
+assumptions. None of these proofs certifies controller power-loss behavior, storage-device write caches,
 filesystem-specific guarantees, or cross-release artifacts. Those require the separate platform
 durability evidence matrix. The in-repo E3 block-reset harness
-(`scripts/run-e3-block-reset.sh`) rehearses abrupt detach / dm-flakey on disposable ext4/APFS image
-rows only and must not be reported as E3 certification.
+(`scripts/run-e3-block-reset.sh`) confirms a paused checkpoint worker before rehearsing abrupt detach
+or bounded dm-flakey `drop-writes`, `error-writes`, and `all-io-error` modes on disposable ext4/APFS
+image rows. It records reset/remount/oracle outcomes but must not be reported as E3 certification.

@@ -310,6 +310,7 @@ hazards:
   prove:
   - tests/integration/persistence_recovery_tests.cpp
   - fuzz
+  - engineering/formal/persistence/PersistenceRecovery.tla
   rischio_residuo: CRC not a MAC; no cryptographic authenticity
   stato: accettato
   accettazione_rischio: Threat model accepts checksum-only integrity for prototype
@@ -333,6 +334,7 @@ hazards:
   prove:
   - tests/crash/crash_persistence.cpp
   - tests/integration/persistence_recovery_tests.cpp
+  - engineering/formal/persistence/PersistenceRecovery.tla
   rischio_residuo: Power-loss certification platform dependent
   stato: aperto
   accettazione_rischio: Alternating checksummed slots; E3/E4 open
@@ -424,6 +426,7 @@ hazards:
   - tests/crash/crash_persistence.cpp
   - tests/integration/server_reactor_durable_lifecycle_tests.cpp
   - tests/integration/server_reactor_durable_wire_tests.cpp
+  - engineering/formal/persistence/PersistenceRecovery.tla
   rischio_residuo: OpenBSD fdatasync≡fsync cost; platform matrices open
   stato: mitigato
   accettazione_rischio: Platform-aware sync paths + fault tests

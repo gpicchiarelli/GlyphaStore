@@ -10,10 +10,12 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <optional>
 #include <random>
@@ -23,6 +25,7 @@
 #include <string_view>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <system_error>
 #include <unistd.h>
 #include <utility>
 #include <vector>
@@ -37,6 +40,12 @@ constexpr std::string_view kRotateKey{"rotate-key"};
 constexpr std::uint64_t kCompactionHistoryNowNs{1'000};
 constexpr std::size_t kCompactionHistoryKeyCount{8};
 constexpr std::size_t kMultiOutputHistoryKeyCount{64};
+constexpr std::size_t kMaxRandomCampaignIterations{10'000};
+constexpr std::array<std::string_view, 9> kRandomCampaignBoundaries{
+    "sync_directory#1", "write_record#1",     "write_record#32",  "preallocate_segment#2",
+    "write_record#64",  "sync_commit_slot#4", "sync_directory#3", "remove_compaction_segment#2",
+    "sync_directory#5",
+};
 
 [[nodiscard]] auto crash_run_suffix() -> const std::string& {
     static const auto suffix = std::to_string(static_cast<unsigned long long>(::getpid())) + "-" +
@@ -50,10 +59,23 @@ struct Options {
     std::string scenario{};
     std::string boundary{};
     std::string storage{"sync"};
+    std::string checkpoint_action{"kill"};
     std::uint64_t history_seed{};
+    std::optional<std::uint64_t> campaign_seed{};
+    std::size_t campaign_iterations{};
     std::filesystem::path data_dir{};
     std::filesystem::path checkpoint_dir{};
+    std::filesystem::path report_path{};
 };
+
+[[nodiscard]] auto parse_unsigned(const std::string_view value) -> std::optional<std::uint64_t> {
+    std::uint64_t parsed{};
+    const auto [end, error] = std::from_chars(value.data(), value.data() + value.size(), parsed);
+    if (error != std::errc{} || end != value.data() + value.size()) {
+        return std::nullopt;
+    }
+    return parsed;
+}
 
 [[nodiscard]] auto parse_options(int argc, char** argv) -> std::optional<Options> {
     Options options;
@@ -89,6 +111,12 @@ struct Options {
                 return std::nullopt;
             }
             options.storage = std::string{*value};
+        } else if (arg == "--checkpoint-action") {
+            const auto value = require_value("--checkpoint-action");
+            if (!value || (*value != "kill" && *value != "pause")) {
+                return std::nullopt;
+            }
+            options.checkpoint_action = std::string{*value};
         } else if (arg == "--data-dir") {
             const auto value = require_value("--data-dir");
             if (!value) {
@@ -101,6 +129,31 @@ struct Options {
                 return std::nullopt;
             }
             options.checkpoint_dir = *value;
+        } else if (arg == "--campaign-seed") {
+            const auto value = require_value("--campaign-seed");
+            if (!value) {
+                return std::nullopt;
+            }
+            options.campaign_seed = parse_unsigned(*value);
+            if (!options.campaign_seed) {
+                return std::nullopt;
+            }
+        } else if (arg == "--iterations") {
+            const auto value = require_value("--iterations");
+            if (!value) {
+                return std::nullopt;
+            }
+            const auto parsed = parse_unsigned(*value);
+            if (!parsed || *parsed == 0 || *parsed > kMaxRandomCampaignIterations) {
+                return std::nullopt;
+            }
+            options.campaign_iterations = static_cast<std::size_t>(*parsed);
+        } else if (arg == "--report") {
+            const auto value = require_value("--report");
+            if (!value) {
+                return std::nullopt;
+            }
+            options.report_path = *value;
         } else if (arg == "--help" || arg == "-h") {
             return std::nullopt;
         } else {
@@ -112,11 +165,15 @@ struct Options {
 
 void print_usage(const char* program) {
     std::cerr << "usage: " << program
-              << " --mode {seed|worker|verify|matrix|copy-matrix|random-matrix|periodic-matrix|group-matrix} "
+              << " --mode {seed|worker|verify|matrix|copy-matrix|random-matrix|random-campaign|"
+                 "pause-smoke|periodic-matrix|group-matrix} "
                  "[--scenario bootstrap|put|rotate|compact|compact-multi-build|compact-multi-random|"
                  "compact-multi-rollback|compact-multi-retire] "
                  "[--boundary OP]\n"
-              << "       [--storage {sync|periodic|group}] [--data-dir PATH] [--checkpoint-dir PATH]\n";
+              << "       [--storage {sync|periodic|group}] [--data-dir PATH] [--checkpoint-dir PATH]\n"
+              << "       worker only: [--checkpoint-action {kill|pause}]\n"
+              << "       random-campaign: --campaign-seed UINT64 --iterations 1.."
+              << kMaxRandomCampaignIterations << " [--report NEW_TSV]\n";
 }
 
 [[nodiscard]] auto periodic_storage(const Options& options) -> bool {
@@ -652,6 +709,8 @@ void run_worker(const Options& options) {
     glyphastore::crash::CheckpointState checkpoint{
         .checkpoint_dir = options.checkpoint_dir,
         .kill_at = options.boundary,
+        .action = options.checkpoint_action == "pause" ? glyphastore::crash::CheckpointAction::pause
+                                                       : glyphastore::crash::CheckpointAction::kill,
     };
     const auto hooks = checkpoint.hooks();
 
@@ -1040,6 +1099,36 @@ enum class RecoveryExpectation { absent, optional, present };
         ::waitpid(child, &status, 0);
         return false;
     }
+    if (options.checkpoint_action == "pause") {
+        bool stopped = false;
+        const auto stop_deadline = std::chrono::steady_clock::now() + std::chrono::seconds{5};
+        while (std::chrono::steady_clock::now() < stop_deadline) {
+            int stop_status = 0;
+            const auto wait_result = ::waitpid(child, &stop_status, WUNTRACED | WNOHANG);
+            if (wait_result == child) {
+                if (WIFSTOPPED(stop_status)) {
+                    stopped = true;
+                    break;
+                }
+                std::cerr << "worker exited before pause confirmation for boundary " << options.boundary
+                          << '\n';
+                return false;
+            }
+            if (wait_result < 0) {
+                std::cerr << "waitpid failed while confirming paused worker: " << std::strerror(errno)
+                          << '\n';
+                return false;
+            }
+            ::usleep(1'000);
+        }
+        if (!stopped) {
+            std::cerr << "worker did not stop at boundary " << options.boundary << '\n';
+            ::kill(child, SIGKILL);
+            int status = 0;
+            ::waitpid(child, &status, 0);
+            return false;
+        }
+    }
     ::kill(child, SIGKILL);
     int status = 0;
     ::waitpid(child, &status, 0);
@@ -1105,24 +1194,117 @@ void cleanup_matrix_case(const Options& options) {
     return run_matrix_cases("copy-matrix", "compact-multi-build", boundaries);
 }
 
+[[nodiscard]] auto run_pause_smoke() -> bool {
+    const std::array<std::string, 1> boundaries{"write_record"};
+    Options options{.checkpoint_action = "pause"};
+    const auto boundary = boundaries.front();
+    options.mode = "pause-smoke";
+    options.scenario = "put";
+    options.boundary = boundary;
+    options.data_dir = std::filesystem::temp_directory_path() /
+                       ("glyphastore-crash-pause-" + crash_run_suffix() + "-put-" + boundary) / "store";
+    options.checkpoint_dir =
+        std::filesystem::temp_directory_path() /
+        ("glyphastore-crash-pause-checkpoints-" + crash_run_suffix() + "-put-" + boundary);
+    const auto passed = run_single_case(options);
+    cleanup_matrix_case(options);
+    return passed;
+}
+
 [[nodiscard]] auto run_random_matrix() -> bool {
-    const std::vector<std::string> boundaries{
-        "sync_directory#1", "write_record#1",     "write_record#32",  "preallocate_segment#2",
-        "write_record#64",  "sync_commit_slot#4", "sync_directory#3", "remove_compaction_segment#2",
-        "sync_directory#5",
-    };
     constexpr std::array<std::uint64_t, 4> kSeeds{
         0xA17E'2026'0000'0001ULL,
         0xA17E'2026'0000'0002ULL,
         0xA17E'2026'0000'0003ULL,
         0xA17E'2026'0000'0004ULL,
     };
+    std::vector<std::string> boundaries;
+    boundaries.reserve(kRandomCampaignBoundaries.size());
+    for (const auto boundary : kRandomCampaignBoundaries) {
+        boundaries.emplace_back(boundary);
+    }
     bool success = true;
     for (const auto seed : kSeeds) {
         if (!run_matrix_cases("random-matrix", "compact-multi-random", boundaries, seed)) {
             success = false;
         }
     }
+    return success;
+}
+
+class CampaignPrng {
+  public:
+    explicit constexpr CampaignPrng(const std::uint64_t seed) noexcept : state_(seed) {}
+
+    [[nodiscard]] constexpr auto next() noexcept -> std::uint64_t {
+        state_ += 0x9E37'79B9'7F4A'7C15ULL;
+        auto value = state_;
+        value = (value ^ (value >> 30U)) * 0xBF58'476D'1CE4'E5B9ULL;
+        value = (value ^ (value >> 27U)) * 0x94D0'49BB'1331'11EBULL;
+        return value ^ (value >> 31U);
+    }
+
+  private:
+    std::uint64_t state_;
+};
+
+[[nodiscard]] consteval auto campaign_prng_contract() -> bool {
+    CampaignPrng random{42};
+    return random.next() == 13'679'457'532'755'275'413ULL && random.next() == 2'949'826'092'126'892'291ULL &&
+           random.next() == 5'139'283'748'462'763'858ULL;
+}
+
+static_assert(campaign_prng_contract(), "random crash schedules must remain cross-platform reproducible");
+
+[[nodiscard]] auto run_random_campaign(const Options& campaign) -> bool {
+    if (!campaign.campaign_seed || campaign.campaign_iterations == 0 ||
+        campaign.campaign_iterations > kMaxRandomCampaignIterations) {
+        return false;
+    }
+
+    std::ofstream report;
+    if (!campaign.report_path.empty()) {
+        if (std::filesystem::exists(campaign.report_path)) {
+            throw std::runtime_error("random campaign report already exists");
+        }
+        report.open(campaign.report_path, std::ios::out);
+        if (!report) {
+            throw std::runtime_error("cannot create random campaign report");
+        }
+        report << "iteration\tcampaign_seed\thistory_seed\tboundary\trecovery_outcome\n";
+        report.flush();
+    }
+
+    std::cout << "# random-crash-campaign schema=glyphastore-random-crash-campaign-v1"
+              << " campaign_seed=" << *campaign.campaign_seed
+              << " iterations=" << campaign.campaign_iterations << '\n';
+
+    CampaignPrng random{*campaign.campaign_seed};
+    bool success = true;
+    for (std::size_t iteration = 1; iteration <= campaign.campaign_iterations; ++iteration) {
+        const auto history_seed = random.next();
+        const auto boundary_index =
+            static_cast<std::size_t>(random.next() % kRandomCampaignBoundaries.size());
+        const auto boundary = kRandomCampaignBoundaries[boundary_index];
+        const std::array<std::string, 1> selected_boundary{std::string{boundary}};
+
+        const auto passed =
+            run_matrix_cases("random-campaign", "compact-multi-random", selected_boundary, history_seed);
+        success = passed && success;
+        const auto outcome = passed ? "passed" : "failed";
+        std::cout << "# random-crash-case iteration=" << iteration
+                  << " campaign_seed=" << *campaign.campaign_seed << " history_seed=" << history_seed
+                  << " boundary=" << boundary << " recovery_outcome=" << outcome << '\n';
+        if (report) {
+            report << iteration << '\t' << *campaign.campaign_seed << '\t' << history_seed << '\t' << boundary
+                   << '\t' << outcome << '\n';
+            report.flush();
+        }
+    }
+
+    std::cout << "# random-crash-summary campaign_seed=" << *campaign.campaign_seed
+              << " iterations=" << campaign.campaign_iterations
+              << " outcome=" << (success ? "passed" : "failed") << '\n';
     return success;
 }
 
@@ -1250,6 +1432,16 @@ int main(int argc, char** argv) {
         }
         if (options->mode == "random-matrix") {
             return run_random_matrix() ? 0 : 1;
+        }
+        if (options->mode == "random-campaign") {
+            if (!options->campaign_seed || options->campaign_iterations == 0) {
+                print_usage(argv[0]);
+                return 2;
+            }
+            return run_random_campaign(*options) ? 0 : 1;
+        }
+        if (options->mode == "pause-smoke") {
+            return run_pause_smoke() ? 0 : 1;
         }
         if (options->mode == "periodic-matrix") {
             return run_periodic_matrix() ? 0 : 1;

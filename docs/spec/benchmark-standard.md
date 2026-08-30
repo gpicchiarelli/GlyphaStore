@@ -3,7 +3,7 @@
 Status: normative measurement methodology
 Applies to: performance claims and regression reports
 Owner: performance maintainers
-Last reviewed: 2026-08-26
+Last reviewed: 2026-08-30
 
 ## 1. Purpose
 
@@ -37,6 +37,12 @@ Automated retained reports must fail closed when an input suite is empty, requir
 missing, a result identity is duplicated, counts disagree with the run metadata, values are
 non-finite/non-positive, or min/median/max ordering is invalid. Exploratory parsing may be more
 permissive only when it is explicitly excluded from CI evidence.
+All first-party benchmark outputs accepted by retained reports must emit the same commit,
+architecture, platform, compiler, warmup, and measured-repeat metadata fields. Specialized CSV/TSV
+suites (compaction, maintenance, generation publication, paired shards/Reactor, and memory census)
+must be retained as structured diagnostics rather than accepted as empty suites. Their primary
+metric, unit, direction, sample count, repeat identities, median, minimum, and maximum are part of
+the report contract.
 When CI promises a fixed matrix, a machine-readable source contract must enumerate the complete
 expected file set and per-source warmup/repeat policy. Missing and unexpected suite files or weaker
 sampling both invalidate the retained report.
@@ -147,6 +153,10 @@ inconclusive; only disjoint ranges may be labeled improvement or regression cand
 paired/statistical evidence may supersede this conservative classification. Optimize a named
 bottleneck only after decomposing relevant time (hashing, Index, record codec, I/O, queue, wakeup,
 parsing, response).
+The same range rule applies to specialized diagnostics with their declared direction: higher is
+better for throughput/publication rate, while lower is better for latency, compaction duration,
+CPU duty, and memory footprint. Specialized candidates remain advisory and do not silently enter a
+canonical throughput regression gate unless a separately reviewed requirement and budget says so.
 
 ## 10. Canonical commands
 

@@ -15,6 +15,9 @@ build_dir=""
 platform="auto"
 profile="smoke"
 reset_mechanism="auto"
+dm_fault_mode="drop-writes"
+dm_fault_mode_explicit="no"
+dm_fault_window_ms=250
 image_size_mib=""
 repeat=1
 work_root=""
@@ -31,8 +34,10 @@ Options:
   --profile smoke|campaign               Checkpoint set (default: smoke)
   --reset-mechanism auto|abrupt-detach|dm-flakey
                                          auto picks dm-flakey on Linux when available
+  --dm-fault-mode drop-writes|error-writes|all-io-error
+                                         dm-flakey down-interval behavior (default: drop-writes)
   --image-size-mib N                     Sparse image size (smoke default 1024, campaign 2048)
-  --repeat N                             Repeat each checkpoint case N times (default: 1)
+  --repeat N                             Repeat each checkpoint case, 1..1000 (default: 1)
   --work-root DIR                        Parent for image/mount scratch (default: under output)
   --keep-work                            Retain image/mount scratch after the run
   -h, --help                             Show this help
@@ -77,6 +82,12 @@ while [[ $# -gt 0 ]]; do
       reset_mechanism="$2"
       shift 2
       ;;
+    --dm-fault-mode)
+      [[ $# -ge 2 ]] || { echo "error: --dm-fault-mode requires a value" >&2; exit 2; }
+      dm_fault_mode="$2"
+      dm_fault_mode_explicit="yes"
+      shift 2
+      ;;
     --image-size-mib)
       [[ $# -ge 2 ]] || { echo "error: --image-size-mib requires a count" >&2; exit 2; }
       image_size_mib="$2"
@@ -118,7 +129,10 @@ build_dir="$(cd "$build_dir" && pwd)"
   { echo "error: --platform accepts auto|linux-ext4|macos-apfs" >&2; exit 2; }
 [[ "$reset_mechanism" == "auto" || "$reset_mechanism" == "abrupt-detach" || "$reset_mechanism" == "dm-flakey" ]] ||
   { echo "error: --reset-mechanism accepts auto|abrupt-detach|dm-flakey" >&2; exit 2; }
-[[ "$repeat" =~ ^[1-9][0-9]*$ ]] || { echo "error: --repeat must be a positive integer" >&2; exit 2; }
+[[ "$dm_fault_mode" == "drop-writes" || "$dm_fault_mode" == "error-writes" || "$dm_fault_mode" == "all-io-error" ]] ||
+  { echo "error: --dm-fault-mode accepts drop-writes|error-writes|all-io-error" >&2; exit 2; }
+[[ "$repeat" =~ ^[1-9][0-9]*$ && "$repeat" -le 1000 ]] ||
+  { echo "error: --repeat must be in 1..1000" >&2; exit 2; }
 if [[ -e "$output_dir" ]]; then
   echo "error: output path already exists; refusing to overwrite: $output_dir" >&2
   exit 2
@@ -174,14 +188,36 @@ if [[ "$reset_mechanism" == "dm-flakey" && "$platform" != "linux-ext4" ]]; then
   echo "error: dm-flakey is only supported with linux-ext4" >&2
   exit 2
 fi
+if [[ "$reset_mechanism" != "dm-flakey" ]]; then
+  if [[ "$dm_fault_mode_explicit" == "yes" ]]; then
+    echo "error: --dm-fault-mode requires --reset-mechanism dm-flakey (or auto resolving to it)" >&2
+    exit 2
+  fi
+  dm_fault_mode="not-applicable"
+fi
 
 mkdir -p "$output_dir" || exit 2
 output_dir="$(cd "$output_dir" && pwd)"
 if [[ -z "$work_root" ]]; then
   work_root="$output_dir/work"
+  mkdir -p "$work_root" || exit 2
+  work_root="$(cd "$work_root" && pwd)"
+else
+  # --work-root is a parent, never a deletion target. Own a run-specific
+  # child so cleanup cannot remove pre-existing operator data.
+  mkdir -p "$work_root" || exit 2
+  work_parent="$(cd "$work_root" && pwd)"
+  if [[ "$work_parent" == "$output_dir" || "$work_parent" == "$output_dir"/* ]]; then
+    echo "error: explicit --work-root must be outside the artifact directory" >&2
+    exit 2
+  fi
+  work_root="$work_parent/glyphastore-e3-work-$$"
+  if [[ -e "$work_root" ]]; then
+    echo "error: generated work directory already exists: $work_root" >&2
+    exit 2
+  fi
+  mkdir "$work_root" || exit 2
 fi
-mkdir -p "$work_root" || exit 2
-work_root="$(cd "$work_root" && pwd)"
 
 provenance="$output_dir/provenance.txt"
 commands="$output_dir/commands.txt"
@@ -191,7 +227,7 @@ cases_log="$output_dir/cases.log"
 : >"$provenance"
 : >"$commands"
 : >"$cases_log"
-printf 'iteration\tscenario\tboundary\treset_mechanism\treset_confirmed\tfsck_status\trecovery\toutcome\n' >"$results"
+printf 'iteration\tscenario\tboundary\tcheckpoint_action\tworker_stop_confirmed\treset_mechanism\tdm_fault_mode\treset_confirmed\tfsck_status\trecovery\toutcome\n' >"$results"
 
 record_command() {
   printf '%s\n' "$*" >>"$commands"
@@ -280,40 +316,40 @@ need_sudo_linux() {
 provision_linux_ext4() {
   need_sudo_linux
   record_command "dd if=/dev/zero of=<image> bs=1M count=0 seek=<size>"
-  dd if=/dev/zero of="$image_path" bs=1M count=0 seek="$image_size_mib" status=none
+  dd if=/dev/zero of="$image_path" bs=1M count=0 seek="$image_size_mib" status=none || return 1
   record_command "losetup --find --show --sector-size 512 <image>"
-  loop_device="$(sudo losetup --find --show --sector-size 512 "$image_path")"
+  loop_device="$(sudo losetup --find --show --sector-size 512 "$image_path")" || return 1
   [[ -n "$loop_device" ]] || { echo "error: losetup failed" >&2; exit 1; }
   attach_device="$loop_device"
   if [[ "$reset_mechanism" == "dm-flakey" ]]; then
     command -v dmsetup >/dev/null 2>&1 || { echo "error: dmsetup not found" >&2; exit 2; }
     local sectors
-    sectors="$(sudo blockdev --getsz "$loop_device")"
+    sectors="$(sudo blockdev --getsz "$loop_device")" || return 1
     mapper_name="glypha-e3-$$"
     mapper_path="/dev/mapper/$mapper_name"
-    # Start fully available; drop_writes is armed only at the reset boundary.
+    # Start fully available; the selected down-interval mode is armed only at reset.
     record_command "dmsetup create <mapper> --table '0 <sectors> flakey <loop> 0 0 0'"
-    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0"
+    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0" || return 1
     attach_device="$mapper_path"
   fi
   record_command "mkfs.ext4 -F -L glyphae3 <device>"
-  sudo mkfs.ext4 -F -L glyphae3 "$attach_device" >/dev/null
+  sudo mkfs.ext4 -F -L glyphae3 "$attach_device" >/dev/null || return 1
   record_command "mount -t ext4 -o defaults <device> <mount>"
-  sudo mount -t ext4 -o defaults "$attach_device" "$mount_point"
+  sudo mount -t ext4 -o defaults "$attach_device" "$mount_point" || return 1
   mounted="yes"
-  sudo chmod 777 "$mount_point"
+  sudo chmod 777 "$mount_point" || return 1
 }
 
 provision_macos_apfs() {
   record_command "hdiutil create -size <N>m -fs APFS -volname GlyphaE3 -type SPARSEBUNDLE <image>"
   # .sparsebundle keeps the disposable row self-contained under work_root.
   local bundle="$image_path.sparsebundle"
-  rm -rf "$bundle"
-  hdiutil create -size "${image_size_mib}m" -fs APFS -volname GlyphaE3 -type SPARSEBUNDLE "$image_path" >/dev/null
+  [[ ! -e "$bundle" ]] || return 1
+  hdiutil create -size "${image_size_mib}m" -fs APFS -volname GlyphaE3 -type SPARSEBUNDLE "$image_path" >/dev/null || return 1
   image_path="$bundle"
   record_command "hdiutil attach -mountpoint <mount> <image>"
   local attach_out
-  attach_out="$(hdiutil attach -mountpoint "$mount_point" "$image_path")"
+  attach_out="$(hdiutil attach -mountpoint "$mount_point" "$image_path")" || return 1
   # Prefer the node that is actually mounted at mount_point (APFS container + volume layout).
   disk_id="$(printf '%s\n' "$attach_out" | awk -v mp="$mount_point" 'index($0, mp) {print $1; exit}')"
   if [[ -z "$disk_id" ]]; then
@@ -326,27 +362,27 @@ provision_macos_apfs() {
 
 remount_linux() {
   if [[ "$mounted" == "yes" ]]; then
-    sudo umount -l "$mount_point" >/dev/null 2>&1 || true
+    sudo umount -l "$mount_point" >/dev/null 2>&1 || return 1
     mounted="no"
   fi
   if [[ -n "$mapper_name" ]] && [[ -e "/dev/mapper/$mapper_name" ]]; then
     sudo dmsetup remove --force "$mapper_name" >/dev/null 2>&1 || true
   fi
   if [[ -n "$loop_device" ]] && ! losetup "$loop_device" >/dev/null 2>&1; then
-    loop_device="$(sudo losetup --find --show --sector-size 512 "$image_path")"
+    loop_device="$(sudo losetup --find --show --sector-size 512 "$image_path")" || return 1
   fi
   attach_device="$loop_device"
   if [[ "$reset_mechanism" == "dm-flakey" ]]; then
     local sectors
-    sectors="$(sudo blockdev --getsz "$loop_device")"
+    sectors="$(sudo blockdev --getsz "$loop_device")" || return 1
     mapper_name="glypha-e3-$$"
     mapper_path="/dev/mapper/$mapper_name"
-    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0"
+    sudo dmsetup create "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 0" || return 1
     attach_device="$mapper_path"
   fi
-  sudo mount -t ext4 -o defaults "$attach_device" "$mount_point"
+  sudo mount -t ext4 -o defaults "$attach_device" "$mount_point" || return 1
   mounted="yes"
-  sudo chmod 777 "$mount_point"
+  sudo chmod 777 "$mount_point" || return 1
 }
 
 remount_macos() {
@@ -356,34 +392,60 @@ remount_macos() {
     disk_id=""
   fi
   local attach_out
-  attach_out="$(hdiutil attach -mountpoint "$mount_point" "$image_path")"
+  attach_out="$(hdiutil attach -mountpoint "$mount_point" "$image_path")" || return 1
   disk_id="$(printf '%s\n' "$attach_out" | awk -v mp="$mount_point" 'index($0, mp) {print $1; exit}')"
   if [[ -z "$disk_id" ]]; then
     disk_id="$(printf '%s\n' "$attach_out" | awk '/\/dev\// {print $1; exit}')"
   fi
+  [[ -n "$disk_id" ]] || return 1
+  mounted="yes"
+  chmod 777 "$mount_point" 2>/dev/null || true
+}
+
+unmount_macos_for_fsck() {
+  [[ -n "$disk_id" ]] || return 1
+  record_command "diskutil unmount <apfs-volume>"
+  diskutil unmount "$disk_id" >/dev/null || return 1
+  mounted="no"
+}
+
+mount_macos_after_fsck() {
+  [[ -n "$disk_id" ]] || return 1
+  record_command "diskutil mount -mountPoint <mount> <apfs-volume>"
+  diskutil mount -mountPoint "$mount_point" "$disk_id" >/dev/null || return 1
   mounted="yes"
   chmod 777 "$mount_point" 2>/dev/null || true
 }
 
 run_fsck() {
+  local log_file="$1"
   local status="skipped"
+  local -a privilege_prefix=()
+  if [[ "$EUID" -ne 0 ]]; then
+    if ! command -v sudo >/dev/null 2>&1 || ! sudo -n true >/dev/null 2>&1; then
+      printf 'non-interactive privilege unavailable for offline filesystem check\n' >"$log_file"
+      printf 'privilege-unavailable\n'
+      return 0
+    fi
+    privilege_prefix=(sudo -n)
+  fi
   if [[ "$platform" == "linux-ext4" ]]; then
     # -n: check only; do not repair away torn-write evidence.
-    if sudo fsck.ext4 -n -f "$loop_device" >"$output_dir/fsck-last.log" 2>&1; then
+    if "${privilege_prefix[@]}" fsck.ext4 -n -f "$loop_device" >"$log_file" 2>&1; then
       status="clean-or-ok"
     else
       status="reported-issues"
     fi
   elif [[ "$platform" == "macos-apfs" ]]; then
     if command -v fsck_apfs >/dev/null 2>&1 && [[ -n "$disk_id" ]]; then
-      if sudo fsck_apfs -n "$disk_id" >"$output_dir/fsck-last.log" 2>&1; then
+      if "${privilege_prefix[@]}" fsck_apfs -n "$disk_id" >"$log_file" 2>&1; then
         status="clean-or-ok"
       else
         status="reported-issues"
       fi
     else
       status="tool-unavailable"
-      printf 'fsck_apfs unavailable or disk id missing\n' >"$output_dir/fsck-last.log"
+      printf 'fsck_apfs unavailable or disk id missing\n' >"$log_file"
     fi
   fi
   printf '%s\n' "$status"
@@ -400,31 +462,55 @@ arm_reset_linux_abrupt() {
   sudo losetup -d "$loop_device"
   # Confirm the loop node is gone / not backed by our image.
   if losetup "$loop_device" >/dev/null 2>&1; then
-    printf 'no'
+    return 1
   else
-    reset_confirmed_global="yes"
-    printf 'yes'
+    return 0
   fi
 }
 
 arm_reset_linux_flakey() {
-  local sectors removed_name
+  local sectors removed_name fault_table attempt
   sectors="$(sudo blockdev --getsz "$loop_device")"
   removed_name="$mapper_name"
-  # Drop all subsequent I/O; then force-remove the mapper (no graceful flush path).
-  record_command "dmsetup reload <mapper> --table '... flakey ... drop_writes'"
-  sudo dmsetup suspend "$mapper_name"
-  sudo dmsetup reload "$mapper_name" --table "0 $sectors flakey $loop_device 0 0 60 1 drop_writes"
-  sudo dmsetup resume "$mapper_name"
-  sudo dmsetup remove --force "$mapper_name"
-  mapper_name=""
+  case "$dm_fault_mode" in
+    drop-writes)
+      fault_table="0 $sectors flakey $loop_device 0 0 60 1 drop_writes"
+      ;;
+    error-writes)
+      fault_table="0 $sectors flakey $loop_device 0 0 60 1 error_writes"
+      ;;
+    all-io-error)
+      # No optional feature: every I/O in the down interval returns an error.
+      fault_table="0 $sectors flakey $loop_device 0 0 60"
+      ;;
+    *)
+      echo "error: unsupported dm-flakey fault mode: $dm_fault_mode" >&2
+      return 1
+      ;;
+  esac
+  # Arm a bounded down interval while the worker is confirmed stopped, then
+  # force-remove the mapper without a graceful application flush path.
+  record_command "dmsetup suspend --noflush <mapper>"
+  record_command "dmsetup reload <mapper> --table '<redacted> flakey <loop> 0 0 60 [$dm_fault_mode]'"
+  sudo dmsetup suspend --noflush "$mapper_name" || return 1
+  sudo dmsetup reload "$mapper_name" --table "$fault_table" || return 1
+  sudo dmsetup resume "$mapper_name" || return 1
+  printf 'dm_fault_mode_armed=yes\n'
+  printf 'dm_fault_mode=%s\n' "$dm_fault_mode"
+  printf 'dm_fault_window_ms=%s\n' "$dm_fault_window_ms"
+  sleep 0.25
+  sudo dmsetup remove --force "$mapper_name" || return 1
+  sudo umount -l "$mount_point" >/dev/null 2>&1 || return 1
   mounted="no"
-  sudo umount -l "$mount_point" >/dev/null 2>&1 || true
+  for ((attempt = 0; attempt < 100; ++attempt)); do
+    [[ -e "/dev/mapper/$removed_name" ]] || break
+    sleep 0.05
+  done
   if [[ -e "/dev/mapper/$removed_name" ]]; then
-    printf 'no'
+    return 1
   else
-    reset_confirmed_global="yes"
-    printf 'yes'
+    mapper_name=""
+    return 0
   fi
 }
 
@@ -437,14 +523,12 @@ arm_reset_macos() {
     if hdiutil detach -force "$disk_id" >/dev/null 2>&1; then
       mounted="no"
       disk_id=""
-      reset_confirmed_global="yes"
-      printf 'yes'
-      return
+      return 0
     fi
     record_command "hdiutil detach -force <disk> retry $attempt/3"
     sleep 0.2
   done
-  printf 'no'
+  return 1
 }
 
 perform_reset() {
@@ -454,7 +538,7 @@ perform_reset() {
     macos-apfs-abrupt-detach) arm_reset_macos ;;
     *)
       echo "error: unsupported reset combination $platform/$reset_mechanism" >&2
-      printf 'no'
+      return 1
       ;;
   esac
 }
@@ -482,12 +566,15 @@ campaign_cases() {
 case_list="$( [[ "$profile" == "campaign" ]] && campaign_cases || smoke_cases )"
 
 {
-  printf 'schema=glyphastore-durability-e3-harness-v1\n'
+  printf 'schema=glyphastore-durability-e3-harness-v2\n'
   printf 'generated_utc=%s\n' "$utc_now"
   printf 'collector=scripts/run-e3-block-reset.sh\n'
   printf 'platform_row=%s\n' "$platform"
   printf 'profile=%s\n' "$profile"
   printf 'reset_mechanism=%s\n' "$reset_mechanism"
+  printf 'dm_fault_mode=%s\n' "$dm_fault_mode"
+  printf 'dm_fault_window_ms=%s\n' "$dm_fault_window_ms"
+  printf 'checkpoint_action=pause\n'
   printf 'image_size_mib=%s\n' "$image_size_mib"
   printf 'requested_repetitions=%s\n' "$repeat"
   printf 'power_loss_exercised=simulated-block-reset\n'
@@ -515,7 +602,10 @@ fi
 
 printf 'Provisioning %s row (%s MiB, reset=%s)...\n' "$platform" "$image_size_mib" "$reset_mechanism"
 if [[ "$platform" == "linux-ext4" ]]; then
-  provision_linux_ext4
+  if ! provision_linux_ext4; then
+    echo "error: failed to provision linux-ext4 rehearsal row" >&2
+    exit 1
+  fi
   {
     printf '\n[filesystem]\n'
     findmnt -T "$mount_point" -o SOURCE,TARGET,FSTYPE,OPTIONS 2>/dev/null || df -PT "$mount_point"
@@ -526,7 +616,10 @@ if [[ "$platform" == "linux-ext4" ]]; then
     printf 'guest_host_boundary=loopback-image-on-host-filesystem\n'
   } >>"$provenance"
 else
-  provision_macos_apfs
+  if ! provision_macos_apfs; then
+    echo "error: failed to provision macos-apfs rehearsal row" >&2
+    exit 1
+  fi
   {
     printf '\n[filesystem]\n'
     df -P "$mount_point"
@@ -548,6 +641,7 @@ while [[ "$iteration" -le "$repeat" ]]; do
     data_dir="$mount_point/store-$case_id"
     checkpoint_dir="$host_scratch/checkpoints-$case_id"
     case_log="$output_dir/case-${case_id}.log"
+    fsck_log="$output_dir/fsck-${case_id}.log"
     {
       printf 'iteration=%s scenario=%s boundary=%s\n' "$iteration" "$scenario" "$boundary"
       printf 'started_utc=%s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -557,10 +651,19 @@ while [[ "$iteration" -le "$repeat" ]]; do
       "$iteration" "$scenario" "$boundary" "$reset_mechanism" | tee -a "$cases_log"
 
     # Ensure a live mount before seeding.
+    mount_ready="yes"
     if [[ "$platform" == "linux-ext4" && "$mounted" != "yes" ]]; then
-      remount_linux
+      remount_linux >>"$case_log" 2>&1 || mount_ready="no"
     elif [[ "$platform" == "macos-apfs" && "$mounted" != "yes" ]]; then
-      remount_macos
+      remount_macos >>"$case_log" 2>&1 || mount_ready="no"
+    fi
+    if [[ "$mount_ready" != "yes" ]]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" \
+        "n/a" "mount-unavailable" "INCONCLUSIVE" >>"$results"
+      inconclusive=$((inconclusive + 1))
+      printf 'outcome=INCONCLUSIVE reason=mount-unavailable\n' >>"$case_log"
+      continue
     fi
 
     rm -rf "$checkpoint_dir"
@@ -570,14 +673,16 @@ while [[ "$iteration" -le "$repeat" ]]; do
       seed_ok=1
     fi
     if [[ "$seed_ok" -ne 1 ]]; then
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$iteration" "$scenario" "$boundary" "$reset_mechanism" "no" "n/a" "seed-failed" "FAIL" >>"$results"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" "n/a" \
+        "seed-failed" "FAIL" >>"$results"
       failed=$((failed + 1))
       printf 'outcome=FAIL reason=seed-failed\n' >>"$case_log"
       continue
     fi
 
     "$crash_bin" --mode worker --scenario "$scenario" --boundary "$boundary" \
+      --checkpoint-action pause \
       --data-dir "$data_dir" --checkpoint-dir "$checkpoint_dir" >>"$case_log" 2>&1 &
     worker_pid=$!
 
@@ -594,22 +699,57 @@ while [[ "$iteration" -le "$repeat" ]]; do
       kill -KILL "$worker_pid" 2>/dev/null || true
       wait "$worker_pid" 2>/dev/null || true
       worker_pid=""
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$iteration" "$scenario" "$boundary" "$reset_mechanism" "no" "n/a" "checkpoint-timeout" "INCONCLUSIVE" >>"$results"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" "n/a" \
+        "checkpoint-timeout" "INCONCLUSIVE" >>"$results"
       inconclusive=$((inconclusive + 1))
       printf 'outcome=INCONCLUSIVE reason=checkpoint-timeout\n' >>"$case_log"
       continue
     fi
 
-    # Worker is SIGSTOP'd at the filesystem boundary. Detach/drop below process.
-    reset_confirmed="$(perform_reset | tail -n 1)"
+    # Confirm the worker is stopped before detaching/faulting below the process.
+    # The child self-stops in-hook; the second STOP closes the marker-observation race.
+    worker_stop_confirmed="no"
+    kill -STOP "$worker_pid" 2>/dev/null || true
+    stop_deadline=$((SECONDS + 5))
+    while [[ "$SECONDS" -lt "$stop_deadline" ]]; do
+      worker_state="$(ps -o state= -p "$worker_pid" 2>/dev/null | tr -d '[:space:]')"
+      if [[ "$worker_state" == T* ]]; then
+        worker_stop_confirmed="yes"
+        break
+      fi
+      if ! kill -0 "$worker_pid" 2>/dev/null; then
+        break
+      fi
+      sleep 0.05
+    done
+    if [[ "$worker_stop_confirmed" != "yes" ]]; then
+      kill -KILL "$worker_pid" 2>/dev/null || true
+      wait "$worker_pid" 2>/dev/null || true
+      worker_pid=""
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "no" "$reset_mechanism" "$dm_fault_mode" "no" "n/a" \
+        "worker-stop-unconfirmed" "INCONCLUSIVE" >>"$results"
+      inconclusive=$((inconclusive + 1))
+      printf 'outcome=INCONCLUSIVE reason=worker-stop-unconfirmed\n' >>"$case_log"
+      continue
+    fi
+    printf 'worker_stop_confirmed=yes\n' >>"$case_log"
+
+    # Worker is confirmed SIGSTOP'd at the filesystem boundary. Detach/drop below process.
+    reset_confirmed="no"
+    if perform_reset >>"$case_log" 2>&1; then
+      reset_confirmed="yes"
+      reset_confirmed_global="yes"
+    fi
     kill -KILL "$worker_pid" 2>/dev/null || true
     wait "$worker_pid" 2>/dev/null || true
     worker_pid=""
 
     if [[ "$reset_confirmed" != "yes" ]]; then
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-        "$iteration" "$scenario" "$boundary" "$reset_mechanism" "no" "n/a" "reset-unconfirmed" "INCONCLUSIVE" >>"$results"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "$worker_stop_confirmed" "$reset_mechanism" \
+        "$dm_fault_mode" "no" "n/a" "reset-unconfirmed" "INCONCLUSIVE" >>"$results"
       inconclusive=$((inconclusive + 1))
       printf 'outcome=INCONCLUSIVE reason=reset-unconfirmed\n' >>"$case_log"
       # Best-effort remount so later cases can proceed.
@@ -617,11 +757,28 @@ while [[ "$iteration" -le "$repeat" ]]; do
       continue
     fi
 
-    fsck_status="$(run_fsck)"
+    reopen_ready="yes"
     if [[ "$platform" == "linux-ext4" ]]; then
-      remount_linux >>"$case_log" 2>&1
+      fsck_status="$(run_fsck "$fsck_log")"
+      remount_linux >>"$case_log" 2>&1 || reopen_ready="no"
     else
-      remount_macos >>"$case_log" 2>&1
+      # Reattach, unmount the APFS volume without detaching it, inspect the
+      # offline volume, then mount that same volume for the recovery oracle.
+      if ! remount_macos >>"$case_log" 2>&1 || ! unmount_macos_for_fsck >>"$case_log" 2>&1; then
+        fsck_status="unavailable"
+        reopen_ready="no"
+      else
+        fsck_status="$(run_fsck "$fsck_log")"
+        mount_macos_after_fsck >>"$case_log" 2>&1 || reopen_ready="no"
+      fi
+    fi
+    if [[ "$reopen_ready" != "yes" ]]; then
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$iteration" "$scenario" "$boundary" "pause" "$worker_stop_confirmed" "$reset_mechanism" \
+        "$dm_fault_mode" "$reset_confirmed" "$fsck_status" "remount-failed" "INCONCLUSIVE" >>"$results"
+      inconclusive=$((inconclusive + 1))
+      printf 'fsck_status=%s\noutcome=INCONCLUSIVE reason=remount-failed\n' "$fsck_status" >>"$case_log"
+      continue
     fi
 
     recovery="failed"
@@ -630,16 +787,21 @@ while [[ "$iteration" -le "$repeat" ]]; do
       recovery="passed"
     fi
 
-    if [[ "$recovery" == "passed" ]]; then
+    if [[ "$recovery" == "passed" && "$fsck_status" != "skipped" &&
+          "$fsck_status" != "tool-unavailable" && "$fsck_status" != "privilege-unavailable" &&
+          "$fsck_status" != "unavailable" ]]; then
       outcome="PASS"
       passed=$((passed + 1))
+    elif [[ "$recovery" == "passed" ]]; then
+      outcome="INCONCLUSIVE"
+      inconclusive=$((inconclusive + 1))
     else
       outcome="FAIL"
       failed=$((failed + 1))
     fi
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-      "$iteration" "$scenario" "$boundary" "$reset_mechanism" "$reset_confirmed" "$fsck_status" \
-      "$recovery" "$outcome" >>"$results"
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$iteration" "$scenario" "$boundary" "pause" "$worker_stop_confirmed" "$reset_mechanism" \
+      "$dm_fault_mode" "$reset_confirmed" "$fsck_status" "$recovery" "$outcome" >>"$results"
     {
       printf 'reset_confirmed=%s\n' "$reset_confirmed"
       printf 'fsck_status=%s\n' "$fsck_status"
@@ -664,8 +826,10 @@ release_reason="block-reset simulation / harness rehearsal; e3_certified remains
 if [[ "$source_dirty" == "yes" ]]; then
   release_reason="$release_reason; source worktree is dirty"
 fi
-if [[ "$harness_result" != "passed" ]]; then
+if [[ "$harness_result" == "failed" ]]; then
   attained_label="FAILED"
+elif [[ "$harness_result" == "inconclusive" ]]; then
+  attained_label="INCONCLUSIVE"
 fi
 
 {
@@ -688,6 +852,7 @@ fi
   printf -- '- Platform row: `%s`\n' "$platform"
   printf -- '- Profile: `%s`\n' "$profile"
   printf -- '- Reset mechanism: `%s`\n' "$reset_mechanism"
+  printf -- '- dm-flakey fault mode: `%s`\n' "$dm_fault_mode"
   printf -- '- Result: `%s`\n' "$harness_result"
   printf -- '- Passed / failed / inconclusive: `%s` / `%s` / `%s`\n' "$passed" "$failed" "$inconclusive"
   printf -- '- Attained label: `%s`\n' "$attained_label"

@@ -58,7 +58,9 @@ Crash tests retain failing directories or a reproducible artifact description. R
 Native evidence uses the levels, row metadata, promotion rules, E2 collector, and E3 block-reset
 harness in the [platform durability evidence matrix](../architecture/platform-durability-evidence.md).
 A hosted-runner pass without a pinned filesystem row must not be reported as power-loss or release
-certification. Harness smoke (`linux-ext4` loopback / `macos-apfs` diskimage) is rehearsal only.
+certification. Harness smoke (`linux-ext4` loopback / `macos-apfs` diskimage) is rehearsal only. The
+E3 controller requires a confirmed paused worker before reset; Linux dm-flakey rehearsals classify
+`drop-writes`, `error-writes`, and `all-io-error` separately in their artifacts.
 
 ## 6. CI tiers
 
@@ -68,9 +70,15 @@ certification. Harness smoke (`linux-ext4` loopback / `macos-apfs` diskimage) is
 2. Required extended: ASan/UBSan and TSan.
 3. Nightly / scheduled: continuous fuzz smoke (Sanitizers `fuzz-run`, 120s per target on Monday),
    crash matrix, opt-in exhaustive and randomized compaction matrices, broader compilers/platforms
-   including FreeBSD and OpenBSD VM gates; docs link check; license hygiene; diagnostic coverage.
+   including FreeBSD and OpenBSD VM gates; a weekly 256-case reproducible randomized crash/reopen
+   campaign; docs link check; license hygiene; diagnostic coverage.
 4. Release: full fixtures, installed consumer, benchmarks, long fuzzing, durable platform evidence,
    tag supply-chain (SBOM/Cosign/attest) and GitHub Release artifact attach.
+
+Relevant persistence and paired-runtime changes also run the bounded TLA+ matrix in
+`.github/workflows/formal-models.yml`. Both ShardPair liveness and persistence/recovery safety are
+required: a TLC error or wall-clock timeout fails the job. The persistence model is an abstract
+logical proof and does not raise E2 evidence to physical E3/E4.
 
 Benchmark smoke tests validate harness correctness; they are not performance gates. Performance regression gates require stable runners and historical variance policy. Line coverage artifacts are diagnostic only (§7).
 
@@ -111,12 +119,22 @@ defaults to 60s per target via `scripts/run-fuzzers.sh`. Override with
 
 Run focused binaries while iterating, then the repository workflow appropriate to the change before handoff.
 
+Run both formal models with a locally supplied `tla2tools.jar`:
+
+```sh
+TLA2TOOLS_JAR=/path/to/tla2tools.jar engineering/formal/shard_pair/run-tlc.sh
+TLA2TOOLS_JAR=/path/to/tla2tools.jar engineering/formal/persistence/run-tlc.sh
+```
+
 Run the long multi-output profile separately; together with `glyphastore_crash_sync`, it covers all
 152 persistence checkpoints and every one of the 64 Record copies:
 
 ```sh
 build/macos-debug/glyphastore_crash_persistence --mode copy-matrix
 build/macos-debug/glyphastore_crash_persistence --mode random-matrix
+build/macos-debug/glyphastore_crash_persistence \
+  --mode random-campaign --campaign-seed 42 --iterations 1000 \
+  --report /path/to/new-report.tsv
 ```
 
 To retain attributable E2 evidence from a configured build, run:
@@ -129,6 +147,23 @@ scripts/collect-durability-evidence.sh \
   --run process-kill
 ```
 
+For a checksummed E2 randomized artifact (commit/toolchain/filesystem provenance, exact seed,
+structured per-reopen outcomes, logs, and SHA-256 manifest):
+
+```sh
+scripts/collect-durability-evidence.sh \
+  --output /path/to/new/evidence-directory \
+  --build-dir build/macos-debug \
+  --probe-path . \
+  --run random-campaign \
+  --campaign-seed 42 \
+  --iterations 1000
+```
+
+The harness accepts at most 10,000 cases. GitHub-hosted dispatches cap the value at 512 and the
+weekly profile uses 256; larger campaigns belong on a dedicated runner. This remains E2 evidence,
+not block-reset or physical E3/E4 evidence.
+
 To rehearse an E3 block-reset on a disposable pinned row (still `e3_certified=no`):
 
 ```sh
@@ -136,7 +171,9 @@ scripts/run-e3-block-reset.sh \
   --output /path/to/new/e3-artifact \
   --build-dir build/unix-debug \
   --platform linux-ext4 \
-  --profile smoke
+  --profile smoke \
+  --reset-mechanism dm-flakey \
+  --dm-fault-mode drop-writes
 ```
 
 For an operator **campaign-prep** package (E0→E1→E2→E3, many reps, evidence tarball + SHA-256

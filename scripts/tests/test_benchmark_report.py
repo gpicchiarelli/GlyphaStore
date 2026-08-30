@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.benchmark_report import (
     ENVIRONMENT_IDENTITY_FIELDS,
     add_comparisons,
+    add_diagnostic_comparisons,
     build_tcp_scaling_analysis,
     compare_with_baseline,
     comparison_environment_status,
     environment_identity,
     has_durable_pipeline_profile,
     load_source_contract,
+    main as benchmark_report_main,
     parse_environment,
+    parse_output,
     regressions_over_threshold,
     render_markdown,
     validate_runs,
@@ -50,8 +57,12 @@ def runs(
                     "name": "store_get",
                     "operations": 100,
                     "median_ops_per_second": rate,
-                    "min_ops_per_second": minimum if minimum is not None else rate * 0.9,
-                    "max_ops_per_second": maximum if maximum is not None else rate * 1.1,
+                    "min_ops_per_second": minimum
+                    if minimum is not None
+                    else rate * 0.9,
+                    "max_ops_per_second": maximum
+                    if maximum is not None
+                    else rate * 1.1,
                 }
             ],
         }
@@ -100,11 +111,15 @@ def tcp_runs() -> list[dict[str, object]]:
                     "median_reactor_input_buffer_compactions": pipeline,
                     "maximum_reactor_input_buffer_compactions": pipeline + 1,
                     "median_reactor_input_buffer_bytes_moved": workers * pipeline * 100,
-                    "maximum_reactor_input_buffer_bytes_moved": workers * pipeline * 125,
+                    "maximum_reactor_input_buffer_bytes_moved": workers
+                    * pipeline
+                    * 125,
                     "median_reactor_output_buffer_compactions": workers,
                     "maximum_reactor_output_buffer_compactions": workers + 1,
                     "median_reactor_output_buffer_bytes_moved": workers * pipeline * 50,
-                    "maximum_reactor_output_buffer_bytes_moved": workers * pipeline * 75,
+                    "maximum_reactor_output_buffer_bytes_moved": workers
+                    * pipeline
+                    * 75,
                 }
             ],
         }
@@ -143,6 +158,245 @@ def strict_tcp_run() -> list[dict[str, object]]:
 
 
 class BenchmarkEnvironmentTests(unittest.TestCase):
+    def test_main_rejects_missing_inputs_and_non_object_baselines(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            json_path = root / "report.json"
+            markdown_path = root / "report.md"
+            missing_argv = [
+                "benchmark_report.py",
+                str(root / "missing.txt"),
+                "--json",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+            with (
+                patch("sys.argv", missing_argv),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                benchmark_report_main()
+
+            source = root / "source.txt"
+            baseline = root / "baseline.json"
+            source.write_text("", encoding="utf-8")
+            baseline.write_text("[]\n", encoding="utf-8")
+            baseline_argv = [
+                "benchmark_report.py",
+                str(source),
+                "--baseline",
+                str(baseline),
+                "--json",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+            with (
+                patch("sys.argv", baseline_argv),
+                contextlib.redirect_stderr(io.StringIO()),
+                self.assertRaises(SystemExit),
+            ):
+                benchmark_report_main()
+
+    def test_main_emits_schema_seven_with_specialized_match_count(self) -> None:
+        content = (
+            "# git_sha=abc123\n"
+            "# arch=x86_64\n"
+            "# platform=linux\n"
+            "# compiler=clang 20\n"
+            "# benchmark_warmup=0\n"
+            "# benchmark_repeats=1\n"
+            "scenario,repeat,compact_ms\n"
+            "no-gain,1,1.5\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "compaction.txt"
+            json_path = root / "report.json"
+            markdown_path = root / "report.md"
+            source.write_text(content, encoding="utf-8")
+            argv = [
+                "benchmark_report.py",
+                str(source),
+                "--strict",
+                "--json",
+                str(json_path),
+                "--markdown",
+                str(markdown_path),
+            ]
+            with patch("sys.argv", argv):
+                self.assertEqual(benchmark_report_main(), 0)
+            report = json.loads(json_path.read_text(encoding="utf-8"))
+            markdown = markdown_path.read_text(encoding="utf-8")
+        self.assertEqual(report["schema_version"], 7)
+        self.assertEqual(report["matched_baseline_diagnostics"], 0)
+        self.assertIn("1 specialized diagnostic(s)", markdown)
+
+    def test_specialized_formats_are_parsed_as_directional_diagnostics(self) -> None:
+        common = (
+            "# git_sha=abc123\n"
+            "# arch=x86_64\n"
+            "# platform=linux\n"
+            "# compiler=clang 20\n"
+            "# benchmark_warmup=1\n"
+            "# benchmark_repeats=2\n"
+        )
+        fixtures = {
+            "compaction.txt": (
+                "scenario,repeat,compact_ms,seed_s,reopen_ms\n"
+                "high-reclaim,1,12,1.0,2\n"
+                "high-reclaim,2,10,0.8,1\n",
+                "compact_ms",
+                False,
+            ),
+            "maintenance-throughput.txt": (
+                "mode,repeat,foreground_ops_s,p99_us,max_us\n"
+                "background,1,100,20,30\n"
+                "background,2,120,18,28\n",
+                "foreground_ops_s",
+                True,
+            ),
+            "maintenance-rotation.txt": (
+                "mode,repeat,rotation_ms,publication_wait_ms,seal_ms,create_ms,manifest_publication_ms\n"
+                "background,1,20,5,4,3,2\n"
+                "background,2,18,4,3,2,1\n",
+                "rotation_ms",
+                False,
+            ),
+            "maintenance-idle.txt": (
+                "mode,repeat,process_cpu_duty_pct,last_eval_us\n"
+                "background,1,0.1,20\n"
+                "background,2,0.2,30\n",
+                "process_cpu_duty_pct",
+                False,
+            ),
+            "generation-shell.txt": (
+                "implementation\trepeat\tops_per_second\tns_per_op\n"
+                "direct\t0\t100\t10\n"
+                "direct\t1\t120\t8\n",
+                "ops_per_second",
+                True,
+            ),
+            "generation-publication.txt": (
+                "implementation\trepeat\tpublications_per_second\tns_per_publication\t"
+                "sample_p99_ns\treader_get_p99_ns\n"
+                "direct\t0\t100\t10\t15\t20\n"
+                "direct\t1\t120\t8\t12\t18\n",
+                "publications_per_second",
+                True,
+            ),
+            "paired-shard.txt": (
+                "kind,implementation,workload,repeat,ops_per_second,p99_get_ns\n"
+                "sample,paired,get100,0,100,20\n"
+                "sample,paired,get100,1,120,18\n"
+                "summary,paired,get100,2,999,1\n",
+                "ops_per_second",
+                True,
+            ),
+            "paired-reactor.txt": (
+                "kind,implementation,repeat,ops_per_second,p99_batch_us,p999_batch_us\n"
+                "sample,paired,0,100,20,30\n"
+                "sample,paired,1,120,18,28\n"
+                "summary,paired,2,999,1,1\n",
+                "ops_per_second",
+                True,
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            for filename, (body, metric, higher_is_better) in fixtures.items():
+                path = Path(directory) / filename
+                path.write_text(common + body, encoding="utf-8")
+                parsed = parse_output(path)
+                self.assertEqual(len(parsed["diagnostics"]), 1, filename)
+                diagnostic = parsed["diagnostics"][0]
+                self.assertEqual(diagnostic["metric_name"], metric, filename)
+                self.assertIs(
+                    diagnostic["higher_is_better"], higher_is_better, filename
+                )
+                self.assertEqual(diagnostic["samples"], 2, filename)
+                validate_runs([parsed])
+
+    def test_memory_census_is_a_strict_single_sample_diagnostic(self) -> None:
+        content = (
+            "# git_sha=abc123\n"
+            "# arch=x86_64\n"
+            "# platform=linux\n"
+            "# compiler=clang 20\n"
+            "# benchmark_warmup=0\n"
+            "# benchmark_repeats=1\n"
+            "entries=100 key_bytes=16 value_bytes=64 workers=1 process_rss_bytes=1048576 "
+            "attributed_live_payload_lower_bound_bytes=524288 unattributed_rss_bytes=524288\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "memory-census.txt"
+            path.write_text(content, encoding="utf-8")
+            parsed = parse_output(path)
+        self.assertEqual(parsed["diagnostics"][0]["metric_name"], "process_rss_bytes")
+        self.assertEqual(parsed["diagnostics"][0]["median"], 1048576)
+        validate_runs([parsed])
+        parsed["diagnostics"][0]["warmup"] = 1
+        with self.assertRaisesRegex(ValueError, "warmup does not match"):
+            validate_runs([parsed])
+
+        parsed["diagnostics"][0]["warmup"] = 0
+        parsed["diagnostics"][0]["median"] = 0
+        with self.assertRaisesRegex(ValueError, "median must be finite and positive"):
+            validate_runs([parsed])
+
+    def test_specialized_comparisons_respect_metric_direction(self) -> None:
+        def diagnostic_run(
+            value: float, higher_is_better: bool
+        ) -> list[dict[str, object]]:
+            return [
+                {
+                    "source": "specialized.txt",
+                    "metadata": {},
+                    "results": [],
+                    "diagnostics": [
+                        {
+                            "name": "case",
+                            "dimensions": {"mode": "case"},
+                            "metric_name": "primary",
+                            "unit": "ms" if not higher_is_better else "ops/s",
+                            "higher_is_better": higher_is_better,
+                            "samples": 3,
+                            "median": value,
+                            "min": value - 1,
+                            "max": value + 1,
+                        }
+                    ],
+                }
+            ]
+
+        lower_current = diagnostic_run(20, False)
+        self.assertEqual(
+            add_diagnostic_comparisons(
+                lower_current, {"runs": diagnostic_run(10, False)}
+            ),
+            1,
+        )
+        self.assertEqual(
+            lower_current[0]["diagnostics"][0]["comparison"]["interpretation"],
+            "regression-candidate",
+        )
+
+        higher_current = diagnostic_run(120, True)
+        add_diagnostic_comparisons(higher_current, {"runs": diagnostic_run(100, True)})
+        self.assertEqual(
+            higher_current[0]["diagnostics"][0]["comparison"]["interpretation"],
+            "improvement-candidate",
+        )
+
+        different_sampling = diagnostic_run(120, True)
+        different_sampling[0]["diagnostics"][0]["samples"] = 5
+        self.assertEqual(
+            add_diagnostic_comparisons(
+                different_sampling, {"runs": diagnostic_run(100, True)}
+            ),
+            0,
+        )
+
     def test_environment_file_and_identity_are_deterministic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "environment.txt"
@@ -152,7 +406,8 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             parsed = parse_environment(path)
         self.assertEqual(parsed, {"runner_os": "Linux", "logical_cpu_count": 4})
         self.assertEqual(
-            environment_identity(parsed), environment_identity(dict(reversed(parsed.items())))
+            environment_identity(parsed),
+            environment_identity(dict(reversed(parsed.items()))),
         )
 
     def test_exact_identity_authorizes_comparison(self) -> None:
@@ -181,7 +436,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertNotIn("comparison", current_runs[0]["results"][0])
 
         markdown = render_markdown(runs(90.0), "now", "before", status)
-        self.assertIn("throughput deltas are suppressed", markdown)
+        self.assertIn("benchmark deltas are suppressed", markdown)
         self.assertIn("Current CPU", markdown)
         self.assertNotIn("-10.00%", markdown)
 
@@ -216,9 +471,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
     def test_disjoint_lower_range_is_regression_candidate(self) -> None:
         current_runs = runs(70.0, 65.0, 75.0)
-        matched = add_comparisons(
-            current_runs, {"runs": runs(100.0, 95.0, 105.0)}
-        )
+        matched = add_comparisons(current_runs, {"runs": runs(100.0, 95.0, 105.0)})
         self.assertEqual(matched, 1)
         comparison = current_runs[0]["results"][0]["comparison"]
         self.assertEqual(comparison["interpretation"], "regression-candidate")
@@ -286,7 +539,9 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
 
         fixture = strict_tcp_run()
         fixture[0]["results"][0]["median_reactor_output_buffer_bytes_moved"] = 49
-        with self.assertRaisesRegex(ValueError, "output bytes_moved median/maximum ordering"):
+        with self.assertRaisesRegex(
+            ValueError, "output bytes_moved median/maximum ordering"
+        ):
             validate_runs(fixture)
 
     def test_source_contract_accepts_exact_suite(self) -> None:
@@ -399,7 +654,9 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
         self.assertAlmostEqual(best[4]["speedup_vs_one_worker"], 3.2)
         self.assertAlmostEqual(best[4]["scaling_efficiency_percent"], 80.0)
         self.assertAlmostEqual(best[4]["gain_vs_pipeline_one_percent"], 100.0)
-        self.assertAlmostEqual(best[4]["median_input_buffer_bytes_moved_per_operation"], 3.2)
+        self.assertAlmostEqual(
+            best[4]["median_input_buffer_bytes_moved_per_operation"], 3.2
+        )
         economical = {
             cell["workers"]: cell for cell in analysis["smallest_near_peak_by_workers"]
         }
@@ -449,9 +706,7 @@ class BenchmarkEnvironmentTests(unittest.TestCase):
             {"source": "volatile.txt", **volatile, "results": [dict(result)]},
             {"source": "durable.txt", **durable, "results": [dict(result)]},
         ]
-        markdown = render_markdown(
-            report_runs, "now", None, {"status": "no-baseline"}
-        )
+        markdown = render_markdown(report_runs, "now", None, {"status": "no-baseline"})
         durable_section = markdown.split("## Durable pipeline profile", 1)[1]
         self.assertIn("| durable |", durable_section)
         self.assertNotIn("| volatile |", durable_section)

@@ -28,7 +28,29 @@ against `1ff35c3` is retained separately in
 
 As in the preceding campaign, the full aggregate is not labelled strict: specialized compaction,
 maintenance, and generation formats do not repeat the common metadata in every row. Their harness
-checks passed, but this metadata gap remains open.
+checks passed. The benchmark harness and schema-v7 report parser now close this gap for future runs;
+these historical raw files remain exploratory because evidence must not be rewritten retroactively.
+
+### Post-campaign structured diagnostic reanalysis
+
+The schema-v7 parser was also applied read-only to the retained specialized CSV/TSV files. It
+recovered 108 direction-aware diagnostics and matched all 108 against each environment-compatible
+baseline. Because the historical files predate the common metadata fix, these counts are diagnostic
+reanalysis rather than strict evidence.
+
+| Baseline | Improvement candidate | Regression candidate | Overlapping ranges |
+| --- | ---: | ---: | ---: |
+| `b971a15` | 1 | 10 | 97 |
+| `1ff35c3` | 7 | 4 | 97 |
+
+Against `b971a15`, five of the ten candidates are the common 4.5–7.6% generation-shell shift;
+three are paired-Reactor cells below 2%, one is churn-disabled (-17.56%), and one is the already
+focused high-reclaim compaction result. Against `1ff35c3`, those generation-shell and churn ranges
+overlap; the four candidates instead are direct publication/adopt (-8.39%), forced rotation
+(+116.82% duration), one paired-Reactor cell (-2.14%), and one paired-shard cell (-2.93%). This
+turnover reinforces the existing assessment: the broad negative counts are dominated by host,
+scheduler, and I/O variability, while the retained raw phase metrics remain available for focused
+reproduction.
 
 ## Immediate comparison with `b971a15`
 

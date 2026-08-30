@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/store.hpp"
@@ -358,10 +359,9 @@ int main(int argc, char** argv) {
         };
 
         std::cout << "# benchmark=glyphastore_durable_compaction\n";
-        std::cout << "# git_sha=" << GLYPHASTORE_GIT_SHA << '\n';
+        glyphastore::bench::print_common_metadata(std::cout, options.warmups, options.repeats);
         std::cout << "# storage_mode=durable-periodic;seed_flush_before_measurement=true\n";
         std::cout << "# compaction_scope=public Store::compact;one Worker;maintenance disabled\n";
-        std::cout << "# warmups=" << options.warmups << ";measured_repeats=" << options.repeats << '\n';
         std::cout << std::fixed << std::setprecision(6);
         std::cout << "scenario,repeat,operations,live_keys,value_bytes,compacted,seed_s,compact_ms,reopen_ms,"
                      "verify_ms,segments_before,segments_after,logical_mib_before,logical_mib_after,"

@@ -3,7 +3,7 @@
 Status: roadmap
 Applies to: persistence v1 and every storage mode that claims restart durability
 Owner: release and storage maintainers
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-30
 
 This document records what each kind of test can establish and what GlyphaStore has established on
 each platform/filesystem row. A hosted runner whose filesystem, mount options, cache path, and
@@ -39,7 +39,7 @@ evidence only. Retained release-grade E3/E4 campaign artifacts do not exist yet.
 | Platform/filesystem row | Automated evidence available | Highest defensible current claim | Evidence path placeholder | Missing before certification |
 |---|---|---|---|---|
 | macOS / APFS | Native build/test workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform macos-apfs` (hdiutil sparsebundle + `detach -force`); scheduled CI harness smoke | E2 when a collector artifact records an actual passing native run; E3-harness rehearsal when the APFS diskimage campaign artifact is retained — **not E3 certified** | [`engineering/evidence/platform-durability/macos-apfs/`](../../engineering/evidence/platform-durability/macos-apfs/) | Pinned Apple hardware/storage (not only a disk image on a hosted runner), APFS and mount metadata, reviewed abrupt-loss campaign with repetitions, then E4 |
-| Linux / ext4 | Hosted Linux workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform linux-ext4` (sparse image + losetup + optional dm-flakey); PR/schedule CI harness smoke | E2 only for a separately recorded run on a declared ext4 mount; E3-harness rehearsal on loopback/mapper — **not E3 certified** for production NVMe/SATA ext4 | [`engineering/evidence/platform-durability/linux-ext4/`](../../engineering/evidence/platform-durability/linux-ext4/) | Dedicated ext4 block device or VM disk (beyond loopback-on-hosted-FS), mount/cache/barrier metadata, reviewed reset campaign, then E4 |
+| Linux / ext4 | Hosted Linux workflow; E2 collector; `scripts/run-e3-block-reset.sh --platform linux-ext4` (sparse image + losetup + dm-flakey); PR drop-write smoke and scheduled three-mode fault rehearsal | E2 only for a separately recorded run on a declared ext4 mount; E3-harness rehearsal on loopback/mapper — **not E3 certified** for production NVMe/SATA ext4 | [`engineering/evidence/platform-durability/linux-ext4/`](../../engineering/evidence/platform-durability/linux-ext4/) | Dedicated ext4 block device or VM disk (beyond loopback-on-hosted-FS), mount/cache/barrier metadata, per-request block trace or equivalent reset proof, reviewed campaign, then E4 |
 | Linux / XFS | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | [`engineering/evidence/platform-durability/linux-xfs/`](../../engineering/evidence/platform-durability/linux-xfs/) | Native XFS job, E2 run, reset campaign and artifacts |
 | Linux / btrfs | Code and suites are portable to the row; no pinned row in current CI | E1 implementation coverage; E2/E3 row evidence not retained | *(not scaffolded; row remains open)* | Native btrfs job, E2 run, reset campaign and artifacts |
 | FreeBSD / UFS | Native FreeBSD VM workflow builds and runs the general suite (`.github/workflows/freebsd.yml`); guest storage row is not pinned | Portability/regression signal, not UFS certification | [`engineering/evidence/platform-durability/freebsd-ufs/`](../../engineering/evidence/platform-durability/freebsd-ufs/) | Pin UFS mount metadata, E2 collector artifact, then E3/E4 campaign |
@@ -101,22 +101,26 @@ scripts/collect-durability-evidence.sh \
 ```
 
 CI: `.github/workflows/durability-evidence.yml` archives metadata on every change, process-kill on the
-weekly schedule / manual dispatch, E3 harness smoke on PRs, weekly campaign-profile loopback/APFS
-rehearsal plus a hosted-ci E0→E3 orchestrator path, and never labels the upload as power-loss
+weekly schedule / manual dispatch (including a retained reproducible randomized E2 crash/reopen
+campaign), E3 harness smoke on PRs, a weekly three-mode Linux block-fault matrix, APFS campaign
+rehearsal, and a hosted-ci E0→E3 orchestrator path. It never labels an upload as power-loss
 certification (`scripts/assert-e3-rehearsal-honesty.sh`).
 
 ## E3 block-reset harness (first pinned rehearsal rows)
 
 `scripts/run-e3-block-reset.sh` provisions a **disposable** filesystem row, arms an external reset
-below the process boundary at named persistence checkpoints (worker `SIGSTOP` via the existing crash
-hooks), remounts, runs `fsck` without repair (`-n`), and evaluates the same recovery oracle as
+below the process boundary at named persistence checkpoints, and asks the crash hook to `SIGSTOP`
+the worker instead of using the ordinary E2 `SIGKILL`. The controller independently confirms the
+stopped state before faulting or detaching the row; a missing confirmation is `INCONCLUSIVE`. It then
+kills the stopped worker, runs an offline filesystem check without repair (`-n`; APFS is temporarily
+reattached and unmounted for this step), remounts, and evaluates the same recovery oracle as
 `glyphastore_crash_persistence`.
 
 Preferred first-row paths:
 
 | Row label | Provisioning | Reset mechanisms |
 |---|---|---|
-| `linux-ext4` | sparse image → `losetup` → `mkfs.ext4` → mount; optional `dm-flakey` mapper | `abrupt-detach` (lazy umount + `losetup -d`); `dm-flakey` (`drop_writes` then force-remove) |
+| `linux-ext4` | sparse image → `losetup` → `mkfs.ext4` → mount; optional `dm-flakey` mapper | `abrupt-detach` (lazy umount + `losetup -d`); `dm-flakey` with `drop-writes`, `error-writes`, or `all-io-error`, then force-remove |
 | `macos-apfs` | `hdiutil` APFS sparsebundle attached at a private mountpoint | `hdiutil detach -force` |
 
 ```sh
@@ -126,7 +130,8 @@ scripts/run-e3-block-reset.sh \
   --build-dir build/unix-debug \
   --platform linux-ext4 \
   --profile smoke \
-  --reset-mechanism auto
+  --reset-mechanism dm-flakey \
+  --dm-fault-mode error-writes
 
 # macOS APFS disk-image smoke
 scripts/run-e3-block-reset.sh \
@@ -140,7 +145,8 @@ scripts/run-e3-block-reset.sh \
 Profiles:
 
 - `smoke` — `put` checkpoints `write_record`, `sync_record`, `write_commit_slot`, `sync_commit_slot`
-- `campaign` — smoke plus `bootstrap sync_commit_slot` and `rotate sync_commit_slot#2`
+- `campaign` — smoke plus `bootstrap sync_commit_slot`, `rotate sync_commit_slot#2`, and compaction
+  intent/promotion checkpoints (`write_compaction_intent`, `rename_segment`, `sync_directory#3`)
 
 Checkpoint markers live on the **host** (`host-scratch/`); the Store data directory lives on the
 test volume so a block reset cannot erase the arming evidence. For macOS detach, prefer the mounted
@@ -148,15 +154,23 @@ APFS volume node from `hdiutil attach` output (not the first `/dev/disk*` line, 
 GUID partition scheme). Image size defaults (1 GiB smoke / 2 GiB campaign) exceed the Store’s
 default 256 MiB free-space reserve plus Segment preallocate.
 
-Every harness artifact sets `e3_certified=no` and `physical_power_cut=no`. A green CI job means the
+Every harness artifact sets `e3_certified=no` and `physical_power_cut=no`. Per-case results retain
+the requested checkpoint action, independent worker-stop confirmation, reset mechanism, dm-flakey
+mode, reset confirmation, fsck status, recovery result, and outcome. A green CI job means the
 harness and recovery oracle rehearsed successfully on that disposable row, not that GlyphaStore is
 certified for sudden power loss on production hardware.
 
 ### dm-flakey notes (Linux)
 
 - Requires root, `dmsetup`, and a loop (or real) block device underneath.
-- Keep the flakey table fully available while seeding and reaching the checkpoint; switch to
-  `drop_writes` only at the armed reset, then `dmsetup remove --force`.
+- Keep the flakey table fully available while seeding and reaching the checkpoint. At the armed
+  reset, the mapper is suspended with `--noflush`, and `--dm-fault-mode` selects `drop-writes`
+  (silently discard writes), `error-writes` (fail writes), or `all-io-error` (no optional feature,
+  so all I/O fails during the down interval), using
+  the semantics in the [Linux kernel dm-flakey documentation](https://cdn.kernel.org/doc/html/latest/admin-guide/device-mapper/dm-flakey.html).
+- The harness confirms that the fault table was armed, holds a bounded 250 ms window, and confirms
+  mapper removal. It does **not** claim that a particular dirty write reached the mapper during that
+  window; absence of a block-level I/O trace remains a stated limitation of this rehearsal row.
 - Confirm mapper removal separately from “reload succeeded.” A timeout, lost console, or failed
   remove is **INCONCLUSIVE**, not PASS.
 - dm-flakey on loopback-over-ext4-on-hosted-disk still inherits the host’s durability; treat it as
@@ -168,9 +182,9 @@ certified for sudden power loss on production hardware.
 
 | Outcome | When |
 |---|---|
-| **PASS** | Reset confirmed below the process boundary; remount succeeds; `fsck -n` (or platform equivalent) runs without silent repair; recovery oracle accepts the required/optional/forbidden visibility for that checkpoint |
+| **PASS** | Worker stop and reset confirmed below the process boundary; remount succeeds; `fsck -n` (or platform equivalent) runs without silent repair; recovery oracle accepts the required/optional/forbidden visibility for that checkpoint |
 | **FAIL** | Reset confirmed, but reopen/oracle disagrees with the recovery matrix, or the Store corrupts committed state that must survive |
-| **INCONCLUSIVE** | Checkpoint not reached, reset not confirmed, host/harness crash, lost console, or fsck/remount infrastructure failure |
+| **INCONCLUSIVE** | Checkpoint or worker stop not confirmed, reset not confirmed, host/harness crash, lost console, missing non-interactive fsck privilege/tool, or fsck/remount infrastructure failure |
 
 Failed and inconclusive rows are retained; they are never discarded to beautify a campaign.
 

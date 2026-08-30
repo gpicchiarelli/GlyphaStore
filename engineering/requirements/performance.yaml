@@ -16,7 +16,10 @@ requirements:
     It derives the smallest measured pipeline retaining at least 95% of the best same-Worker median,
     exposing that economical depth as advice rather than silently changing client behavior.
     Durable profile summaries require explicit durable storage metadata and cannot be inferred from
-    shared completion counters alone.
+    shared completion counters alone. First-party specialized CSV/TSV benchmarks emit the common
+    evidence metadata and are parsed into direction-aware structured diagnostics with complete
+    repeat identities and ordered ranges; these diagnostics remain advisory unless a separate
+    reviewed budget explicitly promotes them into a gate.
   autorita:
   - docs/spec/benchmark-standard.md
   - docs/benchmarks/paired-shards-plan.md

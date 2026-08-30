@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "experimental/paired_shard.hpp"
 #include "glyphastore/store/config.hpp"
 #include "glyphastore/store/store.hpp"
@@ -413,9 +414,9 @@ int main(int argc, char** argv) {
         std::vector<Measurement> measurements;
         measurements.reserve((options.warmup + options.repeats) * 4U);
 
-        std::cout << "# glyphastore paired-shard A/B benchmark\n"
-                  << "# git=" << GLYPHASTORE_GIT_SHA << "\n"
-                  << "# operations=" << options.operations << " keys=" << options.keys
+        std::cout << "# glyphastore paired-shard A/B benchmark\n";
+        glyphastore::bench::print_common_metadata(std::cout, options.warmup, options.repeats);
+        std::cout << "# operations=" << options.operations << " keys=" << options.keys
                   << " value_bytes=" << options.value_bytes << " repeats=" << options.repeats
                   << " warmup=" << options.warmup << " batch_records=" << options.batch_records
                   << " batch_wait_us=" << options.batch_wait_us << "\n"

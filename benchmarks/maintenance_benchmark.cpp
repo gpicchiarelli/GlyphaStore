@@ -1,3 +1,4 @@
+#include "benchmark_metadata.hpp"
 #include "glyphastore/core/error.hpp"
 #include "glyphastore/core/key_hash.hpp"
 #include "glyphastore/core/types.hpp"
@@ -1157,10 +1158,9 @@ int main(int argc, char** argv) {
         }
 
         std::cout << "# benchmark=glyphastore_concurrent_maintenance\n";
-        std::cout << "# git_sha=" << GLYPHASTORE_GIT_SHA << '\n';
+        glyphastore::bench::print_common_metadata(std::cout, options.warmups, options.repeats);
         std::cout << "# scenario=" << scenario_name(options.scenario) << '\n';
-        std::cout << "# warmups=" << options.warmups << ";measured_repeats=" << options.repeats
-                  << ";threads=" << options.threads << ";operations=" << options.operations
+        std::cout << "# threads=" << options.threads << ";operations=" << options.operations
                   << ";keys=" << options.keys << ";value_bytes=" << options.value_bytes
                   << ";reclaim_value_bytes=" << options.reclaim_value_bytes
                   << ";put_percent=" << options.put_percent << ";cooldown_ms=" << options.cooldown_ms << '\n';

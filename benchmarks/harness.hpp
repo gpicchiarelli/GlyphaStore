@@ -1,5 +1,7 @@
 #pragma once
 
+#include "benchmark_metadata.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
@@ -523,35 +525,9 @@ template <typename SetupFn, typename BodyFn>
 }
 
 inline void print_metadata(std::ostream& out, const RunSettings& settings) {
-#ifdef GLYPHASTORE_GIT_SHA
-    out << "# git_sha=" << GLYPHASTORE_GIT_SHA << '\n';
-#else
-    out << "# git_sha=unknown\n";
-#endif
-#if defined(__aarch64__)
-    out << "# arch=arm64\n";
-#elif defined(__x86_64__)
-    out << "# arch=x86_64\n";
-#else
-    out << "# arch=unknown\n";
-#endif
-#if defined(__APPLE__)
-    out << "# platform=macos\n";
-#elif defined(__linux__)
-    out << "# platform=linux\n";
-#elif defined(__FreeBSD__)
-    out << "# platform=freebsd\n";
-#elif defined(__OpenBSD__)
-    out << "# platform=openbsd\n";
-#else
-    out << "# platform=unknown\n";
-#endif
-    out << "# compiler=" << __VERSION__ << '\n';
-    out << "# benchmark_warmup=" << settings.warmup_iterations << '\n';
-    out << "# benchmark_repeats=" << settings.measured_iterations << '\n';
+    print_common_metadata(out, settings.warmup_iterations, settings.measured_iterations);
     out << "# cpu_pin_requested=" << (settings.pin_cpu ? 1 : 0) << '\n';
     out << "# cpu_pin_applied=" << (cpu_pin_applied() ? 1 : 0) << '\n';
-    out << "# note=use plugged-in power; thermal throttling affects spread\n";
 }
 
 inline void print_result(std::ostream& out, const Result& result) {

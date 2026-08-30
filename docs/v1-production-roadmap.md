@@ -235,7 +235,8 @@ periodic/group put, and rotation checkpoints. Instance-local raw I/O seams force
 `pread`/`pwrite`, `EINTR`, synchronization `EIO`, `ENOSPC`/`EDQUOT`, and `EROFS`. The
 [platform durability evidence matrix](architecture/platform-durability-evidence.md) defines
 cumulative E0–E4 claims, provenance, promotion rules, a collector for native E2 artifacts, and an
-in-repo E3 block-reset harness for linux-ext4 loopback / macOS APFS diskimage rehearsal,
+in-repo E3 block-reset harness for linux-ext4 loopback / macOS APFS diskimage rehearsal (including
+confirmed paused-worker arming and distinct bounded dm-flakey drop/error modes),
 campaign orchestrator (`scripts/run-e3-campaign.sh`), honesty assert
 (`scripts/assert-e3-rehearsal-honesty.sh`), and weekly CI campaign-profile / orchestrator rehearsal
 (still `e3_certified=no`).
@@ -295,7 +296,7 @@ write amplification remain within configured limits; no format change is introdu
 **Evidence:** planner, intent codec, filesystem, integration recovery, builder, runtime, model-
 history, SIGKILL, and public integration coverage are summarized in
 [crash-safe durable compaction](architecture/durable-compaction.md) and the crash harness
-profiles (`standard`, `copy-matrix`, `random-matrix`).
+profiles (`standard`, `copy-matrix`, `random-matrix`, `random-campaign`).
 
 ## P1 — complete the product contract
 
