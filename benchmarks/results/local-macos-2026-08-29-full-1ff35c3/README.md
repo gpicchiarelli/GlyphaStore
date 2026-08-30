@@ -13,8 +13,10 @@ durability certification.
 - TCP volatile, pipeline 1/8/32/128, multi-pair and mixed workloads;
 - sync/group/periodic durability, embedded and TCP paths;
 - experimental paired Reactor A/B, compaction, maintenance, rotation, churn;
-- 222 source files aggregated into the strict report (`results.md` /
-  `results.json`).
+- 222 raw source files aggregated into the generic report (`results.md` /
+  `results.json`). The complete suite is not strict-parser evidence because the
+  specialized compaction/maintenance formats do not repeat all common metadata
+  inside each raw file.
 
 Exact invocations are in `commands.txt`, machine record in `environment.txt`.
 
