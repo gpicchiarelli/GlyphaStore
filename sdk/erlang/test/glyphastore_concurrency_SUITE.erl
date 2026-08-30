@@ -641,8 +641,8 @@ wait_until_held(Server) ->
 wait_until_held(_Server, _Need, 0) ->
     error(hold_not_registered);
 wait_until_held(#{tab := Tab} = Server, Need, Left) ->
-    case ets:lookup(Tab, held) of
-        [{held, Held}] when length(Held) >= Need ->
+    case length(ets:match_object(Tab, {{held, '_'}, '_'})) of
+        Held when Held >= Need ->
             ok;
         _ ->
             timer:sleep(10),

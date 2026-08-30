@@ -303,7 +303,7 @@ auto Reactor::accept_ready(const bool tls_endpoint) -> Status {
             // Drop the peer without adopting; SocketHandle closes on destroy.
             continue;
         }
-        ConnectionHandoff handoff{.socket = std::move(**accepted), .last_activity = now};
+        ConnectionHandoff handoff{.socket = std::move(accepted->value()), .last_activity = now};
         if (tls_endpoint) {
             if (!tls_) {
                 continue;
@@ -360,7 +360,7 @@ auto Reactor::accept_unix_ready() -> Status {
         if (abuse_ && !abuse_->try_admit_accept(now)) {
             continue;
         }
-        ConnectionHandoff handoff{.socket = std::move(**accepted), .last_activity = now};
+        ConnectionHandoff handoff{.socket = std::move(accepted->value()), .last_activity = now};
         if (config_.unix_peercred) {
             auto credentials = peer_credentials(handoff.socket.descriptor());
             if (!credentials) {

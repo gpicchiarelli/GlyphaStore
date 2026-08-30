@@ -8,7 +8,6 @@ start(Opts) ->
     Tab = ets:new(glyphastore_fake_server, [public, set]),
     ets:insert(Tab, {cfg, normalize_opts(Opts)}),
     ets:insert(Tab, {request_ids, []}),
-    ets:insert(Tab, {held, []}),
     ets:insert(Tab, {release_all, false}),
     ets:insert(Tab, {store_ops, 0}),
     ets:insert(Tab, {bind_counts, #{}}),
@@ -58,15 +57,14 @@ handle_control(Tab, get_request_ids) ->
     [{request_ids, Ids}] = ets:lookup(Tab, request_ids),
     lists:reverse(Ids);
 handle_control(Tab, release_held) ->
-    case ets:lookup(Tab, held) of
-        [{held, Held}] ->
-            lists:foreach(fun(Pid) -> Pid ! {release_hold, ok} end, Held),
-            ets:insert(Tab, {held, []}),
-            ets:insert(Tab, {release_all, true}),
-            ok;
-        _ ->
-            ok
-    end;
+    %% Publish the release before collecting registrations. A connection that
+    %% races with this control call rechecks release_all after registering, so
+    %% it cannot miss the release and remain blocked.
+    ets:insert(Tab, {release_all, true}),
+    Held = ets:match_object(Tab, {{held, '_'}, '_'}),
+    lists:foreach(fun({{held, Pid}, true}) -> Pid ! {release_hold, ok} end, Held),
+    ets:match_delete(Tab, {{held, '_'}, '_'}),
+    ok;
 handle_control(Tab, {set_routing_epoch, Epoch}) ->
     [{cfg, Cfg}] = ets:lookup(Tab, cfg),
     ets:insert(Tab, {cfg, Cfg#{routing_epoch => Epoch}}),
@@ -144,12 +142,19 @@ maybe_hold(Tab, Flag) ->
                 [{release_all, true}] ->
                     ok;
                 _ ->
-                    [{held, Held}] = ets:lookup(Tab, held),
-                    ets:insert(Tab, {held, [self() | Held]}),
-                    receive
-                        {release_hold, ok} -> ok
-                    after 30000 ->
-                        error(hold_release_timeout)
+                    HeldKey = {held, self()},
+                    ets:insert(Tab, {HeldKey, true}),
+                    case ets:lookup(Tab, release_all) of
+                        [{release_all, true}] ->
+                            ets:delete(Tab, HeldKey),
+                            ok;
+                        _ ->
+                            receive
+                                {release_hold, ok} -> ok
+                            after 30000 ->
+                                error(hold_release_timeout)
+                            end,
+                            ets:delete(Tab, HeldKey)
                     end
             end;
         false ->

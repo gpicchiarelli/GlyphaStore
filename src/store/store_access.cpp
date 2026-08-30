@@ -79,7 +79,8 @@ auto detail::StoreAccess::prepare_get_owned(Store& store, const std::size_t work
         if (!prepared->cold) {
             return fail(ErrorCode::internal_error, "durable GET preparation produced no result");
         }
-        return PreparedGet{.cold = PreparedColdRead{PreparedColdRead::State{std::move(*prepared->cold)}}};
+        return PreparedGet{.cold =
+                               PreparedColdRead{PreparedColdRead::State{std::move(prepared->cold).value()}}};
     }
     auto& worker = store.impl_->volatile_runtime->workers.worker(worker_index);
     std::optional<Worker::ExclusiveIndexQuiesce> index_quiesce;
@@ -192,8 +193,8 @@ auto detail::StoreAccess::prepare_published_durable_get(Store& store, const std:
     if (!prepared->borrowed_cold) {
         return fail(ErrorCode::internal_error, "immutable durable GET preparation produced no result");
     }
-    return PreparedGet{.cold =
-                           PreparedColdRead{PreparedColdRead::State{std::move(*prepared->borrowed_cold)}}};
+    return PreparedGet{
+        .cold = PreparedColdRead{PreparedColdRead::State{std::move(prepared->borrowed_cold).value()}}};
 } catch (const std::bad_alloc&) {
     return store_detail::resource_exhausted();
 } catch (...) {

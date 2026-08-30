@@ -144,9 +144,10 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
     if (!mutation) {
         return unexpected(mutation.error());
     }
+    const auto previous = mutation->previous;
     const auto rollback_index = [&]() -> Status {
-        if (mutation->previous) {
-            auto restored = index_.insert_or_assign(key, *mutation->previous);
+        if (previous) {
+            auto restored = index_.insert_or_assign(key, previous.value());
             if (!restored || restored->previous != ref) {
                 return fail(ErrorCode::corrupted_data, "failed to restore replaced index entry");
             }
@@ -160,8 +161,8 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
     };
 
     Segment* previous_segment = nullptr;
-    if (mutation->previous) {
-        previous_segment = find_owned_segment(mutation->previous->segment_id);
+    if (previous) {
+        previous_segment = find_owned_segment(previous.value().segment_id);
         if (!previous_segment) {
             if (auto rolled_back = rollback_index(); !rolled_back) {
                 return rolled_back;
@@ -169,7 +170,7 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
             return fail(ErrorCode::invalid_reference,
                         "previous record reference targets a segment not owned by this worker");
         }
-        if (auto valid = validate_live_record(*previous_segment, *mutation->previous); !valid) {
+        if (auto valid = validate_live_record(*previous_segment, previous.value()); !valid) {
             if (auto rolled_back = rollback_index(); !rolled_back) {
                 return rolled_back;
             }
@@ -183,8 +184,8 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
         }
         return live;
     }
-    if (mutation->previous) {
-        if (auto dead = previous_segment->mark_dead(*mutation->previous); !dead) {
+    if (previous) {
+        if (auto dead = previous_segment->mark_dead(previous.value()); !dead) {
             static_cast<void>(segment.mark_dead(ref));
             if (auto rolled_back = rollback_index(); !rolled_back) {
                 return rolled_back;
@@ -192,7 +193,7 @@ auto Worker::publish(const HashedKey& key, const RecordRef& ref, Segment& segmen
             return dead;
         }
     }
-    if (mutation->previous) {
+    if (previous) {
         maybe_retire(*previous_segment);
     }
     return {};

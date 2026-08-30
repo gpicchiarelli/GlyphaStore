@@ -79,6 +79,15 @@ pipeline 128: 195.72 kops/s, -42.93%, with p99 rising from 6.78 ms to 35.21 ms a
 8.32 ms to 72.93 ms. Its throughput ranges are disjoint, so this cell needs a focused repeat before
 the change can be accepted.
 
+The focused repeat was performed after the campaign analysis, using the identical command and an
+interleaved same-host A/B against a detached `1ff35c3` worktree. Across three seven-sample rounds,
+the current-tree median-of-medians was 301.19 kops/s versus 287.44 kops/s for `1ff35c3` (+4.78%);
+the corresponding p99 median-of-medians was 7.29 ms versus 7.45 ms (-2.15%). Individual rounds
+varied widely: current 252.33–304.61 kops/s and baseline 262.59–312.50 kops/s. Relative to the
+negative campaign cell, the focused current result is +53.88% throughput with 79.29% lower p99.
+The original -42.93% cell is therefore not reproduced as a code regression; it remains evidence of
+same-host scheduler/thermal variance under advisory affinity and deep pipeline pressure.
+
 ### Durability samples
 
 These rows have different acknowledgement semantics and must not be compared as equivalent modes.
@@ -130,6 +139,8 @@ remains dominated by millisecond-scale persistence and queueing; group batching 
 in-flight memory for throughput.
 
 The results do not close any production-readiness or durability gate. In particular, the benchmark
-campaign does not override the outstanding CI failures observed for `b971a15` (macOS concurrency
-litmus and clang-tidy optional-access diagnostics), and the complete local-report metadata gap is a
-separate assurance issue.
+campaign does not override the CI failures observed for `b971a15`. The macOS concurrency litmus,
+clang-tidy optional-access diagnostics, and an additional Erlang fake-server registration race have
+subsequently been repaired and verified locally where the required runtime is available; the
+follow-up still requires a fresh green CI run. The complete local-report metadata gap is a separate
+assurance issue.

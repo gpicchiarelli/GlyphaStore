@@ -262,10 +262,11 @@ auto Store::get_copy(const std::string_view key) -> Result<OwnedValue> try {
                 return unexpected(prepared.error());
             }
             if (prepared->value) {
-                return std::move(*prepared->value);
+                return std::move(prepared->value).value();
             }
             if (prepared->cold) {
-                return detail::StoreAccess::complete_get_owned(*this, shard, std::move(*prepared->cold));
+                return detail::StoreAccess::complete_get_owned(*this, shard,
+                                                               std::move(prepared->cold).value());
             }
             return fail(ErrorCode::internal_error, "paired durable GET produced no result");
         }
@@ -634,8 +635,8 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
             if (!result) {
                 return unexpected(result.error());
             }
-            if (*result) {
-                return store_detail::public_compaction_result(worker_index, **result);
+            if (result.value()) {
+                return store_detail::public_compaction_result(worker_index, result.value().value());
             }
         }
         return CompactionResult{};
@@ -665,13 +666,14 @@ auto Store::compact_for_maintenance(const std::optional<std::size_t> preferred_w
         if (!candidate) {
             return unexpected(candidate.error());
         }
-        if (!*candidate || (first_candidate && **candidate == *first_candidate)) {
+        const auto& candidate_worker = candidate.value();
+        if (!candidate_worker || (first_candidate && candidate_worker.value() == first_candidate.value())) {
             if (last_no_gain) {
-                return *last_no_gain;
+                return last_no_gain.value();
             }
             return CompactionResult{};
         }
-        const auto worker_index = **candidate;
+        const auto worker_index = candidate_worker.value();
         if (!first_candidate) {
             first_candidate = worker_index;
         }

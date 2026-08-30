@@ -5,10 +5,12 @@ platform durability row, accept ADR 0036, or raise the architectural-prototype c
 
 ## Environment
 
-- Base revision: `24ddfec8e7c6dc774c2658c291dd90d82956e88a` plus the uncommitted changes described here.
+- Base revision: `5fa79cd17f77271c0c109ddec91faf4eda55ea70` plus the uncommitted follow-up changes
+  described here.
 - Host: macOS 26.6.2, Apple clang 21.0.0, arm64.
 - Formatting: clang-format 21.1.8.
-- Static analysis: clang-tidy 21.1.6.
+- Static analysis: clang-tidy 21.1.6 for the initial campaign; clang-tidy 22.1.8 for the
+  post-CI follow-up.
 
 ## Scope
 
@@ -34,12 +36,42 @@ platform durability row, accept ADR 0036, or raise the architectural-prototype c
 | `unix-strict` tests | 54/54 passed; 351.02 s |
 | macOS ASan+UBSan tests | 54/54 passed; 464.72 s |
 | macOS TSan main suite after repair | 696/696 passed; no TSan report |
+| Post-CI macOS Debug CTest | 54/54 passed; 323.81 s |
+| Paired overwrite-storm adverse-scheduling repetition | 500/500 passed after the test-contract repair |
 
 The first full TSan main-suite run exposed three reports with one root cause: the dedicated
 volatile Writer read a caller-stack `SyncMutation::status` after publishing `done`. The Writer now
 derives the all-failed/indeterminate decision before the release notification and never
 dereferences those nodes afterward. Both direct reproducer tests and the complete 696-test TSan
 main suite passed after the repair.
+
+## Post-CI reconciliation
+
+The first pushed campaign exposed two additional classes of quality debt without changing the
+architectural-prototype claim ceiling:
+
+- the Ubuntu clang-tidy package diagnosed 24 unchecked `std::optional` accesses across 10
+  production sources that clang-tidy 21.1.6 had not reported locally. Every site now uses an
+  explicit checked `value()` extraction after its fail-closed guard. The full 109-source gate
+  passes locally with clang-tidy 22.1.8;
+- the macOS overwrite-storm litmus failed because its Writer treated the documented bounded
+  generation-admission `resource_exhausted` result as a visibility failure while the Reader held a
+  nearly continuous sequence of counted leases. The test now creates an explicit quiescent
+  hand-off and retries the same mutation; GET errors and empty values remain independent hard
+  failures. Five hundred adverse-scheduling repetitions and the complete Debug CTest matrix pass;
+- the packaged Erlang concurrency suite exposed a lost update in the fake server's ETS `held`
+  list when two connection processes registered concurrently. Per-process ETS keys remove the
+  read/modify/write race, while publishing `release_all` before collecting keys and rechecking it
+  after registration closes the late-registration window.
+
+These are static-analysis and proof-harness repairs. They do not alter persistence format v1, wire
+protocol v2, acknowledgement points, routing, recovery, or public mutation visibility.
+
+The focused eight-Worker/eight-client/pipeline-128 volatile read-after-write repeat also did not
+reproduce the full-campaign performance outlier. Three interleaved seven-sample rounds produced a
+current-tree median-of-medians of 301.19 kops/s and p99 of 7.29 ms, versus 287.44 kops/s and 7.45 ms
+at `1ff35c3`. The wide per-round overlap prevents a performance-change claim, but rules out using
+the isolated 195.72 kops/s / 35.21 ms cell as evidence of a deterministic code regression.
 
 ## Residuals
 
@@ -51,3 +83,5 @@ main suite passed after the repair.
   high-signal production pass is fail-closed.
 - External URL availability and Markdown fragment semantics remain covered by the separate
   scheduled link workflow, not the deterministic local-link validator.
+- Erlang/OTP is not installed on this macOS host, so the repaired Erlang suite awaits CI execution;
+  this local record does not count that row as passed.

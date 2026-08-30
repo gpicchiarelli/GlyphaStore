@@ -39,26 +39,67 @@ GLYPHA_TEST("paired Store concurrent GET observes live generation under overwrit
     GLYPHA_REQUIRE(store.put(key, bytes("seed")).has_value());
 
     std::atomic_bool stop{false};
-    std::atomic_bool failed{false};
+    std::atomic_bool quiescence_requested{false};
+    std::atomic_bool reader_quiescent{false};
+    std::atomic_int reader_failure{};
+    int writer_failure{};
     std::thread reader{[&] {
         while (!stop.load(std::memory_order_acquire)) {
+            if (quiescence_requested.load(std::memory_order_acquire)) {
+                reader_quiescent.store(true, std::memory_order_release);
+                while (quiescence_requested.load(std::memory_order_acquire) &&
+                       !stop.load(std::memory_order_acquire)) {
+                    std::this_thread::yield();
+                }
+                reader_quiescent.store(false, std::memory_order_release);
+                continue;
+            }
             const auto got = store.get(key);
-            if (!got.has_value() || got->bytes.empty()) {
-                failed.store(true, std::memory_order_relaxed);
+            if (!got.has_value()) {
+                reader_failure.store(static_cast<int>(got.error().code) + 1, std::memory_order_relaxed);
+                return;
+            }
+            if (got->bytes.empty()) {
+                reader_failure.store(-1, std::memory_order_relaxed);
                 return;
             }
         }
     }};
     for (std::size_t write = 0; write < 8'192; ++write) {
         const auto value = "v-" + std::to_string(write);
-        if (!store.put(key, bytes(value)).has_value()) {
-            failed.store(true, std::memory_order_relaxed);
+        auto put = store.put(key, bytes(value));
+        if (!put && put.error().code == glyphastore::ErrorCode::resource_exhausted) {
+            // Counted Reader leases intentionally bound retired generations. If
+            // the overwrite storm never exposes a quiescent instant, honor that
+            // backpressure and retry the same mutation only after one explicit
+            // quiescent hand-off.
+            quiescence_requested.store(true, std::memory_order_release);
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{2};
+            while (!reader_quiescent.load(std::memory_order_acquire) &&
+                   std::chrono::steady_clock::now() < deadline) {
+                std::this_thread::yield();
+            }
+            if (!reader_quiescent.load(std::memory_order_acquire)) {
+                writer_failure = -1;
+                quiescence_requested.store(false, std::memory_order_release);
+                break;
+            }
+            put = store.put(key, bytes(value));
+            quiescence_requested.store(false, std::memory_order_release);
+        }
+        if (!put) {
+            writer_failure = static_cast<int>(put.error().code) + 1;
             break;
         }
     }
     stop.store(true, std::memory_order_release);
     reader.join();
-    GLYPHA_REQUIRE(!failed.load(std::memory_order_relaxed));
+    if (const auto failure = reader_failure.load(std::memory_order_relaxed); failure != 0) {
+        throw std::runtime_error{"overwrite-storm reader failure " + std::to_string(failure)};
+    }
+    if (writer_failure != 0) {
+        throw std::runtime_error{"overwrite-storm writer failure " + std::to_string(writer_failure)};
+    }
     GLYPHA_REQUIRE(store.close().has_value());
 }
 

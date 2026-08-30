@@ -85,7 +85,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
         if (!record) {
             response.status = reactor_detail::response_status(record.error());
         } else if (record->value) {
-            owned_response = std::move(*record->value);
+            owned_response = std::move(record->value).value();
             response.value = owned_response.view();
             owns_response_value = true;
         } else {
@@ -108,7 +108,7 @@ auto Reactor::execute_local(const ConnectionToken token, const RequestView& requ
                               .request_id = request.request_id,
                               .generation_epoch = generation_epoch,
                               .worker_index = executor_id_,
-                              .read = std::move(*record->cold),
+                              .read = std::move(record->cold).value(),
                               .cancellation =
                                   {
                                       .epoch = &cancellation_epoch,
